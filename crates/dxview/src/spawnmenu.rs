@@ -151,6 +151,15 @@ fn build(commands: &mut Commands, assets: &mut RuntimeAssets, images: &mut Asset
                     ("GOD".to_string(), "God mode (no damage): toggle".to_string(), (0.12, 0.16, 0.12)),
                     ("SKILLPTS".to_string(), "Add 1000 skill points".to_string(), (0.12, 0.16, 0.12)),
                     ("QUOTES".to_string(), "Show the quotes window".to_string(), (0.12, 0.16, 0.12)),
+                    // The original's cheats (DeusExPlayer exec functions).
+                    ("CHEAT:AllHealth".to_string(), "AllHealth: heal fully".to_string(), (0.16, 0.12, 0.08)),
+                    ("CHEAT:AllEnergy".to_string(), "AllEnergy: bioenergy full".to_string(), (0.16, 0.12, 0.08)),
+                    ("CHEAT:AllAmmo".to_string(), "AllAmmo: ammo to max".to_string(), (0.16, 0.12, 0.08)),
+                    ("CHEAT:AllWeapons".to_string(), "AllWeapons: every weapon".to_string(), (0.16, 0.12, 0.08)),
+                    ("CHEAT:AllCredits".to_string(), "AllCredits: 100,000 credits".to_string(), (0.16, 0.12, 0.08)),
+                    ("CHEAT:AllSkills".to_string(), "AllSkills: every skill Master".to_string(), (0.16, 0.12, 0.08)),
+                    ("ALLAUGS".to_string(), "AllAugs: every augmentation".to_string(), (0.16, 0.12, 0.08)),
+                    ("INVISIBLE".to_string(), "Invisible: AI can't see you (toggle)".to_string(), (0.16, 0.12, 0.08)),
                 ]
                     .into_iter()
                     .chain(cans)
@@ -284,6 +293,34 @@ pub fn spawn_menu_system(
                     hud.text = format!("God mode {}", if on { "ON" } else { "OFF" });
                     hud.time_left = 2.0;
                     *bg = BackgroundColor(Color::srgba(0.3, 0.45, 0.3, 0.95));
+                    continue;
+                }
+                if let Some(c) = b.0.strip_prefix("CHEAT:") {
+                    let c: &'static str = match c {
+                        "AllHealth" => "AllHealth",
+                        "AllEnergy" => "AllEnergy",
+                        "AllAmmo" => "AllAmmo",
+                        "AllWeapons" => "AllWeapons",
+                        "AllCredits" => "AllCredits",
+                        _ => "AllSkills",
+                    };
+                    crate::missions::player_req(crate::missions::PlayerReq::Cheat(c));
+                    hud.text = c.to_string();
+                    hud.time_left = 2.0;
+                    continue;
+                }
+                if b.0 == "ALLAUGS" {
+                    for aug in AUGS {
+                        let _ = crate::abilities::give_aug(&mut assets.classes, aug, true);
+                    }
+                    hud.text = "AllAugs".into();
+                    hud.time_left = 2.0;
+                    continue;
+                }
+                if b.0 == "INVISIBLE" {
+                    let on = !crate::abilities::CHEAT_INVISIBLE.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+                    hud.text = format!("Invisible {}", if on { "ON" } else { "OFF" });
+                    hud.time_left = 2.0;
                     continue;
                 }
                 if b.0 == "QUOTES" {

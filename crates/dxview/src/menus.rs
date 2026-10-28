@@ -401,6 +401,28 @@ fn display_mode_choice() -> Choice {
 
 pub const DISPLAY_MODES: [&str; 3] = ["Full Screen", "Windowed", "Borderless"];
 
+/// Ours: Vertical Sync on the Display screen.
+fn vsync_choice() -> Choice {
+    let mut c = display_mode_choice();
+    c.key = "VSync".into();
+    c.label = "|&Vertical Sync".into();
+    c.help = "Wait for the monitor's refresh before showing each frame: no tearing, frame rate capped at the refresh rate. Off: as many frames as the PC can draw.".into();
+    c.kind = ChoiceKind::Enum(vec!["Disabled".into(), "Enabled".into()]);
+    c.value = crate::settings::get("VSync");
+    c.saved = c.value;
+    c.dropdown = false;
+    c
+}
+
+/// The Bevy present mode for a VSync setting.
+pub fn present_mode(v: f32) -> bevy::window::PresentMode {
+    if v > 0.5 {
+        bevy::window::PresentMode::AutoVsync
+    } else {
+        bevy::window::PresentMode::AutoNoVsync
+    }
+}
+
 /// The Bevy window mode for a DisplayMode setting.
 /// The window mode for a DisplayMode setting. The primary monitor, not "current": at startup there is no window
 /// yet, so winit has no current monitor and Bevy panics ("Unable to get monitor").
@@ -607,6 +629,24 @@ impl Enhance {
         }
         items.extend(pad_option_choices().into_iter().map(|c| tag(c, "Controller")));
         items.extend(dualsense_choices().into_iter().map(|c| tag(c, "DualSense")));
+        for (key, group, lbl, help) in [
+            ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo, reload every clip and switch weapons (or to melee) when they run dry, as the original scripts say."),
+            ("FloorConsumables", "Gameplay", "Use Consumables From The Floor", "With no room in your inventory, a medkit, bioelectric cell, food or drink you pick up is used on the spot."),
+            ("LadderGrab", "Gameplay", "Grab Ladders", "Use takes hold of a ladder and Jump lets go; on it, forward and back climb up and down."),
+            ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab types a keypad code, logins are filled in."),
+            ("DialogueHotkeys", "Interface", "Dialogue Hotkeys", "Number the first four conversation choices; keys 1-4 pick them."),
+            ("InventorySort", "Interface", "Inventory Auto-Sort", "A Sort button on the inventory screen packs the items neatly, weapons first."),
+            ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish and many more blood splats stay on the ground."),
+            ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord (needs DiscordAppId in launcher.txt)."),
+        ] {
+            let mut c = debug_mode_choice();
+            c.key = key.into();
+            c.label = lbl.into();
+            c.help = help.into();
+            c.value = crate::settings::get(key);
+            c.saved = c.value;
+            items.push(tag(c, group));
+        }
         let mut lip = debug_mode_choice();
         lip.key = "SmoothLipSync".into();
         lip.label = "Smooth |&Lip Sync".into();
@@ -631,9 +671,9 @@ impl Enhance {
     }
     fn value_text(c: &Choice) -> String {
         match &c.kind {
-            ChoiceKind::Enum(v) => v.get(c.value.max(0.0) as usize).cloned().unwrap_or_default(),
             ChoiceKind::Action { .. } => "...".into(),
-            _ => format!("{:.0}", c.value),
+            ChoiceKind::Slider { ticks, .. } if c.value_text().contains('.') => format!("{} / {}", c.slider_tick() + 1, ticks),
+            _ => c.value_text(),
         }
     }
     /// Change the selected item a step (an action item opens its screen instead).
@@ -641,12 +681,17 @@ impl Enhance {
         let Some(i) = self.sel else { return };
         let c = &mut self.items[i];
         match &c.kind {
-            ChoiceKind::Enum(v) => {
-                let n = v.len().max(1) as i32;
-                c.value = ((c.value as i32 + dir).rem_euclid(n)) as f32;
-            }
             ChoiceKind::Action { invoke, .. } if !invoke.is_empty() => acts.push(Act::Push(invoke.clone())),
-            _ => {}
+            ChoiceKind::Action { .. } => {}
+            _ => {
+                c.cycle(dir);
+                // The original screens' settings that take effect at once (volumes, brightness, themes, the
+                // window).
+                live_preview(c);
+                if let Some(a) = choice_side_effect(c) {
+                    acts.push(a);
+                }
+            }
         }
     }
     /// Move the selection among the shown items, keeping it on screen.
@@ -676,6 +721,25 @@ struct KeypadWin {
     wait: Option<(f32, bool)>,
     /// bInstantSuccess (bypassed with a multitool): the code goes in by itself on the first frame.
     instant: bool,
+    /// Ours (Enhancement "Codes From Notes"): the code is in one of the player's notes; Tab enters it.
+    noted: bool,
+}
+
+/// Ours: a code or password appears in one of the player's notes as a whole word.
+pub(crate) fn in_notes(code: &str) -> bool {
+    if code.is_empty() || crate::settings::get("NotesAutofill") < 0.5 {
+        return false;
+    }
+    let Some(st) = crate::consys::lock().as_ref().map(|s| s.notes.clone()) else { return false };
+    let want = code.to_ascii_lowercase();
+    st.iter().any(|n| {
+        let n = n.to_ascii_lowercase();
+        n.match_indices(&want).any(|(i, _)| {
+            let before = n[..i].chars().next_back();
+            let after = n[i + want.len()..].chars().next();
+            !before.is_some_and(|c| c.is_ascii_alphanumeric()) && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+        })
+    })
 }
 
 static KEYPAD_OPEN: std::sync::Mutex<Option<(usize, String, bool)>> = std::sync::Mutex::new(None);
@@ -815,7 +879,26 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             f = frame(assets, "MenuScreenCustomizeKeys");
             f.class = class.to_string();
             f.title = "Enhancements".into();
-            Body::Enhance(Enhance::new())
+            let mut en = Enhance::new();
+            // Ours: every original settings screen's choices on the same searchable list ("Display:", "Sound:"...).
+            for (screen, group) in [
+                ("MenuScreenDisplay", "Display"),
+                ("MenuScreenSound", "Sound"),
+                ("MenuScreenControls", "Controls"),
+                ("MenuScreenOptions", "Game"),
+                ("MenuScreenAdjustColors", "Colors"),
+            ] {
+                if let Some(Win { body: Body::Choices { choices }, .. }) = open_window(hud, assets, screen) {
+                    for mut c in choices {
+                        if en.items.iter().any(|o| o.key == c.key) {
+                            continue;
+                        }
+                        c.label = format!("{group}: {}", label(&c.label));
+                        en.items.push(c);
+                    }
+                }
+            }
+            Body::Enhance(en)
         }
         "MenuScreenDualSense" | "MenuScreenPadOptions" => {
             // Ours, on the Controls screen's frame: features beyond the original (the v2.0 options go here).
@@ -874,6 +957,8 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             if class == "MenuScreenDisplay" {
                 let at = choices.iter().position(|c| c.key == "Resolution").unwrap_or(choices.len());
                 choices.insert(at, display_mode_choice());
+                let at = choices.iter().position(|c| c.key == "Resolution").map_or(choices.len(), |i| i + 1);
+                choices.insert(at, vsync_choice());
                 choices.push(hud_scale_choice());
             }
             for c in choices.iter_mut().filter(|c| c.key == "Resolution") {
@@ -1618,6 +1703,10 @@ fn draw_keypad(u: &mut Ui<W>, k: &KeypadWin, fonts: &Fonts) {
         u.text(&big, x + ox, y + oy, 25, 27, HAlign::Center, VAlign::Center, col, &key_char(i).to_string());
         u.hit(w, (x, y, 25, 27), true);
     }
+    if k.noted && k.wait.is_none() {
+        let small = u.f.small.clone();
+        u.text(&small, 0, 148, 103, 12, HAlign::Center, VAlign::Center, h_col(7), "Tab: code from notes");
+    }
 }
 
 /// MenuUIWindow.CreateMenuEditWindow (the clip sits 5 down, not 4 as on computers).
@@ -1681,6 +1770,7 @@ enum Act {
     NewGame(crate::travel::NewGame),
     ToggleFullscreen,
     DisplayMode(f32),
+    VSync(f32),
     Resolution(u32, u32),
     SaveGame(std::path::PathBuf, String),
     LoadGame(std::path::PathBuf),
@@ -1757,6 +1847,7 @@ fn choice_side_effect(c: &Choice) -> Option<Act> {
     match c.key.as_str() {
         "Resolution" => RESOLUTIONS.get(c.value.max(0.0) as usize).map(|&(w, h)| Act::Resolution(w, h)),
         "DisplayMode" => Some(Act::DisplayMode(c.value)),
+        "VSync" => Some(Act::VSync(c.value)),
         _ => None,
     }
 }
@@ -1790,6 +1881,11 @@ fn save_choices(win: &Win) {
 
 /// CancelSetting: put live-previewed values back.
 fn cancel_choices(win: &Win) {
+    if let Body::Enhance(en) = &win.body {
+        for c in en.items.iter().filter(|c| !matches!(c.kind, ChoiceKind::Action { .. })) {
+            crate::settings::set(&c.key, c.saved);
+        }
+    }
     if let Body::Choices { choices } = &win.body {
         for c in choices {
             if !matches!(c.kind, ChoiceKind::Action { .. }) {
@@ -1994,7 +2090,8 @@ pub fn menu_system(
     }
     if let Some((blocker, valid, instant)) = KEYPAD_OPEN.lock().ok().and_then(|mut k| k.take()) {
         let f = Frame { class: "HUDKeypadWindow".into(), cw: 103, ch: 162, ..default() };
-        let mut k = KeypadWin { blocker, valid, input: String::new(), wait: None, instant };
+        let noted = in_notes(&valid);
+        let mut k = KeypadWin { blocker, valid, input: String::new(), wait: None, instant, noted };
         if k.instant {
             k.input = k.valid.clone();
             keypad_validate(&mut k);
@@ -2397,6 +2494,17 @@ pub fn menu_system(
                     keypad_press(kp, i);
                     continue;
                 }
+                // Ours: Tab types the code found in the notes.
+                if *k == KeyCode::Tab && kp.noted && kp.wait.is_none() {
+                    kp.input.clear();
+                    let code: Vec<char> = kp.valid.chars().collect();
+                    for ch in code {
+                        if let Some(i) = (0..12).find(|&i| key_char(i) == ch) {
+                            keypad_press(kp, i);
+                        }
+                    }
+                    continue;
+                }
             }
             // Enhancements: arrows move / change, Enter changes or opens, everything else types into the search.
             if let Body::Enhance(en) = &mut win.body {
@@ -2702,6 +2810,9 @@ pub fn menu_system(
             }
             Act::DisplayMode(v) => {
                 window.mode = window_mode(v);
+            }
+            Act::VSync(v) => {
+                window.present_mode = present_mode(v);
             }
             Act::Resolution(w, h) => {
                 window.resolution.set_physical_resolution(w, h);
@@ -3182,7 +3293,7 @@ mod tests {
         ] {
             let mut win = if class == "KEYPAD" {
                 let f = Frame { class: "HUDKeypadWindow".into(), cw: 103, ch: 162, ..default() };
-                Win { f, body: Body::Keypad(KeypadWin { blocker: 0, valid: "0451".into(), input: "04".into(), wait: None, instant: false }), pos: None, focus: None, hides_below: true, drop: None }
+                Win { f, body: Body::Keypad(KeypadWin { blocker: 0, valid: "0451".into(), input: "04".into(), wait: None, instant: false, noted: false }), pos: None, focus: None, hides_below: true, drop: None }
             } else if class == "MSG" {
                 let d = assets.classes.defaults("MenuMain");
                 msg_box(&mut hud, &mut assets, &pstr(&d, "MessageBoxTitle"), &pstr(&d, "ExitMessage"), true, MsgPurpose::Exit).unwrap()

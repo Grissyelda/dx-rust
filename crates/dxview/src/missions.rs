@@ -92,7 +92,18 @@ pub enum PlayerReq {
     Credits,
     /// SetInstantSoundVolume (None = back to normal).
     SoundVolume(Option<f32>),
+    /// The debug menu's DeusExPlayer cheats: AllHealth, AllEnergy, AllAmmo, AllWeapons, AllCredits, AllSkills.
+    Cheat(&'static str),
 }
+
+/// Every player weapon (DeusExPlayer.AllWeapons).
+const ALL_WEAPONS: &[&str] = &[
+    "WeaponPistol", "WeaponStealthPistol", "WeaponAssaultGun", "WeaponAssaultShotgun", "WeaponSawedOffShotgun",
+    "WeaponRifle", "WeaponGEPGun", "WeaponLAW", "WeaponFlamethrower", "WeaponPlasmaRifle", "WeaponMiniCrossbow",
+    "WeaponPepperGun", "WeaponProd", "WeaponCombatKnife", "WeaponCrowbar", "WeaponBaton", "WeaponSword",
+    "WeaponNanoSword", "WeaponShuriken", "WeaponLAM", "WeaponEMPGrenade", "WeaponGasGrenade",
+    "WeaponNanoVirusGrenade", "WeaponHideAGun",
+];
 
 static PLAYER: Mutex<Vec<PlayerReq>> = Mutex::new(Vec::new());
 
@@ -1976,6 +1987,54 @@ pub fn mission_fx_system(
             PlayerReq::Quote(lines, secs) => crate::classic_hud::quote_text(&lines, secs),
             PlayerReq::Credits => crate::credits::show(),
             PlayerReq::SoundVolume(v) => crate::sound::set_instant_sound_volume(v),
+            PlayerReq::Cheat(c) => match c {
+                "AllHealth" => {
+                    ph.heal(10000.0);
+                }
+                "AllEnergy" => ph.energy = 100.0,
+                "AllCredits" => inv.0.credits = 100000,
+                "AllSkills" => {
+                    if let Some(a) = crate::abilities::lock().as_mut() {
+                        for s in a.skills.list.iter_mut() {
+                            s.level = 3;
+                        }
+                    }
+                }
+                "AllWeapons" | "AllAmmo" => {
+                    if c == "AllWeapons" {
+                        for w in ALL_WEAPONS {
+                            if !inv.0.items.iter().any(|i| i.def.class == *w) {
+                                let d = assets.classes.defaults(w);
+                                let _ = crate::pickups::give_weapon(&mut inv.0, w, &d, 0, &mut assets);
+                            }
+                        }
+                    }
+                    // AllAmmo: every owned weapon's ammo types to MaxAmmo.
+                    let owned: Vec<String> = inv.0.items.iter().filter(|i| i.def.class.starts_with("Weapon")).map(|i| i.def.class.clone()).collect();
+                    for w in owned {
+                        let d = assets.classes.defaults(&w);
+                        let ammos: Vec<String> = d
+                            .iter()
+                            .filter(|p| p.name.eq_ignore_ascii_case("AmmoNames") || p.name.eq_ignore_ascii_case("AmmoName"))
+                            .filter_map(|p| match &p.value {
+                                Value::Path(a) if !a.ends_with("AmmoNone") => Some(a.rsplit('.').next().unwrap_or("").to_string()),
+                                _ => None,
+                            })
+                            .collect();
+                        for a in ammos {
+                            let max = match unreal_pkg::props::find(&assets.classes.defaults(&a), "MaxAmmo") {
+                                Some(Value::Int(n)) => (*n).max(1) as u32,
+                                _ => 100,
+                            };
+                            match inv.0.ammo.iter_mut().find(|x| x.0 == a) {
+                                Some(x) => x.1 = x.1.max(max),
+                                None => inv.0.ammo.push((a, max)),
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
         }
     }
     if let Some(snd) = ZONE_AMBIENT.lock().ok().and_then(|z| z.clone()) {

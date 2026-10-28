@@ -19,7 +19,7 @@
 //! AlignWindow label + wrapped text, 5 apart), TeamBack_1..3 (600 x 214), Quotes_Music, ten SpinningLogoWindows
 //! bouncing under gravity 120 with a 48-frame FontSpinningDX spin and a cycling hue (Insert adds one, Delete removes
 //! one, End removes all); Escape, a click or the end clears the stack (and loads the title map after the endgame).
-//! Not ported: THEREISNOSPOON (Matrix: a renderer mode switch) and IAMWARREN (Warren's EMP field) only show
+//! THEREISNOSPOON (the Matrix view) and IAMWARREN (Warren's EMP field) act through eggs.rs; they also show
 //! their phrase. Deviation: the original's colour maths writes Int(c * 256) - 1 into a byte, so a channel at 0
 //! wraps to 255 (fading text and logos flash white); we clamp it to 0.
 
@@ -635,6 +635,8 @@ pub fn credits_system(
                         crate::settings::save();
                     }
                     "DANCEPARTY" => dance = true,
+                    "THEREISNOSPOON" => crate::eggs::toggle_matrix(),
+                    "IAMWARREN" => crate::eggs::toggle_warren(),
                     _ => {}
                 }
                 sc.egg.clear();

@@ -57,6 +57,10 @@ struct Gen {
     /// Texture height / width.
     aspect: f32,
     mat: Option<Handle<StandardMaterial>>,
+    /// Actor.LifeSpan: the generator stops after this long and goes once its particles have died.
+    lifespan: Option<f32>,
+    /// Sound played for each burst (ParticleGenerator.spawnSound).
+    spawn_sound: Option<String>,
 }
 
 #[derive(Resource, Default)]
@@ -127,6 +131,8 @@ fn build(level: &dx_level::Level, blockers: &crate::actors::Blockers) -> Vec<Gen
             size: 0.0,
             aspect: 1.0,
             mat: None,
+            lifespan: None,
+            spawn_sound: None,
         });
     }
     // Faucet.PostBeginPlay: a generator CollisionRadius x 0.9 in front of the tap, pitched down 12288.
@@ -164,6 +170,8 @@ fn build(level: &dx_level::Level, blockers: &crate::actors::Blockers) -> Vec<Gen
             size: 0.0,
             aspect: 1.0,
             mat: None,
+            lifespan: None,
+            spawn_sound: None,
         });
     }
     // HKIncenseBurner.PostBeginPlay: a smoke generator at 0.6 x CollisionHeight, straight up.
@@ -185,6 +193,9 @@ fn build(level: &dx_level::Level, blockers: &crate::actors::Blockers) -> Vec<Gen
             life: 4.0,
             random: true,
             follow: Some((bi, off)),
+            gravity: false,
+            lifespan: None,
+            spawn_sound: None,
         }));
     }
     out
@@ -203,6 +214,9 @@ pub struct GenSpec {
     pub life: f32,
     pub random: bool,
     pub follow: Option<(usize, DVec3)>,
+    pub gravity: bool,
+    pub lifespan: Option<f32>,
+    pub spawn_sound: Option<String>,
 }
 
 fn spec_gen(g: GenSpec) -> Gen {
@@ -220,7 +234,7 @@ fn spec_gen(g: GenSpec) -> Gen {
         fade: true,
         random: g.random,
         check: g.check,
-        gravity: false,
+        gravity: g.gravity,
         num: 1,
         spewing: true,
         faucet: None,
@@ -230,6 +244,8 @@ fn spec_gen(g: GenSpec) -> Gen {
         size: 0.0,
         aspect: 1.0,
         mat: None,
+        lifespan: g.lifespan,
+        spawn_sound: g.spawn_sound,
     }
 }
 
@@ -299,6 +315,12 @@ pub fn particle_system(
         if let Some(fb) = g.faucet {
             g.spewing = fixtures.is_on(fb);
         }
+        if let Some(t) = g.lifespan.as_mut() {
+            *t -= dt;
+            if *t <= 0.0 {
+                g.spewing = false;
+            }
+        }
         if let Some((b, off)) = g.follow {
             match blockers.list.get(b).filter(|c| c.radius > 0.0) {
                 Some(c) => g.pos = c.center + off,
@@ -341,6 +363,9 @@ pub fn particle_system(
             if g.time > g.check {
                 g.time = 0.0;
                 if (rnd().0 as f32) <= g.frequency {
+                    if let Some(snd) = &g.spawn_sound {
+                        crate::sound::play(snd, g.pos, 1.0, 1024.0, 1.0);
+                    }
                     for _ in 0..g.num.max(0) {
                         if g.parts.len() >= 64 {
                             break;
@@ -403,6 +428,8 @@ pub fn particle_system(
         });
     }
     st.seed = rnd().1;
+    // LifeSpan ran out and the last particle has died: the generator goes.
+    st.gens.retain(|g| !(g.lifespan.is_some_and(|t| t <= 0.0) && g.parts.is_empty()));
 }
 
 /// A new map: drop generators queued for the old one.

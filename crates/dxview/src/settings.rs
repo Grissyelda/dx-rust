@@ -33,6 +33,8 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("FullScreen", 0.0),
     // Ours: 0 full screen, 1 windowed, 2 borderless.
     ("DisplayMode", 1.0),
+    // Ours: vertical sync (1 on, 0 off).
+    ("VSync", 1.0),
     ("AdjustBrightness", 0.5),
     // HUD size (ours): 0 small, 1 medium (the original's rule), 2 large.
     ("HUDScale", 1.0),
@@ -81,6 +83,15 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("PadFrobPrompt", 0.0),
     // Enhancement: Joe Wintergreen-style lip sync (smoother mouth tweens, visible blinks). On by default.
     ("SmoothLipSync", 1.0),
+    // Small v2 enhancements (all off unless noted).
+    ("NPCFiniteAmmo", 0.0),
+    ("FloorConsumables", 0.0),
+    ("LadderGrab", 0.0),
+    ("NotesAutofill", 0.0),
+    ("DialogueHotkeys", 0.0),
+    ("InventorySort", 0.0),
+    ("PersistentDebris", 0.0),
+    ("DiscordPresence", 1.0),
     // Lay D Denton: Human.bGaveNewGameTips (the checkbox tip is shown once).
     ("LDDPGaveNewGameTips", 0.0),
     // DualSense (ROADMAP Phase 0.3): light bar 0 off / 1 health; player LEDs 0 energy meter / 1 player one / 2 off;

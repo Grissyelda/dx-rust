@@ -814,7 +814,18 @@ impl Term {
                     }
                 }
                 self.focus = Some(Wid::Edit(0));
-                Screen::Login { user: Edit::new(20), pass: Edit::new(20), info: self.d(wx).node.desc.clone() }
+                let (mut user, mut pass) = (Edit::new(20), Edit::new(20));
+                // Ours (Enhancement "Codes From Notes"): an account whose name and password are both in the notes
+                // is filled in.
+                if let Some(u) = self.d(wx).users.iter().find(|u| crate::menus::in_notes(&u.name) && crate::menus::in_notes(&u.password)) {
+                    user.text = u.name.chars().collect();
+                    user.cur = user.text.len();
+                    user.anchor = user.cur;
+                    pass.text = u.password.chars().collect();
+                    pass.cur = pass.text.len();
+                    pass.anchor = pass.cur;
+                }
+                Screen::Login { user, pass, info: self.d(wx).node.desc.clone() }
             }
             Which::Atm => {
                 if self.hacked {

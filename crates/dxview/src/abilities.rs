@@ -542,9 +542,12 @@ pub fn abilities_system(
 
 /// CalculatePlayerVisibility: the cloak hides the player from people and animals, radar transparency from robots;
 /// thermoptic camo from everyone.
+/// The debug menu's Invisible cheat (DeusExPlayer.Invisible: bDetectable False).
+pub static CHEAT_INVISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn invisible_to(robot: bool, camo: bool) -> bool {
     // A player using a computer is bIgnore (Computers.ChangePlayerVisibility): pawns don't see him.
-    camo || crate::computers::player_ignored() || if robot {
+    camo || CHEAT_INVISIBLE.load(std::sync::atomic::Ordering::Relaxed) || crate::computers::player_ignored() || if robot {
         aug_active("AugRadarTrans")
     } else {
         aug_active("AugCloak")

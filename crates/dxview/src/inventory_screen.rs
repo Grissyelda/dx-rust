@@ -118,8 +118,14 @@ enum Btn {
     Use,
     Drop,
     ChangeAmmo,
+    /// Ours: Enhancement "Inventory Auto-Sort".
+    Sort,
     Exit,
     Nav(usize),
+}
+
+fn sort_on() -> bool {
+    crate::settings::get("InventorySort") > 0.5
 }
 
 /// One line of the info panel.
@@ -744,8 +750,12 @@ pub(crate) struct Layout {
 pub(crate) fn layout(f: &Fonts) -> Layout {
     let nav = bar_layout(&f.headers, &NAV_LABELS, 23, 534, true);
     let exit = bar_layout(&f.headers, &["E|&xit"], 573, 48, true)[0];
-    let acts = [Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo];
-    let labels = ["|&Equip", "|&Use", "|&Drop", "Change Amm|&o"];
+    let mut acts = vec![Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo];
+    let mut labels = vec!["|&Equip", "|&Use", "|&Drop", "Change Amm|&o"];
+    if sort_on() {
+        acts.push(Btn::Sort);
+        labels.push("|&Sort");
+    }
     let bars = bar_layout(&f.headers, &labels, BUTTONS.0, BUTTONS.2, false);
     Layout {
         nav,
@@ -1384,6 +1394,9 @@ pub fn inventory_screen_system(
                    assets: &mut RuntimeAssets,
                    inv: &imsim_core::inventory::Inventory|
      -> bool {
+        if b == Btn::Sort {
+            return true;
+        }
         let Some(Sel::Item(c)) = &st.sel else {
             return matches!(b, Btn::Exit | Btn::Nav(_));
         };
@@ -1393,7 +1406,7 @@ pub fn inventory_screen_system(
             .iter()
             .any(|i| &i.key() == c && i.def.kind == ItemKind::Weapon);
         match b {
-            Btn::Exit | Btn::Nav(_) => true,
+            Btn::Exit | Btn::Nav(_) | Btn::Sort => true,
             Btn::Drop => true,
             Btn::Equip => {
                 !c.starts_with("WeaponMod")
@@ -1455,6 +1468,7 @@ pub fn inventory_screen_system(
                         );
                     }
                 }
+                Btn::Sort => inv.0.auto_sort(),
                 Btn::ChangeAmmo => {
                     if let Some(c) = sel_class.clone() {
                         load_ammo(
@@ -1473,7 +1487,7 @@ pub fn inventory_screen_system(
     }
 
     // ---------------------------------------------------------------- draw
-    let en: Vec<(Btn, bool)> = [Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo]
+    let en: Vec<(Btn, bool)> = [Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo, Btn::Sort]
         .iter()
         .map(|b| (*b, enabled(*b, st, &mut assets, &inv.0)))
         .collect();
@@ -2238,6 +2252,7 @@ fn draw_frame(
         (Btn::Use, "|&Use"),
         (Btn::Drop, "|&Drop"),
         (Btn::ChangeAmmo, "Change Amm|&o"),
+        (Btn::Sort, "|&Sort"),
     ];
     let mut right = BUTTONS.0;
     for (b, x, w) in &lay.actions {

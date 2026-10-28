@@ -844,10 +844,11 @@ fn fv(p: &[Property], n: &str, d: f32) -> f32 {
         _ => d,
     }
 }
-/// DXVIEW_NPC_FINITE_AMMO=1: pawns use up ammo and reload every clip, as DeusExWeapon's script does.
+/// Enhancement "NPC Ammo Runs Out" (or DXVIEW_NPC_FINITE_AMMO=1): pawns use up ammo, reload every clip and swap
+/// weapons when dry, as DeusExWeapon's script does.
 fn npc_finite_ammo() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("DXVIEW_NPC_FINITE_AMMO").is_ok_and(|v| v == "1"))
+    static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENV.get_or_init(|| std::env::var("DXVIEW_NPC_FINITE_AMMO").is_ok_and(|v| v == "1")) || crate::settings::get("NPCFiniteAmmo") > 0.5
 }
 
 fn flag(p: &[Property], n: &str) -> bool {

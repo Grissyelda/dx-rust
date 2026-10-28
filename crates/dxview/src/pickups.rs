@@ -587,6 +587,16 @@ pub fn frob_system(
                 hud.time_left = 3.0;
                 if after != before {
                     commands.entity(e).despawn();
+                } else if copies == 1
+                    && crate::settings::get("FloorConsumables") > 0.5
+                    && matches!(
+                        it.class.as_str(),
+                        "MedKit" | "BioelectricCell" | "Candybar" | "Sodacan" | "SoyFood" | "Liquor40oz" | "WineBottle" | "Cigarettes"
+                    )
+                {
+                    // Ours: no room for it, so use it where it lies.
+                    weapons.floor_use = Some(it.class.clone());
+                    commands.entity(e).despawn();
                 }
             }
         }
