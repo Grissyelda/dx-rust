@@ -17,7 +17,7 @@ static WANT: Mutex<Option<(String, String)>> = Mutex::new(None);
 static STARTED: std::sync::Once = std::sync::Once::new();
 
 /// The project's own Discord application (built in, so players don't set anything up). Empty = none yet.
-const BUILT_IN_APP_ID: &str = "";
+const BUILT_IN_APP_ID: &str = "1564865124123152444";
 
 fn app_id() -> Option<String> {
     if let Ok(v) = std::env::var("DXVIEW_DISCORD_ID") {
