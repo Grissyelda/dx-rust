@@ -5,9 +5,8 @@
 //! (u32 LE), JSON. Handshake op 0 `{"v":1,"client_id":...}`, then op 1 SET_ACTIVITY. Everything runs on its own
 //! thread; nothing waits for Discord, and with Discord closed it quietly retries every 20 s.
 //!
-//! The application id is the Discord application made for the game (Developer Portal > Applications): set it as
-//! `DiscordAppId=<id>` in launcher.txt beside the exe or in DXVIEW_DISCORD_ID. Its Rich Presence art asset
-//! named `dxrust` is shown as the large image. No id = off.
+//! The application id is the game's Discord application (built in: BUILT_IN_APP_ID); `DiscordAppId=<id>` in
+//! launcher.txt or DXVIEW_DISCORD_ID override it. Its Rich Presence art asset named `dxrust` is the large image.
 
 use std::io::{Read, Write};
 use std::sync::Mutex;
@@ -17,18 +16,22 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 static WANT: Mutex<Option<(String, String)>> = Mutex::new(None);
 static STARTED: std::sync::Once = std::sync::Once::new();
 
+/// The project's own Discord application (built in, so players don't set anything up). Empty = none yet.
+const BUILT_IN_APP_ID: &str = "";
+
 fn app_id() -> Option<String> {
     if let Ok(v) = std::env::var("DXVIEW_DISCORD_ID") {
         if !v.trim().is_empty() {
             return Some(v.trim().to_string());
         }
     }
-    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or_default();
     std::fs::read_to_string(dir.join("launcher.txt"))
-        .ok()?
+        .unwrap_or_default()
         .lines()
         .find_map(|l| l.strip_prefix("DiscordAppId=").map(|v| v.trim().to_string()))
         .filter(|v| !v.is_empty())
+        .or_else(|| (!BUILT_IN_APP_ID.is_empty()).then(|| BUILT_IN_APP_ID.to_string()))
 }
 
 /// What the presence says now (the map loader calls this on every arrival).
