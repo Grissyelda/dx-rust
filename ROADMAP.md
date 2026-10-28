@@ -13,7 +13,7 @@ The whole game is implemented and the code builds:
 
 - **Missions:** every mission script (training, missions 1 to 15 and the endgame), the three endings and the
   credits.
-- **Content:** every scripted actor class and set piece, and all 73 maps load.
+- **Content:** every scripted actor class and set piece, and every map of every mission loads (missions are split across several maps each; 83 in all).
 - **Systems:** AI, combat, stealth, skills, augmentations, inventory, conversations, infolinks, computers, keypads,
   saves, menus and the HUD, all checked against the original scripts.
 - **Travel:** moving between maps keeps the state of hub maps, and the next map is read ahead.
