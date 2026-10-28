@@ -19,7 +19,7 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
 > here or in the releases.
 
 ## Features
-- **The whole game.** All 73 maps, every mission script, scripted set pieces and both training courses. Travel
+- **The whole game.** Every map of every mission (the game has 83 map files), every mission script, scripted set pieces and both training courses. Travel
   between maps keeps the state of hub maps, and the next map is read ahead.
 - **Faithful by default.** The original rules, numbers and quirks, checked against the original scripts. Every
   modern change is an optional switch in *Settings > Enhancements*.
