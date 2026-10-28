@@ -259,9 +259,24 @@ pub fn mirror_system(
     // wider than the field of view (each reflection is a whole extra render).
     let fwd = main_tf.forward().as_vec3();
     let half = main_proj.fov * 0.5 * main_proj.aspect_ratio.max(1.0) + 0.35;
+    let cone = half.min(3.0).cos();
     let visible = |p: &Plane| {
-        let inside = eye.cmpge(p.min - Vec3::splat(0.5)).all() && eye.cmple(p.max + Vec3::splat(0.5)).all();
+        let (lo, hi) = (p.min - Vec3::splat(0.5), p.max + Vec3::splat(0.5));
+        let inside = eye.cmpge(lo).all() && eye.cmple(hi).all();
+        // Looking straight at a big surface (down at a mirror floor) can leave every corner of its bounds outside the
+        // cone: so also when the view ray goes through the bounds, or their nearest point is in the cone.
+        let ray_hits = {
+            let inv = fwd.recip();
+            let t0 = (lo - eye) * inv;
+            let t1 = (hi - eye) * inv;
+            let tmin = t0.min(t1).max_element();
+            let tmax = t0.max(t1).min_element();
+            tmax >= tmin.max(0.0)
+        };
+        let nearest_in = (eye.clamp(p.min, p.max) - eye).normalize_or_zero().dot(fwd) > cone;
         inside
+            || ray_hits
+            || nearest_in
             || (0..8).any(|i| {
                 let c = Vec3::new(
                     if i & 1 == 0 { p.min.x } else { p.max.x },
@@ -269,7 +284,7 @@ pub fn mirror_system(
                     if i & 4 == 0 { p.min.z } else { p.max.z },
                 );
                 let d = (c - eye).normalize_or_zero();
-                d.dot(fwd) > half.min(3.0).cos()
+                d.dot(fwd) > cone
             })
     };
     let mut near: Vec<(usize, f32)> = mirrors

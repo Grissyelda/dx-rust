@@ -103,38 +103,40 @@ reflecting surface is a full extra render).
 21. Bullets through thin wood and glass (high-calibre rounds).
 22. Smoother leaning and a peek assist.
 23. Melee that sweeps an arc.
+24. Weapon mods shown on the weapon: scope, laser sight, silencer and other fitted mods drawn on the view model and
+    the third-person gun.
 
 ### Large (new rendering, audio or interaction work)
-24. Sway-based aiming, a dynamic crosshair and aim-down-sights (optional).
-25. Real-time shadows for pawns and movers.
-26. New particle effects.
-27. Elemental reactions (electricity through water).
-28. Mantling and vaulting.
-29. Carried heavy objects as cover.
-30. **Optional third-person view** with modern third-person shooter controls: an over-the-shoulder camera that
+25. Sway-based aiming, a dynamic crosshair and aim-down-sights (optional).
+26. Real-time shadows for pawns and movers.
+27. New particle effects.
+28. Elemental reactions (electricity through water).
+29. Mantling and vaulting.
+30. Carried heavy objects as cover.
+31. **Optional third-person view** with modern third-person shooter controls: an over-the-shoulder camera that
      keeps out of walls, shoulder swap, aim-to-zoom, and leaning and crouching cover. JC's body already exists for
      mirrors, with his animations and the weapon in his hand, so the work is the camera, aiming from it (trace
      from the camera, fire from the gun), the HUD reticle and stealth balance. It's a toggle, and first person stays
      the default.
-31. Volumetric fog and light shafts.
-32. Better clouds and a 3D skyline.
-33. Remastered sound effects and a dynamic soundscape.
-34. Sound propagation and room reverb.
-35. New outfits found in the levels.
-36. Dynamic weather and time of day.
+32. Volumetric fog and light shafts.
+33. Better clouds and a 3D skyline.
+34. Remastered sound effects and a dynamic soundscape.
+35. Sound propagation and room reverb.
+36. New outfits found in the levels.
+37. Dynamic weather and time of day.
 
 ### Very large (needs skeletons, new content, or touches the whole engine)
-37. Smarter AI (opt-in).
-38. HD textures and models, PBR and smoother animation.
-39. JC's body visible in first person.
-40. Diegetic damage, healing and augs shown on the body.
-41. Ragdolls and posable models.
-42. Cloth and wetness.
-43. Computers shown in the world while it keeps running.
-44. More NPCs and livelier locations.
-45. **Lay D Denton Project support** (done in code; being tested).
-46. No loading screens.
-47. Co-op and deathmatch multiplayer.
+38. Smarter AI (opt-in).
+39. HD textures and models, PBR and smoother animation.
+40. JC's body visible in first person.
+41. Diegetic damage, healing and augs shown on the body.
+42. Ragdolls and posable models.
+43. Cloth and wetness.
+44. Computers shown in the world while it keeps running.
+45. More NPCs and livelier locations.
+46. **Lay D Denton Project support** (done in code; being tested).
+47. No loading screens.
+48. Co-op and deathmatch multiplayer.
 
 Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sit in the
 last tier.
