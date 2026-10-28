@@ -609,9 +609,23 @@ enum Body {
 struct Enhance {
     items: Vec<Choice>,
     search: Edit,
-    /// Selected item (index into `items`).
-    sel: Option<usize>,
+    /// Selected row.
+    sel: Option<Row>,
     scroll: i32,
+    /// Groups ("Controller", "DualSense"...) opened out; the rest show as one collapsed row each.
+    open: std::collections::HashSet<String>,
+}
+
+/// A row of the Enhancements list: a group's header (click / Enter opens or closes it) or one setting.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Row {
+    Group(usize),
+    Item(usize),
+}
+
+/// The group of a "Group: Label" item, and the label without it.
+fn split_group(label: &str) -> (&str, &str) {
+    label.split_once(": ").unwrap_or(("Other", label))
 }
 
 impl Enhance {
@@ -637,7 +651,7 @@ impl Enhance {
             ("DialogueHotkeys", "Interface", "Dialogue Hotkeys", "Number the first four conversation choices; keys 1-4 pick them."),
             ("InventorySort", "Interface", "Inventory Auto-Sort", "A Sort button on the inventory screen packs the items neatly, weapons first."),
             ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish and many more blood splats stay on the ground."),
-            ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord (needs DiscordAppId in launcher.txt)."),
+            ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord."),
         ] {
             let mut c = debug_mode_choice();
             c.key = key.into();
@@ -655,19 +669,62 @@ impl Enhance {
         lip.saved = lip.value;
         items.push(tag(lip, "Visuals"));
         items.push(tag(debug_mode_choice(), "Developer"));
-        Enhance { items, search: Edit::new(40), sel: Some(0), scroll: 0 }
+        Enhance { items, search: Edit::new(40), sel: Some(Row::Group(0)), scroll: 0, open: Default::default() }
     }
     /// The items the search keeps (every word in the label or help), in order.
-    fn shown(&self) -> Vec<usize> {
+    /// The groups in list order.
+    fn groups(&self) -> Vec<String> {
+        let mut g: Vec<String> = Vec::new();
+        for c in &self.items {
+            let n = split_group(&c.label).0;
+            if !g.iter().any(|x| x == n) {
+                g.push(n.to_string());
+            }
+        }
+        g
+    }
+    /// The rows on show: with a search, every matching item (flat); without, each group's header and the items of
+    /// the open groups.
+    fn shown(&self) -> Vec<Row> {
         let q = self.search.get().to_ascii_lowercase();
         let words: Vec<&str> = q.split_whitespace().collect();
-        (0..self.items.len())
-            .filter(|&i| {
+        if !words.is_empty() {
+            return (0..self.items.len())
+                .filter(|&i| {
+                    let c = &self.items[i];
+                    let hay = format!("{} {}", c.label, c.help).to_ascii_lowercase();
+                    words.iter().all(|w| hay.contains(w))
+                })
+                .map(Row::Item)
+                .collect();
+        }
+        let mut rows = Vec::new();
+        for (gi, g) in self.groups().iter().enumerate() {
+            rows.push(Row::Group(gi));
+            if self.open.contains(g) {
+                rows.extend((0..self.items.len()).filter(|&i| split_group(&self.items[i].label).0 == g).map(Row::Item));
+            }
+        }
+        rows
+    }
+    fn searching(&self) -> bool {
+        !self.search.get().trim().is_empty()
+    }
+    /// The text of a row: (label, value).
+    fn row_text(&self, r: Row) -> (String, String) {
+        match r {
+            Row::Group(g) => {
+                let name = self.groups().get(g).cloned().unwrap_or_default();
+                let n = self.items.iter().filter(|c| split_group(&c.label).0 == name).count();
+                let sign = if self.open.contains(&name) { "-" } else { "+" };
+                (format!("{sign} {name}"), format!("{n} setting{}", if n == 1 { "" } else { "s" }))
+            }
+            Row::Item(i) => {
                 let c = &self.items[i];
-                let hay = format!("{} {}", c.label, c.help).to_ascii_lowercase();
-                words.iter().all(|w| hay.contains(w))
-            })
-            .collect()
+                let l = if self.searching() { c.label.clone() } else { format!("    {}", split_group(&c.label).1) };
+                (l, Enhance::value_text(c))
+            }
+        }
     }
     fn value_text(c: &Choice) -> String {
         match &c.kind {
@@ -678,7 +735,21 @@ impl Enhance {
     }
     /// Change the selected item a step (an action item opens its screen instead).
     fn step(&mut self, dir: i32, acts: &mut Vec<Act>) {
-        let Some(i) = self.sel else { return };
+        let Some(row) = self.sel else { return };
+        let i = match row {
+            Row::Group(g) => {
+                // Enter / click / Right opens a group, Left closes it.
+                if let Some(name) = self.groups().get(g).cloned() {
+                    if dir < 0 {
+                        self.open.remove(&name);
+                    } else if !self.open.remove(&name) {
+                        self.open.insert(name);
+                    }
+                }
+                return;
+            }
+            Row::Item(i) => i,
+        };
         let c = &mut self.items[i];
         match &c.kind {
             ChoiceKind::Action { invoke, .. } if !invoke.is_empty() => acts.push(Act::Push(invoke.clone())),
@@ -701,6 +772,7 @@ impl Enhance {
             return;
         }
         let at = self.sel.and_then(|s| shown.iter().position(|&i| i == s)).map_or(0, |p| (p as i32 + d).clamp(0, shown.len() as i32 - 1));
+        let at = at.clamp(0, shown.len() as i32 - 1);
         self.sel = Some(shown[at as usize]);
         let y = at * ROW_H;
         if y < self.scroll {
@@ -1566,9 +1638,9 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
             let shown = en.shown();
             let rows: Vec<Vec<String>> = shown
                 .iter()
-                .map(|&i| {
-                    let c = &en.items[i];
-                    vec![c.label.clone(), Enhance::value_text(c)]
+                .map(|&r| {
+                    let (l, v) = en.row_text(r);
+                    vec![l, v]
                 })
                 .collect();
             let sel = en.sel.and_then(|s| shown.iter().position(|&i| i == s));
@@ -2369,7 +2441,10 @@ pub fn menu_system(
                             Body::Enhance(en) if l == 0 => {
                                 if let Some(&i) = en.shown().get(r) {
                                     // A click on the selected row changes it; on another row it selects it.
-                                    if en.sel == Some(i) {
+                                    // (A group header opens or closes at once.)
+                                    let header = matches!(i, Row::Group(_));
+                                    if en.sel == Some(i) || header {
+                                        en.sel = Some(i);
                                         en.step(1, &mut acts);
                                     }
                                     en.sel = Some(i);
@@ -2849,7 +2924,8 @@ pub fn menu_system(
                 }
             }
             (Body::Enhance(en), _) => match en.sel {
-                Some(i) => en.items[i].help.clone(),
+                Some(Row::Item(i)) => en.items[i].help.clone(),
+                Some(Row::Group(g)) => format!("Show or hide the {} settings (Enter / click; Left closes). Type to search every setting.", en.groups().get(g).cloned().unwrap_or_default()),
                 None => "Type to search the options.".into(),
             },
             (Body::Choices { .. }, _) if top_w.f.class == "MenuScreenBrightness" => {
