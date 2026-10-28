@@ -15,6 +15,8 @@ one-to-one:
 
 It runs as a native Windows program and on Steam Deck / Linux, with no old engine underneath.
 
+![DX RUST: the training course, playing as the female JC from the Lay D Denton Project](docs/screenshot-training.png)
+
 > **You need your own copy of Deus Ex** (Game of the Year Edition from Steam or GOG). No game files are included
 > here or in the releases.
 
