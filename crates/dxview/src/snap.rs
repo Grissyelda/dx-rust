@@ -15,7 +15,8 @@ pub const LAYER_MENU: u8 = 3;
 /// UI units -> logical window pixels: physical = unit * s + offset; logical = physical / scale factor.
 #[derive(Clone, Copy)]
 pub struct Map {
-    pub s: i32,
+    /// The screen's shown scale (fractional with HUD Scale Large).
+    pub s: f32,
     pub ox: i32,
     pub oy: i32,
     pub sf: f32,
@@ -45,7 +46,7 @@ pub fn offer(layer: u8, m: Map, rects: impl IntoIterator<Item = (i32, i32, i32, 
         if w <= 0 || h <= 0 {
             continue;
         }
-        let px = |u: i32, o: i32| (u * m.s + o) as f32 / m.sf;
+        let px = |u: i32, o: i32| (u as f32 * m.s + o as f32) / m.sf;
         g.push((layer, [px(x, m.ox), px(y, m.oy), px(x + w, m.ox), px(y + h, m.oy)]));
     }
 }

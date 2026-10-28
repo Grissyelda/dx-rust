@@ -43,6 +43,40 @@ pub fn ui_scale(win: &Window) -> f32 {
 /// Scale for a full-screen window of w x h UI units (inventory, computers, menus): Medium is the largest whole
 /// multiple that fits the window (as before); the HUD Scale setting steps it the same way as the HUD, though never
 /// past what fits.
+/// The inventory, computer and menu screens' scale: (the whole-number scale their canvas is drawn at, the scale
+/// shown on screen). HUD Scale Small = one whole step down, Medium = the largest whole fit (crisp pixels, as
+/// before), Large = as big as fits (fractional: the canvas is drawn at the next whole scale up and filtered down,
+/// so a 640 x 480 screen fills a Steam Deck's 800 lines instead of sitting at 1x).
+pub fn screen_scales(win: &Window, w: i32, h: i32) -> (i32, f32) {
+    let (pw, ph) = (win.physical_width() as f32, win.physical_height() as f32);
+    let fitf = (pw / w as f32).min(ph / h as f32).max(1.0);
+    let fit = fitf.floor() as i32;
+    match crate::settings::hud_scale_step() {
+        s if s > 0 => (fitf.ceil() as i32, fitf),
+        s => {
+            let k = (fit + s).clamp(1, fit);
+            (k, k as f32)
+        }
+    }
+}
+
+/// Linear filtering for a screen canvas shown at a fractional scale (nearest when whole).
+pub fn set_filter(images: &mut Assets<Image>, img: &Handle<Image>, render: i32, display: f32) {
+    use bevy::image::ImageSampler;
+    let linear = (display - render as f32).abs() > 1e-3;
+    static LAST: std::sync::Mutex<Vec<(bevy::asset::AssetId<Image>, bool)>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut last) = LAST.lock() else { return };
+    let id = img.id();
+    if last.iter().any(|(i, l)| *i == id && *l == linear) {
+        return;
+    }
+    if let Some(mut im) = images.get_mut(id) {
+        im.sampler = if linear { ImageSampler::linear() } else { ImageSampler::nearest() };
+        last.retain(|(i, _)| *i != id);
+        last.push((id, linear));
+    }
+}
+
 pub fn screen_scale(win: &Window, w: i32, h: i32) -> i32 {
     let (pw, ph) = (win.physical_width() as i32, win.physical_height() as i32);
     let fit = (pw / w).min(ph / h).max(1);

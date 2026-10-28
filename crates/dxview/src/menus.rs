@@ -368,7 +368,7 @@ fn hud_scale_choice() -> Choice {
     Choice {
         key: "HUDScale".into(),
         label: "|&HUD Scale".into(),
-        help: "Size of the HUD and in-game screens: Medium is the original's (the nearest whole multiple of 600 lines).".into(),
+        help: "Size of the HUD, menus, inventory and computers: Medium is the original's (whole multiples, crisp pixels); Large fills the screen (best on a Steam Deck); Small is a step smaller.".into(),
         kind: ChoiceKind::Enum(vec!["Small".into(), "Medium".into(), "Large".into()]),
         value: v,
         saved: v,
@@ -2261,12 +2261,13 @@ pub fn menu_system(
         Fonts { title, small, headers, fixed }
     };
     let (pw, phh) = (window.physical_width() as i32, window.physical_height() as i32);
-    let s = crate::hud::screen_scale(&window, 640, 480);
-    let (sw, sh) = (pw / s, phh / s);
+    // (s: canvases' whole-number scale; d: the scale shown, fractional with HUD Scale Large.)
+    let (s, d) = crate::hud::screen_scales(&window, 640, 480);
+    let (sw, sh) = ((pw as f32 / d) as i32, (phh as f32 / d) as i32);
     let sf = window.scale_factor();
     let mouse = window
         .cursor_position()
-        .map(|c| (((c.x * sf) as i32).div_euclid(s), ((c.y * sf) as i32).div_euclid(s)))
+        .map(|c| ((c.x * sf / d).floor() as i32, (c.y * sf / d).floor() as i32))
         .unwrap_or((-100, -100));
     let top = st.stack.len() - 1;
     let pos_of = |w: &Win| -> (i32, i32) {
@@ -2960,7 +2961,7 @@ pub fn menu_system(
         };
         draw_win(&mut ui, &mut st.stack[wi], &fonts, if is_top { &help } else { "" }, waiting);
         let Ui { c, .. } = ui;
-        place(&mut st.win_layers[li], &c, pos, s, sf, &mut images, &mut layers, &mut nodes);
+        place(&mut st.win_layers[li], &c, pos, d, sf, &mut images, &mut layers, &mut nodes);
         if is_top {
             hits = layer_hits;
         }
@@ -2975,7 +2976,7 @@ pub fn menu_system(
     // Controller snap-to targets: the widgets you click, not the frame, title bar or scroll tracks.
     crate::snap::offer(
         crate::snap::LAYER_MENU,
-        crate::snap::Map { s, ox: 0, oy: 0, sf },
+        crate::snap::Map { s: d, ox: 0, oy: 0, sf },
         st.hits.iter().filter(|h| h.2 && !matches!(h.0, W::Win | W::Title | W::ScrollTrack(_))).map(|h| h.1),
     );
     // Cursor: the same DeusExCursor2 as the in-game screens (ours: the original menus used Cursor1).
@@ -2985,7 +2986,7 @@ pub fn menu_system(
             cc.drop_shadow(0, 0, &tx, (2.0, 2.5), 2.5, 0.6);
             cc.texture(0, 0, 64, 64, 0, 0, &tx, Style::Masked, m_col(12));
         }
-        place(cl, &cc, (mouse.0 - 32, mouse.1 - 32), s, sf, &mut images, &mut layers, &mut nodes);
+        place(cl, &cc, (mouse.0 - 32, mouse.1 - 32), d, sf, &mut images, &mut layers, &mut nodes);
         if window.cursor_position().is_none() {
             if let Ok((_, mut v, _)) = nodes.get_mut(cl.e) {
                 *v = Visibility::Hidden;
