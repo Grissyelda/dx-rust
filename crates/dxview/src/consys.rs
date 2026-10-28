@@ -875,6 +875,24 @@ pub fn start_datalink(flags: &FlagBase, name: &str, trigger: Option<usize>) -> b
 }
 
 /// A third-person conversation is waiting on the player's choice.
+/// InformationDevices.ReadText with bAddToVault (datacubes): the text goes into the DataVault as a note once
+/// (AddNote(vaultString,, True): "Note added" + LogNoteAdded).
+pub fn add_vault_note(text: &str) {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    let mut g = lock();
+    let Some(st) = g.as_mut() else { return };
+    if st.notes.contains(&text) {
+        return;
+    }
+    st.notes.insert(0, text);
+    let m = st.strings.get("NoteAdded").cloned().unwrap_or_else(|| "Note added".into());
+    st.messages.push(m);
+    crate::sound::play_player("DeusExSounds.UserInterface.LogNoteAdded", 1.0, 0.0);
+}
+
 pub fn choosing() -> bool {
     lock().as_ref().and_then(|s| s.play.as_ref().map(|p| !p.first_person && !p.choices.is_empty())).unwrap_or(false)
 }

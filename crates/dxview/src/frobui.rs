@@ -420,8 +420,11 @@ pub fn frob_target_system(
 /// Something is highlighted to frob (the pad's X: use it, else reload).
 static HAS_TARGET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn has_target() -> bool {
-    HAS_TARGET.load(std::sync::atomic::Ordering::Relaxed)
+    HAS_TARGET.load(std::sync::atomic::Ordering::Relaxed) || LADDER_GRAB.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+/// Enhancement "Grab Ladders": a ladder is in reach and not held yet, so the pad's X tap is Use (take hold).
+pub static LADDER_GRAB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// FrobDisplayWindow.DrawWindow: the cornered box (shrinking in and out every 0.3 s) and the name label.
 #[allow(clippy::too_many_arguments)]
