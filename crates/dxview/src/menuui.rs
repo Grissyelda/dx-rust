@@ -633,12 +633,14 @@ pub(crate) fn place(
     l: &mut Layer,
     c: &Canvas,
     pos: (i32, i32),
-    s: i32,
+    d: f32,
     sf: f32,
     images: &mut Assets<Image>,
     layers: &mut Assets<HudLayer>,
     nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), impl bevy::ecs::query::QueryFilter>,
 ) {
+    // `d`: the shown scale (fractional with HUD Scale Large; the canvas is drawn at its own whole scale c.s).
+    crate::hud::set_filter(images, &l.img, c.s, d);
     if upload(images, &l.img, &mut l.last, c) {
         if let Ok((_, _, m)) = nodes.get(l.e) {
             if let Some(m) = layers.get_mut(&m.0) {
@@ -648,10 +650,10 @@ pub(crate) fn place(
     }
     if let Ok((mut n, mut v, _)) = nodes.get_mut(l.e) {
         *v = Visibility::Inherited;
-        n.left = Val::Px((pos.0 * s) as f32 / sf);
-        n.top = Val::Px((pos.1 * s) as f32 / sf);
-        n.width = Val::Px((c.w * s) as f32 / sf);
-        n.height = Val::Px((c.h * s) as f32 / sf);
+        n.left = Val::Px(pos.0 as f32 * d / sf);
+        n.top = Val::Px(pos.1 as f32 * d / sf);
+        n.width = Val::Px(c.w as f32 * d / sf);
+        n.height = Val::Px(c.h as f32 * d / sf);
     }
 }
 

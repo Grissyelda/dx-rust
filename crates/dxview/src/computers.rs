@@ -2284,12 +2284,13 @@ pub fn computer_system(
     // ---- an open terminal
     let fill = txt(&mut hud, &mut assets, "ComputerScreenHack", "digitFillerChars", "01234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()_+-=][}{");
     let (pw, phh) = (window.physical_width() as i32, window.physical_height() as i32);
-    let s = crate::hud::screen_scale(&window, 640, 480);
-    let (sw, sh) = (pw / s, phh / s);
+    // (s: canvases' whole-number scale; d: the scale shown, fractional with HUD Scale Large.)
+    let (s, d) = crate::hud::screen_scales(&window, 640, 480);
+    let (sw, sh) = ((pw as f32 / d) as i32, (phh as f32 / d) as i32);
     let sf = window.scale_factor();
     let mouse = window
         .cursor_position()
-        .map(|c| (((c.x * sf) as i32).div_euclid(s), ((c.y * sf) as i32).div_euclid(s)))
+        .map(|c| ((c.x * sf / d).floor() as i32, (c.y * sf / d).floor() as i32))
         .unwrap_or((-100, -100));
     let mut close = false;
     if let Some(t) = st.term.as_mut() {
@@ -2699,7 +2700,7 @@ pub fn computer_system(
         let mut ui = Ui { c: Canvas::new(cw, ch, s), hud: &mut hud, assets: &mut assets, f: &fonts, o: pos, hits: &mut hits, pressed, hover: hover_now, focus };
         draw_comp(&mut ui, t, &dv, &g);
         let Ui { c, .. } = ui;
-        place(&mut nodes.comp, &c, pos, s, sf, &mut images, &mut layers, &mut layer_nodes);
+        place(&mut nodes.comp, &c, pos, d, sf, &mut images, &mut layers, &mut layer_nodes);
         if let Some(Screen::Security(sc)) = t.screen.as_ref() {
             sec_sel = Some((sc.sel, sc.fov));
         }
@@ -2713,7 +2714,7 @@ pub fn computer_system(
             let mut oc = Canvas::new(cw, ch, s);
             let (bx, by) = (TITLE_LEFT_BOTTOM.0 + CAM_WINDOWS[sel].0, TITLE_H + g.voff + CAM_WINDOWS[sel].1 + 16);
             draw_selection(&mut oc, &mut hud, &mut assets, bx, by);
-            place(&mut nodes.overlay, &oc, pos, s, sf, &mut images, &mut layers, &mut layer_nodes);
+            place(&mut nodes.overlay, &oc, pos, d, sf, &mut images, &mut layers, &mut layer_nodes);
             st.noise_t -= dt;
             if st.noise_t <= 0.0 {
                 st.noise_t = 0.05;
@@ -2765,10 +2766,10 @@ pub fn computer_system(
                         im.image = img;
                     }
                     let (x, y) = (client.0 + CAM_WINDOWS[j].0 + 1, client.1 + CAM_WINDOWS[j].1 + 17);
-                    n.left = Val::Px((x * s) as f32 / sf);
-                    n.top = Val::Px((y * s) as f32 / sf);
-                    n.width = Val::Px((FEED_SIZE.0 * s) as f32 / sf);
-                    n.height = Val::Px((FEED_SIZE.1 * s) as f32 / sf);
+                    n.left = Val::Px(x as f32 * d / sf);
+                    n.top = Val::Px(y as f32 * d / sf);
+                    n.width = Val::Px(FEED_SIZE.0 as f32 * d / sf);
+                    n.height = Val::Px(FEED_SIZE.1 as f32 * d / sf);
                 }
             }
         }
@@ -2799,7 +2800,7 @@ pub fn computer_system(
             let mut ui = Ui { c: Canvas::new(HACK_SIZE.0, HACK_SIZE.1, s), hud: &mut hud, assets: &mut assets, f: &fonts, o: hp, hits: &mut hits, pressed, hover: hover_now, focus };
             draw_hack(&mut ui, h);
             let Ui { c, .. } = ui;
-            place(&mut nodes.hack, &c, hp, s, sf, &mut images, &mut layers, &mut layer_nodes);
+            place(&mut nodes.hack, &c, hp, d, sf, &mut images, &mut layers, &mut layer_nodes);
         }
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.hack.e) {
@@ -2815,7 +2816,7 @@ pub fn computer_system(
             let mut ui = Ui { c: Canvas::new(ACCOUNTS_SIZE.0, ACCOUNTS_SIZE.1, s), hud: &mut hud, assets: &mut assets, f: &fonts, o: ap, hits: &mut hits, pressed, hover: hover_now, focus };
             draw_accounts(&mut ui, a, &users, &current);
             let Ui { c, .. } = ui;
-            place(&mut nodes.accounts, &c, ap, s, sf, &mut images, &mut layers, &mut layer_nodes);
+            place(&mut nodes.accounts, &c, ap, d, sf, &mut images, &mut layers, &mut layer_nodes);
         }
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.accounts.e) {
@@ -2826,7 +2827,7 @@ pub fn computer_system(
     t.hits = hits;
     crate::snap::offer(
         crate::snap::LAYER_COMPUTER,
-        crate::snap::Map { s, ox: 0, oy: 0, sf: window.scale_factor() },
+        crate::snap::Map { s: d, ox: 0, oy: 0, sf: window.scale_factor() },
         t.hits
             .iter()
             .filter(|h| h.2 && !matches!(h.0, Wid::CompWin | Wid::Title | Wid::HackWin | Wid::AcctWin | Wid::ScrollTrack(_)))
@@ -2839,7 +2840,7 @@ pub fn computer_system(
         cc.texture(0, 0, 64, 64, 0, 0, &tx, Style::Masked, m_col(12));
     }
     let cp = (mouse.0 - 32, mouse.1 - 32);
-    place(&mut nodes.cursor, &cc, cp, s, sf, &mut images, &mut layers, &mut layer_nodes);
+    place(&mut nodes.cursor, &cc, cp, d, sf, &mut images, &mut layers, &mut layer_nodes);
     if window.cursor_position().is_none() {
         if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.cursor.e) {
             *v = Visibility::Hidden;

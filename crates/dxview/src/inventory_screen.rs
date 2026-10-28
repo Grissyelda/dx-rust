@@ -1048,16 +1048,18 @@ pub fn inventory_screen_system(
         window.physical_height() as i32,
     );
     // The largest whole-number scale at which the 640 x 480 screen fits the window (crisp pixels).
-    let s = crate::hud::screen_scale(&window, SCREEN_W, SCREEN_H);
-    let ox = (pw - SCREEN_W * s) / 2;
-    let oy = (phh - SCREEN_H * s) / 2;
+    // (s: the canvas's whole-number scale; d: the scale shown, fractional with HUD Scale Large.)
+    let (s, d) = crate::hud::screen_scales(&window, SCREEN_W, SCREEN_H);
+    crate::hud::set_filter(&mut images, &canvas_img, s, d);
+    let ox = (pw - (SCREEN_W as f32 * d) as i32) / 2;
+    let oy = (phh - (SCREEN_H as f32 * d) as i32) / 2;
     let sf = window.scale_factor();
     let mouse = window
         .cursor_position()
         .map(|c| {
             (
-                ((c.x * sf) as i32 - ox).div_euclid(s),
-                ((c.y * sf) as i32 - oy).div_euclid(s),
+                ((c.x * sf - ox as f32) / d).floor() as i32,
+                ((c.y * sf - oy as f32) / d).floor() as i32,
             )
         })
         .unwrap_or((-100, -100));
@@ -1136,7 +1138,7 @@ pub fn inventory_screen_system(
                 ph: &mut ph,
                 bot: bot.clone(),
             };
-            crate::snap::set_page_map(Some(crate::snap::Map { s, ox, oy, sf }));
+            crate::snap::set_page_map(Some(crate::snap::Map { s: d, ox, oy, sf }));
             let r = crate::persona::page(screen, &mut st.persona, &mut ctx, &input, s);
             crate::snap::set_page_map(None);
             r
@@ -1204,7 +1206,7 @@ pub fn inventory_screen_system(
             &canvas_img,
             ox,
             oy,
-            s,
+            d,
             sf,
         );
         let mut cc = Canvas::new(64, 64, s);
@@ -1222,10 +1224,10 @@ pub fn inventory_screen_system(
             } else {
                 Visibility::Hidden
             };
-            n.left = Val::Px((ox + (mouse.0 - 32) * s) as f32 / sf);
-            n.top = Val::Px((oy + (mouse.1 - 32) * s) as f32 / sf);
-            n.width = Val::Px((64 * s) as f32 / sf);
-            n.height = Val::Px((64 * s) as f32 / sf);
+            n.left = Val::Px((ox as f32 + (mouse.0 - 32) as f32 * d) / sf);
+            n.top = Val::Px((oy as f32 + (mouse.1 - 32) as f32 * d) / sf);
+            n.width = Val::Px(64.0 * d / sf);
+            n.height = Val::Px(64.0 * d / sf);
         }
         return;
     }
@@ -1273,7 +1275,7 @@ pub fn inventory_screen_system(
             charged: &charged,
         };
         {
-            crate::snap::offer(crate::snap::LAYER_PERSONA, crate::snap::Map { s, ox, oy, sf }, snap_rects(&view, &lay));
+            crate::snap::offer(crate::snap::LAYER_PERSONA, crate::snap::Map { s: d, ox, oy, sf }, snap_rects(&view, &lay));
             hit_test(mouse, &view, &lay, &rows, st.scroll)
         }
     };
@@ -1566,8 +1568,8 @@ pub fn inventory_screen_system(
         *v = Visibility::Inherited;
         n.left = Val::Px(ox as f32 / sf);
         n.top = Val::Px(oy as f32 / sf);
-        n.width = Val::Px((SCREEN_W * s) as f32 / sf);
-        n.height = Val::Px((SCREEN_H * s) as f32 / sf);
+        n.width = Val::Px(SCREEN_W as f32 * d / sf);
+        n.height = Val::Px(SCREEN_H as f32 * d / sf);
     }
 
     // The cursor: DeusExCursor2 (hot spot 32, 32) with its shadow, or the dragged item's icon (dimmed where it
@@ -1620,12 +1622,12 @@ pub fn inventory_screen_system(
         } else {
             Visibility::Hidden
         };
-        let mx = ox + (mouse.0 - hot.0) * s;
-        let my = oy + (mouse.1 - hot.1) * s;
-        n.left = Val::Px(mx as f32 / sf);
-        n.top = Val::Px(my as f32 / sf);
-        n.width = Val::Px((cc.w * s) as f32 / sf);
-        n.height = Val::Px((cc.h * s) as f32 / sf);
+        let mx = ox as f32 + (mouse.0 - hot.0) as f32 * d;
+        let my = oy as f32 + (mouse.1 - hot.1) as f32 * d;
+        n.left = Val::Px(mx / sf);
+        n.top = Val::Px(my / sf);
+        n.width = Val::Px(cc.w as f32 * d / sf);
+        n.height = Val::Px(cc.h as f32 * d / sf);
     }
 }
 
@@ -1641,7 +1643,7 @@ fn present(
     canvas_img: &Handle<Image>,
     ox: i32,
     oy: i32,
-    s: i32,
+    d: f32,
     sf: f32,
 ) {
     if upload(images, canvas_img, &mut st.last, c) {
@@ -1655,8 +1657,8 @@ fn present(
         *v = Visibility::Inherited;
         n.left = Val::Px(ox as f32 / sf);
         n.top = Val::Px(oy as f32 / sf);
-        n.width = Val::Px((SCREEN_W * s) as f32 / sf);
-        n.height = Val::Px((SCREEN_H * s) as f32 / sf);
+        n.width = Val::Px(SCREEN_W as f32 * d / sf);
+        n.height = Val::Px(SCREEN_H as f32 * d / sf);
     }
 }
 
@@ -1705,7 +1707,10 @@ pub(crate) fn upload(
     if let Some(mut img) = images.get_mut(handle) {
         let (w, h) = ((c.w * c.s) as u32, (c.h * c.s) as u32);
         if img.width() != w || img.height() != h {
+            // (Keeping its filtering: hud::set_filter's choice.)
+            let sampler = img.sampler.clone();
             *img = blank(w, h);
+            img.sampler = sampler;
             resized = true;
         }
         img.data = Some(bytes.clone());
