@@ -874,6 +874,11 @@ pub fn start_datalink(flags: &FlagBase, name: &str, trigger: Option<usize>) -> b
     s.start_datalink(flags, name, trigger)
 }
 
+/// A third-person conversation is waiting on the player's choice.
+pub fn choosing() -> bool {
+    lock().as_ref().and_then(|s| s.play.as_ref().map(|p| !p.first_person && !p.choices.is_empty())).unwrap_or(false)
+}
+
 /// ConPlayBase.SetPlayedFlag: <con>_Played; Lay D Denton also marks a FemJC conversation's male original played.
 fn set_played(flags: &mut FlagBase, name: &str) {
     flags.set_bool(&format!("{name}_Played"), true);

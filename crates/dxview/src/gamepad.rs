@@ -447,6 +447,19 @@ fn bound(map: &[Input], action: &str) -> Option<Input> {
     ACTIONS.iter().position(|a| a.0 == action).map(|i| map[i])
 }
 
+/// The pad buttons for conversation choices 1-4 with Dialogue Hotkeys on.
+pub const DIALOGUE_HOTKEYS: [(PadBtn, KeyCode); 4] =
+    [(PadBtn::West, KeyCode::Digit1), (PadBtn::North, KeyCode::Digit2), (PadBtn::LB, KeyCode::Digit3), (PadBtn::RB, KeyCode::Digit4)];
+
+/// Y in a menu: type the keypad code found in the notes (menus.rs takes it).
+pub static PAD_NOTES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The pad was the last thing used (glyphs instead of keys in prompts).
+pub fn pad_in_use() -> bool {
+    let f = frame();
+    f.connected && f.pad_last
+}
+
 pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
     let f = frame();
     let mut out = PadOut { inputs: Vec::new(), scroll: 0.0, cursor: Vec2::ZERO, snap: None };
@@ -473,8 +486,22 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
         if held(PadBtn::South) {
             out.inputs.push(Input::Mouse(MouseButton::Left));
         }
-        if held(PadBtn::West) {
-            out.inputs.push(Input::Mouse(MouseButton::Right));
+        // Ours: with Dialogue Hotkeys on, conversation choices 1-4 are X / Y / LB / RB (A still takes the
+        // highlighted one); elsewhere Y is Tab (a keypad code from the notes).
+        let hotkeys = crate::consys::choosing() && crate::settings::get("DialogueHotkeys") > 0.5;
+        if hotkeys {
+            for (b, k) in DIALOGUE_HOTKEYS {
+                if just(b) {
+                    h.taps.push((Input::Key(k), 2));
+                }
+            }
+        } else {
+            if held(PadBtn::West) {
+                out.inputs.push(Input::Mouse(MouseButton::Right));
+            }
+            if just(PadBtn::North) {
+                PAD_NOTES.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         // Start on the menus closes them all (back to the game); elsewhere it's Escape like B.
         if just(PadBtn::Start) && crate::menus::open() && crate::menus::request_close_all() {
