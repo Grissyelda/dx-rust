@@ -840,6 +840,17 @@ fn key_char(i: usize) -> char {
 }
 
 /// HUDKeypadWindow.PressButton: add the digit (Touchtone), check once the code is as long as the right one.
+/// Ours: enter the code found in the notes.
+fn keypad_from_notes(kp: &mut KeypadWin) {
+    kp.input.clear();
+    let code: Vec<char> = kp.valid.chars().collect();
+    for ch in code {
+        if let Some(i) = (0..12).find(|&i| key_char(i) == ch) {
+            keypad_press(kp, i);
+        }
+    }
+}
+
 fn keypad_press(k: &mut KeypadWin, i: usize) {
     if k.wait.is_some() {
         return;
@@ -1777,7 +1788,17 @@ fn draw_keypad(u: &mut Ui<W>, k: &KeypadWin, fonts: &Fonts) {
     }
     if k.noted && k.wait.is_none() {
         let small = u.f.small.clone();
-        u.text(&small, 0, 148, 103, 12, HAlign::Center, VAlign::Center, h_col(7), "Tab: code from notes");
+        if crate::gamepad::pad_in_use() {
+            // The pad: Y types it (gamepad.rs sends Tab).
+            let kind = crate::gamepad::glyph_kind();
+            let gw = crate::glyphs::width_small(kind, crate::gamepad::PadBtn::North);
+            let tw = small.width("code from notes");
+            let x0 = (103 - gw - 4 - tw) / 2;
+            crate::glyphs::draw_small(&mut u.c, kind, crate::gamepad::PadBtn::North, x0, 148);
+            u.text(&small, x0 + gw + 4, 148, tw + 2, 12, HAlign::Left, VAlign::Center, h_col(7), "code from notes");
+        } else {
+            u.text(&small, 0, 148, 103, 12, HAlign::Center, VAlign::Center, h_col(7), "Tab: code from notes");
+        }
     }
 }
 
@@ -2169,6 +2190,14 @@ pub fn menu_system(
             keypad_validate(&mut k);
         }
         st.stack.push(Win { f, body: Body::Keypad(k), pos: None, focus: None, hides_below: true, drop: None });
+    }
+    // The pad's Y on a keypad: the code from the notes (gamepad.rs).
+    if crate::gamepad::PAD_NOTES.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
+            if k.noted && k.wait.is_none() {
+                keypad_from_notes(k);
+            }
+        }
     }
     // HUDKeypadWindow.KeypadDelay: a second on the result, then close (right) or start over (wrong).
     if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
@@ -2572,13 +2601,7 @@ pub fn menu_system(
                 }
                 // Ours: Tab types the code found in the notes.
                 if *k == KeyCode::Tab && kp.noted && kp.wait.is_none() {
-                    kp.input.clear();
-                    let code: Vec<char> = kp.valid.chars().collect();
-                    for ch in code {
-                        if let Some(i) = (0..12).find(|&i| key_char(i) == ch) {
-                            keypad_press(kp, i);
-                        }
-                    }
+                    keypad_from_notes(kp);
                     continue;
                 }
             }

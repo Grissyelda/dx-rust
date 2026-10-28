@@ -491,17 +491,20 @@ pub fn draw_lower(
         } else {
             COL_CHOICE
         };
-        c.text(
-            &sf,
-            12,
-            y,
-            w - 24,
-            bh,
-            HAlign::Left,
-            VAlign::Center,
-            col,
-            &if hotkeys && i < 4 { format!("{}. {text}", i + 1) } else { text.clone() },
-        );
+        // Dialogue Hotkeys: "1." for the keys, or the pad's button (X / Y / LB / RB) when it was last used.
+        let mut tx = 12;
+        let shown = if hotkeys && i < 4 && crate::gamepad::pad_in_use() {
+            let kind = crate::gamepad::glyph_kind();
+            let b = crate::gamepad::DIALOGUE_HOTKEYS[i].0;
+            crate::glyphs::draw_small(c, kind, b, tx, y + (bh - 11) / 2);
+            tx += crate::glyphs::width_small(kind, b) + 4;
+            text.clone()
+        } else if hotkeys && i < 4 {
+            format!("{}. {text}", i + 1)
+        } else {
+            text.clone()
+        };
+        c.text(&sf, tx, y, w - tx - 12, bh, HAlign::Left, VAlign::Center, col, &shown);
         y += bh;
     }
     if let Ok(mut r) = CHOICE_ROWS.lock() {
