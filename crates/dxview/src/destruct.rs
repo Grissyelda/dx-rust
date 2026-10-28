@@ -819,7 +819,8 @@ pub fn shell_system(
                 fv(&d, "CollisionHeight", 0.3) as f64,
             ),
             resting: false,
-            life: Some(fv(&d, "LifeSpan", 10.0)),
+            // Enhancement "Casings And Blood Stay": no LifeSpan.
+            life: (crate::settings::get("PersistentDebris") < 0.5).then(|| fv(&d, "LifeSpan", 10.0)),
             parts: Vec::new(),
             lit_at: DVec3::ZERO,
         };

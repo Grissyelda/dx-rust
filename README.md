@@ -38,6 +38,17 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   Point the launcher at the mod's folder (see below).
 - **Smooth lip sync.** Mouths blend between sounds and close gently, and people blink visibly. The timings follow
   Joe Wintergreen's lipsync mod, and there's a switch in Enhancements to turn it off.
+- **Optional extras:**
+  - dialogue hotkeys and Discord Rich Presence;
+  - inventory auto-sort;
+  - keypad codes and logins taken from your notes;
+  - using consumables straight from the floor;
+  - ladder grabbing;
+  - enemies that run out of ammo;
+  - casings and blood that stay;
+  - a debug menu with the original cheats.
+
+  Every setting, the original ones included, is on one searchable list.
 - **Rotating autosaves** on map changes and completed goals.
 
 ## Getting started

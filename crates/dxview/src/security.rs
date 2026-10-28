@@ -71,6 +71,22 @@ pub fn event(tag: &str, on: bool) {
     }
 }
 
+/// Warren's EMP field (eggs.rs), slot 2 turrets, 3 laser triggers, 4 beam triggers, 5 cameras (1 alarm units go to
+/// alarms.rs): 100 EMP to the ones in range that aren't confused already, with sparks.
+pub fn warren(center: DVec3, radius: f64, slot: u8) {
+    if slot == 1 {
+        crate::alarms::warren(center, radius);
+        return;
+    }
+    let ty: &'static str = match slot {
+        2 => "WarrenTurret",
+        3 => "WarrenLaser",
+        4 => "WarrenBeam",
+        _ => "WarrenCamera",
+    };
+    blast(center, radius, 100.0, ty);
+}
+
 pub fn blast(center: DVec3, radius: f64, damage: f32, damage_type: &'static str) {
     if let Ok(mut q) = BLASTS.lock() {
         q.push((center, radius, damage, damage_type));
@@ -606,6 +622,38 @@ pub fn security_system(
                 if !l.confused {
                     l.confused = true;
                     crate::sound::play("DeusExSounds.Weapons.EMPZap", l.pos, 1.0, 1280.0, 1.0);
+                }
+            }
+        } else if ty.starts_with("Warren") {
+            // UpdateWarrenEMPField: TakeDamage(100, 'EMP') on each one in range not yet bConfused.
+            let extra = (*dmg - 15.0).max(0.0) / 5.0;
+            match *ty {
+                "WarrenCamera" => {
+                    for cm in st.cams.iter_mut().filter(|x| !x.gone && !x.confused && x.pos.distance(*c) < *r) {
+                        cm.confusion_dur += extra;
+                        cm.confusion_t = 0.0;
+                        cm.confused = true;
+                        crate::sound::play("DeusExSounds.Weapons.EMPZap", cm.pos, 1.0, 1280.0, 1.0);
+                        crate::eggs::device_sparks(cm.pos);
+                    }
+                }
+                "WarrenTurret" => {
+                    for t in st.turrets.iter_mut().filter(|x| !x.gone && !x.confused && x.gun_pos.distance(*c) < *r) {
+                        t.confusion_dur = (t.confusion_dur + extra).clamp(10.0, 30.0);
+                        t.confusion_t = 0.0;
+                        t.confused = true;
+                        crate::sound::play("DeusExSounds.Weapons.EMPZap", t.gun_pos, 1.0, 1280.0, 1.0);
+                        crate::eggs::device_sparks(t.gun_pos);
+                    }
+                }
+                _ => {
+                    let beam = *ty == "WarrenBeam";
+                    for l in st.lasers.iter_mut().filter(|x| !x.gone && !x.confused && x.beam.is_some() == beam && x.pos.distance(*c) < *r) {
+                        l.confusion_t = 0.0;
+                        l.confused = true;
+                        crate::sound::play("DeusExSounds.Weapons.EMPZap", l.pos, 1.0, 1280.0, 1.0);
+                        crate::eggs::device_sparks(l.pos);
+                    }
                 }
             }
         } else if *ty == "Exploded" {

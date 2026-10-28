@@ -475,6 +475,8 @@ pub fn draw_lower(
     }
     let top = LOWER_Y.load(std::sync::atomic::Ordering::Relaxed);
     let mut rows = Vec::new();
+    // Enhancement "Dialogue Hotkeys": the first four choices are numbered.
+    let hotkeys = crate::settings::get("DialogueHotkeys") > 0.5;
     for (i, (text, skill)) in p.choices.iter().enumerate() {
         let bh = sf.height + 4;
         rows.push((top + y, top + y + bh));
@@ -498,7 +500,7 @@ pub fn draw_lower(
             HAlign::Left,
             VAlign::Center,
             col,
-            text,
+            &if hotkeys && i < 4 { format!("{}. {text}", i + 1) } else { text.clone() },
         );
         y += bh;
     }

@@ -93,6 +93,27 @@ pub fn mission_system(
             fl.set("PlayerTraveling", FlagValue::Bool(true), 0);
         }
         crate::missions::set_current(st.mission, &st.map);
+        // Discord Rich Presence: where we are.
+        {
+            let loc = info
+                .and_then(|a| match find(&a.props, "MissionLocation") {
+                    Some(Value::Str(s)) if !s.trim().is_empty() => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| st.map.clone());
+            if crate::menus::intro_map() || st.mission < 0 {
+                crate::discord::set("In the main menu", "");
+            } else {
+                let diff = match crate::travel::combat_difficulty() {
+                    d if d <= 1.0 => "Easy",
+                    d if d <= 1.5 => "Medium",
+                    d if d <= 2.0 => "Hard",
+                    _ => "Realistic",
+                };
+                let m = if st.mission == 0 { "Training".to_string() } else { format!("Mission {}", st.mission) };
+                crate::discord::set(&loc, &format!("{m} - {diff}"));
+            }
+        }
         // LDDP (JCDentonMale.TravelPostAccept): its flags on every arrival, never expiring.
         if crate::travel::lddp() {
             for (f, v) in crate::travel::lddp_flags() {

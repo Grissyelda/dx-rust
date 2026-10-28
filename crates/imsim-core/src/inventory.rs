@@ -220,6 +220,34 @@ impl Inventory {
         true
     }
 
+    /// Ours (Enhancement "Inventory Auto-Sort"): repack the grid - weapons first, then the rest, biggest first,
+    /// by name - first fit, row by row. Nothing moves if they wouldn't all fit.
+    pub fn auto_sort(&mut self) {
+        let old: Vec<Option<(u32, u32)>> = self.items.iter().map(|i| i.pos).collect();
+        let mut order: Vec<usize> = (0..self.items.len()).filter(|&i| old[i].is_some()).collect();
+        order.sort_by(|&a, &b| {
+            let (ia, ib) = (&self.items[a], &self.items[b]);
+            let w = |i: &Item| if i.def.kind == ItemKind::Weapon { 0 } else { 1 };
+            let area = |i: &Item| i.def.inv_size.0 * i.def.inv_size.1;
+            (w(ia), std::cmp::Reverse(area(ia)), std::cmp::Reverse(ia.def.inv_size.1), &ia.def.name)
+                .cmp(&(w(ib), std::cmp::Reverse(area(ib)), std::cmp::Reverse(ib.def.inv_size.1), &ib.def.name))
+        });
+        for &i in &order {
+            self.items[i].pos = None;
+        }
+        for &i in &order {
+            match self.find_slot(self.items[i].def.inv_size, Some(i)) {
+                Some(p) => self.items[i].pos = Some(p),
+                None => {
+                    for (it, p) in self.items.iter_mut().zip(old) {
+                        it.pos = p;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     /// Whether there's room for a new item of this size (FindInventorySlot with bSearchOnly).
     pub fn has_room(&self, def: &ItemDef) -> bool {
         self.find_slot(def.inv_size, None).is_some()

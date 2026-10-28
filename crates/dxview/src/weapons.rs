@@ -467,6 +467,8 @@ pub struct Weapons {
     pub pending_class: Option<String>,
     /// Inventory screen Use: activate this pickup without raising it.
     pub use_request: Option<String>,
+    /// Enhancement "Use Consumables From The Floor": a consumable frobbed with no room for it is used on the spot.
+    pub floor_use: Option<String>,
 }
 
 /// A carried body thrown or dropped: (pawn entity, where, velocity).
@@ -1324,6 +1326,14 @@ pub fn weapon_system(
     }
     if let Some((c, a)) = std::mem::take(&mut weapons.ammo_note) {
         weapons.loaded_ammo.insert(c, a);
+    }
+    // Ours: a consumable used straight from the floor (no room in the inventory): used without taking one.
+    if let Some(class) = weapons.floor_use.take() {
+        let r = activate_pickup(&class, &mut ph, &cam, &player, &mut launches, &mut flares, &mut zoom, &mut charged, &mut rt_assets, &mut weapons);
+        if !r.msg.is_empty() {
+            hud.text = r.msg;
+            hud.time_left = 2.0;
+        }
     }
     // Use from the inventory screen (UseSelectedItem: inv.Activate()).
     if let Some(class) = weapons.use_request.take() {

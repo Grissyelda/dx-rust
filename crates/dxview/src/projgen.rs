@@ -462,6 +462,9 @@ pub fn projgen_system(
                 life: 4.0,
                 random: true,
                 follow: Some((b, off)),
+                gravity: false,
+                lifespan: None,
+                spawn_sound: None,
             });
         }
     }

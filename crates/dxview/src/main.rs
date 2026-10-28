@@ -37,6 +37,8 @@ mod fogball;
 mod augdisplay;
 mod shake;
 mod particles;
+mod eggs;
+mod discord;
 mod augcan;
 mod shadows;
 mod conui;
@@ -580,6 +582,7 @@ fn main() {
                     .unwrap_or((1600, 900))
                     .into(),
                 mode: menus::window_mode(settings::get("DisplayMode")),
+                present_mode: menus::present_mode(settings::get("VSync")),
                 ..default()
             }),
             ..default()
@@ -762,6 +765,7 @@ fn main() {
         .add_systems(Update, (augdisplay::augdisplay_system, augdisplay::vision_system, augdisplay::aug_text_system))
         .init_resource::<particles::Particles>()
         .add_systems(Update, particles::particle_system.after(devices::device_system).after(fixtures::fixture_system))
+        .add_systems(Update, (eggs::matrix_system, eggs::warren_system))
         .add_systems(
             PreUpdate,
             (
@@ -1385,11 +1389,12 @@ fn fly(
     mut walk_test: Option<ResMut<WalkTest>>,
     movers_res: Res<movers::Movers>,
     mut frob_req: ResMut<pickups::FrobRequest>,
-    (carrying, mut ph, weapons_res, mut scripted): (
+    (carrying, mut ph, weapons_res, mut scripted, mouse): (
         Res<carry::Carrying>,
         ResMut<ai::PlayerHealth>,
         Res<weapons::Weapons>,
         ResMut<weapons::ScriptedInput>,
+        Res<ButtonInput<MouseButton>>,
     ),
 ) {
     let _prof = crate::prof::scope("main::fly");
@@ -1586,7 +1591,25 @@ fn fly(
                     }
                     let into = wish.dot(-n);
                     let climbing = player.body.physics == Physics::Climbing;
-                    if into > 0.3 || (climbing && wish.length_squared() > 0.0) {
+                    // Enhancement "Grab Ladders": Use takes hold, Jump lets go (pushing off), and on the ladder
+                    // forward / back climb up / down; otherwise walking into one does nothing special.
+                    let grab = settings::get("LadderGrab") > 0.5;
+                    if grab && !climbing {
+                        if mouse.just_pressed(MouseButton::Right) {
+                            player.body.physics = Physics::Climbing;
+                            player.body.velocity = DVec3::ZERO;
+                        }
+                    } else if grab && keys.just_pressed(KeyCode::Space) {
+                        player.body.physics = Physics::Falling;
+                        player.body.velocity = n * 180.0 + DVec3::Z * 160.0;
+                        wish = DVec3::ZERO;
+                    } else if grab {
+                        let looking_down = cam.pitch < -0.35;
+                        let vertical = into * if looking_down { -1.0 } else { 1.0 };
+                        // Keep some of the push into it so you step off at the top; pulling back doesn't leave.
+                        let flat = wish - (-n) * if into > 0.0 { into * 0.7 } else { into };
+                        wish = flat + DVec3::Z * vertical;
+                    } else if into > 0.3 || (climbing && wish.length_squared() > 0.0) {
                         let looking_down = cam.pitch < -0.35;
                         let vertical = if into > 0.3 {
                             into * if looking_down { -1.0 } else { 1.0 }

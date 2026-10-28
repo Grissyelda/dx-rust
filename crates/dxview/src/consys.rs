@@ -2343,6 +2343,8 @@ struct ConInput {
     up: bool,
     down: bool,
     click: bool,
+    /// Enhancement "Dialogue Hotkeys": 1-4 (row or numpad) pick that choice.
+    pick: Option<usize>,
 }
 
 static INPUT: Mutex<Option<ConInput>> = Mutex::new(None);
@@ -2401,6 +2403,18 @@ pub fn capture_input_system(
         up: keys.just_pressed(KeyCode::ArrowUp) || scroll.delta.y > 0.0,
         down: keys.just_pressed(KeyCode::ArrowDown) || scroll.delta.y < 0.0,
         click: mouse.just_released(MouseButton::Left),
+        pick: if crate::settings::get("DialogueHotkeys") > 0.5 {
+            [
+                (KeyCode::Digit1, KeyCode::Numpad1),
+                (KeyCode::Digit2, KeyCode::Numpad2),
+                (KeyCode::Digit3, KeyCode::Numpad3),
+                (KeyCode::Digit4, KeyCode::Numpad4),
+            ]
+            .iter()
+            .position(|(a, b)| keys.just_pressed(*a) || keys.just_pressed(*b))
+        } else {
+            None
+        },
     };
     if let Ok(mut g) = INPUT.lock() {
         let prev = g.unwrap_or_default();
@@ -2409,6 +2423,7 @@ pub fn capture_input_system(
             up: prev.up || i.up,
             down: prev.down || i.down,
             click: prev.click || i.click,
+            pick: prev.pick.or(i.pick),
         });
     }
     // Choices: the mouse moves the highlight (the original shows the cursor for them).
@@ -2767,7 +2782,10 @@ pub fn consys_system(
                         }
                         // A click picks the choice under the pointer (anywhere else does nothing); Enter picks the
                         // highlighted one.
-                        if (input.click && (hover.is_some() || !CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed)))
+                        if let Some(k) = input.pick.filter(|&k| k < n) {
+                            p.focus = k;
+                            st.choose(fl, k);
+                        } else if (input.click && (hover.is_some() || !CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed)))
                             || keys_enter(&input)
                         {
                             let f = p.focus;

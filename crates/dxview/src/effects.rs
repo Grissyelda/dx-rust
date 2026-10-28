@@ -279,7 +279,9 @@ pub fn blood_system(
             ))
             .id();
         splats.0.push_back(splat);
-        while splats.0.len() > 300 {
+        // Enhancement "Casings And Blood Stay": many more before the oldest go.
+        let cap = if crate::settings::get("PersistentDebris") > 0.5 { 3000 } else { 300 };
+        while splats.0.len() > cap {
             if let Some(old) = splats.0.pop_front() {
                 commands.entity(old).despawn();
             }

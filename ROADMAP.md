@@ -49,7 +49,7 @@ Worth watching along the way:
 - vehicles and cross-map elevators.
 
 ### 2. Small pieces not ported yet
-- The credits easter eggs THEREISNOSPOON and IAMWARREN: the phrase and the sound play, but the effect doesn't.
+None left. The credits easter eggs THEREISNOSPOON (the Matrix view) and IAMWARREN (Warren's EMP field) now work.
 
 ### 3. Tuning by eye
 - Water: glint, opacity and ripple size.
@@ -79,16 +79,16 @@ reflecting surface is a full extra render).
 
 ### Small (UI, quality of life, toggles)
 1. Enhancements menu (scrolling and searchable; done) as the home of every toggle.
-2. NPC ammo running out, with reloads and weapon swaps (in code behind a developer switch; becomes a toggle).
-3. Dialogue hotkeys 1-4.
-4. Use consumables straight from the floor when the inventory is full.
-5. Shell casings and blood that stay.
-6. Discord rich presence.
-7. Inventory auto-sort.
-8. Codes and passwords from notes offered on keypads and computers.
-9. Debug menu with the original's cheats.
-10. The original settings screens moved onto the searchable list.
-11. Use to grab and Jump to let go of ladders.
+2. NPC ammo running out, with reloads and weapon swaps (done).
+3. Dialogue hotkeys 1-4 (done).
+4. Use consumables straight from the floor when the inventory is full (done).
+5. Shell casings and blood that stay (done).
+6. Discord rich presence (done).
+7. Inventory auto-sort (done).
+8. Codes and passwords from notes offered on keypads and computers (done).
+9. Debug menu with the original's cheats (done).
+10. The original settings screens moved onto the searchable list (done).
+11. Use to grab and Jump to let go of ladders (done).
 12. Dragon's Tooth energy balancing.
 
 ### Medium (systems whose pieces exist)

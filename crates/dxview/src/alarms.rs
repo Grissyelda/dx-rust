@@ -28,6 +28,8 @@ pub struct AlarmRt {
     pub associated: Option<usize>,
     /// Hacked: dead for good.
     pub disabled: bool,
+    /// EMP'd (TakeDamage 'EMP': bConfused for alarmTimeout seconds): can't be set off meanwhile.
+    pub confused: f32,
     light: (u8, u8, u8, f32),
     /// Not an AlarmUnit but another source of the 'Alarm' AI event (a security camera, a laser tripwire, a
     /// computer): nobody runs to push it, and its owner switches it on and off and sounds it.
@@ -60,6 +62,14 @@ impl AlarmRt {
 }
 
 static HACKED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+static WARREN: std::sync::Mutex<Vec<(DVec3, f64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Warren's EMP field (eggs.rs): every alarm unit within `radius` that isn't confused takes 100 EMP.
+pub fn warren(center: DVec3, radius: f64) {
+    if let Ok(mut q) = WARREN.lock() {
+        q.push((center, radius));
+    }
+}
 
 /// A multitool bypass finished on the actor `actor`. AlarmUnit.HackAction: an alarm that is sounding goes quiet
 /// and is disabled for good; one that isn't sounding is left alone (the script never sets one off this way).
@@ -95,7 +105,7 @@ impl Alarms {
     /// AlarmUnit.Trigger: switch on (and every unit sharing its Tag), raise Event.
     pub fn trigger(&mut self, i: usize, instigator: Option<Target>) {
         let Some(u) = self.units.get(i) else { return };
-        if u.disabled || u.active {
+        if u.disabled || u.active || u.confused > 0.0 {
             return;
         }
         let tag = u.tag.clone();
@@ -111,7 +121,7 @@ impl Alarms {
         }
         for j in fire {
             let u = &mut self.units[j];
-            if u.disabled || u.active {
+            if u.disabled || u.active || u.confused > 0.0 {
                 continue;
             }
             u.active = true;
@@ -142,6 +152,7 @@ impl Alarms {
             instigator: None,
             associated: None,
             disabled: false,
+            confused: 0.0,
             light: (0, 0, 0, 0.0),
             external: true,
             seek: pos,
@@ -238,6 +249,7 @@ pub fn alarm_system(
                 instigator: None,
                 associated: None,
                 disabled: false,
+            confused: 0.0,
                 light: (
                     b("LightHue", 0),
                     b("LightSaturation", 255),
@@ -265,6 +277,21 @@ pub fn alarm_system(
         }
     }
     let dt = time.delta_secs();
+    // AlarmUnit.TakeDamage 'EMP': confused for alarmTimeout (a sounding one goes quiet), EMPZap.
+    for (c, r) in WARREN.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        for u in alarms.units.iter_mut().filter(|u| !u.external && u.confused <= 0.0 && u.pos.distance(c) < r) {
+            u.confused = u.timeout.max(1.0);
+            u.active = false;
+            u.t = 0.0;
+            crate::sound::play("DeusExSounds.Weapons.EMPZap", u.pos, 1.0, 1280.0, 1.0);
+            crate::eggs::device_sparks(u.pos);
+        }
+    }
+    for u in alarms.units.iter_mut() {
+        if u.confused > 0.0 {
+            u.confused -= dt;
+        }
+    }
     let now = time.elapsed_secs_f64();
     for (i, u) in alarms.units.iter_mut().enumerate() {
         if !u.active || u.external {
