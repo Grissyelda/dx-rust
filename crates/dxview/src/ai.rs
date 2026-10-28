@@ -168,7 +168,9 @@ impl PlayerHealth {
     /// his own frame (X forward, Y right, Z up). Gunshots are scaled by the combat difficulty; EMP only drains
     /// bioelectric energy.
     pub fn damage(&mut self, dmg: f32, damage_type: &str, offset: DVec3) {
-        if self.dead || GOD_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        // DXVIEW_GOD=1: god mode from the start (test runs).
+        static ENV_GOD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if self.dead || GOD_MODE.load(std::sync::atomic::Ordering::Relaxed) || *ENV_GOD.get_or_init(|| std::env::var("DXVIEW_GOD").is_ok()) {
             return;
         }
         self.damage_icons.push((damage_type.to_string(), offset));
@@ -577,6 +579,18 @@ pub enum AtkPhase {
     Firing,
 }
 
+/// ScriptedPawn state OpeningDoor.
+#[derive(Clone, Debug)]
+pub struct DoorWait {
+    pub mover: usize,
+    /// FindBackupPoint's destLoc (or where we stand).
+    pub back_to: DVec3,
+    pub t: f32,
+    /// FrobDoor done (Frob before backing up when the door doesn't encroach, after it when it does).
+    pub frobbed: bool,
+    pub encroaches: bool,
+}
+
 #[derive(Component)]
 pub struct Npc {
     pub actor: usize,
@@ -750,6 +764,10 @@ pub struct Npc {
     pub clean_time: f32,
     /// Stall watchdog: seconds wanting to move without moving, and legs given up in a row.
     pub stall: f32,
+    /// bCanOpenDoors (animals can't).
+    pub can_open_doors: bool,
+    /// State OpeningDoor: the door (mover index) being opened, where to back up to, and the time spent.
+    pub door: Option<DoorWait>,
     pub stalls: u32,
     pub startle_timer: f32,
     /// Rat: every second, a 5% chance to squeak.
@@ -1100,6 +1118,8 @@ impl Npc {
             cleaner: find(p, "majorDir").is_some(),
             clean_time: 0.0,
             stall: 0.0,
+            can_open_doors: !matches!(find(p, "bCanOpenDoors"), Some(Value::Bool(false))),
+            door: None,
             stalls: 0,
             minor_dir: match find(p, "minorDir") {
                 Some(Value::Byte(b)) => *b,
@@ -5015,6 +5035,18 @@ pub fn npc_system(
                                     let wh = world.trace(my_eye, end, DVec3::splat(0.5));
                                     let ph_hit =
                                         trace_cylinder(&player_cyl, my_eye, end, DVec3::splat(0.5));
+                                    // TraceFire's tracer (10mm / 30.06 / 7.62mm, one slug, half the time).
+                                    if !w.hand_to_hand
+                                        && w.shots_per_fire() == 1
+                                        && crate::impacts::tracer_ammo(w.ammo_class.as_deref())
+                                        && crate::sound::frand() < 0.5
+                                    {
+                                        let f = match ph_hit {
+                                            Some(p) if p.fraction < wh.fraction && !ph.dead => p.fraction,
+                                            _ => wh.fraction,
+                                        };
+                                        crate::impacts::tracer(my_eye, end, my_eye + (end - my_eye) * f);
+                                    }
                                     match ph_hit {
                                         Some(p) if p.fraction < wh.fraction && !ph.dead => {
                                             let dmg = w.hit_damage;
@@ -5103,6 +5135,16 @@ pub fn npc_system(
                                                     my_eye + dir * range * wh.fraction,
                                                     w.hit_damage,
                                                     w.damage_type(npc.ammo.as_deref()),
+                                                );
+                                                crate::impacts::wall_hit(
+                                                    my_eye + dir * range * wh.fraction,
+                                                    wh.normal,
+                                                    dir,
+                                                    w.hit_damage,
+                                                    crate::impacts::Source::Weapon {
+                                                        penetrating: w.penetrating,
+                                                        hand_to_hand: w.hand_to_hand,
+                                                    },
                                                 );
                                             }
                                             if let Some(b) = wh.actor {
@@ -5299,6 +5341,39 @@ pub fn npc_system(
         if !running {
             params.ground_speed *= npc.walk_frac;
         }
+        // State OpeningDoor: back off out of the door's swing (StrafeTo(destLoc)), frob it (before backing up when
+        // it doesn't encroach, after when it does), then wait for it to finish opening (StopWaiting) or 5 s.
+        if let Some(dw) = npc.door.as_mut() {
+            dw.t += dt;
+            let here = npc.body.as_ref().map_or(deco.body.location, |b| b.location);
+            let to = DVec3::new(dw.back_to.x - here.x, dw.back_to.y - here.y, 0.0);
+            let backing = !dw.frobbed || dw.encroaches && dw.t < 2.0;
+            let mut finished = false;
+            if backing && to.length() > 6.0 && dw.t < 2.0 {
+                wish = to.normalize_or_zero();
+                running = true;
+            } else {
+                wish = DVec3::ZERO;
+                if !dw.frobbed {
+                    dw.frobbed = true;
+                    dw.t = 0.0;
+                    if !frob_door(lvl, &mv, dw.mover, npc.blocker) {
+                        finished = true;
+                    }
+                } else {
+                    let rt = &mv.rt[dw.mover];
+                    // FinishNotify -> StopWaiting once the door is at rest open; Sleep(5) otherwise.
+                    if (dw.t > 0.3 && !rt.interpolating && rt.key_num > 0) || dw.t > 5.0 || rt.destroyed {
+                        finished = true;
+                    }
+                }
+            }
+            if finished {
+                npc.door = None;
+                npc.stall = 0.0;
+                npc.route = None;
+            }
+        }
         let body = npc.body.as_mut().unwrap();
         let before = body.location;
         if !npc.sitting {
@@ -5346,6 +5421,59 @@ pub fn npc_system(
         }
         let moved = body.location;
         let mut vel = body.velocity;
+        // HitWall -> CheckOpenDoor: walking into a mover. Glass that isn't a door gets broken (TakeDamage 200);
+        // a door (more than one key and bIsDoor) is opened - by its button if a decoration triggers it, else by
+        // Frob, which lets any pawn but the player through any door, locked or not.
+        if npc.door.is_none()
+            && npc.can_open_doors
+            && !npc.sitting
+            && wish.truncate().length_squared() > 0.01
+            && matches!(
+                npc.state,
+                NpcState::Idle | NpcState::Attacking | NpcState::Seeking | NpcState::Fleeing | NpcState::Alerting | NpcState::Burning
+            )
+        {
+            let dir = DVec3::new(wish.x, wish.y, 0.0).normalize_or_zero();
+            let ext = DVec3::new(npc.params.radius - 1.0, npc.params.radius - 1.0, npc.params.height - 1.0);
+            let mut best: Option<(usize, f64, DVec3)> = None;
+            for (i, (info, rt)) in lvl.movers.iter().zip(mv.rt.iter()).enumerate() {
+                if rt.destroyed || rt.location.distance(moved) > 1500.0 {
+                    continue;
+                }
+                if let Some(h) = crate::movers::trace_mover(info, rt, moved, moved + dir * 6.0, ext) {
+                    if best.map_or(true, |b| h.fraction < b.1) {
+                        best = Some((i, h.fraction, h.normal));
+                    }
+                }
+            }
+            if let Some((i, _, normal)) = best {
+                let props = &lvl.actors[lvl.movers[i].actor].props;
+                let rt = &mv.rt[i];
+                let door = is_door(lvl, i);
+                let breakable = rt.breakable.unwrap_or(matches!(find(props, "bBreakable"), Some(Value::Bool(true))));
+                let ignore_encroach = matches!(find(props, "MoverEncroachType"), Some(Value::Byte(3)));
+                if !door && breakable {
+                    crate::movers::damage_mover(i, 200.0, "Shot");
+                } else if door && !(rt.interpolating && ignore_encroach) {
+                    let back_to = backup_point(lvl, &mv, i, moved, normal, npc.params.radius, npc.params.height);
+                    let mut dw = DoorWait { mover: i, back_to, t: 0.0, frobbed: false, encroaches: !ignore_encroach };
+                    if !dw.encroaches {
+                        dw.frobbed = true;
+                        if frob_door(lvl, &mv, i, npc.blocker) {
+                            npc.door = Some(dw);
+                        }
+                    } else {
+                        npc.door = Some(dw);
+                    }
+                    if npc.door.is_some() {
+                        npc.stall = 0.0;
+                        if std::env::var("DXVIEW_DOORLOG").is_ok() {
+                            println!("DOOR {} opens {} (locked {})", lvl.actors[npc.actor].name, lvl.movers[i].name, rt.locked);
+                        }
+                    }
+                }
+            }
+        }
         // Stall watchdog: wanting to move but getting nowhere (a pawn, a door, a ledge the route didn't know
         // about) for 1.5 s drops the route and gives up the current leg, so nobody runs on the spot. Speed for
         // the animation is what was actually covered, not the velocity pushing into the obstacle.
@@ -6221,6 +6349,66 @@ pub fn carcass_swap_system(
 }
 
 /// A new map is going in (loader.rs): this module's state of the map being left.
+/// ScriptedPawn.IsDoor: a DeusExMover with more than one keyframe and bIsDoor.
+fn is_door(lvl: &dx_level::Level, i: usize) -> bool {
+    lvl.movers[i].num_keys > 1 && lvl.movers[i].is_door
+}
+
+/// ScriptedPawn.FrobDoor: a decoration whose Event is the door's Tag (its button) triggers every mover with that tag;
+/// otherwise a frobbable door is frobbed, unless another pawn is already waiting on it. False = nothing done.
+fn frob_door(lvl: &dx_level::Level, mv: &Movers, i: usize, me: usize) -> bool {
+    let info = &lvl.movers[i];
+    let tag = info.tag.clone();
+    let button = !tag.is_empty()
+        && lvl.actors.iter().any(|a| {
+            find(&a.props, "bPushable").is_some() && crate::devices::name_prop(&a.props, "Event").eq_ignore_ascii_case(&tag)
+        });
+    if button {
+        crate::movers::pawn_door(crate::movers::PawnDoor::Trigger(tag, me));
+        return true;
+    }
+    let rt = &mv.rt[i];
+    if rt.frobbable.unwrap_or(info.frobbable) && rt.waiting_pawn.map_or(true, |w| w == me) {
+        crate::movers::pawn_door(crate::movers::PawnDoor::Frob(i, me));
+        return true;
+    }
+    false
+}
+
+/// OpeningDoor.FindBackupPoint: inside the door's movement area (grown by our radius + 30), back away along the
+/// normal of the door face we walked into until we're out of it (45..700 units) if that way is clear; else stay.
+/// The area here is the circle the door sweeps around its pivot.
+fn backup_point(lvl: &dx_level::Level, mv: &Movers, i: usize, at: DVec3, normal: DVec3, radius: f64, height: f64) -> DVec3 {
+    let info = &lvl.movers[i];
+    let reach = info
+        .parts
+        .iter()
+        .flat_map(|p| p.positions.iter())
+        .map(|p| (p[0] as f64).hypot(p[1] as f64))
+        .fold(0.0f64, f64::max)
+        + radius
+        + 30.0;
+    let c = mv.rt[i].location;
+    let n = DVec3::new(normal.x, normal.y, 0.0).normalize_or_zero();
+    if n == DVec3::ZERO {
+        return at;
+    }
+    let rel = DVec3::new(at.x - c.x, at.y - c.y, 0.0);
+    if rel.length() >= reach {
+        return at;
+    }
+    // |rel + n t| = reach, the root ahead of us.
+    let b = rel.dot(n);
+    let t = -b + (b * b - (rel.length_squared() - reach * reach)).max(0.0).sqrt();
+    let t = t.clamp(45.0, 700.0);
+    let to = at + n * t;
+    let ext = DVec3::new(radius, radius, height);
+    if lvl.collision.trace(at, to, ext).fraction < 1.0 {
+        return at;
+    }
+    to
+}
+
 pub fn reset_level() {
     if let Ok(mut v) = WORLD.lock() {
         v.clear();
