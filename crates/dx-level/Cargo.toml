@@ -1,0 +1,12 @@
+[package]
+name = "dx-level"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+glam = "0.32"
+unreal-pkg = { path = "../unreal-pkg" }
+
+[dev-dependencies]
+imsim-core = { path = "../imsim-core" }

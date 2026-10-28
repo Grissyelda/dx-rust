@@ -29,8 +29,16 @@ Deus Ex and all of its content belong to their owners. DX RUST includes none of 
 the player's own install at run time.
 
 ## Lay D Denton Project
-The Lay D Denton Project belongs to its authors. DX RUST includes none of
+The Lay D Denton Project belongs to its authors and is supported with their permission. DX RUST includes none of
 its files: it reads them from the folder the player chooses.
+
+## Joe Wintergreen's lipsync mod
+The *Smooth Lip Sync* enhancement uses the timings from Joe Wintergreen's lipsync mod for Deus Ex:
+- mouth shapes blend over 0.36 s;
+- the mouth closes over 0.3 s;
+- blinks are checked every 0.5 s and play at a fifth of the speed.
+
+It was rewritten in Rust; none of the mod's files are included. Credit to Joe Wintergreen (@joewintergreen).
 
 ## Rust crates
 DX RUST's dependencies (Bevy, egui / eframe, gilrs, hidapi, cpal, rfd, serde and others) keep their own licences,

@@ -36,6 +36,8 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   haptics and infolinks through the pad's speaker.
 - **Lay D Denton Project support.** Play as the female JC with the community mod's voice, looks and conversations.
   Point the launcher at the mod's folder (see below).
+- **Smooth lip sync.** Mouths blend between sounds and close gently, and people blink visibly. The timings follow
+  Joe Wintergreen's lipsync mod, and there's a switch in Enhancements to turn it off.
 - **Rotating autosaves** on map changes and completed goals.
 
 ## Getting started
@@ -49,7 +51,7 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
 ### Steam Deck / Linux
 1. Install *Deus Ex: Game of the Year Edition* through Steam. Proton installs the files DX RUST needs, and you
    don't have to run the game.
-2. In Desktop Mode, download `dxrust-steamdeck.tar.gz` from [Releases](../../releases) and extract it, for
+2. In Desktop Mode, download `dxrust-steamdeck.tar.xz` from [Releases](../../releases) and extract it, for
    example to `~/Games/dxrust`.
 3. Run `dxlauncher` once to check that it found your game. Steam libraries and SD cards are searched
    automatically.
@@ -85,7 +87,7 @@ On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder.
 
 ## Status and what's left
 The whole game is implemented. Before 1.0:
-- multiple full playthroughs, with fixes for whatever they find;
+- a full playthrough, with fixes for whatever it finds;
 - tuning by eye (water, a few intro effects);
 - a performance pass;
 - Steam Deck tuning;
@@ -108,5 +110,5 @@ were on and what you did.
 
 ## Credits
 - Ion Storm Austin, for Deus Ex.
-- The Lay D Denton Project team, for the mod.
+- The Lay D Denton Project team, for the mod and permission to support it.
 - The Bevy, egui, gilrs and hidapi projects, and the Rust community.
