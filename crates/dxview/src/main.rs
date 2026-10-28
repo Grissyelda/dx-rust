@@ -1594,6 +1594,7 @@ fn fly(
                     // Enhancement "Grab Ladders": Use takes hold, Jump lets go (pushing off), and on the ladder
                     // forward / back climb up / down; otherwise walking into one does nothing special.
                     let grab = settings::get("LadderGrab") > 0.5;
+                    frobui::LADDER_GRAB.store(grab && !climbing, std::sync::atomic::Ordering::Relaxed);
                     if grab && !climbing {
                         if mouse.just_pressed(MouseButton::Right) {
                             player.body.physics = Physics::Climbing;
@@ -1626,6 +1627,7 @@ fn fly(
                     }
                 }
                 None => {
+                    frobui::LADDER_GRAB.store(false, std::sync::atomic::Ordering::Relaxed);
                     if player.body.physics == Physics::Climbing {
                         player.body.physics = Physics::Falling;
                     }

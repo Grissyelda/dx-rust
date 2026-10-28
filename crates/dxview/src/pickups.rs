@@ -767,6 +767,10 @@ pub fn frob_system(
                 if let Some(msg) = info.toggle(&root_dir.0, &tag, blockers.list[b].center) {
                     hud.text = msg;
                     hud.time_left = 2.0;
+                } else if matches!(unreal_pkg::props::find(&a.props, "bAddToVault"), Some(unreal_pkg::props::Value::Bool(true))) {
+                    if let Some(t) = info.text.as_ref() {
+                        crate::consys::add_vault_note(t);
+                    }
                 }
                 return;
             }
