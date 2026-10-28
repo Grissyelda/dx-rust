@@ -126,7 +126,7 @@ reflecting surface is a full extra render).
 37. Dynamic weather and time of day.
 
 ### Very large (needs skeletons, new content, or touches the whole engine)
-38. Smarter AI (opt-in).
+38. Smarter AI (opt-in), including stealth that respects darkness more than the original's guards do.
 39. HD textures and models, PBR and smoother animation.
 40. JC's body visible in first person.
 41. Diegetic damage, healing and augs shown on the body.
