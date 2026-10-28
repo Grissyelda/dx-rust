@@ -41,6 +41,8 @@ pub struct MoverRt {
     /// Mission-script overrides of bBreakable / bFrobbable (None = the map's value).
     pub breakable: Option<bool>,
     pub frobbable: Option<bool>,
+    /// Mover.WaitingPawn: the pawn (blocker) that frobbed it open (ScriptedPawn.FrobDoor); others leave it alone.
+    pub waiting_pawn: Option<usize>,
 }
 
 #[derive(Resource)]
@@ -111,6 +113,7 @@ pub fn spawn_movers(
             old_pos: to_dvec(info.location),
             old_rot: info.rotation,
             close_timer: None,
+            waiting_pawn: None,
             opening: false,
             locked: info.locked,
             moved_since_lit: false,
@@ -321,6 +324,37 @@ pub fn frob(
     msg
 }
 
+/// Doors pawns open (ScriptedPawn.FrobDoor): (mover, pawn blocker) frobbed, or a tag triggered by the door's button.
+pub enum PawnDoor {
+    Frob(usize, usize),
+    Trigger(String, usize),
+}
+static PAWN_DOORS: std::sync::Mutex<Vec<PawnDoor>> = std::sync::Mutex::new(Vec::new());
+
+pub fn pawn_door(req: PawnDoor) {
+    if let Ok(mut q) = PAWN_DOORS.lock() {
+        q.push(req);
+    }
+}
+
+/// DeusExMover.Frob by a pawn that isn't the player: "Let any non-player pawn open any door for now" - locked or
+/// not, from either side; this and every like-tagged mover are triggered.
+fn frob_by_pawn(level: &Level, movers: &mut Movers, idx: usize) {
+    let info = &level.movers[idx];
+    if movers.rt[idx].destroyed || !movers.rt[idx].frobbable.unwrap_or(info.frobbable) {
+        return;
+    }
+    let tag = info.tag.clone();
+    trigger(info, &mut movers.rt[idx]);
+    if !tag.is_empty() && tag != "DeusExMover" {
+        for (j, other) in level.movers.iter().enumerate() {
+            if j != idx && other.tag == tag {
+                trigger(other, &mut movers.rt[j]);
+            }
+        }
+    }
+}
+
 /// PHYS_MovingBrush plus the timed-close part of TriggerOpenTimed.
 pub fn tick_movers(
     time: Res<Time>,
@@ -345,6 +379,24 @@ pub fn tick_movers(
         time.delta_secs_f64().min(0.1)
     };
     let level = &level.0;
+    for req in PAWN_DOORS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        match req {
+            PawnDoor::Frob(i, pawn) => {
+                if i < movers.rt.len() {
+                    frob_by_pawn(level, &mut movers, i);
+                    movers.rt[i].waiting_pawn = Some(pawn);
+                }
+            }
+            PawnDoor::Trigger(tag, pawn) => {
+                for (j, info) in level.movers.iter().enumerate() {
+                    if info.tag.eq_ignore_ascii_case(&tag) {
+                        trigger(info, &mut movers.rt[j]);
+                        movers.rt[j].waiting_pawn = Some(pawn);
+                    }
+                }
+            }
+        }
+    }
     let at = attach.get_or_insert_with(|| Attachments::build(level));
     // MoverColliders ride their movers (MoverCollider.BeginPlay: SetBase(mover)); class-proximity triggers look for
     // them (triggers.rs) - the training ranges' targets open the blast doors as they come forward.
@@ -413,6 +465,10 @@ pub fn tick_movers(
                         interpolate_to(info, rt, k, info.move_time as f64);
                     } else if rt.opening && info.initial_state == "TriggerOpenTimed" {
                         rt.close_timer = Some(info.stay_open_time as f64);
+                    }
+                    // FinishNotify: the waiting pawn goes on (StopWaiting) and the door is free again.
+                    if !rt.interpolating {
+                        rt.waiting_pawn = None;
                     }
                 }
             }
@@ -927,6 +983,9 @@ pub fn mover_damage_system(
 /// A new map is going in (loader.rs): this module's state of the map being left.
 pub fn reset_level() {
     if let Ok(mut v) = EVENTS_OUT.lock() {
+        v.clear();
+    }
+    if let Ok(mut v) = PAWN_DOORS.lock() {
         v.clear();
     }
     if let Ok(mut v) = LINE_HITS.lock() {

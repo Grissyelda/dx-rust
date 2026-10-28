@@ -44,6 +44,24 @@ pub struct MeshFx {
     pub grow: Option<(f32, f32)>,
 }
 
+/// A mesh effect that keeps one DrawScale for `life` seconds, fading out (Spark: FlatFX, 0.25 s).
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_mesh_fx_timed(
+    commands: &mut Commands,
+    assets: &mut RuntimeAssets,
+    images: &mut Assets<Image>,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    class: &str,
+    at: DVec3,
+    rot: [i32; 3],
+    scale: f32,
+    life: f32,
+) -> Option<Entity> {
+    spawn_mesh_fx_ex(commands, assets, images, meshes, materials, class, at, rot, scale, Some((life, (scale, 0.0))))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_mesh_fx(
     commands: &mut Commands,
     assets: &mut RuntimeAssets,
@@ -54,6 +72,22 @@ pub fn spawn_mesh_fx(
     at: DVec3,
     rot: [i32; 3],
     size: f32,
+) -> Option<Entity> {
+    spawn_mesh_fx_ex(commands, assets, images, meshes, materials, class, at, rot, size, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_mesh_fx_ex(
+    commands: &mut Commands,
+    assets: &mut RuntimeAssets,
+    images: &mut Assets<Image>,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    class: &str,
+    at: DVec3,
+    rot: [i32; 3],
+    size: f32,
+    timed: Option<(f32, (f32, f32))>,
 ) -> Option<Entity> {
     let mut d = assets.classes.defaults(class);
     let Some(Value::Path(mesh)) = find(&d, "Mesh").cloned() else {
@@ -120,13 +154,17 @@ pub fn spawn_mesh_fx(
         Some(Value::Float(l)) if *l > 0.0 && class == "WaterRing" => *l,
         _ => 0.5,
     };
+    let (life, grow) = match timed {
+        Some((l, g)) => (l, Some(g)),
+        None => (life, None),
+    };
     commands.entity(root).insert((
         MeshFx {
             t: 0.0,
             life,
             size,
             mats,
-            grow: None,
+            grow,
         },
         FxMaterial(mat),
     ));

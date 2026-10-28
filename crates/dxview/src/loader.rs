@@ -412,6 +412,7 @@ fn reset_modules() {
     crate::triggers::reset_level();
     crate::cinematic::reset_level();
     crate::scriptworld::reset_level();
+    crate::impacts::reset_level();
 }
 
 /// Resources the app creates once with defaults (main.rs); the map-building systems re-insert the rest.

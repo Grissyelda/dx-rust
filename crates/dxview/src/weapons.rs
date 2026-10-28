@@ -1570,6 +1570,14 @@ pub fn weapon_system(
                     h.stats.hit_damage * h.stats.damage_mult(),
                     h.stats.damage_type(h.stats.ammo_class.as_deref()),
                 );
+                // TraceHitHandSpawner: only breakable movers get marked by a blow.
+                crate::impacts::wall_hit(
+                    at,
+                    hit.normal,
+                    fw,
+                    h.stats.hit_damage * h.stats.damage_mult(),
+                    crate::impacts::Source::Weapon { penetrating: h.stats.penetrating, hand_to_hand: true },
+                );
             }
             let props = hit
                 .actor
@@ -2186,6 +2194,15 @@ pub fn weapon_system(
                             );
                         }
                     }
+                    // TraceFire: a tracer for half the single-slug shots of 10mm / 30.06 / 7.62mm ammo (never scoped).
+                    if !h.stats.hand_to_hand
+                        && h.stats.shots_per_fire() == 1
+                        && zoom.0.is_none()
+                        && crate::impacts::tracer_ammo(h.stats.ammo_class.as_deref())
+                        && crate::sound::frand() < 0.5
+                    {
+                        crate::impacts::tracer(eye, end, eye + (end - eye) * hit.fraction);
+                    }
                     if hit.fraction < 1.0 && hit.actor.is_none() {
                         // ProcessTraceHit on the level or a mover: breakable doors take HitDamage x the skill multiplier.
                         crate::movers::hit_line(
@@ -2193,6 +2210,14 @@ pub fn weapon_system(
                             eye + dir * range * hit.fraction,
                             h.stats.hit_damage * h.stats.damage_mult(),
                             h.stats.damage_type(h.stats.ammo_class.as_deref()),
+                        );
+                        // SpawnEffects (TraceHitSpawner): smoke, chips, the hole and a spark.
+                        crate::impacts::wall_hit(
+                            eye + dir * range * hit.fraction,
+                            hit.normal,
+                            dir,
+                            h.stats.hit_damage * h.stats.damage_mult(),
+                            crate::impacts::Source::Weapon { penetrating: h.stats.penetrating, hand_to_hand: false },
                         );
                     }
                     if let Some(b) = hit.actor {

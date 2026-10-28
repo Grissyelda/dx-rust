@@ -519,11 +519,12 @@ pub fn security_system(
         ResMut<Assets<Mesh>>,
         ResMut<Assets<StandardMaterial>>,
     ),
-    (mut noises, mut pawn_hits, mut deco_hits, mut shells): (
+    (mut noises, mut pawn_hits, mut deco_hits, mut shells, mut blood): (
         ResMut<crate::stealth::Noises>,
         ResMut<crate::damage::PawnHits>,
         ResMut<crate::destruct::DecoHits>,
         ResMut<crate::destruct::Shells>,
+        ResMut<crate::effects::BloodFx>,
     ),
 ) {
     let _prof = crate::prof::scope("security::security_system");
@@ -535,6 +536,9 @@ pub fn security_system(
         st.init = true;
         st.seed = 0x5EC0_1234;
         init(st, &mut commands, &mut level.0, &mut blockers, &mut alarms, &refs, &mut assets, &mut images, &mut meshes, &mut materials);
+        // The guns (and laser beams) spawned by init only exist once the commands are applied: a turret checked
+        // this frame would find no gun and count as destroyed.
+        return;
     }
     let lvl = &level.0;
 
@@ -903,6 +907,7 @@ pub fn security_system(
             && t.base_entity.map_or(true, |e| decos.get(e).is_ok());
         let gun_ok = blockers.list[t.gun_blocker].radius > 0.0 && decos.get(t.gun_entity).is_ok();
         if !base_ok || !gun_ok {
+            println!("TURRET {} destroyed (base {} gun {})", lvl.actors[t.actor].name, base_ok, gun_ok);
             dead_turrets.push(i);
             continue;
         }
@@ -935,6 +940,15 @@ pub fn security_system(
             }
         }
         let on = t.active && !t.disabled;
+        if std::env::var("DXVIEW_TURRETLOG").is_ok() && t.gun_pos.distance(me) < 2000.0 {
+            let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(&movers.rt) };
+            let tr = w.trace(t.gun_pos, me, DVec3::ZERO);
+            println!(
+                "TURRET {} active={} disabled={} heard={} gun={:.0?} rot={:.0?} want={:.0?} dist={:.0} clear={:.3} target={}",
+                lvl.actors[t.actor].name, t.active, t.disabled, heard, t.gun_pos, t.rot, t.want,
+                t.gun_pos.distance(me), tr.fraction, t.target.is_some()
+            );
+        }
         let mut dest = t.want;
         if on {
             t.target = None;
@@ -1017,7 +1031,7 @@ pub fn security_system(
             if t.target.is_some() {
                 lens = Some(RED);
                 if near < 4096.0 && wrap(t.rot.0 - dest.0).abs() < 8192.0 && t.fire_t > t.fire_rate {
-                    fire(t, &world, lvl, &blockers, &player_cyl, player_yaw, &mut ph, &mut pawn_hits, &mut deco_hits, &mut shells, &mut noises);
+                    fire(t, &world, lvl, &blockers, &player_cyl, player_yaw, &mut ph, &mut pawn_hits, &mut deco_hits, &mut shells, &mut noises, &mut blood);
                     t.fire_t = 0.0;
                 }
             } else {
@@ -1425,6 +1439,7 @@ fn fire(
     deco_hits: &mut crate::destruct::DecoHits,
     shells: &mut crate::destruct::Shells,
     noises: &mut crate::stealth::Noises,
+    blood: &mut crate::effects::BloodFx,
 ) {
     t.firing = true;
     let ax = rotator_axes([t.rot.0.round() as i32, t.rot.1.round() as i32, 0]);
@@ -1463,12 +1478,38 @@ fn fire(
         kind: crate::stealth::NoiseKind::Loud,
     });
     t.flash_t = 0.1;
+    if std::env::var("DXVIEW_TURRETLOG").is_ok() {
+        println!("TURRET fire at {:.0?} player_hit={} frac={:.3}", at, player_hit, f);
+    }
+    // A tracer half the time (when the shot goes more than 250 units).
+    if rnd(&mut t.seed) < 0.5 {
+        crate::impacts::tracer(start, end, at);
+    }
+    let dir = (end - start).normalize_or_zero();
     if player_hit {
         ph.damage(t.damage, "AutoShot", crate::ai::player_offset(player_cyl.center, player_yaw, at));
+        // A spark where it hits and the player bleeds (SpawnBlood: pawns that aren't robots).
+        crate::impacts::spark(at, -dir);
+        blood.0.push((at - dir, dir));
         return;
     }
     if f >= 1.0 {
         return;
+    }
+    let normal = if h.normal.length_squared() > 0.5 { h.normal } else { -dir };
+    match h.actor {
+        Some(b) => {
+            crate::impacts::spark(at, normal);
+            let a = &lvl.actors[blockers.list[b].actor];
+            if find(&a.props, "GroundSpeed").is_some() && find(&a.props, "EMPHitPoints").is_none() {
+                blood.0.push((at - dir, dir));
+            }
+        }
+        // The level or a mover: smoke, chips, a hole (cracked glass on Glass walls) and the spark.
+        None => {
+            crate::impacts::spark(at, normal);
+            crate::impacts::wall_hit(at, normal, dir, t.damage, crate::impacts::Source::Turret);
+        }
     }
     // A ricochet where it lands.
     let snd = match h.actor.map(|b| &lvl.actors[blockers.list[b].actor].props) {

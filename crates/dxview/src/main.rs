@@ -64,6 +64,7 @@ mod devices;
 mod drug;
 mod dynlight;
 mod effects;
+mod impacts;
 mod electricity;
 mod explosion;
 mod fixtures;
@@ -690,6 +691,10 @@ fn main() {
                     .after(weapons::weapon_system)
                     .after(ai::npc_system),
                 effects::cleaner_system.after(effects::blood_system),
+                impacts::impacts_system
+                    .after(weapons::weapon_system)
+                    .after(ai::npc_system)
+                    .before(projectiles::launch_system),
                 actors::env_map_system.after(fly),
                 mirror::mirror_system
                     .after(fly)
@@ -1165,6 +1170,7 @@ fn setup(
     commands.insert_resource(ai::GameFlags::default());
     commands.insert_resource(ai::Takedowns::default());
     commands.insert_resource(effects::Splats::default());
+    commands.insert_resource(impacts::Decals::default());
     commands.insert_resource(weapons::Clips::default());
     commands.insert_resource(weapons::PawnHealth::default());
     commands.insert_resource(ai::PlayerHealth::default());

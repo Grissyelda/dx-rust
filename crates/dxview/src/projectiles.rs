@@ -49,6 +49,9 @@ pub struct Launches(pub Vec<Launch>);
 pub struct Projectile {
     /// The projectile class (AugDefense ignores Tracer / GreaselSpit / GraySpit).
     pub class: String,
+    /// A Tracer: flies until it touches anything, then just goes (DeusExProjectile: "Don't even attempt damage with
+    /// a tracer").
+    pub tracer: bool,
     pub pos: DVec3,
     pub vel: DVec3,
     pub damage: f32,
@@ -219,12 +222,17 @@ pub fn launch_system(
                 None,
             ) {
                 let at = l.pos.as_vec3().to_array();
+                let unlit = matches!(find(&d, "bUnlit"), Some(Value::Bool(true)));
                 for (h, part) in handles.into_iter().zip(ps) {
                     if let Some(mut mm) = meshes.get_mut(&h) {
-                        mm.insert_attribute(
-                            Mesh::ATTRIBUTE_COLOR,
-                            light_part(&part, at, [0, 0, 0], 1.0, &level.0.lights),
-                        );
+                        let colors = if unlit {
+                            // bUnlit (Tracer): full bright.
+                            let n = mm.attribute(Mesh::ATTRIBUTE_POSITION).map(|a| a.len()).unwrap_or(0);
+                            vec![[1.0f32, 1.0, 1.0, 1.0]; n]
+                        } else {
+                            light_part(&part, at, [0, 0, 0], 1.0, &level.0.lights)
+                        };
+                        mm.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
                     }
                     parts.push((h, part));
                 }
@@ -321,21 +329,25 @@ pub fn launch_system(
                 byte("LightRadius", 64) as f32,
             )
         });
+        let short = l.class.rsplit('.').next().unwrap_or(&l.class).to_string();
+        let tracer = short == "Tracer" || short == "SniperTracer";
         commands.entity(root).insert(Projectile {
-            class: l.class.rsplit('.').next().unwrap_or(&l.class).to_string(),
+            tracer,
+            class: short,
             light,
             impact_snd: crate::sound::prop(&d, "ImpactSound"),
             ambient_snd,
             cloud,
             pos: l.pos,
             vel: l.dir.normalize_or_zero() * speed,
-            damage,
+            damage: if tracer { 0.0 } else { damage },
             damage_type,
             from: l.from,
             ownerless: l.still || l.ownerless,
             life: l.life.unwrap_or(f("LifeSpan", 60.0)).max(1.0),
             stuck: false,
             stick: stick
+                && !tracer
                 && matches!(find(&d, "bStickToWall"), Some(Value::Bool(true)))
                 && !matches!(find(&d, "bExplodes"), Some(Value::Bool(true))),
             sprite: sprite_fx,
@@ -594,6 +606,18 @@ pub fn projectile_system(
             } else {
                 p.pos = end;
             }
+            tf.translation = Vec3::from(ue_to_bevy(p.pos.as_vec3().to_array()));
+            continue;
+        }
+        if p.tracer {
+            let h = world.trace(start, end, DVec3::ZERO);
+            let hits_player = p.from.is_some()
+                && trace_cylinder(&player_cyl, start, end, DVec3::ZERO).is_some_and(|x| x.fraction < h.fraction);
+            if h.fraction < 1.0 || hits_player || start.distance(p.pos) > p.max_range {
+                commands.entity(e).despawn();
+                continue;
+            }
+            p.pos = end;
             tf.translation = Vec3::from(ue_to_bevy(p.pos.as_vec3().to_array()));
             continue;
         }
