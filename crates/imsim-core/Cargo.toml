@@ -1,0 +1,10 @@
+[package]
+name = "imsim-core"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+version.workspace = true
+description = "Engine-neutral immersive-sim gameplay rules (movement, later inventory, damage, AI)."
+
+[dependencies]
+glam = "0.32"
+serde = { version = "1", features = ["derive"] }

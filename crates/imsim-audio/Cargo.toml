@@ -1,0 +1,12 @@
+[package]
+name = "imsim-audio"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+version.workspace = true
+description = "Small software mixer for immersive sims: positional one-shot and looping voices plus tracker-module music with section jumps and crossfades."
+
+[dependencies]
+cpal = "0.15"
+xmrs = "0.15"
+xmrsplayer = "0.15"
+symphonia = { version = "0.5", default-features = false, features = ["mp3"] }

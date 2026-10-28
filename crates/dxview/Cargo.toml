@@ -1,0 +1,33 @@
+[package]
+name = "dxview"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+version.workspace = true
+
+[build-dependencies]
+winresource = "0.1"
+
+[dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui"] }
+dx-level = { path = "../dx-level" }
+imsim-core = { path = "../imsim-core" }
+unreal-pkg = { path = "../unreal-pkg" }
+imsim-audio = { path = "../imsim-audio" }
+glam = "0.32"
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+half = "2.7"
+# Gamepads (XInput / Windows.Gaming.Input / evdev) for controller support.
+gilrs = "0.11"
+cpal = "0.15"
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
+
+[features]
+# Chrome trace of every system, main and render world: cargo build --features trace (writes trace-*.json).
+trace = ["bevy/trace_chrome"]
+# Bevy's spans (every system, render graph node, submit, present) summed per frame into prof.log with DXVIEW_PROF=1.
+spans = ["bevy/trace"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
+raw-window-handle = "0.6"

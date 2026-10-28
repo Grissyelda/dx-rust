@@ -111,25 +111,30 @@ reflecting surface is a full extra render).
 27. Elemental reactions (electricity through water).
 28. Mantling and vaulting.
 29. Carried heavy objects as cover.
-30. Volumetric fog and light shafts.
-31. Better clouds and a 3D skyline.
-32. Remastered sound effects and a dynamic soundscape.
-33. Sound propagation and room reverb.
-34. New outfits found in the levels.
-35. Dynamic weather and time of day.
+30. **Optional third-person view** with modern third-person shooter controls: an over-the-shoulder camera that
+     keeps out of walls, shoulder swap, aim-to-zoom, and leaning and crouching cover. JC's body already exists for
+     mirrors, with his animations and the weapon in his hand, so the work is the camera, aiming from it (trace
+     from the camera, fire from the gun), the HUD reticle and stealth balance. It's a toggle, and first person stays
+     the default.
+31. Volumetric fog and light shafts.
+32. Better clouds and a 3D skyline.
+33. Remastered sound effects and a dynamic soundscape.
+34. Sound propagation and room reverb.
+35. New outfits found in the levels.
+36. Dynamic weather and time of day.
 
 ### Very large (needs skeletons, new content, or touches the whole engine)
-36. Smarter AI (opt-in).
-37. HD textures and models, PBR and smoother animation.
-38. JC's body visible in first person.
-39. Diegetic damage, healing and augs shown on the body.
-40. Ragdolls and posable models.
-41. Cloth and wetness.
-42. Computers shown in the world while it keeps running.
-43. More NPCs and livelier locations.
-44. **Lay D Denton Project support** (done in code; being tested).
-45. No loading screens.
-46. Co-op and deathmatch multiplayer.
+37. Smarter AI (opt-in).
+38. HD textures and models, PBR and smoother animation.
+39. JC's body visible in first person.
+40. Diegetic damage, healing and augs shown on the body.
+41. Ragdolls and posable models.
+42. Cloth and wetness.
+43. Computers shown in the world while it keeps running.
+44. More NPCs and livelier locations.
+45. **Lay D Denton Project support** (done in code; being tested).
+46. No loading screens.
+47. Co-op and deathmatch multiplayer.
 
 Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sit in the
 last tier.

@@ -1,0 +1,10 @@
+[package]
+name = "dxtool"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+png = "0.17"
+unreal-pkg = { path = "../unreal-pkg" }
+dx-level = { path = "../dx-level" }

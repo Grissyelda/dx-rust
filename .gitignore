@@ -1,0 +1,22 @@
+/target
+/dist
+crates/*/target
+*.log
+test_out/
+# Files the game writes beside the exe
+session.txt
+settings.txt
+launcher.txt
+keybinds.txt
+padbinds.txt
+Save/
+crash.log
+# Deus Ex data, Lay D Denton files and anything extracted from them belong to their owners: never commit them.
+/game_data/
+/dx_src/
+*.u
+*.utx
+*.uax
+*.umx
+*.dx
+*.unr
