@@ -115,7 +115,7 @@ fn spawn_puff(
 ) {
     let tex = "Effects.Smoke.SmokePuff1";
     let Some(img) = crate::weapons::image_for(assets, images, tex) else { return };
-    let tex_size = assets.lib.load_image(tex).map(|t| t.width as f32).unwrap_or(64.0);
+    let tex_size = assets.lib.width(tex).map(|w| w as f32).unwrap_or(64.0);
     let mat = materials.add(StandardMaterial {
         base_color_texture: Some(img),
         unlit: true,
@@ -384,7 +384,7 @@ pub fn impacts_system(
         }
         let Some((tex, scale)) = hole else { continue };
         let Some(img) = modulated_image_for(&mut assets, &mut images, tex) else { continue };
-        let width = assets.lib.load_image(tex).map(|t| t.width as f32).unwrap_or(64.0);
+        let width = assets.lib.width(tex).map(|w| w as f32).unwrap_or(64.0);
         let size = width * scale;
         let normal = Vec3::from(ue_to_bevy(h.normal.as_vec3().to_array())).normalize_or_zero();
         let mat = materials.add(decal_material(img, true));

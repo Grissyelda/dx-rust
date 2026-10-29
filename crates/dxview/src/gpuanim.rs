@@ -86,88 +86,107 @@ pub struct GpuAnimated;
 #[derive(Component)]
 pub struct GpuAnimSkip;
 
+/// Texels per keyframe page: texel indices travel to the shader as f32 (UV_1), exact only below 2^24.
+const PAGE_TEXELS: usize = 1 << 24;
+
+/// One pair of keyframe textures (value + remainder). A page is filled once (the meshes that appear together,
+/// a whole level at load) and uploaded once; meshes spawned later go into new small pages, so a late spawn never
+/// re-uploads the level's keyframes (that was a multi-second stall with HDTP's big meshes).
+#[derive(Default)]
+struct Page {
+    hi: Vec<u8>,
+    lo: Vec<u8>,
+    len: usize,
+    rows: usize,
+    images: Option<(Handle<Image>, Handle<Image>)>,
+}
+
 #[derive(Resource, Default)]
 pub struct GpuAnim {
-    frames: Vec<[f32; 3]>,
-    uploaded: usize,
-    /// (anim mesh, vertex ids, draw scale bits) -> (first texel, vertex count, local bounds min, max).
-    keyed: HashMap<(usize, u64, u32), (u32, u32, Vec3, Vec3)>,
-    images: Option<(Handle<Image>, Handle<Image>)>,
-    rows: usize,
-    mats: HashMap<AssetId<StandardMaterial>, Handle<AnimMaterial>>,
+    pages: Vec<Page>,
+    /// (anim mesh, draw scale bits) -> (page, first texel, vertices per frame, local bounds min, max). One block per
+    /// mesh holds every mesh vertex of every frame; each part's vertices index into it by vertex id, so parts,
+    /// wedges (UV seams) and actors sharing a mesh share its keyframes.
+    keyed: HashMap<(usize, u32), (usize, u32, u32, Vec3, Vec3)>,
+    /// (standard material, page) -> its animated twin.
+    mats: HashMap<(AssetId<StandardMaterial>, usize), Handle<AnimMaterial>>,
 }
 
 impl GpuAnim {
-    /// The part's keyframes in its own vertex order, already in Bevy axes and scale (ue_to_bevy(p * DrawScale),
-    /// exactly what the CPU path writes), added once per distinct (mesh, vertex list, draw scale).
-    fn keyframes(&mut self, mesh: &std::sync::Arc<dx_level::actors::AnimMesh>, vert_ids: &[u32], draw_scale: f32) -> (u32, u32, Vec3, Vec3) {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        vert_ids.hash(&mut h);
-        let key = (std::sync::Arc::as_ptr(mesh) as usize, h.finish(), draw_scale.to_bits());
+    /// The mesh's keyframes, already in Bevy axes and scale (ue_to_bevy(p * DrawScale), exactly what the CPU
+    /// path writes), added once per distinct (mesh, draw scale).
+    fn keyframes(&mut self, mesh: &std::sync::Arc<dx_level::actors::AnimMesh>, draw_scale: f32) -> Option<(usize, u32, u32, Vec3, Vec3)> {
+        let key = (std::sync::Arc::as_ptr(mesh) as usize, draw_scale.to_bits());
         if let Some(v) = self.keyed.get(&key) {
-            return *v;
+            return Some(*v);
         }
-        let base = self.frames.len() as u32;
         let (fv, nf) = (mesh.frame_verts, mesh.frames.max(1));
+        let need = fv * nf;
+        if need == 0 || need > PAGE_TEXELS {
+            return None;
+        }
+        if self.pages.last().is_none_or(|p| p.images.is_some() || p.len + need > PAGE_TEXELS) {
+            self.pages.push(Page::default());
+        }
+        let pi = self.pages.len() - 1;
+        let page = &mut self.pages[pi];
+        let base = page.len as u32;
+        page.hi.reserve(need * 8);
+        page.lo.reserve(need * 8);
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-        for fr in 0..nf {
-            for &v in vert_ids {
-                let u = mesh.verts.get(fr * fv + v as usize).copied().unwrap_or([0.0; 3]);
-                let p = dx_level::ue_to_bevy([u[0] * draw_scale, u[1] * draw_scale, u[2] * draw_scale]);
-                lo = lo.min(Vec3::from(p));
-                hi = hi.max(Vec3::from(p));
-                self.frames.push(p);
+        for i in 0..need {
+            let u = mesh.verts.get(i).copied().unwrap_or([0.0; 3]);
+            let p = Vec3::from(dx_level::ue_to_bevy([u[0] * draw_scale, u[1] * draw_scale, u[2] * draw_scale]));
+            lo = lo.min(p);
+            hi = hi.max(p);
+            for c in 0..4 {
+                let v = if c < 3 { p[c] } else { 0.0 };
+                let h = half::f16::from_f32(v);
+                let l = half::f16::from_f32(v - h.to_f32());
+                page.hi.extend_from_slice(&h.to_bits().to_le_bytes());
+                page.lo.extend_from_slice(&l.to_bits().to_le_bytes());
             }
         }
+        page.len += need;
         if lo.x > hi.x {
             (lo, hi) = (Vec3::ZERO, Vec3::ZERO);
         }
-        let v = (base, vert_ids.len() as u32, lo, hi);
+        let v = (pi, base, fv as u32, lo, hi);
         self.keyed.insert(key, v);
-        v
+        if std::env::var_os("DXVIEW_GPUANIM_LOG").is_some() {
+            let total: usize = self.pages.iter().map(|p| p.len).sum();
+            println!("GPUANIM +{need} texels: {total} in {} page(s), {} meshes", self.pages.len(), self.keyed.len());
+        }
+        Some(v)
     }
 
-    /// (Re)build the two keyframe textures when keyframes were added; true if the images were replaced.
-    fn upload(&mut self, images: &mut Assets<Image>) -> bool {
-        if self.frames.len() == self.uploaded && self.images.is_some() {
-            return false;
-        }
-        self.uploaded = self.frames.len();
-        // Room for meshes spawned later without growing again.
-        let rows = (self.frames.len() + self.frames.len() / 4 + TEX_W).div_ceil(TEX_W).max(1);
-        let rows = rows.max(self.rows);
-        let mut hi = vec![0u8; rows * TEX_W * 8];
-        let mut lo = vec![0u8; rows * TEX_W * 8];
-        for (i, p) in self.frames.iter().enumerate() {
-            for c in 0..3 {
-                let h = half::f16::from_f32(p[c]);
-                let l = half::f16::from_f32(p[c] - h.to_f32());
-                hi[i * 8 + c * 2..i * 8 + c * 2 + 2].copy_from_slice(&h.to_bits().to_le_bytes());
-                lo[i * 8 + c * 2..i * 8 + c * 2 + 2].copy_from_slice(&l.to_bits().to_le_bytes());
+    /// Upload the pages filled since the last call (each exactly once); returns them.
+    fn upload(&mut self, images: &mut Assets<Image>) -> Vec<usize> {
+        let mut done = Vec::new();
+        for (pi, page) in self.pages.iter_mut().enumerate() {
+            if page.images.is_some() || page.len == 0 {
+                continue;
             }
+            let rows = page.len.div_ceil(TEX_W).max(1);
+            let bytes = |mut src: Vec<u8>| {
+                src.resize(rows * TEX_W * 8, 0);
+                src
+            };
+            let mk = |data: Vec<u8>| {
+                Image::new(
+                    Extent3d { width: TEX_W as u32, height: rows as u32, depth_or_array_layers: 1 },
+                    TextureDimension::D2,
+                    data,
+                    TextureFormat::Rgba16Float,
+                    RenderAssetUsages::RENDER_WORLD,
+                )
+            };
+            page.rows = rows;
+            let (hi, lo) = (std::mem::take(&mut page.hi), std::mem::take(&mut page.lo));
+            page.images = Some((images.add(mk(bytes(hi))), images.add(mk(bytes(lo)))));
+            done.push(pi);
         }
-        let mk = |data: Vec<u8>| {
-            Image::new(
-                Extent3d { width: TEX_W as u32, height: rows as u32, depth_or_array_layers: 1 },
-                TextureDimension::D2,
-                data,
-                TextureFormat::Rgba16Float,
-                RenderAssetUsages::RENDER_WORLD,
-            )
-        };
-        if let (Some((h, l)), true) = (&self.images, rows == self.rows) {
-            if let Some(mut img) = images.get_mut(h) {
-                img.data = Some(hi);
-            }
-            if let Some(mut img) = images.get_mut(l) {
-                img.data = Some(lo);
-            }
-            return false;
-        }
-        self.rows = rows;
-        self.images = Some((images.add(mk(hi)), images.add(mk(lo))));
-        true
+        done
     }
 }
 
@@ -198,32 +217,38 @@ pub fn gpuanim_setup(
             commands.entity(e).try_insert(GpuAnimSkip);
             continue;
         };
+        let Some((page, base, nv, lo, hi)) = ga.keyframes(&anim.mesh, anim.draw_scale) else {
+            commands.entity(e).try_insert(GpuAnimSkip);
+            continue;
+        };
         let mut parts = Vec::new();
         for c in children.iter() {
             let Ok((m3, mm)) = kids.get(c) else { continue };
             let Some(&(_, pi)) = a.parts.iter().find(|(h, _)| h.id() == m3.0.id()) else { continue };
             let Some(part) = ma.parts.get(pi) else { continue };
-            let (base, nv, lo, hi) = ga.keyframes(&anim.mesh, &part.vert_ids, anim.draw_scale);
             if let Some(mut m) = meshes.get_mut(&m3.0) {
-                let uv1: Vec<[f32; 2]> = (0..nv).map(|i| [(base + i) as f32, nv as f32]).collect();
+                let uv1: Vec<[f32; 2]> = part.vert_ids.iter().map(|&v| [(base + v) as f32, nv as f32]).collect();
                 m.insert_attribute(Mesh::ATTRIBUTE_UV_1, VertexAttributeValues::Float32x2(uv1));
             }
             parts.push((c, mm.0.clone(), lo, hi));
         }
-        todo.push((e, parts));
+        todo.push((e, page, parts));
     }
     let replaced = ga.upload(&mut images);
-    let (hi_img, lo_img) = ga.images.clone().unwrap();
-    if replaced {
-        for h in ga.mats.values() {
-            if let Some(mut m) = anim_mats.get_mut(h) {
-                m.extension = VertAnim { hi: hi_img.clone(), lo: lo_img.clone() };
+    for pi in replaced {
+        let Some((hi_img, lo_img)) = ga.pages[pi].images.clone() else { continue };
+        for ((_, p), h) in &ga.mats {
+            if *p == pi {
+                if let Some(mut m) = anim_mats.get_mut(h) {
+                    m.extension = VertAnim { hi: hi_img.clone(), lo: lo_img.clone() };
+                }
             }
         }
     }
-    for (e, parts) in todo {
+    for (e, page, parts) in todo {
+        let Some((hi_img, lo_img)) = ga.pages[page].images.clone() else { continue };
         for (c, std_mat, lo, hi) in parts {
-            let mat = match ga.mats.get(&std_mat.id()) {
+            let mat = match ga.mats.get(&(std_mat.id(), page)) {
                 Some(h) => h.clone(),
                 None => {
                     let Some(base_mat) = std_mats.get(&std_mat).cloned() else { continue };
@@ -231,7 +256,7 @@ pub fn gpuanim_setup(
                         base: base_mat,
                         extension: VertAnim { hi: hi_img.clone(), lo: lo_img.clone() },
                     });
-                    ga.mats.insert(std_mat.id(), h.clone());
+                    ga.mats.insert((std_mat.id(), page), h.clone());
                     h
                 }
             };

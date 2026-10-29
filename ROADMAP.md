@@ -58,7 +58,9 @@ None left. The credits easter eggs THEREISNOSPOON (the Matrix view) and IAMWARRE
 
 ### 4. Performance
 NPC updates, transform and visibility propagation, the extra camera passes, draw-call count, and mirrors (each
-reflecting surface is a full extra render).
+reflecting surface is a full extra render). Done so far: memory-mapped packages, compressed (BC1) textures on the
+GPU, paged GPU vertex animation, weapons prepared at map load so drawing one never stalls, and far fewer meshes
+re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.
@@ -90,6 +92,10 @@ reflecting surface is a full extra render).
 10. The original settings screens moved onto the searchable list (done).
 11. Use to grab and Jump to let go of ladders (done).
 12. Dragon's Tooth energy balancing (done).
+12a. GMDX's bugfixes and quality-of-life options, each a switch in Enhancements (done: skill awards that pay once,
+    turrets that ignore animals, blasts that break strong doors, gibbed bodies dropping weapons, Muscle aug jumps
+    while carrying, tool counts, item counts, duplicate keys, searched bodies, ammo totals, stack limits, faster
+    infolinks, dropping whole stacks, binoculars on the scope key, restricted combat music, no flickering lights).
 
 ### Medium (systems whose pieces exist)
 13. HUD customisation: toggle, scale and fade each part (done).
@@ -99,7 +105,8 @@ reflecting surface is a full extra render).
 17. Weapon inertia (done).
 18. A better flashlight: a cone with soft spill (done).
 19. Debris and decals kept across map loads and saves (done).
-20. Perks bought with skill points, from GMDX: Augmented Edition (the Skills screen is done; effects in progress).
+20. Perks bought with skill points, from GMDX: Augmented Edition (done: 42 perks with their effects; the ones that
+    need GMDX-only systems - helmets, the secondary item slot, stamina, the rocket-cam - are left out of the menu).
 21. Bullets through thin wood and breakable glass (done).
 22. Smoother leaning and a peek assist (done).
 23. Melee that sweeps an arc (done).

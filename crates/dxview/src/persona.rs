@@ -1943,6 +1943,10 @@ fn heal_part(ctx: &mut Ctx, region: usize, points: Option<f32>, leave_kit: bool)
     if !leave_kit {
         use_once(ctx.inv, "MedKit");
         crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
+        // GMDX Toxicologist (PersonaScreenHealth.UseMedKit): cures poison too.
+        if crate::perks::has("PerkToxicologist") {
+            ctx.ph.cure_poison();
+        }
     }
     (after - before) as i32
 }
@@ -1976,6 +1980,9 @@ fn heal_all(ctx: &mut Ctx) -> i32 {
     }
     if healed > 0 {
         crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
+        if crate::perks::has("PerkToxicologist") {
+            ctx.ph.cure_poison();
+        }
     }
     healed
 }

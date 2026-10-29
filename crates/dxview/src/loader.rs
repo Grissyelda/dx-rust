@@ -284,7 +284,9 @@ pub fn loader_system(world: &mut World) {
         let (tx, rx) = std::sync::mpsc::channel();
         let m = map.clone();
         let _ = std::thread::Builder::new().name("level-load".into()).spawn(move || {
+            let t0 = std::time::Instant::now();
             let r = dx_level::load_level(&root, &m).map(|l| (l, crate::player_params(&root)));
+            crate::prof::hitch_note(&format!("level load {m}"), t0.elapsed().as_secs_f64() * 1000.0);
             // Developer aid: DXVIEW_LOAD_DELAY=<secs> holds the loading screen up longer (to look at it).
             if let Some(d) = std::env::var("DXVIEW_LOAD_DELAY").ok().and_then(|v| v.parse::<f32>().ok()) {
                 std::thread::sleep(std::time::Duration::from_secs_f32(d));

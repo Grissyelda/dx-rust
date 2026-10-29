@@ -72,8 +72,12 @@ pub fn resolve(path: &Path) -> PathBuf {
     let g = STATE.read();
     let Some((root, ovs)) = g.as_ref().ok().and_then(|g| g.as_ref()) else { return path.to_path_buf() };
     if ovs.is_empty() {
-        if path.exists() || path.parent().zip(path.file_name()).is_some_and(|(d, n)| ci_in(d, &n.to_string_lossy()).is_some()) {
+        if path.exists() {
             return path.to_path_buf();
+        }
+        // Another case of the same name (Linux file systems are case-sensitive; scripts aren't).
+        if let Some(p) = path.parent().zip(path.file_name()).and_then(|(d, n)| ci_in(d, &n.to_string_lossy())) {
+            return p;
         }
         if let Ok(rel) = path.strip_prefix(root) {
             if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
@@ -92,10 +96,14 @@ pub fn resolve(path: &Path) -> PathBuf {
             return p;
         }
     }
-    if !path.exists() && ci_in(&root.join(parent), &name).is_none() {
-        if let Some(p) = in_addons(parent, &name) {
-            return p;
-        }
+    if path.exists() {
+        return path.to_path_buf();
+    }
+    if let Some(p) = ci_in(&root.join(parent), &name) {
+        return p;
+    }
+    if let Some(p) = in_addons(parent, &name) {
+        return p;
     }
     path.to_path_buf()
 }

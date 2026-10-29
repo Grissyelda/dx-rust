@@ -166,6 +166,8 @@ pub fn explosion(pos: DVec3, size: f32, hue: u8, saturation: u8) {
 
 /// A light that shines this frame. `flicker` 0..1 dims it at random (fire).
 pub fn hold(key: u64, pos: DVec3, spec: Spec, flicker: f32) {
+    // GMDX Lighting Accessibility (setting NoStrobeLights): no flickering lights.
+    let flicker = if crate::settings::get("NoStrobeLights") > 0.5 { 0.0 } else { flicker };
     if let Ok(mut h) = HELD.lock() {
         h.push((key, pos, spec, flicker));
     }
@@ -478,13 +480,33 @@ pub fn dynlight_system(
 
 /// Re-light decorations and pawns that a dynamic light reaches (and once more when it's gone), up to 30 times a
 /// second.
+/// A hash of the lights reaching something and where it is (positions to a unit, colours in 1/64 steps): equal
+/// signatures light it the same, so its mesh needn't be relit and re-uploaded.
+pub fn light_sig(lights: &[LightInfo], at: [f32; 3], extra: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for l in lights {
+        for k in 0..3 {
+            (l.pos[k].round() as i32).hash(&mut h);
+            ((l.color[k] * 64.0).round() as i32).hash(&mut h);
+        }
+        (l.radius.round() as i32).hash(&mut h);
+    }
+    for k in 0..3 {
+        (at[k].round() as i32).hash(&mut h);
+    }
+    extra.hash(&mut h);
+    h.finish()
+}
+
 pub fn relight_system(
     time: Res<Time>,
     level: Res<LevelRes>,
+    blockers: Res<crate::actors::Blockers>,
     decos: Query<(Entity, &Deco)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut map_gen: Local<u64>,
-    mut lit: Local<HashSet<Entity>>,
+    mut lit: Local<HashMap<Entity, u64>>,
     mut timer: Local<f32>,
 ) {
     // A new map (loader.rs): start this system's per-map state over.
@@ -502,7 +524,7 @@ pub fn relight_system(
         return;
     }
     let lvl = &level.0;
-    let mut now = HashSet::new();
+    let mut now = HashMap::new();
     for (e, d) in &decos {
         let draw = d.body.location + d.pre;
         let p = draw.as_vec3().to_array();
@@ -512,19 +534,37 @@ pub fn relight_system(
                     .sqrt();
             dd < l.radius + 96.0
         });
-        if !near && !lit.contains(&e) {
+        let was = lit.get(&e).copied();
+        if !near && was.is_none() {
             continue;
         }
+        // The lights that reach it as the spawn lighting sees them (static lights it is in sight of, plus the
+        // dynamic ones in sight), so a deco lit by a passing flash goes back to exactly how it was.
+        let half_h = d.blocker.and_then(|b| blockers.list.get(b)).map_or(16.0, |c| c.height as f32);
+        let lights = lights_at(lvl, p, half_h);
+        // Only when what lights it changed (a flickering fire's brightness in 1/64 steps, a light moving more than
+        // a unit, the deco itself moving or turning): HDTP's dense meshes made relighting every deco near a lamp
+        // 30 times a second the biggest per-frame mesh upload.
+        let sig = light_sig(
+            &lights,
+            p,
+            ((d.rotation[0] as u64 & 0xffff) << 32)
+                ^ ((d.rotation[1] as u64 & 0xffff) << 16)
+                ^ (d.rotation[2] as u64 & 0xffff)
+                ^ (((d.scale_glow * 64.0).round() as u64) << 48),
+        );
         if near {
-            now.insert(e);
+            now.insert(e, sig);
+        }
+        if was == Some(sig) {
+            continue;
         }
         let ma = &lvl.mesh_actors[d.mesh_actor];
-        let all = lights(&lvl.lights);
         for (h, pi) in &d.parts {
             if let Some(mut m) = meshes.get_mut(h) {
                 m.insert_attribute(
                     Mesh::ATTRIBUTE_COLOR,
-                    dx_level::actors::light_part(&ma.parts[*pi], p, d.rotation, d.scale_glow, &all),
+                    dx_level::actors::light_part(&ma.parts[*pi], p, d.rotation, d.scale_glow, &lights),
                 );
             }
         }

@@ -1168,7 +1168,9 @@ pub fn inventory_screen_system(
                     med: medic,
                     remaining: n.service_cooldown,
                     refresh: int_p(&d, ref_key, 60) as f32,
-                    amount: int_p(&d, amt_key, amt as i32) as f32,
+                    // GMDX Misfeature Exploit: bots give 1.5 x (MedicalBot.Frob 375 for 250, RepairBot 90 for 60).
+                    amount: int_p(&d, amt_key, amt as i32) as f32
+                        * if crate::perks::has("PerkMisfeatureExploit") { 1.5 } else { 1.0 },
                 })
             });
         let (c, act) = {
@@ -1515,6 +1517,12 @@ pub fn inventory_screen_system(
                     }
                 }
                 Btn::Drop => {
+                    // GMDX HUD: Allow Dropping Item Stacks (setting DropStacks): Shift + Drop drops the whole stack.
+                    DROP_STACK.store(
+                        crate::settings::get("DropStacks") > 0.5
+                            && (binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight)),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     if let Some(c) = sel_class.clone() {
                         drop_item(
                             st,
@@ -1945,6 +1953,9 @@ fn equip(st: &mut InvScreen, class: &str, weapons: &mut Weapons) {
 
 /// PersonaScreenInventory.DropSelectedItem / DeusExPlayer.DropItem(item, bDrop=True).
 #[allow(clippy::too_many_arguments)]
+/// The next drop takes the whole stack (Shift + Drop, setting DropStacks).
+static DROP_STACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn drop_item(
     st: &mut InvScreen,
     class: &str,
@@ -1964,7 +1975,7 @@ fn drop_item(
     let d = assets.classes.defaults(class);
     let name = str_p(&d, "ItemName");
     // A canister keeps what it holds when it leaves the inventory.
-    let extra: Vec<Property> = crate::augcan::contents(inv, key)
+    let mut extra: Vec<Property> = crate::augcan::contents(inv, key)
         .map(|augs| {
             augs.iter()
                 .enumerate()
@@ -2021,6 +2032,18 @@ fn drop_item(
         pickup_ammo = None;
     }
     let left_before = inv.0.items[idx].count;
+    let whole = DROP_STACK.swap(false, std::sync::atomic::Ordering::Relaxed)
+        && left_before > 1
+        && matches!(inv.0.items[idx].def.kind, ItemKind::Pickup { .. });
+    if whole {
+        // One pickup carrying the stack (NumCopies), as DeusExPickup drops a stack.
+        let n = left_before;
+        for _ in 1..n {
+            inv.0.drop_one(idx);
+        }
+        extra.push(Property { name: "NumCopies".into(), index: 0, value: Value::Int(n as i32) });
+    }
+    let left_before = if whole { 1 } else { left_before };
     if inv.0.drop_one(idx).is_none() {
         return;
     }
@@ -2472,8 +2495,13 @@ fn draw_items(
                 (false, Some(a)) => s = str_p(&assets.classes.defaults(&a), "beltDescription"),
                 _ => {}
             }
-        } else if matches!(it.def.kind, ItemKind::Pickup { .. }) && it.count > 1 {
-            s = format!("Count: {}", it.count);
+        } else if let ItemKind::Pickup { max_copies } = it.def.kind {
+            // GMDX HUD: Show Max Stacks (setting ShowMaxStacks): "Count: 3/15".
+            if crate::settings::get("ShowMaxStacks") > 0.5 && max_copies > 1 && max_copies < u32::MAX {
+                s = format!("Count: {}/{}", it.count, max_copies);
+            } else if it.count > 1 {
+                s = format!("Count: {}", it.count);
+            }
         }
         if !s.is_empty() {
             c.text(

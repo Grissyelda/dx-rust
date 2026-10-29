@@ -252,8 +252,7 @@ pub fn blood_system(
         };
         let width = assets
             .lib
-            .load_image(tex)
-            .map(|t| t.width as f32)
+            .width(tex).map(|w| w as f32)
             .unwrap_or(64.0);
         let size = width * (0.2 + rnd() as f32 * 0.2);
         let at = l.pos + DVec3::NEG_Z * 0.0 + (-n) * (f * 6.0) + n * 0.3;

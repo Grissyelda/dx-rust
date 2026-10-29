@@ -71,6 +71,10 @@ pub fn item_def(class: &str, p: &[Property]) -> ItemDef {
         ItemKind::Pickup {
             max_copies: if matches!(find(p, "bCanHaveMultipleCopies"), Some(Value::Bool(true))) {
                 match i(p, "maxCopies") {
+                    // GMDX Combat Medic's Bag: PerkValue (5) more medkits and bio cells.
+                    Some(n) if n > 0 && matches!(class, "MedKit" | "BioelectricCell") => {
+                        n as u32 + crate::perks::value_if("PerkCombatMedicsBag").unwrap_or(0.0) as u32
+                    }
                     Some(n) if n > 0 => n as u32,
                     _ => u32::MAX,
                 }
@@ -401,6 +405,12 @@ pub fn frob_system(
             }
         }
     }
+    // GMDX Wireless Strength: a hackable device out of reach but in line, with the multitool.
+    if best.is_none() && tool.as_deref() == Some("multitool") {
+        if let Some((b, t)) = crate::devices::wireless_target(level, &blockers, &hacking, eye, dir) {
+            best = Some((Target::Device(b), t));
+        }
+    }
     if only_tool {
         let multitool = tool.as_deref() == Some("multitool");
         best = match best {
@@ -422,6 +432,8 @@ pub fn frob_system(
                 let c = blockers.list[*b];
                 owned(&level.actors[c.actor].props).then_some(c.center)
             }
+            // GMDX Sleight of Hand: taking someone's things goes unnoticed.
+            Some((Target::Item(_), _)) if crate::perks::has("PerkSleightOfHand") => None,
             Some((Target::Item(e), _)) => items.get(*e).ok().and_then(|(_, it, _, _)| {
                 owned(&it.props).then(|| it.actor.map_or(player.body.location, |a| {
                     let l = level.actors[a].location();
@@ -584,6 +596,12 @@ pub fn frob_system(
                     + inv.0.ammo.iter().map(|x| x.1 as usize).sum::<usize>()
                     + inv.0.items.iter().map(|x| x.count as usize).sum::<usize>();
                 println!("PICKUP {} -> {msg}", it.class);
+                // GMDX HUD: Pickup Message Shows Size (setting PickupSize): "... [2x3]" when it didn't fit.
+                let msg = if crate::settings::get("PickupSize") > 0.5 && msg == imsim_core::inventory::no_room(&def) {
+                    format!("{msg} [{}x{}]", def.inv_size.0, def.inv_size.1)
+                } else {
+                    msg
+                };
                 hud.text = msg;
                 hud.time_left = 3.0;
                 if after != before {
@@ -734,6 +752,13 @@ pub fn frob_system(
                 return;
             };
             let medic = level.actors[npc.actor].class == "MedicalBot";
+            // GMDX HUD: Streamlined Repair Bot Interface (setting StreamlinedRepairBot): a bot that is still
+            // recharging just says so instead of opening its screen.
+            if !medic && npc.service_cooldown > 0.0 && crate::settings::get("StreamlinedRepairBot") > 0.5 {
+                hud.text = format!("Recharging... {} seconds remaining", npc.service_cooldown.ceil() as i32);
+                hud.time_left = 2.0;
+                return;
+            }
             npc.service_pause = 1.0e9;
             npc.service_shown = false;
             crate::inventory_screen::open_bot(e, medic);

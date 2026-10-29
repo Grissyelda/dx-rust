@@ -66,6 +66,19 @@ fn damage_type_of(n: &str) -> &'static str {
     }
 }
 
+/// GMDX Short Fuse: on (bShortFuseEnabled, default True); Reload with a grenade up toggles it.
+static SHORT_FUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// GMDX Remote Detonation: set off every placed mine of the player's this frame.
+static REMOTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn toggle_short_fuse() -> bool {
+    !SHORT_FUSE.fetch_xor(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn remote_detonate() {
+    REMOTE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn is_grenade_class(p: &[Property]) -> bool {
     find(p, "fuseLength").is_some() && find(p, "blastRadius").is_some()
 }
@@ -223,6 +236,12 @@ pub fn grenade_system(
         if placed_on_wall {
             // PlaceGrenade: stuck, proximity-triggered; it arms when its fuse timer first runs out.
             g.vel = DVec3::ZERO;
+        } else if from.is_none()
+            && crate::perks::has("PerkShortFuse")
+            && SHORT_FUSE.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            // GMDX Short Fuse: the player's thrown grenades go off after 2 s.
+            g.fuse = 2.0;
         }
         let m = rotator_to_bevy_mat3(rot);
         let root = commands
@@ -265,10 +284,27 @@ pub fn grenade_system(
         commands.entity(root).insert(g);
     }
     let dt = time.delta_secs();
+    let remote = REMOTE.swap(false, std::sync::atomic::Ordering::Relaxed);
+    let sonic = crate::perks::has("PerkSonicTransducerSensor");
     for (e, mut g, mut tf) in &mut q {
         let g = &mut *g;
         g.time += dt;
         let mut explode = false;
+        // Remote Detonation: the player's own wall mines (bProximityTriggered, not EMP-disabled) go off.
+        if remote && g.proximity && !g.placed && g.from.is_none() && !g.disabled {
+            explode = true;
+        }
+        // Sonic-Transducer Sensor (ThrownProjectile.Tick): mines nobody owns hum (LAMAmbient, radius 26, volume 192).
+        if sonic && g.placed && g.proximity && !g.disabled {
+            crate::sound::hold(
+                e.to_bits() | (1 << 58),
+                "DeusExSounds.Weapons.LAMAmbient",
+                Some(g.pos),
+                192.0 / 255.0 * 1.4,
+                25.0 * 27.0,
+                1.0,
+            );
+        }
         // Blown up by another explosion nearby (TakeDamage; gas doesn't set grenades off, EMP disables them).
         for (p, r, ty) in &blasts.0 {
             if p.distance(g.pos) < *r {
@@ -451,6 +487,20 @@ pub fn grenade_system(
                 fireball: matches!(g.damage_type, "Exploded" | "EMP"),
                 fx: if g.damage_type == "EMP" { 3 } else { 2 },
             });
+            // GMDX Knockout Gas: the player's gas grenade also knocks out what's in the blast (Damage 260,
+            // 'KnockedOut'; the tear gas clouds still come).
+            if g.damage_type == "TearGas" && g.from.is_none() && !g.placed && crate::perks::has("PerkKnockoutGas") {
+                booms.0.push(Boom {
+                    pos: g.pos,
+                    damage: 260.0,
+                    radius: g.blast,
+                    damage_type: "KnockedOut",
+                    from: None,
+                    rings: true,
+                    fireball: false,
+                    fx: 0,
+                });
+            }
             if g.damage_type == "TearGas" {
                 // SpawnTearGas: blastRadius / 36 floating clouds that linger 30-40 s.
                 let n = (g.blast / 36.0) as usize;

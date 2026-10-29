@@ -786,6 +786,11 @@ fn triggered(
                 out.messages.push(message);
                 crate::sound::play_player("DeusExSounds.UserInterface.LogSkillPoints", 1.0, 0.0);
             }
+            // GMDX fix (Shifter; setting FixSkillAwardOnce): a bTriggerOnceOnly award fired by an event pays once
+            // (the original only switched its collision off, so a repeated event paid again).
+            if t.once && crate::settings::get("FixSkillAwardOnce") > 0.5 {
+                t.destroyed = true;
+            }
         }
         Kind::Conversation {
             con,

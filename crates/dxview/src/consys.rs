@@ -877,6 +877,12 @@ pub fn start_datalink(flags: &FlagBase, name: &str, trigger: Option<usize>) -> b
 /// A third-person conversation is waiting on the player's choice.
 /// InformationDevices.ReadText with bAddToVault (datacubes): the text goes into the DataVault as a note once
 /// (AddNote(vaultString,, True): "Note added" + LogNoteAdded).
+/// The DataVault already holds this text as a note.
+pub fn has_vault_note(text: &str) -> bool {
+    let text = text.trim();
+    lock().as_ref().is_some_and(|st| st.notes.iter().any(|n| n.trim() == text))
+}
+
 pub fn add_vault_note(text: &str) {
     let text = text.trim().to_string();
     if text.is_empty() {
@@ -2277,7 +2283,9 @@ impl ConState {
             LinkPhase::End(t) => {
                 let t = t + dt;
                 l.name_visible = ((t / 0.5) as i32) % 2 == 1;
-                if t > 1.0 + 0.5 {
+                // GMDX HUD: Faster Infolink Playback (setting FasterInfolinks): a queued infolink follows at once.
+                let fast = crate::settings::get("FasterInfolinks") > 0.5 && !self.link_queue.is_empty();
+                if t > if fast { 0.0 } else { 1.0 + 0.5 } {
                     // DestroyInfoLinkWindow; FireNextDataLink.
                     self.link = None;
                     if !self.link_queue.is_empty() {

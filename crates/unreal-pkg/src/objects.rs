@@ -223,7 +223,7 @@ fn rgb565(c: u16) -> [u8; 3] {
     [((r * 255 + 15) / 31) as u8, ((g * 255 + 31) / 63) as u8, ((b * 255 + 15) / 31) as u8]
 }
 
-fn decode_dxt1(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Option<()> {
+pub fn decode_dxt1(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Option<()> {
     let bw = (w + 3) / 4;
     let bh = (h + 3) / 4;
     if data.len() < bw * bh * 8 {

@@ -1778,7 +1778,8 @@ fn draw_ammo(
             HAlign::Center,
             VAlign::Top,
             crate::menuui::h_col(8),
-            "CLIPS",
+            // GMDX HUD: Accurate Ammo Display (setting AmmoTotal): the rounds left instead of the clips.
+            if crate::settings::get("AmmoTotal") > 0.5 { "TOTAL" } else { "CLIPS" },
         );
     }
     if let Some(t) = hud.ui(assets, "HUDAmmoDisplayBorder_1") {
@@ -1815,12 +1816,29 @@ fn draw_ammo(
     };
     let reload = h.reload_count as i32;
     let reloading = h.reloading;
-    let col = if amount < low_mark {
+    // GMDX HUD: Show Max Ammo (setting AmmoMaxCyan): cyan when you carry all you can of it.
+    let max_ammo = h
+        .ammo_class
+        .clone()
+        .and_then(|a| match find(hud.defaults(assets, &a), "MaxAmmo") {
+            Some(Value::Int(n)) => Some(*n),
+            _ => None,
+        })
+        .unwrap_or(i32::MAX);
+    let full = crate::settings::get("AmmoMaxCyan") > 0.5 && has_ammo_type && amount >= max_ammo;
+    let col = if full {
+        [0, 255, 255]
+    } else if amount < low_mark {
         COL_AMMO_LOW
     } else {
         COL_AMMO
     };
-    let (in_clip, clips_left) = ammo_counts(reload, has_ammo_type, amount, loaded);
+    let (in_clip, clips_real) = ammo_counts(reload, has_ammo_type, amount, loaded);
+    let clips_left = if crate::settings::get("AmmoTotal") > 0.5 && has_ammo_type {
+        (amount - in_clip).max(0)
+    } else {
+        clips_real
+    };
     let info_x = 66;
     if reload > 1 {
         let t = if reloading {
@@ -1839,7 +1857,9 @@ fn draw_ammo(
             col,
             &t,
         );
-        let ccol = if clips_left == 0 || (clips_left == 1 && amount < 2 * reload) {
+        let ccol = if full {
+            [0, 255, 255]
+        } else if clips_real == 0 || (clips_real == 1 && amount < 2 * reload) {
             COL_AMMO_LOW
         } else {
             COL_AMMO

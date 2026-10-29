@@ -604,18 +604,27 @@ pub fn vision_system(
     blockers: Res<crate::actors::Blockers>,
     main: Query<(&Transform, &Projection), (With<crate::FlyCam>, Without<crate::SkyCam>, Without<HeatCam>)>,
     mut heat: Query<(&mut Camera, &mut Transform, &mut Projection), With<HeatCam>>,
-    npcs: Query<(Entity, &crate::ai::Npc, Option<&Children>)>,
+    npcs: Query<(Entity, &crate::ai::Npc, Option<&Children>), Without<crate::ai::OutOfWorld>>,
     parts: Query<(), With<Mesh3d>>,
     mut tint: Query<(&mut Node, &mut Visibility), With<IrTint>>,
     mut tagged: Local<std::collections::HashSet<Entity>>,
     mut map_gen: Local<u64>,
+    active: Res<crate::charged::ActiveCharged>,
 ) {
     if crate::loader::new_map(&mut map_gen) {
         tagged.clear();
     }
     let level = crate::abilities::aug_level("AugVision");
-    let on = level.is_some_and(|l| l >= 1) && !ph.dead && !crate::menus::open() && !crate::consys::third_person();
-    let range = crate::abilities::aug("AugVision").unwrap_or(0.0) as f64;
+    // GMDX Thermal Imaging (TechGoggles.UpdateHUDDisplay): the goggles see heat through walls within 512.
+    let goggles_ir = active.has("TechGoggles") && crate::perks::has("PerkThermalImaging");
+    let on = (level.is_some_and(|l| l >= 1) || goggles_ir)
+        && !ph.dead
+        && !crate::menus::open()
+        && !crate::consys::third_person();
+    let mut range = if level.is_some_and(|l| l >= 1) { crate::abilities::aug("AugVision").unwrap_or(0.0) as f64 } else { 0.0 };
+    if goggles_ir {
+        range = range.max(512.0);
+    }
     if heat.is_empty() {
         commands.spawn((
             Camera3d::default(),
@@ -640,7 +649,9 @@ pub fn vision_system(
     let mut want: std::collections::HashSet<Entity> = std::collections::HashSet::new();
     if on && range > 0.0 {
         for (_, n, kids) in npcs.iter() {
-            if n.carried {
+            // Pawns not in the world (bInWorld False, mission scripts' hidden ones) and carried bodies don't glow
+            // (GMDX's fix: vanilla's vision showed them as ghosts).
+            if n.carried || crate::scriptworld::is_hidden(n.actor) {
                 continue;
             }
             let Some(c) = blockers.list.get(n.blocker) else { continue };
@@ -723,7 +734,9 @@ pub fn aug_text_system(
     let Some(win) = windows.iter().next() else { return };
     let busy = ph.dead || crate::menus::open() || crate::inventory_screen::screen_open() || crate::consys::third_person() || crate::credits::open();
     let light_amp = !busy && (active.has("TechGoggles") || crate::abilities::aug_active("AugVision"));
-    let ir = light_amp && crate::abilities::aug_level("AugVision").is_some_and(|l| l >= 1);
+    let ir = light_amp
+        && (crate::abilities::aug_level("AugVision").is_some_and(|l| l >= 1)
+            || (active.has("TechGoggles") && crate::perks::has("PerkThermalImaging")));
     let defense = if busy { None } else { crate::abilities::defense_target() };
     let any = light_amp || defense.is_some();
     if st.0.is_none() {

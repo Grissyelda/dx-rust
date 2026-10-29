@@ -108,20 +108,30 @@ pub fn aim_system(
         aim.standing = 0.0;
         return;
     };
-    // BringUp resets the standing bonus.
-    if aim.held_class.as_deref() != Some(h.stats.class.as_str()) || h.state == WState::Selecting {
+    // BringUp resets the standing bonus (GMDX Sidearm perk: not when a pistol comes up).
+    let skill_of = |s: &str| h.stats.governing_skill.as_deref().is_some_and(|g| g.eq_ignore_ascii_case(s));
+    let keep = skill_of("SkillWeaponPistol") && crate::perks::has("PerkSidearm");
+    if aim.held_class.as_deref() != Some(h.stats.class.as_str()) || (h.state == WState::Selecting && !keep) {
         aim.held_class = Some(h.stats.class.clone());
-        aim.standing = 0.0;
+        if !keep {
+            aim.standing = 0.0;
+        }
     }
     let speed = player.body.velocity.length() as f32;
     if speed < 10.0 {
-        aim.standing += dt;
+        // GMDX Steady perk: the rifle's standing-still bonus builds faster.
+        let mult = match crate::perks::value_if("PerkSteady") {
+            Some(v) if skill_of("SkillWeaponRifle") => 1.0 + v,
+            _ => 1.0,
+        };
+        aim.standing += dt * mult;
     } else {
         aim.standing = (aim.standing - 0.03 * dt * speed).max(0.0);
     }
     let skill = h.stats.skill;
     // Wounded arms and head make aiming worse.
-    let mut acc = h.stats.base_accuracy + skill + ph.accuracy_penalty();
+    let ambidextrous = skill_of("SkillWeaponPistol") && crate::perks::has("PerkAmbidextrous");
+    let mut acc = h.stats.base_accuracy + skill + ph.accuracy_penalty_with(ambidextrous);
     let before = acc;
     if aim.standing > 0.0 {
         let div = (15.0 + 29.0 * skill).max(0.0);

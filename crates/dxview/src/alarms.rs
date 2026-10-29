@@ -28,6 +28,8 @@ pub struct AlarmRt {
     pub associated: Option<usize>,
     /// Hacked: dead for good.
     pub disabled: bool,
+    /// hackStrength 0 (bypassed with a multitool): a pawn pushing it does nothing (ScriptedPawn.TriggerAlarm).
+    pub bypassed: bool,
     /// EMP'd (TakeDamage 'EMP': bConfused for alarmTimeout seconds): can't be set off meanwhile.
     pub confused: f32,
     light: (u8, u8, u8, f32),
@@ -152,6 +154,7 @@ impl Alarms {
             instigator: None,
             associated: None,
             disabled: false,
+            bypassed: false,
             confused: 0.0,
             light: (0, 0, 0, 0.0),
             external: true,
@@ -249,6 +252,7 @@ pub fn alarm_system(
                 instigator: None,
                 associated: None,
                 disabled: false,
+                bypassed: false,
             confused: 0.0,
                 light: (
                     b("LightHue", 0),
@@ -266,6 +270,7 @@ pub fn alarm_system(
         .unwrap_or_default()
     {
         for u in alarms.units.iter_mut().filter(|u| u.actor == actor) {
+            u.bypassed = true;
             if u.active {
                 u.active = false;
                 u.disabled = true;
@@ -315,7 +320,7 @@ pub fn alarm_system(
             1.0,
         );
         // The light blinks twice a second.
-        if now % 0.5 > 0.25 {
+        if now % 0.5 > 0.25 || crate::settings::get("NoStrobeLights") > 0.5 {
             let (h, s, b, r) = u.light;
             crate::dynlight::hold(
                 0xA_0000_0000 | i as u64,

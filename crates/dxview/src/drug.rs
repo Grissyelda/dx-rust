@@ -170,7 +170,11 @@ pub fn scope_sway_system(
     // Recoil (DeusExWeapon.Tick): while the Shoot animation plays the view kicks up by (4096..8192) x recoil and
     // sideways by +-2048 x recoil per second; recoil = recoilStrength + skill x 2.
     if let Some(h) = weapons.held.as_ref() {
-        let recoil = (h.stats.recoil + h.stats.skill * 2.0).max(0.0);
+        let mut recoil = (h.stats.recoil + h.stats.skill * 2.0).max(0.0);
+        // GMDX Marksman perk: half the recoil on rifles.
+        if crate::perks::has("PerkMarksman") && h.stats.governing_skill.as_deref().is_some_and(|g| g.eq_ignore_ascii_case("SkillWeaponRifle")) {
+            recoil *= 0.5;
+        }
         if recoil > 0.0 && h.state == crate::weapons::WState::Firing && !h.clip.done() {
             let mut r = || {
                 st.3 =

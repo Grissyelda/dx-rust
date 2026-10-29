@@ -594,8 +594,11 @@ pub struct PickJob {
     pub per_pick: f64,
 }
 
-/// SkillLockpicking value (0.1 untrained .. 0.75 master).
+/// SkillLockpicking value (0.1 untrained .. 0.75 master); GMDX Locksport makes it 1 (one pick opens any lock).
 pub fn lockpick_skill() -> f64 {
+    if crate::perks::has("PerkLocksport") {
+        return 1.0;
+    }
     crate::abilities::skill("SkillLockpicking") as f64
 }
 
@@ -759,7 +762,7 @@ fn mover_sounds(level: &Level, i: usize, rt: &MoverRt, was: &mut Vec<(bool, bool
 static LINE_HITS: std::sync::Mutex<Vec<(DVec3, DVec3, f32, &'static str)>> =
     std::sync::Mutex::new(Vec::new());
 /// Blast rings (HurtRadius): (centre, radius, damage, damage type).
-static BLASTS: std::sync::Mutex<Vec<(DVec3, f64, f32, &'static str)>> =
+static BLASTS: std::sync::Mutex<Vec<(DVec3, f64, f32, &'static str, f32)>> =
     std::sync::Mutex::new(Vec::new());
 /// Damage straight to one mover (stomped by a falling decoration): (mover, damage, type).
 static DIRECT: std::sync::Mutex<Vec<(usize, f32, &'static str)>> =
@@ -775,8 +778,13 @@ pub fn hit_line(start: DVec3, end: DVec3, damage: f32, damage_type: &'static str
 }
 
 pub fn blast(pos: DVec3, radius: f64, damage: f32, damage_type: &'static str) {
+    blast_ring(pos, radius, damage, damage_type, 0.0);
+}
+
+/// One ring of a staggered blast whose whole Damage is `full` (GMDX's HurtRadiusGMDX mover fix uses it).
+pub fn blast_ring(pos: DVec3, radius: f64, damage: f32, damage_type: &'static str, full: f32) {
     if let Ok(mut q) = BLASTS.lock() {
-        q.push((pos, radius, damage, damage_type));
+        q.push((pos, radius, damage, damage_type, full));
     }
 }
 
@@ -819,10 +827,14 @@ pub fn mover_damage_system(
 ) {
     let _prof = crate::prof::scope("movers::mover_damage_system");
     let lvl = &level.0;
-    let mut hits: Vec<(usize, f32, &'static str)> = DIRECT
+    // (mover, damage, type, past the threshold anyway: GMDX's ring fix)
+    let mut hits: Vec<(usize, f32, &'static str, bool)> = DIRECT
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(i, d, t)| (i, d, t, false))
+        .collect();
     for (start, end, dmg, ty) in LINE_HITS
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
@@ -831,10 +843,11 @@ pub fn mover_damage_system(
         // Extend a little past the hit point so the trace reaches the surface it stopped at.
         let dir = (end - start).normalize_or_zero();
         if let Some((i, _)) = mover_on_line(lvl, &movers.rt, start, end + dir * 4.0) {
-            hits.push((i, dmg, ty));
+            hits.push((i, dmg, ty, false));
         }
     }
-    for (pos, radius, dmg, ty) in BLASTS
+    let ring_fix = crate::settings::get("FixBlastDoors") > 0.5;
+    for (pos, radius, dmg, ty, full) in BLASTS
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
         .unwrap_or_default()
@@ -854,11 +867,17 @@ pub fn mover_damage_system(
             }
             let scale = (1.0 - ((d - 22.0) / radius).max(0.0)) as f32;
             if scale > 0.0 {
-                hits.push((i, dmg * scale, ty));
+                // GMDX fix (setting FixBlastDoors): the blast is dealt in five rings of 2 x Damage / 5, so a door
+                // whose threshold the whole blast beats was never hurt by any one ring. A ring counts whenever the
+                // full Damage at this distance would beat the threshold.
+                let bypass = ring_fix
+                    && full > 0.0
+                    && full * scale >= crate::sound::fprop(&lvl.actors[lvl.movers[i].actor].props, "minDamageThreshold", 10.0);
+                hits.push((i, dmg * scale, ty, bypass));
             }
         }
     }
-    for (i, dmg, ty) in hits {
+    for (i, dmg, ty, bypass) in hits {
         let info = &lvl.movers[i];
         let p = &lvl.actors[info.actor].props;
         let ent = movers.entities[i];
@@ -878,15 +897,26 @@ pub fn mover_damage_system(
         {
             continue;
         }
+        let mut threshold = crate::sound::fprop(p, "minDamageThreshold", 10.0);
         if !rt.breakable.unwrap_or(matches!(
             unreal_pkg::props::find(p, "bBreakable"),
             Some(unreal_pkg::props::Value::Bool(true))
         )) {
-            continue;
+            // GMDX Breakdown (OnMapLoadAndPurchase): pickable doors that aren't breakable and fire no Event give
+            // way to a blast of PerkValue (160) or more.
+            let no_event = !matches!(unreal_pkg::props::find(p, "Event"), Some(unreal_pkg::props::Value::Name(n)) if !n.is_empty() && !n.eq_ignore_ascii_case("None"));
+            match crate::perks::value_if("PerkBreakdown") {
+                Some(v) if rt.breakable.is_none() && rt.pickable && no_event => threshold = v,
+                _ => continue,
+            }
+        }
+        // GMDX Doorsman: every door's minDamageThreshold is PerkValue (5) lower, never below 1.
+        if let Some(v) = crate::perks::value_if("PerkDoorsman") {
+            threshold = (threshold - v).max(1.0);
         }
         // Damage is an int in the script: fractions drop.
         let dmg = dmg.floor();
-        if dmg >= crate::sound::fprop(p, "minDamageThreshold", 10.0) {
+        if dmg >= threshold || bypass {
             rt.door_strength = (rt.door_strength - dmg as f64 * 0.01).clamp(0.0, 1.0);
         }
         println!(
