@@ -8,7 +8,7 @@
 use crate::abilities;
 use crate::ai::{PlayerHealth, P_ARM_L, P_ARM_R, P_HEAD, P_LEG_L, P_LEG_R, P_TORSO};
 use crate::classic_hud::ClassicHud;
-use crate::inventory_screen::{class_p_full, draw_button, inside, int_p, item_borders, label, Fonts, Layout, NAV_LABELS, SCREEN_H, SCREEN_W, WHITE};
+use crate::inventory_screen::{class_p_full, draw_button, inside, int_p, item_borders, label, nav_labels, Fonts, Layout, SCREEN_H, SCREEN_W, WHITE};
 use crate::pickups::PlayerInventory;
 use crate::uicanvas::{color_scaled, wrap, Canvas, HAlign, Rgb, Style, VAlign};
 use crate::weapons::RuntimeAssets;
@@ -22,6 +22,8 @@ pub const SCREEN_GOALS: usize = 4;
 pub const SCREEN_CONVERSATIONS: usize = 5;
 pub const SCREEN_IMAGES: usize = 6;
 pub const SCREEN_LOGS: usize = 7;
+/// Augmentique's PersonaScreenOutfits (a nav button of its own while the mod is on).
+pub const SCREEN_OUTFITS: usize = 8;
 /// HUDRechargeWindow (repair bot): not a persona screen, a small window of its own.
 pub const SCREEN_RECHARGE: usize = 100;
 
@@ -41,7 +43,7 @@ impl BotView {
     }
 }
 
-const CLASSES: [&str; 8] = [
+const CLASSES: [&str; 9] = [
     "PersonaScreenInventory",
     "PersonaScreenHealth",
     "PersonaScreenAugmentations",
@@ -50,6 +52,7 @@ const CLASSES: [&str; 8] = [
     "PersonaScreenConversations",
     "PersonaScreenImages",
     "PersonaScreenLogs",
+    "PersonaScreenOutfits",
 ];
 
 /// Things on a screen that can be pressed.
@@ -82,6 +85,20 @@ pub enum PB {
     CanAug(usize, usize),
     Install,
     Recharge,
+    /// Augmentique's outfits screen: a list row, its buttons, the custom outfit's part arrows (part slot) and
+    /// body-type arrows.
+    OutfitRow(usize),
+    OutfitEquip,
+    OutfitEdit,
+    OutfitCamera,
+    OutfitAccessories,
+    OutfitPrev(i64),
+    OutfitNext(i64),
+    OutfitVariantPrev,
+    OutfitVariantNext,
+    /// GMDX perks: the Perks / Perks (G) / Info button, and a perk's Upgrade button (index into the list shown).
+    Perks,
+    PerkBuy(usize),
 }
 
 /// What the screen asks the frame to do.
@@ -100,6 +117,8 @@ pub enum Act {
 #[derive(Default)]
 pub struct PersonaUi {
     skill_sel: Option<usize>,
+    /// GMDX perks: the skills screen's info pane shows 0 the skill, 1 its perks, 2 the general perks.
+    perk_mode: u8,
     aug_sel: Option<usize>,
     health_sel: Option<usize>,
     pressed: Option<PB>,
@@ -129,6 +148,15 @@ pub struct PersonaUi {
     /// Medical bot: the canister augmentation picked, or the reason it can't be (title, text).
     can_sel: Option<(usize, usize)>,
     can_msg: Option<(String, String)>,
+    /// Outfits screen: selected row, edit mode, low camera, last row click (double click equips).
+    outfit_sel: Option<usize>,
+    outfit_edit: bool,
+    pub(crate) outfit_cam: bool,
+    outfit_click: Option<(usize, f32)>,
+    clock: f32,
+    /// The outfits screen's 3D view this frame (screen rect), and the widgets drawn over it.
+    pub(crate) view: Option<(i32, i32, i32, i32)>,
+    pub(crate) overlay: Option<Canvas>,
 }
 
 /// Editing state of the focused note: cursor and selection anchor as char indices, blink clock, and the column
@@ -380,6 +408,7 @@ fn draw_base(
         );
     } else {
         let nav = ctx.lay.nav.clone();
+        let labels = nav_labels();
         for (i, (x, w)) in nav.iter().enumerate() {
             let s = if i == screen { 3 } else { state(PB::Nav(i)) };
             draw_button(
@@ -390,7 +419,7 @@ fn draw_base(
                 *x,
                 8,
                 *w,
-                NAV_LABELS[i],
+                labels[i],
                 s,
                 true,
             );
@@ -584,6 +613,9 @@ pub fn page(
     }
     ui.last_screen = screen;
     ui.last_mouse = inp.mouse;
+    ui.clock += inp.dt;
+    ui.view = None;
+    ui.overlay = None;
     if let Some(ed) = ui.edit.as_mut() {
         ed.blink += inp.dt;
     }
@@ -628,6 +660,7 @@ pub fn page(
         }
         SCREEN_CONVERSATIONS => cons_hits(ui, cx, cy, &mut hits),
         SCREEN_IMAGES => images_hits(ui, cx, cy, &mut hits),
+        SCREEN_OUTFITS => outfits_hits(ui, ctx, cx, cy, &mut hits),
         _ => {}
     }
     if let Some(m) = crate::snap::page_map() {
@@ -645,7 +678,7 @@ pub fn page(
         if let Some(b) = hover {
             ui.pressed = Some(b);
             // Selection buttons act on press (PersonaItemButton / skill buttons select at once).
-            if matches!(b, PB::Skill(_) | PB::Aug(_) | PB::Part(_) | PB::CanAug(..) | PB::Note(_)) {
+            if matches!(b, PB::Skill(_) | PB::Aug(_) | PB::Part(_) | PB::CanAug(..) | PB::Note(_) | PB::OutfitRow(_)) {
                 pressed_now = Some(b);
             }
         }
@@ -653,7 +686,7 @@ pub fn page(
     if inp.up {
         if let Some(b) = ui.pressed.take() {
             if hover == Some(b)
-                && !matches!(b, PB::Skill(_) | PB::Aug(_) | PB::Part(_) | PB::CanAug(..) | PB::Note(_))
+                && !matches!(b, PB::Skill(_) | PB::Aug(_) | PB::Part(_) | PB::CanAug(..) | PB::Note(_) | PB::OutfitRow(_))
                 && enabled(b)
             {
                 pressed_now = Some(b);
@@ -698,6 +731,21 @@ pub fn page(
                 }
             }
         }
+        SCREEN_OUTFITS => {
+            let n = crate::augmentique::list().len();
+            if n > 0 {
+                let cur = ui.outfit_sel.unwrap_or(0).min(n - 1);
+                if inp.up_key {
+                    ui.outfit_sel = Some((cur + n - 1) % n);
+                }
+                if inp.down_key {
+                    ui.outfit_sel = Some((cur + 1) % n);
+                }
+                if inp.enter {
+                    act = act.or(screen_action(screen, ui, ctx, PB::OutfitEquip));
+                }
+            }
+        }
         SCREEN_AUGS if !med(ctx) => {
             if let Some(k) = inp.fkey {
                 // SelectAugByKey: select the aug on that key and toggle it.
@@ -735,6 +783,10 @@ pub fn page(
             "Conversations",
         ),
         SCREEN_IMAGES => s_default(ctx, CLASSES[screen], "ImagesTitleText", "Images"),
+        SCREEN_OUTFITS => {
+            let t = crate::augmentique::text("OutfitsTitleText");
+            if t.is_empty() { "Outfits".into() } else { t }
+        }
         _ => s_default(ctx, CLASSES[screen], "LogsTitleText", "Logs"),
     };
     draw_base(&mut c, ctx, screen, hover, ui.pressed, &title);
@@ -758,6 +810,7 @@ pub fn page(
         SCREEN_GOALS => draw_goals(&mut c, ctx, ui, cx, cy, &state),
         SCREEN_CONVERSATIONS => draw_cons(&mut c, ctx, ui, cx, cy, &state),
         SCREEN_IMAGES => draw_images(&mut c, ctx, ui, cx, cy, &state),
+        SCREEN_OUTFITS => draw_outfits(&mut c, ctx, ui, cx, cy, &state, s),
         _ => 0,
     };
     ui.scroll = ui.scroll.clamp(0, max_scroll.max(0));
@@ -765,6 +818,10 @@ pub fn page(
 }
 
 fn screen_action(screen: usize, ui: &mut PersonaUi, ctx: &mut Ctx, b: PB) -> Option<Act> {
+    if screen == SCREEN_OUTFITS {
+        outfits_action(ui, b);
+        return None;
+    }
     if med(ctx) {
         match (screen, b) {
             (SCREEN_HEALTH, PB::HealAll) => return Some(Act::BotHeal),
@@ -795,6 +852,21 @@ fn screen_action(screen: usize, ui: &mut PersonaUi, ctx: &mut Ctx, b: PB) -> Opt
                 ui.scroll = 0;
             }
             ui.skill_sel = Some(i);
+            // GMDX: picking a skill while perks are shown shows that skill's perks.
+            if ui.perk_mode != 0 {
+                ui.perk_mode = 1;
+            }
+        }
+        (SCREEN_SKILLS, PB::Perks) => {
+            ui.perk_mode = (ui.perk_mode + 1) % 3;
+            ui.scroll = 0;
+        }
+        (SCREEN_SKILLS, PB::PerkBuy(i)) => {
+            let skill = selected_skill(ui);
+            let list = crate::perks::for_skill(if ui.perk_mode == 2 { None } else { skill.as_deref() });
+            if let Some(p) = list.get(i) {
+                crate::perks::purchase(&p.class);
+            }
         }
         (SCREEN_SKILLS, PB::Upgrade) => {
             let n = abilities::lock()
@@ -981,6 +1053,160 @@ fn skills_hits(
     // The Upgrade bar (PersonaButtonBarWindow at (10, 338), 149 wide, not filling).
     let w = (4 + 6 + ctx.fonts.headers.width(&label("|&Upgrade")) + 8).max(20);
     hits.push((PB::Upgrade, (cx + 10, cy + 338, w, 16), can));
+    // GMDX: the Perks button beside it, and the perk list's Upgrade buttons in the info pane.
+    if let Some(l) = crate::perks::labels().filter(|_| crate::perks::active()) {
+        let pl = perk_button_label(&l, ui.perk_mode);
+        let pw = (4 + 6 + ctx.fonts.headers.width(&label(&pl)) + 8).max(20);
+        hits.push((PB::Perks, (cx + 10 + w, cy + 338, pw, 16), true));
+        if ui.perk_mode != 0 {
+            let (x0, y0, pw_, ph) = INFO_PANE;
+            let (_, rows) = perk_rows(ctx.fonts, ui.perk_mode, selected_skill(ui).as_deref(), pw_);
+            for (y, h, r) in rows {
+                if let PerkRow::Button(i, text, enabled) = r {
+                    let top = cy + y0 + 20 + y - ui.scroll;
+                    if top >= cy + y0 + 20 && top + h <= cy + y0 + ph {
+                        let bw = (4 + 6 + ctx.fonts.headers.width(&label(&text)) + 8).max(20);
+                        hits.push((PB::PerkBuy(i), (cx + x0 + 2, top, bw, 16), enabled));
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl PersonaUi {
+    /// Dev aid: open the skills screen on its perk list.
+    pub fn set_perk_mode(&mut self, m: u8) {
+        self.perk_mode = m.min(2);
+    }
+}
+
+/// The skills screen's info pane (PersonaInfoWindow at (356, 22), 238 x 299), relative to the client area.
+const INFO_PANE: (i32, i32, i32, i32) = (356, 22, 238, 299);
+
+fn perk_button_label(l: &crate::perks::Labels, mode: u8) -> String {
+    match mode {
+        0 => l.perks.clone(),
+        1 => l.perks_general.clone(),
+        _ => l.info.clone(),
+    }
+}
+
+/// The selected skill's class.
+fn selected_skill(ui: &PersonaUi) -> Option<String> {
+    let g = abilities::lock();
+    let a = g.as_ref()?;
+    let sel = ui.skill_sel.unwrap_or(a.skills.list.len().saturating_sub(1));
+    a.skills.list.get(sel).map(|s| s.def.class.clone())
+}
+
+/// One entry of the perk list (PersonaInfoWindow.CreatePerkOverview / CreateObtainedPerkList).
+#[derive(Clone, Debug)]
+enum PerkRow {
+    /// Name and icon (a 28-high PersonaButtonBarWindow).
+    Title(String, Option<String>),
+    Text(String),
+    /// A perk's button: list index, label, purchasable.
+    Button(usize, String, bool),
+    Line,
+}
+
+/// The info pane's title and rows (y from the top of the scrolled area, height, row).
+fn perk_rows(f: &Fonts, mode: u8, skill: Option<&str>, w: i32) -> (String, Vec<(i32, i32, PerkRow)>) {
+    let Some(l) = crate::perks::labels() else { return (String::new(), Vec::new()) };
+    let (skill_name, skill_icon) = {
+        let g = abilities::lock();
+        g.as_ref()
+            .and_then(|a| skill.and_then(|c| a.skills.find(c)).map(|s| (s.def.name.clone(), s.def.icon.clone())))
+            .unwrap_or_default()
+    };
+    let general = mode == 2;
+    let perks = crate::perks::for_skill(if general { None } else { skill });
+    let title = if general { l.general_title.clone() } else { format!("Perks - {skill_name}") };
+    let mut rows: Vec<PerkRow> = Vec::new();
+    for (i, p) in perks.iter().enumerate() {
+        rows.push(PerkRow::Title(p.name.to_uppercase(), p.icon.clone().or_else(|| (!skill_icon.is_empty()).then(|| skill_icon.clone()))));
+        rows.push(PerkRow::Text(p.text()));
+        rows.push(PerkRow::Text(String::new()));
+        if let Some(sk) = &p.skill {
+            let name = {
+                let g = abilities::lock();
+                g.as_ref().and_then(|a| a.skills.find(sk)).map(|s| s.def.name.clone()).unwrap_or_default()
+            };
+            let lv = imsim_core::skills::LEVEL_NAMES[p.level.min(3)];
+            rows.push(PerkRow::Text(l.requires.replacen("%s", &name, 1).replacen("%s", lv, 1)));
+        }
+        rows.push(PerkRow::Text(format!("{}{}", l.points, p.cost)));
+        rows.push(PerkRow::Text(String::new()));
+        let owned = crate::perks::has(&p.class);
+        let can = crate::perks::purchasable(p);
+        let text = if owned { l.purchased.clone() } else if can { l.upgrade.clone() } else { l.unobtainable.clone() };
+        rows.push(PerkRow::Button(i, text, can));
+        rows.push(PerkRow::Line);
+    }
+    let owned: Vec<String> = crate::perks::list().into_iter().filter(|p| crate::perks::has(&p.class)).map(|p| p.name.to_uppercase()).collect();
+    if !owned.is_empty() {
+        rows.push(PerkRow::Text(String::new()));
+        rows.push(PerkRow::Text(l.obtained.clone()));
+        rows.push(PerkRow::Line);
+        for n in owned {
+            rows.push(PerkRow::Text(format!("- {n}")));
+        }
+        rows.push(PerkRow::Line);
+    }
+    let mut y = 1;
+    let mut out = Vec::new();
+    for r in rows {
+        let h = match &r {
+            PerkRow::Title(..) => 28,
+            PerkRow::Text(t) if t.is_empty() => f.small.height,
+            PerkRow::Text(t) => wrap(&f.small, t, w - 8).len() as i32 * f.small.height,
+            PerkRow::Button(..) => 18,
+            PerkRow::Line => 5,
+        };
+        out.push((y, h, r));
+        y += h;
+    }
+    (title, out)
+}
+
+/// The perk list in the info pane; returns how far it can scroll.
+fn draw_perks(c: &mut Canvas, ctx: &mut Ctx, ui: &PersonaUi, cx: i32, cy: i32, state: &dyn Fn(PB) -> usize) -> i32 {
+    let f = ctx.fonts;
+    let (x0, y0, w, h) = INFO_PANE;
+    let (x0, y0) = (cx + x0, cy + y0);
+    let (title, rows) = perk_rows(f, ui.perk_mode, selected_skill(ui).as_deref(), w);
+    c.text(&f.headers, x0 + 2, y0 + 1, w, f.headers.height, HAlign::Left, VAlign::Center, crate::menuui::h_col(7), &title);
+    c.set_clip(Some((x0, y0 + 20, w, h - 20)));
+    let mut total = 0;
+    for (y, rh, r) in &rows {
+        let top = y0 + 20 + y - ui.scroll;
+        total = y + rh;
+        if top + rh < y0 + 20 || top > y0 + h {
+            continue;
+        }
+        match r {
+            PerkRow::Title(name, icon) => {
+                c.text(&f.small, x0 + 6, top + 4, w - 40, f.small.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(8), name);
+                if let Some(t) = icon.as_ref().and_then(|p| ctx.hud.tex(ctx.assets, p)) {
+                    c.texture(x0 + 191, top + 2, 24, 24, 0, 0, &t, Style::Normal, WHITE);
+                }
+            }
+            PerkRow::Text(t) => {
+                for (k, l) in wrap(&f.small, t, w - 8).iter().enumerate() {
+                    c.text(&f.small, x0 + 4, top + k as i32 * f.small.height, w - 8, f.small.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(8), l);
+                }
+            }
+            PerkRow::Button(i, text, enabled) => {
+                let bw = (4 + 6 + f.headers.width(&label(text)) + 8).max(20);
+                let st = if *enabled { state(PB::PerkBuy(*i)) } else { 3 };
+                draw_button(c, ctx.hud, ctx.assets, &f.headers, x0 + 2, top, bw, text, st, false);
+            }
+            PerkRow::Line => c.fill(x0 + 4, top + 2, w - 8, 1, Style::Normal, crate::menuui::h_col(8)),
+        }
+    }
+    c.set_clip(None);
+    (total - (h - 20)).max(0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1171,7 +1397,7 @@ fn draw_skills(
         );
     }
     // Upgrade button and its bar filler.
-    let w = (4 + 6 + f.headers.width(&label(&up_label)) + 8).max(20);
+    let mut w = (4 + 6 + f.headers.width(&label(&up_label)) + 8).max(20);
     let st = if can_up { state(PB::Upgrade) } else { 3 };
     draw_button(
         c,
@@ -1185,11 +1411,18 @@ fn draw_skills(
         st,
         false,
     );
+    // GMDX: the Perks button (Perks -> Perks (G) -> Info).
+    if let Some(l) = crate::perks::labels().filter(|_| crate::perks::active()) {
+        let pl = perk_button_label(&l, ui.perk_mode);
+        let pw = (4 + 6 + f.headers.width(&label(&pl)) + 8).max(20);
+        draw_button(c, ctx.hud, ctx.assets, &f.headers, cx + 10 + w, cy + 338, pw, &pl, state(PB::Perks), false);
+        w += pw;
+    }
     if let Some(t) = ctx.hud.ui(ctx.assets, "PersonaButtonFiller") {
         c.texture(
             cx + 10 + w,
             cy + 338,
-            149 - w,
+            (149 - w).max(0),
             16,
             0,
             0,
@@ -1220,14 +1453,11 @@ fn draw_skills(
         crate::menuui::h_col(7),
         &avail.to_string(),
     );
-    let max = draw_info(
-        c,
-        f,
-        (cx + 356, cy + 22, 238, 299),
-        &info.0,
-        &info.1,
-        ui.scroll,
-    );
+    let max = if ui.perk_mode != 0 && crate::perks::active() {
+        draw_perks(c, ctx, ui, cx, cy, state)
+    } else {
+        draw_info(c, f, (cx + 356, cy + 22, 238, 299), &info.0, &info.1, ui.scroll)
+    };
     if !ui.status.is_empty() {
         c.text(
             &f.small,
@@ -3323,6 +3553,192 @@ fn draw_images(
         );
     }
     0
+}
+
+// ------------------------------------------------------------------------------------------------ outfits
+
+/// Augmentique's PersonaScreenOutfits: the 3D view of JC (15, 20, 400 x 400; drawn by outfit_view.rs), the outfit
+/// list (417, 21, 184 x 398), Change Camera / Edit / Equip (the Settings button's choices are in Settings >
+/// Enhancements > Mods), Show Accessories, the description, and in edit mode the custom outfit's part arrows.
+const OUTFIT_VIEW: (i32, i32, i32, i32) = (15, 20, 400, 400);
+
+fn outfit_buttons(f: &Fonts, cx: i32, cy: i32) -> Vec<(PB, String, (i32, i32, i32, i32))> {
+    let t = |k: &str, d: &str| {
+        let v = crate::augmentique::text(k);
+        if v.is_empty() { d.to_string() } else { v }
+    };
+    let mut x = cx + 10;
+    [
+        (PB::OutfitCamera, t("ChangeCameraLabel", "Change |&Camera")),
+        (PB::OutfitEdit, t("EditButtonLabel", "|&Edit")),
+        (PB::OutfitEquip, t("EquipButtonLabel", "E|&quip")),
+    ]
+    .into_iter()
+    .map(|(b, l)| {
+        let w = (4 + 6 + f.headers.width(&label(&l)) + 8).max(20);
+        let r = (b, l, (x, cy + 422, w, 16));
+        x += w + 2;
+        r
+    })
+    .collect()
+}
+
+fn accessories_rect(f: &Fonts, cx: i32, cy: i32) -> (i32, i32, i32, i32, String) {
+    let l = crate::augmentique::text("ShowAccessoriesLabel");
+    let l = if l.is_empty() { "Show Accessories".to_string() } else { l };
+    let r = checkbox_rect(f, cx, 617, 23, cy + 424, &l);
+    (r.0, r.1, r.2, r.3, l)
+}
+
+/// The custom outfit's rows in edit mode: (prev, next, label, y).
+fn outfit_part_rows(ui: &PersonaUi, cx: i32, cy: i32) -> Vec<(PB, PB, String, i32)> {
+    let mut v = Vec::new();
+    if !ui.outfit_edit {
+        return v;
+    }
+    let y0 = cy + 25;
+    if let Some((name, _)) = crate::augmentique::variant() {
+        let lab = crate::augmentique::text("ModelVariantLabel");
+        v.push((PB::OutfitVariantPrev, PB::OutfitVariantNext, format!("{lab}: {name}"), y0));
+    }
+    for (slot, lab, cur) in crate::augmentique::custom_rows() {
+        let y = y0 + v.len() as i32 * 20;
+        v.push((PB::OutfitPrev(slot), PB::OutfitNext(slot), format!("{lab}: {cur}"), y));
+    }
+    let _ = cx;
+    v
+}
+
+fn outfits_hits(ui: &PersonaUi, ctx: &mut Ctx, cx: i32, cy: i32, hits: &mut Vec<(PB, (i32, i32, i32, i32), bool)>) {
+    let rows = crate::augmentique::list();
+    let (lx, ly, lw, lh) = (cx + IMG_LIST.0, cy + IMG_LIST.1, IMG_LIST.2, IMG_LIST.3);
+    for i in 0..rows.len() {
+        let y = ly + i as i32 * CON_ROW_H - ui.scroll;
+        if y + CON_ROW_H <= ly || y >= ly + lh {
+            continue;
+        }
+        let top = y.max(ly);
+        let bottom = (y + CON_ROW_H).min(ly + lh);
+        hits.push((PB::OutfitRow(i), (lx, top, lw, bottom - top), true));
+    }
+    let sel_equipped = ui.outfit_sel.and_then(|i| rows.get(i)).is_some_and(|r| r.2);
+    for (b, _, r) in outfit_buttons(ctx.fonts, cx, cy) {
+        let en = b != PB::OutfitEquip || (ui.outfit_sel.is_some() && !sel_equipped);
+        hits.push((b, r, en));
+    }
+    if crate::augmentique::has_accessories() && !ui.outfit_edit {
+        let (x, y, w, h, _) = accessories_rect(ctx.fonts, cx, cy);
+        hits.push((PB::OutfitAccessories, (x, y, w, h), true));
+    }
+    for (p, n, _, y) in outfit_part_rows(ui, cx, cy) {
+        hits.push((p, (cx + 20, y, 26, 16), true));
+        hits.push((n, (cx + 50, y, 26, 16), true));
+    }
+}
+
+fn outfits_action(ui: &mut PersonaUi, b: PB) {
+    let rows = crate::augmentique::list();
+    match b {
+        PB::OutfitRow(i) => {
+            // ListRowActivated: a second click on the same row equips it.
+            let double = ui.outfit_click.is_some_and(|(r, t)| r == i && ui.clock - t < 0.4);
+            ui.outfit_sel = Some(i);
+            ui.outfit_click = Some((i, ui.clock));
+            if double {
+                outfits_action(ui, PB::OutfitEquip);
+            }
+        }
+        PB::OutfitEquip => {
+            if let Some(r) = ui.outfit_sel.and_then(|i| rows.get(i)) {
+                ui.outfit_edit = false;
+                crate::augmentique::equip(r.0);
+                // The list re-sorts (new marks go): keep the selection on the equipped outfit.
+                ui.outfit_sel = crate::augmentique::list().iter().position(|x| x.2);
+            }
+        }
+        PB::OutfitEdit => {
+            crate::augmentique::set_no_accessories(false);
+            ui.outfit_edit = !ui.outfit_edit;
+            crate::augmentique::equip_custom();
+            ui.outfit_sel = crate::augmentique::list().iter().position(|x| x.2);
+        }
+        PB::OutfitCamera => ui.outfit_cam = !ui.outfit_cam,
+        PB::OutfitAccessories => crate::augmentique::set_no_accessories(!crate::augmentique::no_accessories()),
+        PB::OutfitPrev(slot) => crate::augmentique::cycle_part(slot, -1),
+        PB::OutfitNext(slot) => crate::augmentique::cycle_part(slot, 1),
+        PB::OutfitVariantPrev => crate::augmentique::cycle_variant(-1),
+        PB::OutfitVariantNext => crate::augmentique::cycle_variant(1),
+        _ => {}
+    }
+}
+
+fn draw_outfits(c: &mut Canvas, ctx: &mut Ctx, ui: &mut PersonaUi, cx: i32, cy: i32, state: &dyn Fn(PB) -> usize, s: i32) -> i32 {
+    let f = ctx.fonts;
+    let rows = crate::augmentique::list();
+    if ui.outfit_sel.is_none() {
+        ui.outfit_sel = rows.iter().position(|r| r.2);
+    }
+    // The 3D view (outfit_view.rs draws it over this canvas; the widgets on it go on the overlay).
+    let (vx, vy, vw, vh) = OUTFIT_VIEW;
+    ui.view = Some((cx + vx, cy + vy, vw, vh));
+    let mut o = Canvas::new(SCREEN_W, SCREEN_H, s);
+    for (p, n, text, y) in outfit_part_rows(ui, cx, cy) {
+        draw_button(&mut o, ctx.hud, ctx.assets, &f.headers, cx + 20, y, 26, "<", state(p), true);
+        draw_button(&mut o, ctx.hud, ctx.assets, &f.headers, cx + 50, y, 26, ">", state(n), true);
+        o.text(&f.headers, cx + 80, y + 2, 330, 14, HAlign::Left, VAlign::Top, crate::menuui::h_col(7), &text);
+    }
+    // The description (bottom of the view, centred), not while editing.
+    if !ui.outfit_edit {
+        let desc = crate::augmentique::equipped_index().map(crate::augmentique::description).unwrap_or_default();
+        if !desc.is_empty() {
+            let lines = wrap(&f.headers, &desc, 300);
+            let lh = f.headers.height;
+            let bottom = cy + vy + vh - 20;
+            for (i, l) in lines.iter().enumerate() {
+                let y = bottom - (lines.len() - i) as i32 * lh;
+                o.text(&f.headers, cx + 65, y, 300, lh, HAlign::Center, VAlign::Top, crate::menuui::h_col(7), l);
+            }
+        }
+    }
+    ui.overlay = Some(o);
+    // The list.
+    let wing = ctx.hud.font(ctx.assets, "FontHUDWingDings");
+    let (lx, ly, lw, lh) = (cx + IMG_LIST.0, cy + IMG_LIST.1, IMG_LIST.2, IMG_LIST.3);
+    // Keep the selection in view.
+    if let Some(sel) = ui.outfit_sel {
+        let y = sel as i32 * CON_ROW_H;
+        if y < ui.scroll {
+            ui.scroll = y;
+        } else if y + CON_ROW_H > ui.scroll + lh {
+            ui.scroll = y + CON_ROW_H - lh;
+        }
+    }
+    let new_label = crate::augmentique::text("NewLabel");
+    c.set_clip(Some((lx, ly, lw, lh)));
+    for (i, (_, name, equipped, new)) in rows.iter().enumerate() {
+        let y = ly + i as i32 * CON_ROW_H - ui.scroll;
+        let sel = ui.outfit_sel == Some(i);
+        if sel {
+            c.fill(lx, y, lw, CON_ROW_H, Style::Normal, [128, 128, 128]);
+        }
+        let col = if sel { WHITE } else { crate::menuui::h_col(9) };
+        let text = if *new { format!("{name} {new_label}") } else { name.clone() };
+        c.text(&f.small, lx + 2, y, 140, CON_ROW_H, HAlign::Left, VAlign::Center, col, &text);
+        if *equipped {
+            if let Some(w) = &wing {
+                c.text(w, lx + 145, y, 34, CON_ROW_H, HAlign::Center, VAlign::Center, col, "C");
+            }
+        }
+    }
+    c.set_clip(None);
+    for (b, l, r) in outfit_buttons(f, cx, cy) {
+        draw_button(c, ctx.hud, ctx.assets, &f.headers, r.0, r.1, r.2, &l, state(b), true);
+    }
+    if crate::augmentique::has_accessories() && !ui.outfit_edit {
+        let (x, y, w, h, l) = accessories_rect(f, cx, cy);
+        draw_checkbox(c, ctx, (x, y, w, h), &l, !crate::augmentique::no_accessories(), true);
+    }
+    (rows.len() as i32 * CON_ROW_H - lh).max(0)
 }
 
 /// Leaving the images screen: viewed images lose their "new" mark (ClearViewedImageFlags).

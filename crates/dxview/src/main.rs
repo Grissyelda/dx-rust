@@ -65,6 +65,12 @@ mod drug;
 mod dynlight;
 mod effects;
 mod impacts;
+mod visattach;
+mod hdtp;
+mod uscript;
+mod augmentique;
+mod perks;
+mod outfit_view;
 mod electricity;
 mod explosion;
 mod fixtures;
@@ -148,6 +154,8 @@ pub struct Player {
     pub stand_eye: f64,
     /// curLeanDist: how far we're leaning sideways (+ right), up to 40 units.
     pub lean: f64,
+    /// Enhancement (Smooth Leaning, peek assist): extra sideways camera offset past where the body could slide.
+    pub peek: f64,
     /// Debug: PgUp lets frobbing open locked doors (until keys and lockpicks exist).
     pub unlock_all: bool,
     /// In the PlayerSwimming state (2 feet high, 3D swim controls). Physics can be Falling while bobbing at the surface.
@@ -482,6 +490,7 @@ pub fn make_player(level: &Level, (params, eye_height, bob): (MoveParams, f64, f
         duck_btn: false,
         last_duck: false,
         lean: 0.0,
+        peek: 0.0,
         params,
         eye_height,
         view: ViewBob::new(bob, eye_height),
@@ -511,30 +520,45 @@ fn main() {
         // Else the usual Steam / GOG / Heroic places (Steam Deck included).
         .or_else(|| unreal_pkg::gamedir::detect().map(|p| p.display().to_string()))
         .unwrap_or_else(|| r"C:\Games\Deus Ex".to_string());
-    // Mod folders laid over the game folder (unreal_pkg::paths): LDDPPath= / ModPath= lines in launcher.txt (the launcher's
-    // Lay D Denton row) or DXVIEW_MOD (';'-separated), first wins - Lay D Denton runs from its own folder this way.
-    let mods: Vec<PathBuf> = std::env::var("DXVIEW_MOD")
-        .ok()
-        .map(|v| v.split(';').filter(|x| !x.trim().is_empty()).map(|x| PathBuf::from(x.trim())).collect())
-        .or_else(|| {
-            let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-            Some(
-                std::fs::read_to_string(dir.join("launcher.txt"))
-                    .ok()?
-                    .lines()
-                    // LDDPPath: the launcher's Lay D Denton row; ModPath: general mod folders (later mods).
-                    .filter_map(|l| l.strip_prefix("LDDPPath=").or_else(|| l.strip_prefix("ModPath=")).map(|v| v.trim().to_string()))
-                    .filter(|v| !v.is_empty())
-                    .map(PathBuf::from)
-                    .collect(),
-            )
-        })
-        .unwrap_or_default();
-    if !mods.is_empty() {
-        println!("dxview: mod folders {mods:?}");
+    // Mods (unreal_pkg::mods): the launcher's Mods page writes Mod.<id>= / ModOn.<id>= lines in launcher.txt (Lay D
+    // Denton's older LDDPPath= still counts). Overlays (Lay D Denton) are laid over the game folder, addons searched
+    // after it, HD texture packs used texture by texture. DXVIEW_MOD (';'-separated folders) adds overlays for tests.
+    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or_default();
+    let mod_settings = unreal_pkg::mods::from_lines(&unreal_pkg::mods::read_launcher_txt(&exe_dir.join("launcher.txt")));
+    let mut enabled = unreal_pkg::mods::enabled(&mod_settings);
+    // DXVIEW_MODS="id=folder;id=folder": mods for test runs.
+    if let Ok(v) = std::env::var("DXVIEW_MODS") {
+        for part in v.split(';') {
+            if let Some((id, dir)) = part.split_once('=') {
+                if let Some(m) = unreal_pkg::mods::def(id.trim()) {
+                    if let Some(p) = unreal_pkg::mods::locate(m, std::path::Path::new(dir.trim())) {
+                        enabled.retain(|(e, _)| e.id != m.id);
+                        enabled.push((m, p));
+                    }
+                }
+            }
+        }
+    }
+    let mut mods: Vec<PathBuf> = enabled
+        .iter()
+        .filter(|(m, _)| m.kind == unreal_pkg::mods::ModKind::Overlay)
+        .map(|(_, p)| p.clone())
+        .collect();
+    if let Ok(v) = std::env::var("DXVIEW_MOD") {
+        mods.extend(v.split(';').filter(|x| !x.trim().is_empty()).map(|x| PathBuf::from(x.trim())));
+    }
+    if !enabled.is_empty() || !mods.is_empty() {
+        println!("dxview: mods {:?}", enabled.iter().map(|(m, p)| format!("{}={}", m.id, p.display())).collect::<Vec<_>>());
     }
     unreal_pkg::paths::set(&PathBuf::from(&root), mods);
+    unreal_pkg::mods::activate(&enabled);
+    unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
     travel::init_lddp();
+    hdtp::init(&PathBuf::from(&root));
+    hdtp::build_layer();
+    augmentique::init(&PathBuf::from(&root));
+    perks::init(&PathBuf::from(&root));
+    visattach::build_layer(&mut unreal_pkg::classes::ClassDb::open(&PathBuf::from(&root).join("System")));
     // `--load <save>`: the saved game's map, put back once it's built (save.rs).
     let loaded_map = save::startup(&args);
     let map = loaded_map.or_else(|| args.get(2).filter(|a| !a.starts_with("--")).cloned())
@@ -549,6 +573,9 @@ fn main() {
         });
     // The chosen face on Paul and JC's stand-ins (DeusExPlayer.UpdatePlayerSkin).
     dx_level::actors::set_overrides(travel::skin_overrides(&map));
+    hdtp::build_layer();
+    visattach::apply();
+    augmentique::build_layer();
     println!("dxview: loading {map} from {root} ...");
     let t0 = std::time::Instant::now();
     let level = match dx_level::load_level(&PathBuf::from(&root), &map) {
@@ -634,6 +661,7 @@ fn main() {
                 pickups::frob_system.after(fly),
                 pickups::belt_ui,
                 weapons::select_system,
+                weapons::visattach_refit_system.after(weapons::weapon_system),
                 weapons::weapon_system.after(fly),
                 weapons::fov_system,
                 weapons::fire_test.before(weapons::select_system),
@@ -701,7 +729,7 @@ fn main() {
                     .after(weapons::fov_system)
                     .after(cinematic::cinematic_system)
                     .after(consys::con_view_system),
-                mirror::mirror_body_system.after(fly),
+                mirror::mirror_body_system.after(fly).after(outfit_view::outfit_view_system),
                 water::water_system,
                 death::death_system.after(fly).after(ai::player_health_ui),
                 carry::corpse_drop_system
@@ -744,6 +772,7 @@ fn main() {
                 .after(keybinds::bind_menu_system)
                 .after(classic_hud::classic_hud_system),
         )
+        .add_systems(Update, outfit_view::outfit_view_system.after(inventory_screen::inventory_screen_system))
         .add_systems(
             Update,
             abilities::abilities_system.before(dynlight::aug_light_system),
@@ -1465,7 +1494,7 @@ fn fly(
     // Leaning rolls the view: ViewRotation.Roll = curLeanDist * 20 (Unreal units).
     // ViewShake adds its own roll and eye bob (PlayerPawn.ViewShake).
     let (shake_roll, shake_vert) = crate::shake::tick(time.delta_secs());
-    let roll = ((player.lean * 20.0 + shake_roll) / 65536.0 * std::f64::consts::TAU) as f32;
+    let roll = (((player.lean + player.peek) * 20.0 + shake_roll) / 65536.0 * std::f64::consts::TAU) as f32;
     tf.rotation = Quat::from_rotation_y(cam.yaw)
         * Quat::from_rotation_x(cam.pitch)
         * Quat::from_rotation_z(-roll);
@@ -1750,7 +1779,46 @@ fn fly(
                     < 1.0;
                 (!blocked && floor).then_some(to)
             };
-            if can_lean && input != 0.0 {
+            if crate::settings::get("SmoothLean") > 0.5 {
+                // Enhancement (Smooth Leaning): eases in and out instead of the fixed 80 units/s slide, works while
+                // crouch-walking, and where the body can't slide any further (a wall at the corner) the eyes go on
+                // as far as there's room for them, so you can peek past it.
+                let crouch_ok = player.crouched
+                    && player.body.velocity.truncate().length() < 130.0
+                    && player.body.physics == Physics::Walking;
+                let target = if can_lean || crouch_ok { input * 40.0 } else { 0.0 };
+                let total = player.lean + player.peek;
+                let mut want = total + (target - total) * (1.0 - (-9.0 * dtl).exp());
+                if (target - want).abs() < 0.3 {
+                    want = target;
+                }
+                let step = want.clamp(-40.0, 40.0) - player.lean;
+                if step.abs() > 1e-6 {
+                    let loc = player.body.location;
+                    let moved = try_move(loc, step).map(|to| (to, step)).or_else(|| try_move(loc, step * 0.5).map(|to| (to, step * 0.5)));
+                    if let Some((to, by)) = moved {
+                        player.body.location = to;
+                        player.lean += by;
+                    }
+                }
+                let rest = want - player.lean;
+                player.peek = if rest.abs() > 0.1 && target != 0.0 {
+                    let eye = player.body.location + DVec3::new(0.0, 0.0, player.eye_height);
+                    let f = imsim_core::movement::CollisionWorld::trace(&world, eye, eye + right * rest, DVec3::splat(5.0)).fraction;
+                    rest * (f - 0.05).max(0.0)
+                } else if target == 0.0 {
+                    rest * (-9.0 * dtl).exp()
+                } else {
+                    0.0
+                };
+                if player.peek.abs() < 0.1 {
+                    player.peek = 0.0;
+                }
+                if player.lean.abs() < 0.1 && target == 0.0 {
+                    player.lean = 0.0;
+                }
+            } else if can_lean && input != 0.0 {
+                player.peek = 0.0;
                 let alpha = 40.0 * input * 2.0 * dtl;
                 if (player.lean + alpha).abs() < 40.0 {
                     if let Some(to) = try_move(player.body.location, alpha) {
@@ -1958,7 +2026,9 @@ fn fly(
                 .view
                 .swim_bob(time.elapsed_secs_f64(), vel, ru.normalize_or_zero());
         }
-        let l = player.body.location + player.view.camera_offset();
+        let l = player.body.location
+            + player.view.camera_offset()
+            + DVec3::new(ru.x, ru.y, 0.0).normalize_or_zero() * player.peek;
         let eye = ue_to_bevy([l.x as f32, l.y as f32, l.z as f32]);
         tf.translation = Vec3::from(eye);
         sky.rotation = tf.rotation;

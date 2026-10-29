@@ -92,6 +92,25 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("InventorySort", 0.0),
     ("PersistentDebris", 0.0),
     ("DiscordPresence", 1.0),
+    // v2 medium enhancements (all off unless noted).
+    ("DTSEnergy", 0.0),
+    ("BodyAlarms", 0.0),
+    ("ThrownNoise", 0.0),
+    ("SurfaceFootsteps", 0.0),
+    ("WeaponInertia", 0.0),
+    ("FlashlightCone", 0.0),
+    ("BulletPenetration", 0.0),
+    ("SmoothLean", 0.0),
+    ("MeleeArc", 0.0),
+    // Mods (used only while the mod is on in the launcher): New Vision textures, HDTP item / decoration models,
+    // HDTP characters. Taken up when the next map loads.
+    ("HDTextures", 1.0),
+    ("HDModels", 1.0),
+    ("HDCharacters", 1.0),
+    // Augmentique: NPC outfits (iEquipNPCs: 0 none, 1 all but unique characters, 2 everyone); every outfit open
+    // from the start even when GMDX Augmented's maps can be searched for them.
+    ("AugNPCs", 1.0),
+    ("AugAllOutfits", 0.0),
     // Lay D Denton: Human.bGaveNewGameTips (the checkbox tip is shown once).
     ("LDDPGaveNewGameTips", 0.0),
     // DualSense (ROADMAP Phase 0.3): light bar 0 off / 1 health; player LEDs 0 energy meter / 1 player one / 2 off;

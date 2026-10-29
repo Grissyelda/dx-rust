@@ -36,6 +36,9 @@ pub struct ViewModelCam;
 #[derive(Component)]
 pub struct ViewModelRoot;
 
+/// GMDX's inertiaSpeed (Flare's default; the lerp rate per second for Viewmodel Inertia).
+const INERTIA_SPEED: f32 = 30.0;
+
 #[derive(Debug, Clone)]
 pub struct WeaponStats {
     /// Weapon ShakeTime, ShakeMag, ShakeVert (the kick on firing).
@@ -437,6 +440,87 @@ pub struct Held {
     /// Reload state script position: 0 ReloadBegin, 1 looping Reload, 2 ReloadEnd.
     pub phase: u8,
     pub flash: Option<Entity>,
+    /// Visible Attachments / HDTP: what the view model was built showing (rebuilt when a mod is fitted, the laser
+    /// toggled, the ammo changed or the clip ran dry); None for meshes neither mod has.
+    pub vis: Option<String>,
+}
+
+impl Held {
+    /// What a Visible Attachments view model should show now.
+    pub fn fitted(&self) -> crate::visattach::Fitted {
+        Self::fitted_of(&self.stats, self.lasing)
+    }
+    pub fn fitted_of(stats: &WeaponStats, lasing: bool) -> crate::visattach::Fitted {
+        crate::visattach::Fitted {
+            silencer: stats.silenced,
+            laser: stats.has_laser,
+            lasing,
+            scope: stats.has_scope && stats.class != "WeaponRifle",
+        }
+    }
+}
+
+/// The class defaults for a view mesh drawn by a mod, and the muzzle-flash section (HDTP): a Visible Attachments
+/// mesh drops the class's MultiSkins (they're for the pickup / third-person layout) and masks the sections of mods
+/// not fitted; an HDTP weapon takes what its RenderOverlays sets before Super.RenderOverlays.
+fn view_defaults(
+    stats: &WeaponStats,
+    defaults: &[Property],
+    f: crate::visattach::Fitted,
+    loaded: bool,
+) -> Option<(Vec<Property>, Option<u32>)> {
+    let strip = |d: &[Property]| -> Vec<Property> { d.iter().filter(|p| !p.name.eq_ignore_ascii_case("MultiSkins")).cloned().collect() };
+    let st = crate::hdtp::WeaponState {
+        scope: stats.has_scope,
+        silencer: f.silencer,
+        laser: f.laser,
+        lasing: f.lasing,
+        ammo: stats.ammo_class.iter().cloned().collect(),
+        loaded,
+    };
+    // Augmentique: the weapon skin chosen for this class fills the slots left empty (ApplyWeaponSkin).
+    let skin = crate::augmentique::player_skin(&stats.class);
+    if let Some((skins, muzzle)) = crate::hdtp::view_skins(&stats.class, &stats.view_mesh, &st) {
+        // The class's own MultiSkins stay unless RenderOverlays sets the slot.
+        let mut d = defaults.to_vec();
+        crate::visattach::apply_skins(&mut d, &skins);
+        return Some((d, muzzle));
+    }
+    if let Some(skins) = crate::visattach::skins_for(&stats.view_mesh, f) {
+        let mut d = strip(defaults);
+        crate::augmentique::apply_weapon_skin(&mut d, &stats.class, &skin, true);
+        crate::visattach::apply_skins(&mut d, &skins);
+        return Some((d, None));
+    }
+    let mut d = defaults.to_vec();
+    crate::augmentique::apply_weapon_skin(&mut d, &stats.class, &skin, true);
+    // A dark Dragon's Tooth (GMDX SetWeaponSkin with the charge used up): the blade sections masked out.
+    if stats.class == "WeaponNanoSword" && DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed) {
+        let off: Vec<(u32, String)> = [1u32, 4, 5, 6, 7]
+            .iter()
+            .map(|&i| (i, "DeusExItems.Skins.PinkMaskTex".to_string()))
+            .chain(std::iter::once((2, "DeusExItems.Skins.BlackMaskTex".to_string())))
+            .collect();
+        crate::visattach::apply_skins(&mut d, &off);
+    }
+    Some((d, None))
+}
+
+/// Enhancement: the Dragon's Tooth runs on bioenergy (setting DTSEnergy).
+pub fn dts_energy() -> bool {
+    crate::settings::get("DTSEnergy") > 0.5
+}
+
+/// Bioenergy a Dragon's Tooth blow takes (GMDX chargePerUse 5 of 100).
+const DTS_DRAIN: f32 = 5.0;
+
+/// The Dragon's Tooth blade is dark (no bioenergy left, with DTSEnergy on): set by weapon_system.
+static DTS_EMPTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The key `Held::vis` compares.
+fn vis_key(f: crate::visattach::Fitted, stats: &WeaponStats, loaded: bool) -> String {
+    let dts = stats.class == "WeaponNanoSword" && DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed);
+    format!("{f:?}|{:?}|{loaded}|{}|{dts}", stats.ammo_class, crate::augmentique::player_skin(&stats.class))
 }
 
 /// Rounds loaded in each weapon class (kept when switching weapons).
@@ -832,7 +916,9 @@ pub fn spawn_mesh_parts(
         )
     };
     let mut handles = Vec::new();
+    // Mesh skins may come from an HD texture mod (New Vision): hd_scope is on while each part's image loads.
     for part in &parts {
+        assets.lib.hd_scope = true;
         let tex_path = part.texture.map(|i| tex_paths[i].clone());
         // PF_Masked mesh sections: palette index 0 is see-through even if the texture itself isn't flagged masked
         // (otherwise it shows as the palette's purple, e.g. the third-person combat knife).
@@ -870,6 +956,7 @@ pub fn spawn_mesh_parts(
                 })
             })
             .clone();
+        assets.lib.hd_scope = false;
         let pos: Vec<[f32; 3]> = part.positions.iter().map(|p| map(*p)).collect();
         let nrm: Vec<[f32; 3]> = part
             .normals
@@ -910,6 +997,7 @@ pub fn spawn_mesh_parts(
 fn build_held(
     stats: WeaponStats,
     defaults: &[Property],
+    loaded: Option<u32>,
     assets: &mut RuntimeAssets,
     images: &mut Assets<Image>,
     meshes: &mut Assets<Mesh>,
@@ -917,6 +1005,12 @@ fn build_held(
     commands: &mut Commands,
     root: Entity,
 ) -> Option<Held> {
+    let probe = Held::fitted_of(&stats, false);
+    let loaded = loaded.unwrap_or(stats.reload_count) > 0;
+    let vd = view_defaults(&stats, defaults, probe, loaded);
+    let vis = vd.as_ref().map(|_| vis_key(probe, &stats, loaded));
+    let muzzle_slot = vd.as_ref().and_then(|v| v.1);
+    let defaults = vd.as_ref().map(|v| v.0.as_slice()).unwrap_or(defaults);
     let (m, parts, handles) = spawn_mesh_parts(
         &stats.view_mesh.clone(),
         stats.view_scale,
@@ -941,6 +1035,7 @@ fn build_held(
             &parts,
             &handles,
             Some(RenderLayers::layer(VIEW_LAYER)),
+            muzzle_slot.map(|m| (m, crate::hdtp::muzzle_textures(stats.automatic))),
         )
     } else {
         None
@@ -985,6 +1080,7 @@ fn build_held(
         relight: 0.0,
         phase: 0,
         flash,
+        vis,
         using: false,
         lasing: false,
         pending_throw: None,
@@ -998,6 +1094,117 @@ fn build_held(
         melee_pending: false,
         flame_shots: 0,
     })
+}
+
+/// Visible Attachments: rebuild the view model's sections when a mod is fitted to the weapon in hand or its laser
+/// is switched (the animation and weapon state carry on).
+#[allow(clippy::too_many_arguments)]
+pub fn visattach_refit_system(
+    mut commands: Commands,
+    mut weapons: ResMut<Weapons>,
+    mut assets: ResMut<RuntimeAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    root: Single<Entity, With<ViewModelRoot>>,
+    children: Query<&Children>,
+    clips: Res<Clips>,
+    mut dev: Local<bool>,
+) {
+    // Dev aid: DXVIEW_WEAPON_MODS="WeaponPistol=scope,laser,silencer,lasing;..." fits mods at start.
+    if !*dev {
+        *dev = true;
+        if let Ok(v) = std::env::var("DXVIEW_WEAPON_MODS") {
+            for one in v.split(';') {
+                if let Some((c, list)) = one.split_once('=') {
+                    let m = weapons.mods.entry(c.trim().to_string()).or_default();
+                    m.scope |= list.contains("scope");
+                    m.laser |= list.contains("laser");
+                    m.silencer |= list.contains("silencer");
+                }
+            }
+        }
+    }
+    let lasing_dev = std::env::var("DXVIEW_WEAPON_MODS").is_ok_and(|v| v.contains("lasing"));
+    let w = &mut *weapons;
+    if lasing_dev {
+        if let Some(h) = w.held.as_mut() {
+            h.lasing = h.stats.has_laser;
+        }
+    }
+    let Some(h) = w.held.as_mut() else { return };
+    let Some(old) = h.vis.clone() else { return };
+    // A mod fitted to the weapon in hand (inventory screen) shows at once (WeaponMod.ApplyMod sets the flag on the
+    // weapon itself).
+    if let Some(m) = w.mods.get(&h.stats.class) {
+        h.stats.has_scope |= m.scope;
+        h.stats.silenced |= m.silencer;
+        h.stats.has_laser |= m.laser;
+    }
+    let now = h.fitted();
+    let loaded = clips.0.get(&h.stats.class).copied().unwrap_or(h.stats.reload_count) > 0;
+    let key = vis_key(now, &h.stats, loaded);
+    if key == old {
+        return;
+    }
+    let base = assets.classes.defaults(&h.stats.class);
+    let Some((d, muzzle_slot)) = view_defaults(&h.stats, &base, now, loaded) else { return };
+    let Some((_, parts, handles)) = spawn_mesh_parts(
+        &h.stats.view_mesh.clone(),
+        h.stats.view_scale,
+        &d,
+        &mut assets,
+        &mut images,
+        &mut meshes,
+        &mut materials,
+        &mut commands,
+        *root,
+        &view_to_cam,
+        Some(RenderLayers::layer(VIEW_LAYER)),
+    ) else {
+        return;
+    };
+    // The old sections go (the new ones aren't children yet: their commands are still queued).
+    if let Ok(ch) = children.get(*root) {
+        for c in ch.iter() {
+            commands.entity(c).despawn();
+        }
+    }
+    // Pose the new sections where the old ones were this frame.
+    for (pi, hm) in handles.iter().enumerate() {
+        let f = h.clip.frame();
+        if let Some(mut mm) = meshes.get_mut(hm) {
+            let pos: Vec<[f32; 3]> = parts[pi]
+                .vert_ids
+                .iter()
+                .map(|&v| {
+                    let p = h.mesh.sample(h.clip.start, h.clip.frames, f, v as usize);
+                    let sc = h.stats.view_scale;
+                    view_to_cam([p[0] * sc, p[1] * sc, p[2] * sc])
+                })
+                .collect();
+            mm.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+        }
+    }
+    h.flash = if h.stats.muzzle_flash {
+        add_muzzle_flash(
+            &mut commands,
+            &mut assets,
+            &mut images,
+            &mut materials,
+            *root,
+            &parts,
+            &handles,
+            Some(RenderLayers::layer(VIEW_LAYER)),
+            muzzle_slot.map(|m| (m, crate::hdtp::muzzle_textures(h.stats.automatic))),
+        )
+    } else {
+        None
+    };
+    h.parts = parts;
+    h.handles = handles;
+    h.relight = 0.0;
+    h.vis = Some(key);
 }
 
 /// Number keys pick a belt slot; weapons are raised, the previous one lowered first.
@@ -1056,6 +1263,7 @@ pub fn select_system(
             if let Some(h) = build_held(
                 stats,
                 &d,
+                None,
                 &mut a,
                 &mut images,
                 &mut meshes,
@@ -1192,9 +1400,11 @@ pub fn select_system(
                     }
                 }
                 let mut a = assets;
+                let loaded = clips.0.get(&class).copied();
                 if let Some(h) = build_held(
                     stats,
                     &d,
+                    loaded,
                     &mut a,
                     &mut images,
                     &mut meshes,
@@ -1208,6 +1418,48 @@ pub fn select_system(
             }
         }
     }
+}
+
+/// Enhancement (Bullets Through Thin Walls, setting BulletPenetration): a shot that hit the level at `at` going
+/// `dir` passes through when the surface is wood (16 units, half damage; sabot 0.75) - a BSP face in the Wood
+/// texture group or a mover with wood fragments - or a glass mover (8 units, 0.8), with open space that far behind.
+/// Returns where it comes out and the damage kept.
+pub fn penetrate(level: &dx_level::Level, rts: &[crate::movers::MoverRt], at: DVec3, dir: DVec3, sabot: bool) -> Option<(DVec3, f32)> {
+    if crate::settings::get("BulletPenetration") < 0.5 {
+        return None;
+    }
+    let wood = (16.0, if sabot { 0.75 } else { 0.5 });
+    let glass = (8.0, 0.8);
+    let mover = crate::movers::mover_on_line(level, rts, at - dir * 2.0, at + dir * 2.0).map(|(i, _)| i);
+    let (thick, keep) = match mover {
+        Some(i) => {
+            let props = &level.actors[level.movers[i].actor].props;
+            let frag = crate::sound::prop(props, "FragmentClass").unwrap_or_default().to_ascii_lowercase();
+            if frag.ends_with("glassfragment") {
+                glass
+            } else if frag.ends_with("woodfragment") {
+                wood
+            } else {
+                return None;
+            }
+        }
+        None => {
+            let n = -dir;
+            match level.wall_group(at.to_array(), n.to_array()).map(|g| g.to_ascii_lowercase()) {
+                // Glass in the level itself is bulletproof in Deus Ex (BulletProofHit); only glass movers let it by.
+                Some(g) if g == "wood" => wood,
+                _ => return None,
+            }
+        }
+    };
+    // From `thick` behind the face back toward it: open space there and a back face on the way = thin enough.
+    let world = World { level, blockers: &[], ignore: None, pushable: None, movers: Some(rts) };
+    let from = at + dir * thick;
+    let back = world.trace(from, at + dir * 0.25, DVec3::ZERO);
+    if back.fraction <= 0.001 || back.fraction >= 1.0 {
+        return None;
+    }
+    Some((from + (at + dir * 0.25 - from) * back.fraction, keep))
 }
 
 /// Distance-scaled spread like DeusExWeapon.TraceFire: the end point is jittered by accuracy * 1000 units.
@@ -1281,6 +1533,7 @@ pub fn weapon_system(
     ),
 ) {
     let _prof = crate::prof::scope("weapons::weapon_system");
+    DTS_EMPTY.store(dts_energy() && ph.energy < 1.0, std::sync::atomic::Ordering::Relaxed);
     let dt = time.delta_secs();
     // What pawns see the player doing (reactions.rs): a weapon out (BringUp's WeaponDrawn), a tool at work on a lock
     // or a device (MegaFutz).
@@ -1403,6 +1656,26 @@ pub fn weapon_system(
         h.stats.view_offset[2] * k + up,
     ];
     root.translation = Vec3::from(view_to_cam(off));
+    // GMDX (Sarge) CalcDrawOffset "Viewmodel Inertia" (setting WeaponInertia): the world-space draw offset eases
+    // toward where it should be at deltaTime x inertiaSpeed, so the weapon trails the view when turning. Not while
+    // zoomed or reloading; snaps back when it falls more than 40 units behind or the weapon changes.
+    {
+        static CACHED: std::sync::Mutex<Option<(String, Vec3)>> = std::sync::Mutex::new(None);
+        let world = cam.rotation * root.translation;
+        if let Ok(mut c) = CACHED.lock() {
+            let on = crate::settings::get("WeaponInertia") > 0.5 && zoom.0.is_none() && h.state != WState::Reloading;
+            let mut now = world;
+            if on {
+                if let Some((cls, v)) = c.as_ref() {
+                    if *cls == h.stats.class && v.distance(world) <= 40.0 * METERS_PER_UNIT {
+                        now = v.lerp(world, (dt * INERTIA_SPEED).min(1.0));
+                    }
+                }
+                root.translation = cam.rotation.inverse() * now;
+            }
+            *c = Some((h.stats.class.clone(), now));
+        }
+    }
 
     h.clip.t += dt;
     h.timer -= dt;
@@ -1541,6 +1814,10 @@ pub fn weapon_system(
         && h.clip.t * h.clip.rate >= h.clip.frames as f32 * 0.5
     {
         h.melee_pending = false;
+        // Enhancement: each Dragon's Tooth swing costs bioenergy (GMDX WeaponNanoSword.DrainPower, 5 a use).
+        if h.stats.class == "WeaponNanoSword" && dts_energy() {
+            ph.energy = (ph.energy - DTS_DRAIN).max(0.0);
+        }
         let eye = bevy_to_ue(cam.translation.to_array());
         let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
         let f = cam.forward().as_vec3();
@@ -1624,6 +1901,40 @@ pub fn weapon_system(
                         attacker: None,
                         attacker_pos: player.body.location,
                     });
+                }
+            }
+        }
+        // Enhancement (Melee Sweeps An Arc, setting MeleeArc): the blow also catches whatever stands within 25
+        // degrees either side of the aim (traces at 12.5 and 25 degrees), each thing once, at three quarters damage.
+        if crate::settings::get("MeleeArc") > 0.5 && bird.is_none() {
+            let mut done: Vec<usize> = hit.actor.into_iter().collect();
+            let dt_name = h.stats.damage_type(h.stats.ammo_class.as_deref());
+            let dmg = h.stats.hit_damage * h.stats.damage_mult() * 0.75;
+            for deg in [12.5f64, -12.5, 25.0, -25.0] {
+                let (s, c) = deg.to_radians().sin_cos();
+                let d = DVec3::new(fw.x * c - fw.y * s, fw.x * s + fw.y * c, fw.z).normalize();
+                let side = world.trace(eye, eye + d * range, DVec3::splat(0.5));
+                let Some(b) = side.actor.filter(|b| side.fraction < 1.0 && !done.contains(b)) else { continue };
+                done.push(b);
+                let at = eye + d * range * side.fraction;
+                let props = &level.0.actors[blockers.list[b].actor].props;
+                if find(props, "GroundSpeed").is_some() {
+                    if h.stats.penetrating && find(props, "EMPHitPoints").is_none() {
+                        blood.0.push((at - d, d));
+                    }
+                    if let Some(snd) = &h.stats.snd.misc[0] {
+                        crate::sound::play_player(snd, 1.0, 1024.0);
+                    }
+                    pawn_hits.0.push(crate::damage::PawnHit {
+                        blocker: b,
+                        damage: dmg,
+                        damage_type: dt_name,
+                        hit_loc: at,
+                        attacker: None,
+                        attacker_pos: player.body.location,
+                    });
+                } else {
+                    deco_hits.0.push(crate::destruct::DecoHit { blocker: b, damage: dmg, damage_type: dt_name });
                 }
             }
         }
@@ -1924,6 +2235,10 @@ pub fn weapon_system(
                 h.phase = 1;
             }
         }
+    } else if h.state == WState::Idle && locked && pulled && h.stats.class == "WeaponNanoSword" && dts_energy() && ph.energy < 1.0 {
+        // Enhancement (Dragon's Tooth energy, after GMDX's ChargeManager): no bioenergy, no blade.
+        hud.text = "Not enough bioelectric energy".into();
+        hud.time_left = 1.5;
     } else if h.state == WState::Idle && locked && pulled {
         let thrown = h.stats.hand_to_hand && h.stats.reload_count > 0;
         let has_round = if thrown {
@@ -2219,6 +2534,42 @@ pub fn weapon_system(
                             h.stats.hit_damage * h.stats.damage_mult(),
                             crate::impacts::Source::Weapon { penetrating: h.stats.penetrating, hand_to_hand: false },
                         );
+                        // Enhancement (Bullets Through Thin Walls): on through thin wood or glass, weaker.
+                        let dt_name = h.stats.damage_type(h.stats.ammo_class.as_deref());
+                        if h.stats.penetrating && matches!(dt_name, "Shot" | "Sabot") {
+                            let at = eye + dir * range * hit.fraction;
+                            if let Some((exit, keep)) = penetrate(&level.0, &mv.rt, at, dir, dt_name == "Sabot") {
+                                let dmg = h.stats.hit_damage * h.stats.damage_mult() * keep;
+                                let hit2 = world.trace(exit + dir * 0.5, end, DVec3::splat(0.5));
+                                let at2 = exit + dir * 0.5 + (end - exit - dir * 0.5) * hit2.fraction;
+                                if hit2.fraction < 1.0 {
+                                    match hit2.actor {
+                                        None => {
+                                            crate::movers::hit_line(exit, at2, dmg, dt_name);
+                                            crate::impacts::wall_hit(at2, hit2.normal, dir, dmg, crate::impacts::Source::Weapon { penetrating: true, hand_to_hand: false });
+                                        }
+                                        Some(b) => {
+                                            let a = &level.0.actors[blockers.list[b].actor];
+                                            if find(&a.props, "GroundSpeed").is_some() {
+                                                if find(&a.props, "EMPHitPoints").is_none() {
+                                                    blood.0.push((at2 - dir, dir));
+                                                }
+                                                pawn_hits.0.push(crate::damage::PawnHit {
+                                                    blocker: b,
+                                                    damage: dmg,
+                                                    damage_type: dt_name,
+                                                    hit_loc: at2,
+                                                    attacker: None,
+                                                    attacker_pos: player.body.location,
+                                                });
+                                            } else {
+                                                deco_hits.0.push(crate::destruct::DecoHit { blocker: b, damage: dmg, damage_type: dt_name });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     if let Some(b) = hit.actor {
                         let ai = blockers.list[b].actor;
@@ -2530,7 +2881,7 @@ pub fn fire_texture_system(
 pub struct MuzzleFlashPart {
     /// Seconds left to show.
     pub left: f32,
-    pub mats: [Handle<StandardMaterial>; 2],
+    pub mats: Vec<Handle<StandardMaterial>>,
 }
 
 /// DeusExWeapon.SwapMuzzleFlashTexture: weapons with a muzzle flash have a translucent, unlit slot (BlackMaskTex,
@@ -2546,15 +2897,19 @@ pub fn add_muzzle_flash(
     parts: &[MeshPart],
     handles: &[Handle<Mesh>],
     layer: Option<RenderLayers>,
+    // HDTP: the muzzle-flash section by slot and its textures (DeusExWeapon.GetMuzzleTex).
+    pick: Option<(u32, Vec<String>)>,
 ) -> Option<Entity> {
-    let i = parts
-        .iter()
-        .position(|p| p.class == SurfaceClass::Translucent && p.unlit)?;
+    let i = match &pick {
+        Some((slot, _)) => parts.iter().position(|p| p.slots.contains(slot))?,
+        None => parts.iter().position(|p| p.class == SurfaceClass::Translucent && p.unlit)?,
+    };
+    let texs: Vec<String> = match pick {
+        Some((_, t)) => t,
+        None => vec!["DeusExItems.Skins.FlatFXTex34".into(), "DeusExItems.Skins.FlatFXTex37".into()],
+    };
     let mut mats = Vec::new();
-    for t in [
-        "DeusExItems.Skins.FlatFXTex34",
-        "DeusExItems.Skins.FlatFXTex37",
-    ] {
+    for t in &texs {
         let img = image_for(assets, images, t);
         mats.push(materials.add(StandardMaterial {
             base_color_texture: img,
@@ -2571,7 +2926,7 @@ pub fn add_muzzle_flash(
         Visibility::Hidden,
         MuzzleFlashPart {
             left: 0.0,
-            mats: [mats[0].clone(), mats[1].clone()],
+            mats: mats.clone(),
         },
     ));
     if let Some(l) = layer {
@@ -2598,7 +2953,7 @@ pub fn muzzle_flash_system(
         if f.left > 0.0 {
             if *vis == Visibility::Hidden {
                 *n = n.wrapping_mul(1103515245).wrapping_add(12345);
-                mat.0 = f.mats[((*n >> 16) & 1) as usize].clone();
+                mat.0 = f.mats[((*n >> 16) as usize) % f.mats.len().max(1)].clone();
             }
             *vis = Visibility::Inherited;
             f.left -= dt;
@@ -2841,5 +3196,43 @@ pub fn activate_pickup(
         consumed,
         msg,
         spray: weapons_spray,
+    }
+}
+
+#[cfg(test)]
+mod penetrate_tests {
+    use super::*;
+
+    /// HUD_GAME=<game root> cargo test -p dxview penetrate_island -- --nocapture
+    #[test]
+    fn penetrate_island() {
+        let Ok(root) = std::env::var("HUD_GAME") else { return };
+        crate::settings::set("BulletPenetration", 1.0);
+        let level = dx_level::load_level(std::path::Path::new(&root), "01_NYC_UNATCOIsland.dx").unwrap();
+        let (mut tried, mut through) = (0, 0);
+        for w in &level.walls {
+            let g = level.floor_groups.get(w.group as usize).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+            if (g != "wood" && g != "glass") || w.normal[2].abs() > 0.3 {
+                continue;
+            }
+            let n = DVec3::from_array(w.normal);
+            let c = (DVec3::from_array(w.min) + DVec3::from_array(w.max)) * 0.5;
+            let c = c - n * (n.dot(c) - w.dist);
+            let from = c + n * 32.0;
+            let hit = level.collision.trace(from, c - n * 32.0, DVec3::ZERO);
+            if hit.fraction >= 1.0 {
+                continue;
+            }
+            let at = from + (c - n * 32.0 - from) * hit.fraction;
+            tried += 1;
+            if let Some((exit, keep)) = penetrate(&level, &[], at, -n, false) {
+                through += 1;
+                if through <= 5 {
+                    println!("{g} at {at:.0?} -> out at {exit:.0?} ({:.1} thick, keep {keep})", at.distance(exit));
+                }
+            }
+        }
+        println!("{through} of {tried} wood / glass walls let a shot through");
+        assert!(tried > 0);
     }
 }

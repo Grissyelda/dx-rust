@@ -7,7 +7,7 @@
 //! only real property names. Placed actors in a map store only the values the designer changed, so
 //! `ClassDb::actor_properties` overlays them on the class chain to get every effective value.
 
-use crate::props::{self, Property};
+use crate::props::{self, Property, Value};
 use crate::{Export, Package, Reader};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,26 @@ pub const CODE_PACKAGES: &[&str] = &[
 
 /// Mods' code packages, loaded after the game's when present (through a mod folder, paths.rs): the Lay D Denton
 /// Project's FemJC (its NPCs and JC's female carcass).
-pub const MOD_PACKAGES: &[&str] = &["FemJC"];
+pub const MOD_PACKAGES: &[&str] = &["FemJC", "Augmentique"];
+
+/// Packages opened by `ClassDb::package` (not code packages), shared process-wide.
+static SHARED: std::sync::Mutex<Option<HashMap<String, Option<std::sync::Arc<Package>>>>> = std::sync::Mutex::new(None);
+
+/// A package `ClassDb::package` found.
+pub enum PkgRef<'a> {
+    Borrowed(&'a Package),
+    Shared(std::sync::Arc<Package>),
+}
+
+impl std::ops::Deref for PkgRef<'_> {
+    type Target = Package;
+    fn deref(&self) -> &Package {
+        match self {
+            PkgRef::Borrowed(p) => p,
+            PkgRef::Shared(p) => p,
+        }
+    }
+}
 
 pub struct ClassDb {
     dir: PathBuf,
@@ -41,6 +60,49 @@ impl ClassDb {
             db.load(p);
         }
         db
+    }
+
+    /// Like `open`, but some code packages come from other files (a mod's own DeusEx.u, to read what it changes).
+    pub fn open_replacing(system_dir: &Path, replace: &[(&str, PathBuf)]) -> ClassDb {
+        let mut db = ClassDb { dir: system_dir.to_path_buf(), packages: HashMap::new(), property_names: HashSet::new(), cache: HashMap::new(), decl_cache: HashMap::new(), int_cache: HashMap::new() };
+        for (name, path) in replace {
+            if let Ok(pkg) = Package::open(path) {
+                for e in &pkg.exports {
+                    if pkg.class_name(e.class_index).ends_with("Property") {
+                        db.property_names.insert(e.name.to_ascii_lowercase());
+                    }
+                }
+                db.packages.insert(name.to_ascii_lowercase(), pkg);
+            }
+        }
+        for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES) {
+            db.load(p);
+        }
+        db
+    }
+
+    /// A package by name: a loaded code package, or another package in the System folder (or a mod's) - mesh and
+    /// texture packages such as HDTP's - opened once and shared by every ClassDb.
+    pub fn package(&self, name: &str) -> Option<PkgRef<'_>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(p) = self.packages.get(&key) {
+            return Some(PkgRef::Borrowed(p));
+        }
+        let mut guard = SHARED.lock().ok()?;
+        let cache = guard.get_or_insert_with(HashMap::new);
+        if !cache.contains_key(&key) {
+            let p = crate::paths::find_ci(&self.dir, &format!("{name}.u")).and_then(|f| Package::open(f).ok()).map(std::sync::Arc::new);
+            cache.insert(key.clone(), p);
+        }
+        cache.get(&key).cloned().flatten().map(PkgRef::Shared)
+    }
+
+    /// The class names a loaded package defines.
+    pub fn classes_in(&self, pkg: &str) -> Vec<String> {
+        self.packages
+            .get(&pkg.to_ascii_lowercase())
+            .map(|p| p.exports.iter().filter(|e| e.class_index == 0).map(|e| e.name.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn load(&mut self, name: &str) -> bool {
@@ -126,6 +188,14 @@ impl ClassDb {
 
     /// Effective defaults of `class` (searching the code packages), parents first then overrides.
     pub fn defaults(&mut self, class: &str) -> Vec<Property> {
+        let Some(pkg_name) = self.package_of(class) else { return Vec::new() };
+        let mut d = self.defaults_in(&pkg_name, class);
+        apply_class_overrides(class, &mut d);
+        d
+    }
+
+    /// Class defaults as the game's code compiled them (no override layers).
+    pub fn base_defaults(&mut self, class: &str) -> Vec<Property> {
         let Some(pkg_name) = self.package_of(class) else { return Vec::new() };
         self.defaults_in(&pkg_name, class)
     }
@@ -244,7 +314,61 @@ impl ClassDb {
         let class = map.class_name(e.class_index).to_string();
         let mut merged = self.defaults(&class);
         overlay(&mut merged, own);
+        apply_class_overrides(&class, &mut merged);
+        if let Ok(h) = INSTANCE_HOOK.read() {
+            if let Some(f) = h.as_ref() {
+                f(map.self_name.as_deref().unwrap_or(""), &class, &e.name, &mut merged);
+            }
+        }
         Some(merged)
+    }
+}
+
+/// A function that may change one placed actor's properties as a map is read: (map, class, actor name, props).
+/// Mods that dress people differently per actor use it (Augmentique's NPC outfits).
+pub type InstanceHook = Box<dyn Fn(&str, &str, &str, &mut Vec<Property>) + Send + Sync>;
+static INSTANCE_HOOK: std::sync::RwLock<Option<InstanceHook>> = std::sync::RwLock::new(None);
+
+pub fn set_instance_hook(f: Option<InstanceHook>) {
+    if let Ok(mut h) = INSTANCE_HOOK.write() {
+        *h = f;
+    }
+}
+
+/// Override layers (ours): property values set on every actor of a class - its defaults and placed actors alike,
+/// placed values included - such as the player's chosen skin on Paul (travel), a mod's meshes (HDTP, Visible
+/// Attachments). Layers are named so each owner replaces only its own: (class, property, index, value).
+static OVERRIDES: std::sync::RwLock<Vec<(String, Vec<(String, String, u32, Value)>)>> = std::sync::RwLock::new(Vec::new());
+
+/// Layers apply in a fixed order, later ones winning: the player's skins (travel), Visible Attachments, HDTP,
+/// Augmentique outfits; unknown names last.
+fn layer_rank(layer: &str) -> usize {
+    ["travel", "visibleattachments", "hdtp", "augmentique"].iter().position(|l| *l == layer).unwrap_or(99)
+}
+
+pub fn set_override_layer(layer: &str, list: Vec<(String, String, u32, Value)>) {
+    if let Ok(mut o) = OVERRIDES.write() {
+        o.retain(|(l, _)| l != layer);
+        o.push((layer.to_string(), list));
+        o.sort_by_key(|(l, _)| layer_rank(l));
+    }
+}
+
+/// The values a layer sets (for code that needs to know what a mod changed).
+pub fn override_layer(layer: &str) -> Vec<(String, String, u32, Value)> {
+    OVERRIDES.read().ok().and_then(|o| o.iter().find(|(l, _)| l == layer).map(|(_, v)| v.clone())).unwrap_or_default()
+}
+
+pub fn apply_class_overrides(class: &str, props: &mut Vec<Property>) {
+    let Ok(o) = OVERRIDES.read() else { return };
+    for (_, list) in o.iter() {
+        for (c, name, index, value) in list {
+            if !c.eq_ignore_ascii_case(class) {
+                continue;
+            }
+            props.retain(|p| !(p.name.eq_ignore_ascii_case(name) && p.index == *index));
+            props.push(Property { name: name.clone(), index: *index, value: value.clone() });
+        }
     }
 }
 

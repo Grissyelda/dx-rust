@@ -240,6 +240,12 @@ pub struct Global {
     pub takedowns: Vec<TakedownSave>,
     pub keys: Vec<(String, String)>,
     pub con: crate::consys::ConSave,
+    /// Augmentique: outfits found / worn, weapon skins.
+    #[serde(default)]
+    pub augmentique: crate::augmentique::AugSave,
+    /// GMDX perks owned (class names).
+    #[serde(default)]
+    pub perks: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -301,6 +307,11 @@ pub struct LevelSave {
     /// Actors a mission script has hidden (bHidden / out of the world).
     #[serde(default)]
     pub hidden_actors: Vec<usize>,
+    /// Enhancement (Casings And Blood Stay): blood splats and bullet holes on the level, and spent casings.
+    #[serde(default)]
+    pub decals: Vec<crate::impacts::DecalSave>,
+    #[serde(default)]
+    pub casings: Vec<(String, [f64; 3])>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -698,6 +709,8 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
         g.mods = w.mods.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         g.mods.sort_by(|a, b| a.0.cmp(&b.0));
         g.held = w.held.as_ref().map(|h| h.stats.class.clone()).filter(|c| !c.is_empty());
+        g.augmentique = crate::augmentique::save();
+        g.perks = crate::perks::save();
     }
     if let Some(a) = crate::abilities::lock().as_ref() {
         g.skills = a.skills.list.iter().map(|s| (s.def.class.clone(), s.level)).collect();
@@ -800,6 +813,22 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
                 .filter_map(|x| simple(&x.value).map(|v| (x.name.clone(), x.index, v)))
                 .collect();
             l.loose.push(LooseSave { class: p.class.clone(), location: a3(lo.pos), props });
+        }
+    }
+    if crate::settings::get("PersistentDebris") > 0.5 {
+        let mut q = world.query::<(&crate::impacts::KeepDecal, &Transform)>();
+        for (k, t) in q.iter(world) {
+            l.decals.push(crate::impacts::DecalSave {
+                tex: k.tex.clone(),
+                pos: t.translation.to_array(),
+                rot: t.rotation.to_array(),
+                size: t.scale.x,
+                hole: k.hole,
+            });
+        }
+        let mut q = world.query::<(&crate::destruct::Casing, &crate::destruct::Loose)>();
+        for (c, lo) in q.iter(world) {
+            l.casings.push((c.0.to_string(), a3(lo.pos)));
         }
     }
     {
@@ -1165,6 +1194,16 @@ fn restore_level_part(world: &mut World, s: &SaveGame, l: &LevelSave) {
                 .map(|(n, i, v)| Property { name: n.clone(), index: *i, value: unsimple(v) })
                 .collect();
             throws.0.push((it.class.clone(), v3(it.location), DVec3::ZERO, ammo, extra));
+        }
+    }
+    // ---- decals and casings (enhancement)
+    crate::impacts::restore_decals(&l.decals);
+    {
+        let mut shells = world.resource_mut::<crate::destruct::Shells>();
+        for (c, p) in &l.casings {
+            if let Some(c) = crate::destruct::casing_class(c) {
+                shells.0.push((c, v3(*p), DVec3::ZERO));
+            }
         }
     }
     // ---- doors and lifts

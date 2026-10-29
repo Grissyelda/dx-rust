@@ -237,7 +237,40 @@ pub fn loader_system(world: &mut World) {
         if let Some((sk, f, r, m)) = look {
             crate::travel::set_look(sk, f, r, m);
         }
+        // Augmentique: a fresh playthrough, or the saved one's outfits (they dress the map as it's read).
+        match &goal {
+            Goal::NewGame(_) => {
+                crate::augmentique::new_game();
+                crate::perks::new_game();
+            }
+            Goal::Load(s) => {
+                crate::augmentique::restore(s.global.augmentique.clone());
+                crate::perks::restore(&s.global.perks);
+            }
+            _ => {}
+        }
         dx_level::actors::set_overrides(crate::travel::skin_overrides(&map));
+        // The mod switches (Settings > Enhancements > Mods) take effect here: a changed one drops the read-ahead
+        // map and the cached mesh images / materials, built with the old ones.
+        {
+            static LAST: Mutex<String> = Mutex::new(String::new());
+            let key = ["HDTextures", "HDModels", "HDCharacters"].map(|k| crate::settings::get(k).to_string()).join(",");
+            let mut last = LAST.lock().unwrap();
+            if !last.is_empty() && *last != key {
+                if let Ok(mut p) = PREFETCH.lock() {
+                    *p = None;
+                }
+                if let Some(mut a) = world.get_resource_mut::<crate::weapons::RuntimeAssets>() {
+                    a.images.clear();
+                    a.materials.clear();
+                }
+            }
+            *last = key;
+        }
+        unreal_pkg::paths::set_hd_textures_on(crate::settings::get("HDTextures") > 0.5);
+        crate::hdtp::build_layer();
+        crate::visattach::apply();
+        crate::augmentique::build_layer();
         if matches!(goal, Goal::Travel(_)) {
             if let Some((level, params)) = take_prefetched(&map) {
                 println!("loader: {map} was read ahead");

@@ -95,6 +95,10 @@ pub struct LooseSound(pub [Option<String>; 2]);
 #[derive(Component)]
 pub struct LandSound(pub String, pub f32);
 
+/// Thrown (or dropped) by the player: with the Thrown Objects Make Noise enhancement its bounces are heard.
+#[derive(Component)]
+pub struct ThrownByPlayer;
+
 fn fv(p: &[Property], n: &str, d: f32) -> f32 {
     match find(p, n) {
         Some(Value::Float(v)) => *v,
@@ -165,7 +169,7 @@ fn mesh_texture(classes: &unreal_pkg::classes::ClassDb, p: &[Property]) -> Optio
     let mesh = path(p, "Mesh")?;
     let (m, pk) = dx_level::actors::load_mesh(classes, &mesh)?;
     let r = *m.textures.first()?;
-    let pkg = classes.packages.get(&pk.to_ascii_lowercase())?;
+    let pkg = classes.package(&pk)?;
     Some(if r > 0 {
         format!("{pk}.{}", pkg.object_path(r))
     } else {
@@ -646,13 +650,14 @@ pub fn loose_physics(
     time: Res<Time>,
     level: Res<LevelRes>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut q: Query<(Entity, &mut Loose, &mut Transform, Option<&LooseSound>, Option<&LandSound>)>,
+    mut q: Query<(Entity, &mut Loose, &mut Transform, Option<&LooseSound>, Option<&LandSound>, Has<ThrownByPlayer>)>,
     mut noises: ResMut<crate::stealth::Noises>,
 ) {
     let _prof = crate::prof::scope("destruct::loose_physics");
     let dt = time.delta_secs_f64().min(0.05);
     let lvl = &level.0;
-    for (e, mut l, mut tf, lsnd, land) in &mut q {
+    let thrown_noise = crate::stealth::thrown_noise();
+    for (e, mut l, mut tf, lsnd, land, thrown) in &mut q {
         if let Some(t) = l.life.as_mut() {
             *t -= dt as f32;
             if *t <= 0.0 {
@@ -678,6 +683,17 @@ pub fn loose_physics(
                 l.pos += delta * f + hit.normal * 0.1;
                 remaining *= 1.0 - f;
                 let n = hit.normal;
+                if thrown && thrown_noise && l.vel.length() > 120.0 {
+                    let speed = l.vel.length() as f32;
+                    noises.0.push(crate::stealth::Noise {
+                        pos: l.pos,
+                        volume: 1.0,
+                        radius: (300.0 + speed * 0.5).clamp(400.0, 1000.0),
+                        maker: None,
+                        instigator: Some(crate::ai::Target::Player),
+                        kind: crate::stealth::NoiseKind::Alert,
+                    });
+                }
                 if let Some(LandSound(snd, vol)) = land {
                     if n.z > 0.7 && l.vel.z <= -200.0 {
                         crate::sound::play(snd, l.pos, *vol, 768.0, 1.0);
@@ -782,6 +798,15 @@ pub fn shell_launch(
     (pos, vel)
 }
 
+/// A spent casing on the ground (its class), kept with the level by the Casings And Blood Stay enhancement.
+#[derive(Component)]
+pub struct Casing(pub &'static str);
+
+/// The casing classes shells are made of.
+pub fn casing_class(c: &str) -> Option<&'static str> {
+    ["ShellCasing", "ShellCasing2", "ShellCasingSilent"].into_iter().find(|k| k.eq_ignore_ascii_case(c))
+}
+
 pub fn shell_system(
     mut commands: Commands,
     mut shells: ResMut<Shells>,
@@ -824,7 +849,7 @@ pub fn shell_system(
             parts: Vec::new(),
             lit_at: DVec3::ZERO,
         };
-        spawn_loose(
+        if let Some(e) = spawn_loose(
             &mut commands,
             &mut assets,
             &mut images,
@@ -835,7 +860,9 @@ pub fn shell_system(
             &d,
             fv(&d, "DrawScale", 1.0),
             loose,
-        );
+        ) {
+            commands.entity(e).insert(Casing(class));
+        }
     }
 }
 
@@ -862,9 +889,9 @@ pub fn weapon_drop_system(
     let all = drops
         .0
         .drain(..)
-        .map(|(c, p)| (c, p, DVec3::new(0.0, 0.0, 50.0), None, Vec::new()))
-        .chain(player_drops);
-    for (class, pos, vel, ammo, extra) in all {
+        .map(|(c, p)| (c, p, DVec3::new(0.0, 0.0, 50.0), None, Vec::new(), false))
+        .chain(player_drops.into_iter().map(|(c, p, v, a, x)| (c, p, v, a, x, true)));
+    for (class, pos, vel, ammo, extra, by_player) in all {
         let mut d = assets.classes.defaults(&class);
         for x in extra {
             d.retain(|p| !(p.name.eq_ignore_ascii_case(&x.name) && p.index == x.index));
@@ -919,6 +946,9 @@ pub fn weapon_drop_system(
                 class: class.clone(),
                 props,
             });
+            if by_player {
+                commands.entity(ent).insert(ThrownByPlayer);
+            }
         }
     }
 }

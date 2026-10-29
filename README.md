@@ -36,8 +36,14 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   - Xbox and PlayStation button glyphs, and snap-to navigation in the menus.
 - **DualSense.** Health on the light bar, adaptive triggers for each weapon class, and rumble. Over USB, also HD
   haptics and infolinks through the pad's speaker.
-- **Lay D Denton Project support.** Play as the female JC with the community mod's voice, looks and conversations.
-  Point the launcher at the mod's folder (see below).
+- **Mod support.** Point the launcher's *Mods* page at the folders of the community mods you have, and turn on as
+  many as you like (see below):
+  - the **Lay D Denton Project** (play as the female JC, with her voice, looks and conversations);
+  - **HDTP** (high-definition models) and **New Vision** (high-resolution world textures), each with a switch in
+    Settings;
+  - **Visible Attachments** (scopes, lasers and silencers drawn on the weapons);
+  - **Augmentique** (outfits for JC and the people of the world, and weapon skins);
+  - **GMDX: Augmented Edition** (perks bought with skill points on the Skills screen).
 - **Smooth lip sync.** Mouths blend between sounds and close gently, and people blink visibly. The timings follow
   Joe Wintergreen's lipsync mod, and there's a switch in Enhancements to turn it off.
 - **Optional extras:**
@@ -71,13 +77,21 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
 4. Add `dxrust.sh` (or `dxlauncher`) to Steam as a *Non-Steam Game* to play from Game Mode. Use Steam Input's
    *Gamepad* template.
 
-### Lay D Denton (optional)
-1. Download the [Lay D Denton Project](https://www.moddb.com/mods/the-lay-d-denton-project) and unzip it.
-2. In the launcher, click **Lay D Denton...** and choose the mod's folder. Right-click it to turn it off again.
-3. Start a new game and use the portrait arrows. Every other face is the female JC. Tick *Original Morpheus?* or
-   *Original Interactions?* if you want the original versions of those.
+### Mods (optional)
+1. Download the mods you want and unzip each one into its own folder:
+   [Lay D Denton Project](https://www.moddb.com/mods/the-lay-d-denton-project),
+   [HDTP](https://www.moddb.com/mods/project-hdtp),
+   [New Vision](https://www.moddb.com/mods/deus-ex-new-vision),
+   [Augmentique](https://www.moddb.com/mods/augmentique),
+   [GMDX](https://www.moddb.com/mods/gmdx) (Augmented Edition), and Visible Attachments.
+2. On the launcher's **Mods** page, click a mod's button and choose its folder. Right-click it to turn it off again.
+3. For Lay D Denton, start a new game and use the portrait arrows: every other face is the female JC. Tick
+   *Original Morpheus?* or *Original Interactions?* if you want the original versions of those.
+4. HDTP's models and New Vision's textures can be switched on and off in *Settings > Enhancements > Mods*.
 
-The mod's files stay in their own folder: nothing in your Deus Ex install is changed.
+The mods' files stay in their own folders: nothing in your Deus Ex install is changed, and DX RUST includes none
+of them. GMDX's own copy of the game code isn't run: its perks are rewritten in Rust and read their names, numbers
+and icons from your copy of the mod.
 
 ## Building from source
 You need Rust (stable) and, on Windows, the Visual Studio C++ build tools.
@@ -117,11 +131,13 @@ were on and what you did.
   Ion Storm.
 - *Deus Ex* is a trademark of its owners. All game content (maps, art, audio, text) belongs to them and is read
   from your own copy at run time.
-- The Lay D Denton Project belongs to its authors and is used with their permission. Its files aren't
-  redistributed here.
+- The Lay D Denton Project belongs to its authors and is used with their permission. HDTP, New Vision, Visible
+  Attachments, Augmentique and GMDX belong to their authors. No mod's files are redistributed here.
 - DX RUST's own source code is licensed under the **GNU GPL v3.0 or later** (see [LICENSE](LICENSE)).
 
 ## Credits
 - Ion Storm Austin, for Deus Ex.
 - The Lay D Denton Project team, for the mod and permission to support it.
+- The HDTP team, the New Vision team, the authors of Visible Attachments, Augmentique and GMDX (CyberP, and Sarge and
+  the Augmented Edition team), for their mods.
 - The Bevy, egui, gilrs and hidapi projects, and the Rust community.

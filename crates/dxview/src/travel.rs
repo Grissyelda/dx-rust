@@ -168,7 +168,7 @@ pub fn skin() -> u8 {
 }
 
 /// JCDentonTex0 / 4 / 5 / 6 / 7 (JCDentonMale.TravelPostAccept); PaulDentonTex likewise.
-fn skin_tex(base: &str) -> String {
+pub(crate) fn skin_tex(base: &str) -> String {
     let n = match skin() {
         0 => 0,
         k => k as u32 + 3,
@@ -197,12 +197,28 @@ pub fn female_skins() -> [String; 8] {
 }
 
 /// JC's third-person mesh: GM_Trench, or GFM_Trench for Lay D Denton.
-pub fn jc_mesh() -> &'static str {
-    if female() {
-        "DeusExCharacters.GFM_Trench"
-    } else {
-        "DeusExCharacters.GM_Trench"
+pub fn jc_mesh() -> String {
+    // Augmentique: the outfit's body.
+    if let Some(m) = crate::augmentique::player_mesh() {
+        return m;
     }
+    jc_base_mesh()
+}
+
+/// JC's mesh without an Augmentique outfit.
+pub fn jc_base_mesh() -> String {
+    if female() {
+        return "DeusExCharacters.GFM_Trench".into();
+    }
+    // HDTP's JC (its HD characters switch on): the "hdtp" class layer has his mesh.
+    for (c, n, _, v) in unreal_pkg::classes::override_layer("hdtp") {
+        if c.eq_ignore_ascii_case("JCDentonMale") && n.eq_ignore_ascii_case("Mesh") {
+            if let unreal_pkg::props::Value::Path(m) = v {
+                return m;
+            }
+        }
+    }
+    "DeusExCharacters.GM_Trench".into()
 }
 
 /// The first-person hands for Lay D Denton (JCDentonMale.RenderOverlays): the weapons' WeaponHandsTex and the
@@ -321,6 +337,14 @@ pub fn skin_overrides(map: &str) -> Vec<(String, String, u32, unreal_pkg::props:
 /// JCDentonMale's defaults with the chosen face (the third-person JC in conversations and his death); Lay D
 /// Denton's skins, mesh and carcass when she's the one playing.
 pub fn jc_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unreal_pkg::props::Property> {
+    let mut d = jc_base_defaults(classes);
+    // Augmentique: the outfit he has on.
+    crate::augmentique::dress_player(&mut d, false);
+    d
+}
+
+/// jc_defaults without an Augmentique outfit (its "default" textures are these).
+pub fn jc_base_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unreal_pkg::props::Property> {
     use unreal_pkg::props::{Property, Value};
     let mut d = classes.defaults("JCDentonMale");
     if female() {
@@ -328,7 +352,7 @@ pub fn jc_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unreal_pkg
         for (i, t) in female_skins().into_iter().enumerate() {
             d.push(Property { name: "MultiSkins".into(), index: i as u32, value: Value::Path(t) });
         }
-        d.push(Property { name: "Mesh".into(), index: 0, value: Value::Path(jc_mesh().into()) });
+        d.push(Property { name: "Mesh".into(), index: 0, value: Value::Path(jc_base_mesh()) });
         d.push(Property { name: "CarcassType".into(), index: 0, value: Value::Path("FemJC.JCDentonFemaleCarcass".into()) });
         return d;
     }

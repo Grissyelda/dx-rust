@@ -415,6 +415,8 @@ pub struct MirrorBody {
     lit_at: f32,
     /// The weapon in JC's hand (its ThirdPersonMesh on the hand's attachment triangle): class, root, scale.
     held: Option<(String, Entity, f32, Vec<dx_level::actors::MeshPart>, Vec<Handle<Mesh>>)>,
+    /// augmentique::generation() when built (a new outfit rebuilds him).
+    gen: u64,
 }
 
 #[derive(Resource, Default)]
@@ -437,7 +439,15 @@ pub fn mirror_body_system(
     // Something else shows JC (conversation puppet, death), or no mirror reflecting: hide.
     // DXVIEW_MIRROR_BODY=1: show him under a flying camera too (screenshot tests).
     let test = std::env::var("DXVIEW_MIRROR_BODY").is_ok();
-    let show = mirrors.active.is_some() && (test || !player.noclip) && !crate::consys::third_person() && !crate::cinematic::active();
+    // Augmentique's outfits screen shows him too (outfit_view.rs).
+    let outfits = crate::outfit_view::open();
+    let show = (outfits || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active();
+    if let Some(b) = body.0.as_ref() {
+        if b.gen != crate::augmentique::generation() {
+            commands.entity(b.root).despawn();
+            body.0 = None;
+        }
+    }
     if !show {
         if let Some(b) = body.0.as_ref() {
             if let Ok(mut v) = vis.get_mut(b.root) {
@@ -452,7 +462,7 @@ pub fn mirror_body_system(
         let root = commands.spawn((Transform::default(), Visibility::default())).id();
         let map = |p: [f32; 3]| dx_level::ue_to_bevy(p);
         match crate::weapons::spawn_mesh_parts(
-            crate::travel::jc_mesh(),
+            &crate::travel::jc_mesh(),
             1.0,
             &d,
             &mut assets,
@@ -474,12 +484,19 @@ pub fn mirror_body_system(
                     t: 0.0,
                     lit_at: -1.0,
                     held: None,
+                    gen: crate::augmentique::generation(),
                 });
             }
             None => {
+                if std::env::var("DXVIEW_BODYLOG").is_ok() {
+                    println!("mirror body: no mesh {}", crate::travel::jc_mesh());
+                }
                 commands.entity(root).despawn();
                 return;
             }
+        }
+        if std::env::var("DXVIEW_BODYLOG").is_ok() {
+            println!("mirror body: built {}", crate::travel::jc_mesh());
         }
     }
     let Some(b) = body.0.as_mut() else { return };
@@ -532,13 +549,27 @@ pub fn mirror_body_system(
         b.lit_at = time.elapsed_secs();
     }
     // The weapon in hand (a thrown or put-away one leaves the hand empty).
-    let want_w = weapons.held.as_ref().and_then(|h| h.stats.third_mesh.clone().map(|m| (h.stats.class.clone(), m, h.stats.third_scale)));
+    // Keyed by class and (Visible Attachments) what's fitted, so a new mod shows in the reflection too.
+    let want_w = weapons.held.as_ref().and_then(|h| {
+        let fitted = h.fitted();
+        h.stats.third_mesh.clone().map(|m| (format!("{}#{:?}#{}", h.stats.class, h.vis.as_ref().map(|_| fitted), crate::augmentique::player_skin(&h.stats.class)), m, h.stats.third_scale, h.stats.class.clone(), fitted))
+    });
     if b.held.as_ref().map(|h| &h.0) != want_w.as_ref().map(|w| &w.0) {
         if let Some((_, e, ..)) = b.held.take() {
             commands.entity(e).despawn();
         }
-        if let Some((class, mesh, scale)) = want_w {
-            let d = assets.classes.defaults(&class);
+        if let Some((key, mesh, scale, class, fitted)) = want_w {
+            let mut d = assets.classes.defaults(&class);
+            let st = crate::hdtp::WeaponState { scope: fitted.scope, silencer: fitted.silencer, laser: fitted.laser, lasing: fitted.lasing, ammo: Vec::new(), loaded: true };
+            if let Some(skins) = crate::hdtp::world_skins(&class, &st) {
+                crate::visattach::apply_skins(&mut d, &skins);
+            } else if let Some(skins) = crate::visattach::skins_for(&mesh, fitted) {
+                d.retain(|p| !p.name.eq_ignore_ascii_case("MultiSkins"));
+                crate::visattach::apply_skins(&mut d, &skins);
+            }
+            // Augmentique: his weapon skin (fills the slots still empty).
+            crate::augmentique::apply_weapon_skin(&mut d, &class, &crate::augmentique::player_skin(&class), false);
+            let class = key;
             let root = commands.spawn((Transform::default(), Visibility::Inherited)).id();
             commands.entity(b.root).add_child(root);
             let map = |p: [f32; 3]| dx_level::ue_to_bevy(p);

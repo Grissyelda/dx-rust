@@ -32,6 +32,17 @@ the player's own install at run time.
 The Lay D Denton Project belongs to its authors and is supported with their permission. DX RUST includes none of
 its files: it reads them from the folder the player chooses.
 
+## Other supported mods
+HDTP, New Vision, Visible Attachments, Augmentique and GMDX: Augmented Edition belong to their authors. DX RUST
+includes none of their files: it reads them from the folders the player chooses. Where a mod's behaviour is
+supported, it was rewritten in Rust from the mod's source:
+- GMDX AE's perks (Perk / PerkSystem and their effects), viewmodel inertia, the Dragon's Tooth energy cost, and
+  the bugfixes and quality-of-life options listed in Settings > Enhancements;
+- Augmentique's outfit, NPC outfit and weapon skin rules.
+
+The only exception is Augmentique's outfit lists, which exist only as script code in the mod's own package. A small
+interpreter reads them from the player's copy when the game starts, as data.
+
 ## Joe Wintergreen's lipsync mod
 The *Smooth Lip Sync* enhancement uses the timings from Joe Wintergreen's lipsync mod for Deus Ex:
 - mouth shapes blend over 0.36 s;

@@ -258,14 +258,7 @@ pub fn blood_system(
         let size = width * (0.2 + rnd() as f32 * 0.2);
         let at = l.pos + DVec3::NEG_Z * 0.0 + (-n) * (f * 6.0) + n * 0.3;
         let normal = Vec3::from(ue_to_bevy(n.as_vec3().to_array())).normalize_or_zero();
-        let mat = materials.add(StandardMaterial {
-            base_color_texture: Some(img),
-            unlit: true,
-            double_sided: true,
-            cull_mode: None,
-            alpha_mode: AlphaMode::Multiply,
-            ..default()
-        });
+        let mat = materials.add(crate::impacts::decal_material(img, false));
         let quad = meshes.add(Rectangle::new(1.0, 1.0));
         let rot = Quat::from_rotation_arc(Vec3::Z, normal)
             * Quat::from_rotation_z(rnd() as f32 * std::f32::consts::TAU);
@@ -276,6 +269,7 @@ pub fn blood_system(
                 Transform::from_translation(Vec3::from(ue_to_bevy(at.as_vec3().to_array())))
                     .with_rotation(rot)
                     .with_scale(Vec3::splat(size * dx_level::METERS_PER_UNIT)),
+                crate::impacts::KeepDecal { tex: tex.to_string(), hole: false },
             ))
             .id();
         splats.0.push_back(splat);

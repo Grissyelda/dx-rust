@@ -82,11 +82,21 @@ enum Wid {
     Path,
     Mode,
     Res,
+    /// The main page's Mods... row.
     Mod,
     Play,
     Quit,
     Save,
+    /// The Mods page: a mod's folder button (index into MODS) and its On / Off box.
+    ModPick(usize),
+    ModToggle(usize),
+    Back,
+    Prev,
+    Next,
 }
+
+/// Mods shown per page (the window's five rows).
+const MODS_PER_PAGE: usize = 5;
 
 type Rect = (i32, i32, i32, i32);
 
@@ -96,9 +106,10 @@ fn inside(r: Rect, p: (i32, i32)) -> bool {
 
 struct Launcher {
     game: String,
-    /// The Lay D Denton Project's folder (its System and Maps are laid over the game's; empty = none). Saved as
-    /// LDDPPath; other mods get rows of their own later.
-    lddp: String,
+    /// Each supported mod's folder and whether it's on (unreal_pkg::mods; launcher.txt Mod.<id> / ModOn.<id>).
+    mods: Vec<unreal_pkg::mods::ModSetting>,
+    /// None = the main page, Some(n) = page n of the Mods page.
+    mods_page: Option<usize>,
     mode: usize,
     res: usize,
     status: String,
@@ -130,9 +141,10 @@ impl Launcher {
         let get = |k: &str| st.iter().find(|(a, _)| a == k).and_then(|(_, v)| v.parse::<f32>().ok());
         let mode = get("DisplayMode").map(|v| v.round() as usize).unwrap_or(1).min(2);
         let res = get("Resolution").filter(|v| *v >= 0.0).map(|v| v as usize).unwrap_or(10).min(RESOLUTIONS.len() - 1);
-        let lddp = lk.iter().find(|(k, _)| k == "LDDPPath").map(|(_, v)| v.clone()).unwrap_or_default();
+        let mods = unreal_pkg::mods::from_lines(&lk);
         let mut l = Launcher {
-            lddp,
+            mods,
+            mods_page: std::env::var("DXL_MODS_PAGE").ok().and_then(|v| v.parse().ok()),
             cur: game.chars().count(),
             game,
             mode,
@@ -169,9 +181,13 @@ impl Launcher {
     fn save(&mut self) -> bool {
         let dir = exe_dir();
         let mut lk = vec![("GamePath".to_string(), self.game.clone())];
-        if !self.lddp.is_empty() {
-            lk.push(("LDDPPath".into(), self.lddp.clone()));
+        // Keep lines the launcher doesn't edit (DiscordAppId and the like).
+        for (k, v) in read_kv(&dir.join("launcher.txt")) {
+            if k != "GamePath" && k != "LDDPPath" && k != "ModPath" && !k.starts_with("Mod.") && !k.starts_with("ModOn.") {
+                lk.push((k, v));
+            }
         }
+        lk.extend(unreal_pkg::mods::to_lines(&self.mods));
         if let Err(e) = write_kv(&dir.join("launcher.txt"), "DX RUST launcher", &lk) {
             self.status = format!("Can't save launcher.txt: {e}");
             return false;
@@ -210,33 +226,54 @@ impl Launcher {
         }
     }
 
-    fn browse_lddp(&mut self) {
-        let Some(p) = rfd::FileDialog::new().set_title("The Lay D Denton Project folder (with System and Maps)").pick_folder() else {
+    fn setting(&self, i: usize) -> Option<&unreal_pkg::mods::ModSetting> {
+        let id = unreal_pkg::mods::MODS.get(i)?.id;
+        self.mods.iter().find(|s| s.id == id)
+    }
+
+    /// Choose a mod's folder (it must hold the mod's marker file, here or one folder down).
+    fn browse_mod(&mut self, i: usize) {
+        let m = &unreal_pkg::mods::MODS[i];
+        let Some(p) = rfd::FileDialog::new().set_title(format!("The {} folder", m.name)).pick_folder() else {
             return;
         };
-        match find_lddp(&p) {
-            Some(dir) => self.lddp = dir.display().to_string(),
+        match unreal_pkg::mods::locate(m, &p) {
+            Some(dir) => {
+                self.mods.retain(|s| s.id != m.id);
+                self.mods.push(unreal_pkg::mods::ModSetting { id: m.id, path: dir.display().to_string(), on: true });
+            }
             None => {
                 rfd::MessageDialog::new()
-                    .set_title("Not Lay D Denton")
-                    .set_description(
-                        "That folder doesn't hold the Lay D Denton Project (its System folder with FemJC.u). Choose the \
-                         folder you unpacked the mod into, such as Lay_D_Denton_Project_1.1.",
-                    )
+                    .set_title(format!("Not {}", m.name))
+                    .set_description(format!(
+                        "That folder doesn't hold {} (its {}). Choose the folder you unpacked the mod into.",
+                        m.name,
+                        m.marker.replace('/', "\\")
+                    ))
                     .set_level(rfd::MessageLevel::Warning)
                     .show();
             }
         }
     }
 
-    /// What the Lay D Denton row shows.
-    fn lddp_label(&self) -> String {
-        if self.lddp.is_empty() {
-            "Off".into()
-        } else if find_lddp(Path::new(&self.lddp)).is_some() {
-            "On".into()
+    /// What a mod's box shows.
+    fn mod_label(&self, i: usize) -> String {
+        let m = &unreal_pkg::mods::MODS[i];
+        match self.setting(i) {
+            None => "None".into(),
+            Some(s) if unreal_pkg::mods::locate(m, Path::new(&s.path)).is_none() => "Not Found".into(),
+            Some(s) if s.on => "On".into(),
+            Some(_) => "Off".into(),
+        }
+    }
+
+    /// The main page's Mods row: how many are on.
+    fn mods_summary(&self) -> String {
+        let n = (0..unreal_pkg::mods::MODS.len()).filter(|&i| self.mod_label(i) == "On").count();
+        if n == 0 {
+            "None".into()
         } else {
-            "Not Found".into()
+            format!("{n} On")
         }
     }
 
@@ -259,7 +296,12 @@ impl Launcher {
             Some(Wid::Path) => "Type or paste the path of the Deus Ex folder",
             Some(Wid::Mode) => "Change how the game's window is shown",
             Some(Wid::Res) => "Change the video resolution",
-            Some(Wid::Mod) => "Play with the Lay D Denton Project: choose its folder (right click to turn it off)",
+            Some(Wid::Mod) => "Choose the mods to play with (Lay D Denton, HDTP, New Vision and others)",
+            Some(Wid::ModPick(i)) => unreal_pkg::mods::MODS[i].help,
+            Some(Wid::ModToggle(_)) => "Turn this mod on or off (right click on its name forgets the folder)",
+            Some(Wid::Back) => "Back to the launcher",
+            Some(Wid::Prev) => "The previous page of mods",
+            Some(Wid::Next) => "The next page of mods",
             Some(Wid::Play) => "Save these settings and start the game",
             Some(Wid::Save) => "Keep these settings without starting the game",
             Some(Wid::Quit) => "Close the launcher",
@@ -294,18 +336,36 @@ impl Launcher {
                 0
             }
         };
-        let st: Vec<(Wid, usize)> =
-            [Wid::Folder, Wid::Path, Wid::Mode, Wid::Res, Wid::Mod, Wid::Play, Wid::Quit, Wid::Save].iter().map(|w| (*w, state(self, *w))).collect();
-        let stof = |w: Wid| st.iter().find(|x| x.0 == w).map_or(0, |x| x.1);
+        let (hover, pressed, game_ok) = (self.hover, self.pressed, valid_game(Path::new(&self.game)));
+        let stof = move |wd: Wid| -> usize {
+            if wd == Wid::Play && !game_ok {
+                3
+            } else if pressed == Some(wd) && hover == Some(wd) {
+                2
+            } else if hover == Some(wd) {
+                1
+            } else {
+                0
+            }
+        };
+        let _ = state;
         let (editing, cur, game) = (self.editing, self.cur, self.game.clone());
         let (mode, res, translucent) = (self.mode, self.res, self.translucent);
-        let mod_label = self.lddp_label();
+        let mods_summary = self.mods_summary();
+        let page = self.mods_page;
+        let n_mods = unreal_pkg::mods::MODS.len();
+        let pages = n_mods.div_ceil(MODS_PER_PAGE).max(1);
+        let mod_rows: Vec<(usize, String)> = match page {
+            Some(p) => (p * MODS_PER_PAGE..((p + 1) * MODS_PER_PAGE).min(n_mods)).map(|i| (i, self.mod_label(i))).collect(),
+            None => Vec::new(),
+        };
         let a = self.art.as_mut()?;
         let (ox, oy) = (MARGIN, MARGIN);
         let face = a.col(3);
         let title = a.title.clone();
         let small = a.small.clone();
-        let tw = (31 + title.width(TITLE).min(400) + 45).max(200);
+        let heading = if page.is_some() { "DX RUST Mods" } else { TITLE };
+        let tw = (31 + title.width(heading).min(400) + 45).max(200);
         // Right edge (under everything else).
         {
             let (rx, ry) = (ox + tw + 1, oy + TITLE_H - 4);
@@ -326,7 +386,7 @@ impl Launcher {
             draw(&mut c, a, &format!("MenuTitle{set}_Center"), ox + 87, oy, tw - 187, TITLE_H, Style::Masked, col);
             draw(&mut c, a, &format!("MenuTitle{set}_Right"), ox + tw - 100, oy, 100, TITLE_H, Style::Masked, col);
         }
-        c.text(&title, ox + 31, oy, tw - 31, TITLE_H, HAlign::Left, VAlign::Center, a.col(2), TITLE);
+        c.text(&title, ox + 31, oy, tw - 31, TITLE_H, HAlign::Left, VAlign::Center, a.col(2), heading);
         if let Some(t) = a.ui("MenuIcon_DeusEx") {
             c.texture(ox + 12, oy + 3, t.w as i32, t.h as i32, 0, 0, &t, Style::Masked, [255, 255, 255]);
         }
@@ -348,62 +408,95 @@ impl Launcher {
         c.set_clip(None);
         let mut hits = Vec::new();
         let row_y = |i: i32| cy + 27 + i * 36;
-        // Row 0: the folder button and whether the game is there.
-        action_button(&mut c, a, cx + ROW_X, row_y(0), LABEL_W, "Game Folder...", stof(Wid::Folder));
-        hits.push((Wid::Folder, (cx + ROW_X, row_y(0), LABEL_W, 19), true));
-        let (ftxt, fcol) = if found { ("Found", a.btn(0)) } else { ("Not Found", [255, 0, 0]) };
-        info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(0), INFO_W, ftxt, fcol);
-        // Row 1: the folder path (an edit field across the row).
-        {
-            let (x, y, w) = (cx + ROW_X, row_y(1), INFO_X + INFO_W);
-            // The box's middle is see-through and this row spans art that isn't a dark well: darken it first.
-            c.fill(x + 3, y + 3, w - 8, 13, Style::Normal, [0, 0, 0]);
-            info_button(&mut c, a, x, y, w, "", a.col(8));
-            let (tx, ty, tww) = (x + 4, y + 4, w - 8);
-            let chars: Vec<char> = game.chars().collect();
-            let before: String = chars[..cur.min(chars.len())].iter().collect();
-            let cur_x = small.width(&before);
-            let scroll = (cur_x - (tww - 2)).max(0);
-            let tcol = if stof(Wid::Path) >= 1 || editing { a.btn(1) } else { a.btn(0) };
-            c.set_clip(Some((tx, ty - 1, tww, 13)));
-            c.text(&small, tx - scroll, ty, tww + scroll, 11, HAlign::Left, VAlign::Center, tcol, &game);
-            if editing && blink {
-                c.fill(tx - scroll + cur_x, ty, 1, 11, Style::Normal, a.col(12));
+        if page.is_none() {
+            // Row 0: the folder button and whether the game is there.
+            action_button(&mut c, a, cx + ROW_X, row_y(0), LABEL_W, "Game Folder...", stof(Wid::Folder));
+            hits.push((Wid::Folder, (cx + ROW_X, row_y(0), LABEL_W, 19), true));
+            let (ftxt, fcol) = if found { ("Found", a.btn(0)) } else { ("Not Found", [255, 0, 0]) };
+            info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(0), INFO_W, ftxt, fcol);
+            // Row 1: the folder path (an edit field across the row).
+            {
+                let (x, y, w) = (cx + ROW_X, row_y(1), INFO_X + INFO_W);
+                // The box's middle is see-through and this row spans art that isn't a dark well: darken it first.
+                c.fill(x + 3, y + 3, w - 8, 13, Style::Normal, [0, 0, 0]);
+                info_button(&mut c, a, x, y, w, "", a.col(8));
+                let (tx, ty, tww) = (x + 4, y + 4, w - 8);
+                let chars: Vec<char> = game.chars().collect();
+                let before: String = chars[..cur.min(chars.len())].iter().collect();
+                let cur_x = small.width(&before);
+                let scroll = (cur_x - (tww - 2)).max(0);
+                let tcol = if stof(Wid::Path) >= 1 || editing { a.btn(1) } else { a.btn(0) };
+                c.set_clip(Some((tx, ty - 1, tww, 13)));
+                c.text(&small, tx - scroll, ty, tww + scroll, 11, HAlign::Left, VAlign::Center, tcol, &game);
+                if editing && blink {
+                    c.fill(tx - scroll + cur_x, ty, 1, 11, Style::Normal, a.col(12));
+                }
+                c.set_clip(None);
+                hits.push((Wid::Path, (x, y, w, 19), true));
             }
-            c.set_clip(None);
-            hits.push((Wid::Path, (x, y, w, 19), true));
+            // Rows 2 and 3: display mode and resolution (MenuUIChoiceEnum: click for the next value, right click back).
+            for (i, wd, lbl, val) in [
+                (2, Wid::Mode, "Display Mode", MODES[mode].to_string()),
+                (3, Wid::Res, "Screen Resolution", format!("{}x{}", RESOLUTIONS[res].0, RESOLUTIONS[res].1)),
+            ] {
+                action_button(&mut c, a, cx + ROW_X, row_y(i), LABEL_W, lbl, stof(wd));
+                let vcol = a.btn(if stof(wd) >= 1 { 1 } else { 0 });
+                info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(i), INFO_W, &val, vcol);
+                hits.push((wd, (cx + ROW_X, row_y(i), INFO_X + INFO_W, 19), true));
+            }
+            // Row 4: the Mods page.
+            {
+                action_button(&mut c, a, cx + ROW_X, row_y(4), LABEL_W, "Mods...", stof(Wid::Mod));
+                let vcol = a.btn(if stof(Wid::Mod) >= 1 { 1 } else { 0 });
+                info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(4), INFO_W, &mods_summary, vcol);
+                hits.push((Wid::Mod, (cx + ROW_X, row_y(4), INFO_X + INFO_W, 19), true));
+            }
+        } else {
+            // The Mods page: one row per mod - its folder button and On / Off.
+            for (row, (i, label)) in mod_rows.iter().enumerate() {
+                let m = &unreal_pkg::mods::MODS[*i];
+                let y = row_y(row as i32);
+                action_button(&mut c, a, cx + ROW_X, y, LABEL_W, &format!("{}...", m.name), stof(Wid::ModPick(*i)));
+                hits.push((Wid::ModPick(*i), (cx + ROW_X, y, LABEL_W, 19), true));
+                let vcol = match label.as_str() {
+                    "Not Found" => [255, 0, 0],
+                    _ => a.btn(if stof(Wid::ModToggle(*i)) >= 1 { 1 } else { 0 }),
+                };
+                info_button(&mut c, a, cx + ROW_X + INFO_X, y, INFO_W, label, vcol);
+                hits.push((Wid::ModToggle(*i), (cx + ROW_X + INFO_X, y, INFO_W, 19), label != "None"));
+            }
         }
-        // Rows 2 and 3: display mode and resolution (MenuUIChoiceEnum: click for the next value, right click back).
-        for (i, wd, lbl, val) in [
-            (2, Wid::Mode, "Display Mode", MODES[mode].to_string()),
-            (3, Wid::Res, "Screen Resolution", format!("{}x{}", RESOLUTIONS[res].0, RESOLUTIONS[res].1)),
-        ] {
-            action_button(&mut c, a, cx + ROW_X, row_y(i), LABEL_W, lbl, stof(wd));
-            let vcol = a.btn(if stof(wd) >= 1 { 1 } else { 0 });
-            info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(i), INFO_W, &val, vcol);
-            hits.push((wd, (cx + ROW_X, row_y(i), INFO_X + INFO_W, 19), true));
-        }
-        // Row 4: the mod folder.
-        {
-            action_button(&mut c, a, cx + ROW_X, row_y(4), LABEL_W, "Lay D Denton...", stof(Wid::Mod));
-            let vcol = a.btn(if stof(Wid::Mod) >= 1 { 1 } else { 0 });
-            info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(4), INFO_W, &mod_label, vcol);
-            hits.push((Wid::Mod, (cx + ROW_X, row_y(4), INFO_X + INFO_W, 19), true));
-        }
-        // Action bar: Save on the left, Play and Quit on the right.
+        // Action bar: Save on the left, Play and Quit on the right (the Mods page: Back, and the pages).
         {
             let (bx, by, bw) = (cx + 1, cy + CH + 1, CW - 1 - 2);
             let mut right = bw;
-            for (wd, lbl) in [(Wid::Play, "Play"), (Wid::Quit, "Quit")] {
+            let right_buttons: Vec<(Wid, &str)> = match page {
+                None => vec![(Wid::Play, "Play"), (Wid::Quit, "Quit")],
+                Some(p) => {
+                    let mut v = Vec::new();
+                    if p + 1 < pages {
+                        v.push((Wid::Next, "Next"));
+                    }
+                    if p > 0 {
+                        v.push((Wid::Prev, "Previous"));
+                    }
+                    v
+                }
+            };
+            for (wd, lbl) in right_buttons {
                 let w = action_width(a, lbl);
                 right -= w;
                 action_button(&mut c, a, bx + right, by, w, lbl, stof(wd));
                 hits.push((wd, (bx + right, by, w, 19), stof(wd) != 3));
                 right -= 2;
             }
-            let w = action_width(a, "Save");
-            action_button(&mut c, a, bx, by, w, "Save", stof(Wid::Save));
-            hits.push((Wid::Save, (bx, by, w, 19), true));
+            let (lw, lbl) = match page {
+                None => (Wid::Save, "Save"),
+                Some(_) => (Wid::Back, "Back"),
+            };
+            let w = action_width(a, lbl);
+            action_button(&mut c, a, bx, by, w, lbl, stof(lw));
+            hits.push((lw, (bx, by, w, 19), true));
         }
         // Left edge.
         {
@@ -443,8 +536,21 @@ impl Launcher {
             }
             Wid::Mode => self.mode = (self.mode + if back { MODES.len() - 1 } else { 1 }) % MODES.len(),
             Wid::Res => self.res = (self.res + if back { RESOLUTIONS.len() - 1 } else { 1 }) % RESOLUTIONS.len(),
-            Wid::Mod if back => self.lddp.clear(),
-            Wid::Mod => self.browse_lddp(),
+            Wid::Mod => self.mods_page = Some(0),
+            Wid::Back => self.mods_page = None,
+            Wid::Next => self.mods_page = self.mods_page.map(|p| p + 1),
+            Wid::Prev => self.mods_page = self.mods_page.map(|p| p.saturating_sub(1)),
+            Wid::ModPick(i) if back => {
+                let id = unreal_pkg::mods::MODS[i].id;
+                self.mods.retain(|s| s.id != id);
+            }
+            Wid::ModPick(i) => self.browse_mod(i),
+            Wid::ModToggle(i) => {
+                let id = unreal_pkg::mods::MODS[i].id;
+                if let Some(s) = self.mods.iter_mut().find(|s| s.id == id) {
+                    s.on = !s.on;
+                }
+            }
             Wid::Play => {
                 if self.play() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -621,6 +727,8 @@ impl eframe::App for Launcher {
             let (enter, esc) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
             if enter {
                 self.activate(Wid::Play, false, ctx);
+            } else if esc && self.mods_page.is_some() {
+                self.mods_page = None;
             } else if esc {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -638,24 +746,6 @@ impl eframe::App for Launcher {
             ui.painter().image(tex, r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         });
     }
-}
-
-/// The Lay D Denton Project's folder: `dir` itself or a folder just inside it (an unpacked zip often adds one) with
-/// System/FemJC.u, any case.
-fn find_lddp(dir: &Path) -> Option<std::path::PathBuf> {
-    let has = |d: &Path| -> bool {
-        let Ok(rd) = std::fs::read_dir(d) else { return false };
-        rd.flatten().any(|e| {
-            e.file_name().to_string_lossy().eq_ignore_ascii_case("System")
-                && std::fs::read_dir(e.path())
-                    .map(|r| r.flatten().any(|f| f.file_name().to_string_lossy().eq_ignore_ascii_case("FemJC.u")))
-                    .unwrap_or(false)
-        })
-    };
-    if has(dir) {
-        return Some(dir.to_path_buf());
-    }
-    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_dir() && has(p))
 }
 
 fn main() -> eframe::Result<()> {
