@@ -374,8 +374,7 @@ fn spawn_bubble(
     let img = crate::weapons::image_for(assets, images, TEX);
     let width = assets
         .lib
-        .load_image(TEX)
-        .map(|t| t.width as f32)
+        .width(TEX).map(|w| w as f32)
         .unwrap_or(64.0);
     let material = materials.add(StandardMaterial {
         base_color_texture: img,

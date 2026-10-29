@@ -5,3 +5,4 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+memmap2 = "0.9"

@@ -512,6 +512,9 @@ enum Btn {
     Return,
     Withdraw,
     Close,
+    /// GMDX Data Recovery: "Save To Datavault" (and its greyed "Saved To Datavault").
+    SaveEmail,
+    SavedEmail,
 }
 
 /// Widgets the mouse can press.
@@ -1175,6 +1178,14 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
             };
             g.status = Some((383, 12, 21));
             g.buttons = vec![(Btn::Logout, true, true)];
+            // GMDX Data Recovery (ComputerScreenEmail): save the email being read as a DataVault note.
+            if email && crate::perks::has("PerkDataRecovery") && m.sel.is_some() && !m.body.trim().is_empty() {
+                if crate::consys::has_vault_note(&m.body) {
+                    g.buttons.push((Btn::SavedEmail, true, false));
+                } else {
+                    g.buttons.push((Btn::SaveEmail, true, true));
+                }
+            }
             if m.special {
                 g.buttons.push((Btn::Special, false, true));
                 g.left_edge = true;
@@ -1267,6 +1278,8 @@ fn btn_label(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str, b: B
         }
         Btn::Withdraw => txt(hud, assets, class, "ButtonLabelWithdraw", "|&Withdraw"),
         Btn::Close => txt(hud, assets, class, "ButtonLabelClose", "|&Close"),
+        Btn::SaveEmail => "Save To Datavault".into(),
+        Btn::SavedEmail => "Saved To Datavault".into(),
     }
 }
 
@@ -1792,6 +1805,12 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
                     t.close_screen(a, wx);
                 }
                 Btn::Special => t.close_screen("SPECIAL", wx),
+                Btn::SaveEmail => {
+                    if let Some(Screen::Email(m)) = t.screen.as_ref() {
+                        crate::consys::add_vault_note(&m.body);
+                    }
+                }
+                Btn::SavedEmail => {}
                 Btn::Return => t.close_screen("RETURN", wx),
                 Btn::Withdraw => t.withdraw(wx),
                 Btn::Close => {

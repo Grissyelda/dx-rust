@@ -394,16 +394,37 @@ impl PlayerHealth {
         if self.dead {
             return;
         }
-        self.poison_counter = 4;
+        // GMDX Hardened: three doses instead of four and no blurred view (drugEffectTimer = 0).
+        let hardened = crate::perks::has("PerkHardened");
+        self.poison_counter = if hardened { 3 } else { 4 };
         self.poison_timer = 0.0;
         self.poison_damage = self.poison_damage.max(dmg);
-        self.drug_timer += 4.0;
+        if hardened {
+            self.drug_timer = 0.0;
+        } else {
+            self.drug_timer += 4.0;
+        }
+    }
+
+    /// StopPoison (GMDX Toxicologist medkits): no more doses, no drug effect.
+    pub fn cure_poison(&mut self) {
+        self.poison_counter = 0;
+        self.poison_timer = 0.0;
+        self.poison_damage = 0.0;
+        self.drug_timer = 0.0;
     }
 
     /// Movement speed multiplier from wounded legs and torso (PlayerWalking.ProcessMove), and whether both legs are
     /// gone (crawl: 0.8 speed, forced crouch).
     pub fn speed_factor(&self) -> (f64, bool) {
         let p = &self.parts;
+        if p[P_LEG_L] < 1.0 && p[P_LEG_R] < 1.0 {
+            return (0.8, true);
+        }
+        // GMDX Perserverance: wounds don't slow the player (only losing both legs does).
+        if crate::perks::has("PerkPerserverance") {
+            return (1.0, false);
+        }
         let mut k = 1.0f64;
         for leg in [P_LEG_L, P_LEG_R] {
             k -= 0.5
@@ -428,18 +449,28 @@ impl PlayerHealth {
 
     /// CalculateAccuracy penalties from wounded arms and head.
     pub fn accuracy_penalty(&self) -> f32 {
+        self.accuracy_penalty_with(false)
+    }
+
+    /// With `best_arm` (GMDX Ambidextrous perk, pistols) only the healthier arm counts.
+    pub fn accuracy_penalty_with(&self, best_arm: bool) -> f32 {
         let p = &self.parts;
         let mut a = 0.0;
-        for arm in [P_ARM_R, P_ARM_L] {
-            a += if p[arm] < 1.0 {
-                0.5
-            } else if p[arm] < 34.0 {
-                0.2
-            } else if p[arm] < 67.0 {
-                0.1
-            } else {
-                0.0
-            };
+        let pen = |h: f32| if h < 1.0 {
+            0.5
+        } else if h < 34.0 {
+            0.2
+        } else if h < 67.0 {
+            0.1
+        } else {
+            0.0
+        };
+        if best_arm {
+            a += pen(p[P_ARM_R].max(p[P_ARM_L]));
+        } else {
+            for arm in [P_ARM_R, P_ARM_L] {
+                a += pen(p[arm]);
+            }
         }
         if p[P_HEAD] < 67.0 {
             a += 0.1;
@@ -813,6 +844,10 @@ pub struct Npc {
     pub poison_timer: f32,
     pub poison_damage: f32,
     pub poisoner: Option<usize>,
+    /// GMDX Hemorrhage (StartBleed): `bleed_counter` more BleedEffect ticks of `bleed_damage`, one a second.
+    pub bleed_counter: u32,
+    pub bleed_timer: f32,
+    pub bleed_damage: f32,
     /// This body is in the player's hands (POVCorpse).
     pub carried: bool,
     /// Robot.EMPHitPoints.
@@ -1159,6 +1194,9 @@ impl Npc {
             poison_timer: 0.0,
             poison_damage: 0.0,
             poisoner: None,
+            bleed_counter: 0,
+            bleed_timer: 0.0,
+            bleed_damage: 0.0,
             carried: false,
             emp_hp: fv(p, "EMPHitPoints", 0.0),
             arsenal: Vec::new(),
@@ -3125,6 +3163,25 @@ pub fn npc_system(
                 });
             }
         }
+        // GMDX UpdateBleed: a BleedEffect tick every second, with a spray of blood drops.
+        if npc.bleed_counter > 0 {
+            npc.bleed_timer += dt;
+            if npc.bleed_timer >= 1.0 {
+                npc.bleed_timer = 0.0;
+                npc.bleed_counter -= 1;
+                let c = blockers.list[npc.blocker].center;
+                if npc.bleed_damage > 0.0 {
+                    new_hits.push(crate::damage::PawnHit {
+                        blocker: npc.blocker,
+                        damage: npc.bleed_damage,
+                        damage_type: "BleedEffect",
+                        hit_loc: c,
+                        attacker: None,
+                        attacker_pos: c,
+                    });
+                }
+            }
+        }
         if let Some(list) = hits_by.remove(&npc.blocker) {
             let center = blockers.list[npc.blocker].center;
             for h in list {
@@ -3328,6 +3385,19 @@ pub fn npc_system(
                                 npc.params.height,
                                 npc.hp_body.robot,
                             ));
+                            // GMDX fix (G-Flex / Shifter; setting FixGibLoot): what a gibbed person carried is
+                            // thrown out with the chunks instead of destroyed (not robots or animals).
+                            if crate::settings::get("FixGibLoot") > 0.5 && !npc.hp_body.robot && !npc.animal {
+                                for (k, w) in npc.arsenal.iter().enumerate() {
+                                    let a = npc.yaw + k as f64 * 2.4;
+                                    weapon_drops.0.push((
+                                        w.class.clone(),
+                                        center + DVec3::new(a.cos(), a.sin(), 0.0) * (npc.params.radius * 0.8),
+                                    ));
+                                }
+                                npc.arsenal.clear();
+                                npc.weapon = None;
+                            }
                             takedowns.log.push(Takedown {
                                 alliance: npc.alliance.clone(),
                                 name: lvl.actors[npc.actor].name.clone(),
@@ -3476,6 +3546,20 @@ pub fn npc_system(
                             npc.burn_tick = 0.0;
                             println!("PAWN {} caught fire", lvl.actors[npc.actor].name);
                         }
+                        // GMDX Hemorrhage: a player's shuriken (crate::perks) starts the bleed (StartBleed:
+                        // 16 ticks of int(Damage x 0.1)); each BleedEffect tick sprays blood drops.
+                        if crate::perks::take_bleed(npc.blocker, h.damage) {
+                            npc.bleed_counter = 16;
+                            npc.bleed_timer = 0.0;
+                            npc.bleed_damage = (h.damage * 0.1).floor();
+                        }
+                        if h.damage_type == "BleedEffect" && npc.can_bleed {
+                            for i in 0..10u32 {
+                                if (npc.blocker as u32 * 31 + i * 17 + npc.bleed_counter * 7) % 2 == 0 {
+                                    drips.0.push(center + DVec3::Z * npc.params.height * 0.3);
+                                }
+                            }
+                        }
                         if h.damage_type == "Poison" {
                             // StartPoison: eight more doses, two seconds apart.
                             npc.poison_counter = 8;
@@ -3600,7 +3684,15 @@ pub fn npc_system(
                                         an.clip = Some(c);
                                         npc.anim = name;
                                         npc.state = NpcState::TakingHit(dur);
-                                        npc.take_hit_timer = 2.0;
+                                        // GMDX Piercing: 1.3 s with a hand-to-hand weapon in the player's hand
+                                        // (Grays and Karkians are slower to flinch there, so they keep 2).
+                                        let tough = matches!(
+                                            lvl.actors[npc.actor].class.as_str(),
+                                            "Gray" | "Karkian" | "KarkianBaby"
+                                        );
+                                        npc.take_hit_timer = crate::perks::flinch_time()
+                                            .filter(|_| !tough)
+                                            .unwrap_or(2.0);
                                     }
                                 }
                             } else if matches!(npc.state, NpcState::Idle | NpcState::Seeking)
@@ -3660,6 +3752,14 @@ pub fn npc_system(
             npc.crazed = (npc.crazed - dt).max(0.0);
             if npc.crazed == 0.0 {
                 npc.target = None;
+                // GMDX Sensor Burnout (Robot.StartReboot): the scrambled bot shuts down for PerkValue seconds
+                // before it goes back to its orders.
+                if let Some(v) = crate::perks::value_if("PerkSensorBurnout") {
+                    if npc.hp_body.robot && npc.state != NpcState::Dead {
+                        npc.state = NpcState::Stunned(v);
+                        npc.anim = "";
+                    }
+                }
             }
         }
         // Gray.Tick: every damageInterval, radiation to the player if visible within damageRadius (hostile or not).
@@ -4630,7 +4730,20 @@ pub fn npc_system(
                             };
                             if left <= 0.0 {
                                 npc.alarm_timer = 120.0;
-                                alarms.trigger(i, npc.target);
+                                // TriggerAlarm: only if it hasn't been hacked; GMDX Sabotage shocks whoever
+                                // pushes a bypassed one (200 'Stunned').
+                                if !alarms.units[i].bypassed {
+                                    alarms.trigger(i, npc.target);
+                                } else if crate::perks::has("PerkSabotage") {
+                                    new_hits.push(crate::damage::PawnHit {
+                                        blocker: npc.blocker,
+                                        damage: 200.0,
+                                        damage_type: "Stunned",
+                                        hit_loc: me_c,
+                                        attacker: Some(npc.blocker),
+                                        attacker_pos: me_c,
+                                    });
+                                }
                                 alarms.units[i].associated = None;
                                 npc.alert = None;
                                 npc.anim = "";
@@ -5879,6 +5992,8 @@ pub struct HeldModel {
     /// Where it was last lit (Unreal units) and whether a dynamic light reached it then: a weapon that hasn't
     /// moved and has no dynamic light near is not re-lit (re-uploading its mesh for nothing).
     pub lit_at: Option<([f32; 3], bool)>,
+    /// dynlight::light_sig of the lights it was last lit with.
+    pub lit_sig: Option<u64>,
     /// Weapon class this model shows; a different weapon in hand rebuilds it.
     pub class: String,
 }
@@ -6031,6 +6146,7 @@ pub fn npc_weapon_models(
                 scale: w.third_scale,
                 relight: 0.0,
                 lit_at: None,
+                lit_sig: None,
                 class: w.class.clone(),
             });
         } else {
@@ -6044,6 +6160,7 @@ pub fn npc_weapon_models(
                 scale: 1.0,
                 relight: 1.0e9,
                 lit_at: None,
+                lit_sig: None,
                 class: w.class.clone(),
             });
         }
@@ -6143,6 +6260,11 @@ pub fn npc_weapon_models(
             }
             hm.lit_at = Some((at, dyn_near));
             let lit_by = crate::dynlight::lights_at(&level.0, at, 24.0);
+            let sig = crate::dynlight::light_sig(&lit_by, at, 0);
+            if hm.lit_sig == Some(sig) {
+                continue;
+            }
+            hm.lit_sig = Some(sig);
             for (pi, h) in hm.handles.iter().enumerate() {
                 if let Some(mut m) = meshes.get_mut(h) {
                     let c = dx_level::actors::light_part(&hm.parts[pi], at, [0, 0, 0], 1.0, &lit_by);

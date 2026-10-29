@@ -9,9 +9,39 @@ use std::time::Instant;
 
 static ON: AtomicBool = AtomicBool::new(false);
 static STATS: Mutex<Option<HashMap<&'static str, (f64, u32, f64)>>> = Mutex::new(None);
+/// Always on (DXVIEW_NO_HITCHLOG turns it off): this frame's scope times, so a frame that takes over 400 ms is
+/// written to hitch.log beside the exe with what it spent its time on.
+static HITCH: AtomicBool = AtomicBool::new(true);
+static FRAME: Mutex<Vec<(&'static str, f64)>> = Mutex::new(Vec::new());
+
+static PROCESS_START: Mutex<Option<Instant>> = Mutex::new(None);
 
 pub fn init() {
+    if let Ok(mut p) = PROCESS_START.lock() {
+        *p = Some(Instant::now());
+    }
     ON.store(std::env::var("DXVIEW_PROF").is_ok(), Ordering::Relaxed);
+    HITCH.store(std::env::var_os("DXVIEW_NO_HITCHLOG").is_none(), Ordering::Relaxed);
+}
+
+/// Note a slow piece of work outside the per-frame scopes (a level load, a view model build) in hitch.log.
+pub fn hitch_note(what: &str, ms: f64) {
+    if ms > 250.0 && HITCH.load(Ordering::Relaxed) {
+        hitch_write(&format!("{what}: {ms:.0} ms\n"));
+    }
+}
+
+fn hitch_write(text: &str) {
+    use std::io::Write;
+    // At most 300 lines a run (a slow GPU would otherwise log every frame).
+    static LINES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if LINES.fetch_add(1, Ordering::Relaxed) >= 300 {
+        return;
+    }
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("hitch.log")) {
+        let _ = f.write_all(text.as_bytes());
+    }
 }
 
 pub struct Scope(&'static str, Instant);
@@ -19,6 +49,14 @@ pub struct Scope(&'static str, Instant);
 impl Drop for Scope {
     fn drop(&mut self) {
         let ms = self.1.elapsed().as_secs_f64() * 1000.0;
+        if HITCH.load(Ordering::Relaxed) && ms > 1.0 {
+            if let Ok(mut f) = FRAME.lock() {
+                f.push((self.0, ms));
+            }
+        }
+        if !ON.load(Ordering::Relaxed) {
+            return;
+        }
         if let Ok(mut g) = STATS.lock() {
             let e = g.get_or_insert_with(HashMap::new).entry(self.0).or_insert((0.0, 0, 0.0));
             e.0 += ms;
@@ -35,7 +73,7 @@ pub fn on() -> bool {
 }
 
 pub fn scope(name: &'static str) -> Option<Scope> {
-    ON.load(Ordering::Relaxed).then(|| Scope(name, Instant::now()))
+    (ON.load(Ordering::Relaxed) || HITCH.load(Ordering::Relaxed)).then(|| Scope(name, Instant::now()))
 }
 
 #[derive(Default)]
@@ -43,16 +81,42 @@ pub struct ProfState {
     frames: Vec<f64>,
     last: Option<Instant>,
     since: f64,
+    hitch_last: Option<Instant>,
+    started: Option<Instant>,
 }
 
 pub fn prof_report_system(
     mut st: bevy::prelude::Local<ProfState>,
     diags: Option<bevy::prelude::Res<bevy::diagnostic::DiagnosticsStore>>,
 ) {
+    let now = Instant::now();
+    // The hitch log: frames over 250 ms after the first 10 s (loading has its own lines).
+    if HITCH.load(Ordering::Relaxed) {
+        if st.started.is_none() {
+            // Start-up: process start to the first frame.
+            if let Some(p) = PROCESS_START.lock().ok().and_then(|p| *p) {
+                hitch_write(&format!("--- start-up to the first frame: {:.0} ms\n", (now - p).as_secs_f64() * 1000.0));
+            }
+        }
+        let start = *st.started.get_or_insert(now);
+        if let Some(l) = st.hitch_last {
+            let ms = (now - l).as_secs_f64() * 1000.0;
+            let mut f = FRAME.lock().map(|mut f| std::mem::take(&mut *f)).unwrap_or_default();
+            if ms > 400.0 && (now - start).as_secs_f64() > 10.0 {
+                f.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let mut text = format!("frame {ms:.0} ms at {:.1} s:", (now - start).as_secs_f64());
+                for (k, v) in f.iter().take(8) {
+                    text.push_str(&format!(" {k} {v:.0}"));
+                }
+                text.push('\n');
+                hitch_write(&text);
+            }
+        }
+        st.hitch_last = Some(now);
+    }
     if !ON.load(Ordering::Relaxed) {
         return;
     }
-    let now = Instant::now();
     if let Some(l) = st.last {
         let ms = (now - l).as_secs_f64() * 1000.0;
         st.frames.push(ms);
@@ -427,5 +491,74 @@ pub fn dump_spans(frames: usize) {
     for (k, (tot, n)) in v.iter().take(60) {
         let k: String = k.chars().take(90).collect();
         println!("PROF span {:7.3} ms/frame  x{:<6} {k}", tot / frames.max(1) as f64, n / frames.max(1) as u64);
+    }
+}
+
+/// Developer aid: `DXVIEW_MESHLOG=1` - every five seconds, which kind of thing the re-uploaded meshes belong to
+/// (by the components on the mesh entity's parent chain), to find who rewrites meshes every frame.
+#[allow(clippy::type_complexity)]
+pub fn mesh_owner_system(
+    mut ev: bevy::prelude::MessageReader<bevy::asset::AssetEvent<bevy::prelude::Mesh>>,
+    draws: bevy::prelude::Query<(bevy::prelude::Entity, &bevy::prelude::Mesh3d)>,
+    parents: bevy::prelude::Query<&bevy::prelude::ChildOf>,
+    kinds: bevy::prelude::Query<(
+        bevy::prelude::Has<crate::ai::Npc>,
+        bevy::prelude::Has<crate::actors::Deco>,
+        bevy::prelude::Has<crate::weapons::ViewModelRoot>,
+        bevy::prelude::Has<crate::ai::HeldRoot>,
+        bevy::prelude::Has<crate::projectiles::Projectile>,
+        bevy::prelude::Has<crate::particles::ParticleSprite>,
+        bevy::prelude::Has<crate::actors::MeshActorRef>,
+    )>,
+    deco_names: bevy::prelude::Query<&crate::actors::Deco>,
+    mut acc: bevy::prelude::Local<(HashMap<String, u32>, u32, Option<Instant>)>,
+) {
+    if std::env::var_os("DXVIEW_MESHLOG").is_none() {
+        ev.clear();
+        return;
+    }
+    let ids: std::collections::HashSet<bevy::asset::AssetId<bevy::prelude::Mesh>> = ev
+        .read()
+        .filter_map(|e| match e {
+            bevy::asset::AssetEvent::Modified { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    acc.1 += 1;
+    if !ids.is_empty() {
+        for (e, m) in &draws {
+            if !ids.contains(&m.0.id()) {
+                continue;
+            }
+            let mut kind = "other".to_string();
+            let mut cur = Some(e);
+            let mut depth = 0;
+            while let Some(c) = cur {
+                if let Ok((npc, deco, vm, held, proj, part, ma)) = kinds.get(c) {
+                    let k = if vm { "view model" } else if held { "npc weapon" } else if npc { "pawn" } else if proj { "projectile" } else if part { "particle" } else if deco { "decoration" } else if ma { "mesh actor" } else { "" };
+                    if !k.is_empty() {
+                        let name = deco_names.get(c).map(|d| d.name.clone()).unwrap_or_default();
+                        kind = format!("{k} (depth {depth}) {name}");
+                        break;
+                    }
+                }
+                cur = parents.get(c).ok().map(|p| p.parent());
+                depth += 1;
+            }
+            *acc.0.entry(kind).or_default() += 1;
+        }
+    }
+    let now = Instant::now();
+    let last = *acc.2.get_or_insert(now);
+    if (now - last).as_secs_f64() >= 5.0 {
+        let f = acc.1.max(1) as f64;
+        let mut v: Vec<_> = acc.0.iter().map(|(k, n)| (k.clone(), *n)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        for (k, n) in v {
+            println!("MESHLOG {k}: {:.1}/frame", n as f64 / f);
+        }
+        acc.0.clear();
+        acc.1 = 0;
+        acc.2 = Some(now);
     }
 }

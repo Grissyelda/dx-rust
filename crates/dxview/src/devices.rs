@@ -35,6 +35,46 @@ pub struct HackJob {
     pub per: f64,
 }
 
+/// GMDX Wireless Strength (DeusExPlayer.HighlightCenterObject): with a multitool in hand and nothing in frob reach,
+/// the first hackable device (bHackable, strength left) within PerkValue (768) units along the view, in sight.
+pub fn wireless_target(
+    lvl: &dx_level::Level,
+    blockers: &Blockers,
+    hacking: &Hacking,
+    eye: glam::DVec3,
+    dir: glam::DVec3,
+) -> Option<(usize, f64)> {
+    let range = crate::perks::value_if("PerkWirelessStrength")? as f64;
+    if !crate::perks::holding("Multitool") {
+        return None;
+    }
+    let end = eye + dir * range;
+    let wall = lvl.collision.trace(eye, end, glam::DVec3::splat(1.0)).fraction;
+    let mut best: Option<(usize, f64)> = None;
+    for (b, c) in blockers.list.iter().enumerate() {
+        if c.radius <= 0.0 {
+            continue;
+        }
+        let p = &lvl.actors[c.actor].props;
+        if !is_hackable(p) || matches!(find(p, "bHackable"), Some(Value::Bool(false))) {
+            continue;
+        }
+        let s = *hacking.strength.get(&b).unwrap_or(&match find(p, "hackStrength") {
+            Some(Value::Float(v)) => *v as f64,
+            _ => 0.2,
+        });
+        if s <= 0.0 {
+            continue;
+        }
+        if let Some(t) = crate::pickups::ray_cylinder(eye, end, c.center, c.radius, c.height) {
+            if t <= wall + 0.01 && best.map_or(true, |(_, f)| t < f) {
+                best = Some((b, t));
+            }
+        }
+    }
+    best
+}
+
 pub fn name_prop(p: &[Property], n: &str) -> String {
     match find(p, n) {
         Some(Value::Name(s)) if s != "None" => s.clone(),
@@ -195,7 +235,14 @@ pub fn device_system(
         }
         if stop {
             hacking.job = None;
-            if inv.0.use_one("Multitool") == 0 && holding {
+            // GMDX Cracked (HackableDevices.StopHacking): a finished hack of a device whose initial strength is at
+            // most PerkValue (5%) leaves the multitool unused.
+            let initial = match find(props(b), "hackStrength") {
+                Some(Value::Float(v)) => *v,
+                _ => 0.2,
+            };
+            let free = s <= 1e-6 && crate::perks::value_if("PerkCracked").is_some_and(|v| initial <= v + 1e-4);
+            if !free && inv.0.use_one("Multitool") == 0 && holding {
                 weapons.held = None;
             }
         }

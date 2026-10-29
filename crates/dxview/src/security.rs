@@ -740,7 +740,15 @@ pub fn security_system(
     // Pawns: (blocker, centre, alive, hostile to the player, robot).
     let pawns: Vec<(usize, DVec3, bool)> = npcs
         .iter()
-        .filter(|n| n.state != NpcState::Dead && n.body.is_some())
+        .filter(|n| {
+            n.state != NpcState::Dead
+                && n.body.is_some()
+                // Out of the world (bInWorld False): nothing to see or shoot.
+                && blockers.list.get(n.blocker).is_some_and(|c| c.radius > 0.0)
+                // GMDX fix (setting FixTurretAnimals): turrets don't waste rounds on rats, birds and dogs.
+                && !(crate::settings::get("FixTurretAnimals") > 0.5
+                    && crate::classtree::is_a(&lvl.actors[n.actor].class, "Animal"))
+        })
         .map(|n| (n.blocker, n.body.as_ref().unwrap().location, n.hates("Player")))
         .collect();
 

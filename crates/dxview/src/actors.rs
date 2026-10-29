@@ -301,13 +301,29 @@ pub struct EnvMapped;
 /// UV_0 = 0.5 + 0.5 * (view-space normal x, -y) for every environment-mapped part, each frame.
 pub fn env_map_system(
     cams: Query<&GlobalTransform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<EnvMapped>)>,
-    parts: Query<(&Mesh3d, &GlobalTransform), With<EnvMapped>>,
+    parts: Query<(Entity, &Mesh3d, &GlobalTransform, &ViewVisibility), With<EnvMapped>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut last: Local<HashMap<Entity, Quat>>,
 ) {
+    let _prof = crate::prof::scope("actors::env_map_system");
     let Some(cam) = cams.iter().next() else { return };
-    let inv = cam.compute_transform().rotation.inverse();
-    for (m, gt) in &parts {
-        let rot = inv * gt.compute_transform().rotation;
+    let cam_t = cam.compute_transform();
+    let inv = cam_t.rotation.inverse();
+    for (e, m, gt, vis) in &parts {
+        // Only what is on screen and near enough for the shine to show (a sphere map follows the view, so every
+        // env-mapped bottle and camera on the map was re-uploaded every frame), and only when the view turned.
+        let t = gt.compute_transform();
+        if !vis.get() || t.translation.distance(cam_t.translation) > 30.0 {
+            continue;
+        }
+        let rot = inv * t.rotation;
+        // A turn of under about a degree (two beyond 10 m) doesn't move the shine visibly.
+        let far = t.translation.distance(cam_t.translation) > 10.0;
+        let keep = if far { 0.99985 } else { 0.99996 };
+        if last.get(&e).is_some_and(|q| q.dot(rot).abs() > keep) {
+            continue;
+        }
+        last.insert(e, rot);
         let Some(mut mesh) = meshes.get_mut(&m.0) else { continue };
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(n)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) else {
             continue;

@@ -442,6 +442,33 @@ fn shot_system(
     }
 }
 
+/// Developer aid: `DXVIEW_SHOT_TIMES="dir;t1,t2,..."` saves a screenshot at each of those seconds after start
+/// (game time) without touching the camera - for cut scenes - and exits after the last.
+fn timed_shot_system(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut done: Local<usize>,
+    mut cfg: Local<Option<Option<(String, Vec<f32>)>>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let cfg = cfg.get_or_insert_with(|| {
+        let v = std::env::var("DXVIEW_SHOT_TIMES").ok()?;
+        let (dir, ts) = v.split_once(';')?;
+        Some((dir.to_string(), ts.split(',').filter_map(|t| t.trim().parse().ok()).collect()))
+    });
+    let Some((dir, ts)) = cfg.as_ref() else { return };
+    let t = time.elapsed_secs();
+    if let Some(&want) = ts.get(*done) {
+        if t >= want {
+            let path = format!("{dir}/t{:05.1}.png", want);
+            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+            *done += 1;
+        }
+    } else if t > ts.last().copied().unwrap_or(0.0) + 1.0 {
+        exit.write(AppExit::Success);
+    }
+}
+
 /// A crash leaves its message and where it happened in crash.log beside the exe (and on stderr). Installed as a
 /// startup system so it wraps the hook Bevy's plugins put in place.
 fn install_crash_log() {
@@ -503,6 +530,9 @@ pub fn make_player(level: &Level, (params, eye_height, bob): (MoveParams, f64, f
 
 fn main() {
     prof::init();
+    // DXT1 textures go to the GPU compressed (desktop GPUs and the Steam Deck take BC formats; checked again once
+    // the render device exists). DXVIEW_NO_BC1 decodes them as before.
+    dx_level::set_bc1_supported(std::env::var_os("DXVIEW_NO_BC1").is_none());
     let args: Vec<String> = std::env::args().collect();
     // The game folder: the first argument, else the launcher's choice (launcher.txt beside the exe), else the default.
     let root = args
@@ -587,6 +617,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    prof::hitch_note("first level load", t0.elapsed().as_secs_f64() * 1000.0);
     println!(
         "loaded in {:.1}s: {} triangles, {} textures ({} missing), {} backdrop / {} invisible faces skipped",
         t0.elapsed().as_secs_f32(),
@@ -640,7 +671,7 @@ fn main() {
             c.insert_resource(weapons::ScriptedInput::default());
         })
         .add_systems(loader::LevelSetup, setup)
-        .add_systems(Startup, loader::first_level_setup)
+        .add_systems(Startup, (detect_bc1, loader::first_level_setup).chain())
         .add_systems(First, loader::loader_system.before(save::save_first_system))
         .add_systems(Update, loader::loading_screen_system)
         .add_systems(
@@ -655,6 +686,7 @@ fn main() {
                 uv_scroll,
                 overlay_update,
                 shot_system.after(fly).after(overlay_update),
+                (timed_shot_system, weapons::prewarm_view_models_system.after(weapons::select_system)),
                 walk_test_finish,
                 hud_text,
                 door_test.after(fly),
@@ -786,7 +818,7 @@ fn main() {
             (gamepad::poll_system, keybinds::remap_system).chain().after(bevy::input::InputSystems),
         )
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system))
+        .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system, prof::mesh_owner_system))
         .init_resource::<consys::ConSetup>()
         .init_resource::<triggers::Triggers>()
         .init_resource::<logic::LogicActors>()
@@ -1019,11 +1051,49 @@ fn main() {
         .run();
 }
 
-pub fn make_image(t: &dx_level::TextureImage) -> Image {
+/// The render device takes BC (DXT) compressed textures.
+static GPU_BC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn detect_bc1(dev: Option<Res<bevy::render::renderer::RenderDevice>>) {
+    let ok = dev.is_none_or(|d| d.features().contains(bevy::render::render_resource::WgpuFeatures::TEXTURE_COMPRESSION_BC));
+    GPU_BC.store(ok, std::sync::atomic::Ordering::Relaxed);
+    if !ok {
+        println!("dxview: no BC texture support on this GPU: DXT1 textures are decoded");
+        dx_level::set_bc1_supported(false);
+    }
+}
+
+/// A TextureImage's pixels for the GPU: (format, mips concatenated). BC1 blocks pass through unless the device
+/// can't take them, then they decode to RGBA8.
+pub fn image_data(t: &dx_level::TextureImage) -> (TextureFormat, Vec<u8>, u32) {
     let mut data = Vec::new();
+    if t.bc1 && GPU_BC.load(std::sync::atomic::Ordering::Relaxed) {
+        for m in &t.mips {
+            data.extend_from_slice(m);
+        }
+        return (TextureFormat::Bc1RgbaUnormSrgb, data, t.mips.len() as u32);
+    }
+    if t.bc1 {
+        let mut n = 0;
+        for (k, m) in t.mips.iter().enumerate() {
+            let (w, h) = ((t.width >> k).max(1) as usize, (t.height >> k).max(1) as usize);
+            let mut out = vec![0u8; w * h * 4];
+            if unreal_pkg::objects::decode_dxt1(m, w, h, &mut out).is_none() {
+                break;
+            }
+            data.extend_from_slice(&out);
+            n += 1;
+        }
+        return (TextureFormat::Rgba8UnormSrgb, data, n.max(1));
+    }
     for m in &t.mips {
         data.extend_from_slice(m);
     }
+    (TextureFormat::Rgba8UnormSrgb, data, t.mips.len() as u32)
+}
+
+pub fn make_image(t: &dx_level::TextureImage) -> Image {
+    let (format, data, levels) = image_data(t);
     let mut img = Image::new_uninit(
         Extent3d {
             width: t.width,
@@ -1031,10 +1101,10 @@ pub fn make_image(t: &dx_level::TextureImage) -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        TextureFormat::Rgba8UnormSrgb,
+        format,
         RenderAssetUsages::RENDER_WORLD,
     );
-    img.texture_descriptor.mip_level_count = t.mips.len() as u32;
+    img.texture_descriptor.mip_level_count = levels;
     img.data = Some(data);
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
@@ -1228,7 +1298,7 @@ fn setup(
     // AnimNext loops (screens, monitors, TV noise) on the level's surfaces and meshes.
     anim_tex::reset();
     for (i, t) in level.textures.iter().enumerate() {
-        let masked = t.mips.first().is_some_and(|m| m.chunks_exact(4).any(|p| p[3] == 0));
+        let masked = t.has_alpha_holes();
         anim_tex::register(&mut runtime_assets.lib, &t.name, &handles[i], masked, true);
     }
     // Procedural textures on the level's meshes and surfaces (the augmentation canister's blue Nano_SFX_A glow):
@@ -1671,7 +1741,15 @@ fn fly(
         }
         let carried_mass = carrying.held.as_ref().map(|h| h.mass).unwrap_or(0.0);
         // Can't jump with anything heavier than 20 in your arms; carrying slows you by Mass * 2.
-        let jump = keys.just_pressed(KeyCode::Space) && carried_mass <= 20.0 && !player.swimming && !drone;
+        // DoJump: nothing heavier than 20 in your arms. GMDX fix (setting FixCarryJump): the Muscle aug, which the
+        // original read only after giving up, lets you jump with up to (CurrentLevel + 3) x 50 (150-300).
+        let carry_limit = match crate::abilities::aug_level("AugMuscle") {
+            Some(l) if crate::settings::get("FixCarryJump") > 0.5 && crate::abilities::aug_active("AugMuscle") => {
+                (l as f64 + 3.0) * 50.0
+            }
+            _ => 20.0,
+        };
+        let jump = keys.just_pressed(KeyCode::Space) && carried_mass <= carry_limit && !player.swimming && !drone;
         let world = actors::SwimWorld(World {
             level: &level.0,
             blockers: &blockers.list,
@@ -1851,6 +1929,12 @@ fn fly(
             }
         }
         let mut params = player.params.clone();
+        // GMDX Sprinter (GetCurrentGroundSpeed): x PerkValue with empty hands and nothing carried, before AugSpeed.
+        if let Some(v) = crate::perks::value_if("PerkSprinter") {
+            if weapons_res.held.is_none() && carried_mass <= 0.0 && weapons_res.corpse.is_none() {
+                params.ground_speed *= v as f64;
+            }
+        }
         // AugSpeed: GroundSpeed and JumpZ x LevelValue while active.
         if let Some(v) = crate::abilities::aug("AugSpeed") {
             params.ground_speed *= v as f64;

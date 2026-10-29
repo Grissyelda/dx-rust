@@ -643,6 +643,11 @@ pub fn build_layer() {
             }
         }
     }
+    if let Ok(c) = std::env::var("DXVIEW_HDTPLOG") {
+        for (cc, n, i, v) in list.iter().filter(|(cc, ..)| c == "*" || cc.eq_ignore_ascii_case(&c)) {
+            println!("HDTP {cc}.{n}[{i}] = {v:?}");
+        }
+    }
     unreal_pkg::classes::set_override_layer("hdtp", list);
 }
 

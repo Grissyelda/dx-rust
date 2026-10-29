@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use dx_level::actors::rotator_axes;
 use dx_level::ue_to_bevy;
 use glam::DVec3;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use unreal_pkg::props::{find, Property, Value};
 
@@ -61,7 +62,41 @@ struct Gen {
     lifespan: Option<f32>,
     /// Sound played for each burst (ParticleGenerator.spawnSound).
     spawn_sound: Option<String>,
+    /// Rides a moving thing that isn't a blocker (a projectile's trail): its position from `track()`; once it is
+    /// untracked the generator stops and goes when its particles have died.
+    track: Option<u64>,
 }
+
+/// Positions of tracked things (projectiles with trails), by id.
+static TRACK: Mutex<Option<HashMap<u64, DVec3>>> = Mutex::new(None);
+
+/// Move a tracked generator's source.
+pub fn track(id: u64, pos: DVec3) {
+    if let Ok(mut t) = TRACK.lock() {
+        t.get_or_insert_with(HashMap::new).insert(id, pos);
+    }
+}
+
+/// The source is gone (the dart stuck or hit something).
+pub fn untrack(id: u64) {
+    if let Ok(mut t) = TRACK.lock() {
+        if let Some(m) = t.as_mut() {
+            m.remove(&id);
+        }
+    }
+}
+
+/// A generator riding a tracked source (see `track`).
+pub fn add_tracked(g: GenSpec, id: u64) {
+    track(id, g.pos);
+    let mut g = spec_gen(g);
+    g.track = Some(id);
+    if let Ok(mut q) = ADD_GEN.lock() {
+        q.push(g);
+    }
+}
+
+static ADD_GEN: Mutex<Vec<Gen>> = Mutex::new(Vec::new());
 
 #[derive(Resource, Default)]
 pub struct Particles {
@@ -133,6 +168,7 @@ fn build(level: &dx_level::Level, blockers: &crate::actors::Blockers) -> Vec<Gen
             mat: None,
             lifespan: None,
             spawn_sound: None,
+            track: None,
         });
     }
     // Faucet.PostBeginPlay: a generator CollisionRadius x 0.9 in front of the tap, pitched down 12288.
@@ -172,6 +208,7 @@ fn build(level: &dx_level::Level, blockers: &crate::actors::Blockers) -> Vec<Gen
             mat: None,
             lifespan: None,
             spawn_sound: None,
+            track: None,
         });
     }
     // HKIncenseBurner.PostBeginPlay: a smoke generator at 0.6 x CollisionHeight, straight up.
@@ -245,6 +282,7 @@ fn spec_gen(g: GenSpec) -> Gen {
         aspect: 1.0,
         mat: None,
         lifespan: g.lifespan,
+        track: None,
         spawn_sound: g.spawn_sound,
     }
 }
@@ -261,7 +299,7 @@ fn tex_size(assets: &mut RuntimeAssets, tex: &str) -> (f32, f32) {
     if let Some(fx) = assets.lib.load_fire(tex) {
         return (fx.width as f32, fx.height as f32);
     }
-    assets.lib.load(tex).map(|(t, _)| (t.width() as f32, t.height() as f32)).unwrap_or((32.0, 32.0))
+    assets.lib.info(tex).filter(|i| i.0 > 0 && i.1 > 0).map(|i| (i.0 as f32, i.1 as f32)).or_else(|| assets.lib.load(tex).map(|(t, _)| (t.width() as f32, t.height() as f32))).unwrap_or((32.0, 32.0))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -291,6 +329,8 @@ pub fn particle_system(
     for g in ADD.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         st.gens.push(spec_gen(g));
     }
+    st.gens.extend(ADD_GEN.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default());
+    let tracked = TRACK.lock().ok().and_then(|t| t.clone()).unwrap_or_default();
     if st.gens.is_empty() {
         return;
     }
@@ -319,6 +359,15 @@ pub fn particle_system(
             *t -= dt;
             if *t <= 0.0 {
                 g.spewing = false;
+            }
+        }
+        if let Some(id) = g.track {
+            match tracked.get(&id) {
+                Some(p) => g.pos = *p,
+                None => {
+                    g.spewing = false;
+                    g.lifespan = Some(0.0);
+                }
             }
         }
         if let Some((b, off)) = g.follow {

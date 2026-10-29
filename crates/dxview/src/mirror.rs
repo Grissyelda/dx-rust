@@ -85,6 +85,9 @@ impl Mirrors {
 /// How many mirror planes can reflect at the same time.
 pub const SLOTS: usize = 3;
 
+/// How far past the mirror plane the reflection camera's oblique near plane sits (metres; about one unit).
+const MIRROR_CLIP_EPS: f32 = 0.02;
+
 /// A reflection in progress: its image (the window's size) and the plane it shows.
 #[derive(Default)]
 pub struct Slot {
@@ -393,7 +396,10 @@ pub fn mirror_system(
             near_clip_plane: if std::env::var("DXVIEW_MIRROR_NOCLIP").is_ok() {
                 main_proj.near_clip_plane
             } else {
-                nv.extend(-dist)
+                // A unit (2 cm) past the mirror, so faces lying in its plane (the floor around a mirrored patch,
+                // the intro's globe-room walkway) are clipped away for good instead of flickering in and out in
+                // stripes along the clip plane.
+                nv.extend(-(dist + MIRROR_CLIP_EPS))
             },
             ..main_proj.clone()
         });

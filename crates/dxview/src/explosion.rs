@@ -345,8 +345,7 @@ pub fn spawn_fireball(
         if i == 0 {
             size = assets
                 .lib
-                .load_image(p)
-                .map(|t| t.width as f32)
+                .width(p).map(|w| w as f32)
                 .unwrap_or(128.0);
         }
         let img = image_for(assets, images, p);
@@ -596,7 +595,7 @@ pub fn explosion_system(
             commands.entity(e).despawn();
             continue;
         }
-        crate::movers::blast(b.pos, radius, amount, b.damage_type);
+        crate::movers::blast_ring(b.pos, radius, amount, b.damage_type, if b.rings { b.damage } else { 0.0 });
         // Cameras, turrets and lasers: EMP confuses them; lasers (not blockers) take the blast here.
         crate::security::blast(b.pos, radius, amount, b.damage_type);
         // Birds aren't blockers: they take the ring too (EMP and gas don't hurt them).
@@ -652,7 +651,15 @@ pub fn explosion_system(
         let d = pc.distance(b.pos).max(1.0);
         if !ph.dead && d < radius + player.params.radius && sees(pc, None) {
             let scale = (1.0 - ((d - player.params.radius) / radius).max(0.0)) as f32;
-            let dmg = amount * scale;
+            let mut dmg = amount * scale;
+            // GMDX Blast Padding: the player's own blast through active ballistic armour does PerkValue (25%) of
+            // its damage, and the armour loses Damage x 4 x Enviro skill charge for it.
+            if b.from.is_none() && ph.armor && b.damage_type == "Exploded" {
+                if let Some(v) = crate::perks::value_if("PerkBlastPadding") {
+                    crate::charged::drain("BallisticArmor", dmg * 4.0 * crate::abilities::skill("SkillEnviro"));
+                    dmg *= v;
+                }
+            }
             let dir = (pc - b.pos) / d;
             let at = pc - dir * (0.5 * (player.params.height + player.params.radius));
             let f = cam.forward().as_vec3();

@@ -938,14 +938,20 @@ pub fn sound_system(
     }
     st.check_timer = 0.0;
     let me = player.body.location;
-    let combat = npcs.iter().any(|n| {
-        n.state == NpcState::Attacking
-            && n.target == Some(Target::Player)
-            && blockers
-                .list
-                .get(n.blocker)
-                .map_or(false, |b| b.center.distance(me) < 1600.0 + b.radius)
-    });
+    let attackers = npcs
+        .iter()
+        .filter(|n| {
+            n.state == NpcState::Attacking
+                && n.target == Some(Target::Player)
+                && blockers
+                    .list
+                    .get(n.blocker)
+                    .map_or(false, |b| b.center.distance(me) < 1600.0 + b.radius)
+        })
+        .count();
+    // GMDX Audio: Play Combat Music = Restricted (setting RestrictedCombatMusic): two or more attackers, so one
+    // distant guard doesn't start the combat track.
+    let combat = attackers >= if crate::settings::get("RestrictedCombatMusic") > 0.5 { 2 } else { 1 };
     if combat {
         st.change_timer = 0.0;
         if st.mode != MusicMode::Combat {

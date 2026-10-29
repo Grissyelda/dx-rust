@@ -187,24 +187,50 @@ pub struct Package {
     pub exports: Vec<Export>,
     /// Package name from the file name (set by `open`), used to resolve same-package references.
     pub self_name: Option<String>,
-    data: std::sync::Arc<Vec<u8>>,
+    data: std::sync::Arc<Bytes>,
 }
 
-/// File contents shared by every Package opened on the same file (HDTP's packages are hundreds of MB, and many
-/// parts of the game open their own Package / ClassDb).
-static FILES: std::sync::Mutex<Vec<(PathBuf, std::sync::Weak<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
+/// A package's bytes: the file mapped into memory (HDTP's and New Vision's packages are hundreds of MB, and only
+/// the objects asked for are ever touched), or bytes in memory.
+pub enum Bytes {
+    Map(memmap2::Mmap),
+    Owned(Vec<u8>),
+}
 
-fn read_shared(real: &Path) -> std::io::Result<std::sync::Arc<Vec<u8>>> {
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bytes::Map(m) => m,
+            Bytes::Owned(v) => v,
+        }
+    }
+}
+
+/// File contents shared by every Package opened on the same file (many parts of the game open their own
+/// Package / ClassDb).
+static FILES: std::sync::Mutex<Vec<(PathBuf, std::sync::Weak<Bytes>)>> = std::sync::Mutex::new(Vec::new());
+
+fn map_file(real: &Path) -> std::io::Result<Bytes> {
+    let f = std::fs::File::open(real)?;
+    // SAFETY: game and mod packages are read-only data; nothing in DX RUST writes them while they're mapped.
+    match unsafe { memmap2::Mmap::map(&f) } {
+        Ok(m) => Ok(Bytes::Map(m)),
+        Err(_) => Ok(Bytes::Owned(std::fs::read(real)?)),
+    }
+}
+
+fn read_shared(real: &Path) -> std::io::Result<std::sync::Arc<Bytes>> {
     if let Ok(mut f) = FILES.lock() {
         f.retain(|(_, w)| w.strong_count() > 0);
         if let Some(a) = f.iter().find(|(p, _)| p == real).and_then(|(_, w)| w.upgrade()) {
             return Ok(a);
         }
-        let a = std::sync::Arc::new(std::fs::read(real)?);
+        let a = std::sync::Arc::new(map_file(real)?);
         f.push((real.to_path_buf(), std::sync::Arc::downgrade(&a)));
         return Ok(a);
     }
-    Ok(std::sync::Arc::new(std::fs::read(real)?))
+    Ok(std::sync::Arc::new(map_file(real)?))
 }
 
 impl Package {
@@ -216,10 +242,10 @@ impl Package {
     }
 
     pub fn from_bytes(data: Vec<u8>) -> Result<Package> {
-        Self::from_shared(std::sync::Arc::new(data))
+        Self::from_shared(std::sync::Arc::new(Bytes::Owned(data)))
     }
 
-    fn from_shared(data: std::sync::Arc<Vec<u8>>) -> Result<Package> {
+    fn from_shared(data: std::sync::Arc<Bytes>) -> Result<Package> {
         let (version, licensee, names, imports, exports) = {
             let mut r = Reader::new(&data, 0);
             let tag = r.u32()?;

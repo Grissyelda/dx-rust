@@ -408,6 +408,9 @@ impl Clip {
 }
 
 pub struct Held {
+    /// The pose last written into the view model's meshes (clip start, frames, frame): an unchanged pose isn't
+    /// re-uploaded (HDTP view models are dense).
+    pub last_pose: Option<(usize, usize, u32)>,
     pub stats: WeaponStats,
     pub mesh: Arc<AnimMesh>,
     pub parts: Vec<MeshPart>,
@@ -735,13 +738,11 @@ pub fn image_for(
     }
     let h = assets
         .lib
-        .load_image(path)
+        .load_gpu(path, false)
+        .map(|(_, t)| t)
         .or_else(|| assets.lib.load_wet(path))
         .map(|t| {
-            let mut data = Vec::new();
-            for m in &t.mips {
-                data.extend_from_slice(m);
-            }
+            let (format, data, levels) = crate::image_data(&t);
             let mut img = Image::new_uninit(
                 Extent3d {
                     width: t.width,
@@ -749,10 +750,10 @@ pub fn image_for(
                     depth_or_array_layers: 1,
                 },
                 TextureDimension::D2,
-                TextureFormat::Rgba8UnormSrgb,
+                format,
                 RenderAssetUsages::RENDER_WORLD,
             );
-            img.texture_descriptor.mip_level_count = t.mips.len() as u32;
+            img.texture_descriptor.mip_level_count = levels;
             img.data = Some(data);
             img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
                 address_mode_u: ImageAddressMode::Repeat,
@@ -835,11 +836,8 @@ pub fn masked_image_for(
     if let Some(h) = assets.images.get(&key) {
         return h.clone();
     }
-    let h = assets.lib.load_image_masked(path).map(|t| {
-        let mut data = Vec::new();
-        for m in &t.mips {
-            data.extend_from_slice(m);
-        }
+    let h = assets.lib.load_gpu(path, true).map(|(_, t)| {
+        let (format, data, levels) = crate::image_data(&t);
         let mut img = Image::new_uninit(
             Extent3d {
                 width: t.width,
@@ -847,10 +845,10 @@ pub fn masked_image_for(
                 depth_or_array_layers: 1,
             },
             TextureDimension::D2,
-            TextureFormat::Rgba8UnormSrgb,
+            format,
             RenderAssetUsages::RENDER_WORLD,
         );
-        img.texture_descriptor.mip_level_count = t.mips.len() as u32;
+        img.texture_descriptor.mip_level_count = levels;
         img.data = Some(data);
         img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
             address_mode_u: ImageAddressMode::Repeat,
@@ -900,7 +898,7 @@ pub fn spawn_mesh_parts(
                 }
             };
             // A texture flagged bMasked draws masked on any section (the first-person combat knife's hilt).
-            let masked = lib.load(tp).map(|(t, _)| t.masked).unwrap_or(false);
+            let masked = lib.info(tp).is_some_and(|i| i.2);
             Some((i, masked))
         };
         mesh_parts(
@@ -994,6 +992,19 @@ pub fn spawn_mesh_parts(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Prints how long building a held weapon took when it was slow (DXVIEW_PROF or over 50 ms).
+struct LogOnDrop(std::time::Instant, String);
+
+impl Drop for LogOnDrop {
+    fn drop(&mut self) {
+        let ms = self.0.elapsed().as_secs_f32() * 1000.0;
+        if ms > 50.0 || std::env::var_os("DXVIEW_PROF").is_some() {
+            println!("weapons: {} view model built in {ms:.0} ms", self.1);
+        }
+        crate::prof::hitch_note(&format!("view model {}", self.1), ms as f64);
+    }
+}
+
 fn build_held(
     stats: WeaponStats,
     defaults: &[Property],
@@ -1005,6 +1016,8 @@ fn build_held(
     commands: &mut Commands,
     root: Entity,
 ) -> Option<Held> {
+    let t0 = std::time::Instant::now();
+    let _log = LogOnDrop(t0, stats.class.clone());
     let probe = Held::fitted_of(&stats, false);
     let loaded = loaded.unwrap_or(stats.reload_count) > 0;
     let vd = view_defaults(&stats, defaults, probe, loaded);
@@ -1070,6 +1083,7 @@ fn build_held(
         crate::sound::play_player(snd, stats.snd.volume, 1024.0);
     }
     Some(Held {
+        last_pose: None,
         stats,
         mesh: am,
         parts,
@@ -1203,6 +1217,7 @@ pub fn visattach_refit_system(
     };
     h.parts = parts;
     h.handles = handles;
+    h.last_pose = None;
     h.relight = 0.0;
     h.vis = Some(key);
 }
@@ -1369,6 +1384,16 @@ pub fn select_system(
             }
         }
     }
+    // GMDX Interaction: Smart Binocular Selection (setting SmartBinoculars): the scope key with empty hands takes
+    // out the binoculars.
+    if weapons.held.is_none()
+        && weapons.pending.is_none()
+        && (keys.just_pressed(KeyCode::BracketLeft) || keys.just_pressed(KeyCode::KeyZ))
+        && crate::settings::get("SmartBinoculars") > 0.5
+        && inv.0.items.iter().any(|i| i.def.class == "Binoculars")
+    {
+        weapons.pending_class = Some("Binoculars".into());
+    }
     // Raise the pending weapon once nothing is held.
     if weapons.held.is_none() {
         let want: Option<String> = match weapons.pending.take() {
@@ -1533,6 +1558,14 @@ pub fn weapon_system(
     ),
 ) {
     let _prof = crate::prof::scope("weapons::weapon_system");
+    crate::perks::set_in_hand(weapons.held.as_ref().map(|h| (h.stats.class.as_str(), h.stats.hand_to_hand)));
+    // GMDX Remote Detonation (DeusExPlayer.SwitchAmmo): Change Ammo with empty hands sets off the player's mines.
+    if weapons.held.is_none()
+        && (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT))
+        && crate::perks::has("PerkRemoteDetonation")
+    {
+        crate::grenades::remote_detonate();
+    }
     DTS_EMPTY.store(dts_energy() && ph.energy < 1.0, std::sync::atomic::Ordering::Relaxed);
     let dt = time.delta_secs();
     // What pawns see the player doing (reactions.rs): a weapon out (BringUp's WeaponDrawn), a tool at work on a lock
@@ -1543,7 +1576,9 @@ pub fn weapon_system(
         });
         crate::reactions::set_weapon_drawn(drawn && !ph.dead);
         let at = player.body.location;
-        crate::reactions::set_hacking((picking.0.is_some() || hacking.job.is_some()).then_some(at));
+        // GMDX Sleight of Hand: picking and hacking send no MegaFutz.
+        let sly = crate::perks::has("PerkSleightOfHand");
+        crate::reactions::set_hacking((!sly && (picking.0.is_some() || hacking.job.is_some())).then_some(at));
     }
     let injected_fire = std::mem::take(&mut scripted.fire);
     let mut pending_ammo: Option<(String, String)> = None;
@@ -1567,12 +1602,13 @@ pub fn weapon_system(
                 dir,
                 from: None,
                 mult: 1.0,
-                life: Some(1.5),
+                // GMDX Firefighter: the halon lives 1.8 s and leaves faster (380 for 320: x1.19).
+                life: Some(if crate::perks::has("PerkFirefighter") { 1.8 } else { 1.5 }),
                 scale: None,
                 still: false,
                 track: None,
                 track_at: None,
-                speed: None,
+                speed: crate::perks::has("PerkFirefighter").then_some(300.0 * 380.0 / 320.0),
                 ownerless: false,
             });
         }
@@ -1603,7 +1639,7 @@ pub fn weapon_system(
             &mut weapons,
         );
         if r.spray {
-            weapons.spray = 3.0;
+            weapons.spray = firefighter_spray();
             weapons.spray_acc = 1.0;
         }
         if !r.msg.is_empty() {
@@ -1882,9 +1918,10 @@ pub fn weapon_system(
                     if props.is_some_and(|p| matches!(find(p, "bOwned"), Some(Value::Bool(true)))) {
                         crate::reactions::futz(blockers.list[b].center);
                     }
+                    let cls = &level.0.actors[blockers.list[b].actor].class;
                     deco_hits.0.push(crate::destruct::DecoHit {
                         blocker: b,
-                        damage: h.stats.hit_damage * h.stats.damage_mult(),
+                        damage: h.stats.hit_damage * h.stats.damage_mult() * crate::perks::piercing_mult(cls, false),
                         damage_type: dt_name,
                     });
                 } else {
@@ -1893,9 +1930,11 @@ pub fn weapon_system(
                     {
                         blood.0.push((at - fw, fw));
                     }
+                    let cls = &level.0.actors[blockers.list[b].actor].class;
+                    let robot = props.is_some_and(|p| find(p, "EMPHitPoints").is_some());
                     pawn_hits.0.push(crate::damage::PawnHit {
                         blocker: b,
-                        damage: h.stats.hit_damage * h.stats.damage_mult(),
+                        damage: h.stats.hit_damage * h.stats.damage_mult() * crate::perks::piercing_mult(cls, robot),
                         damage_type: dt_name,
                         hit_loc: at,
                         attacker: None,
@@ -2099,7 +2138,7 @@ pub fn weapon_system(
             );
             let (consumed, msg, weapons_spray) = (r.consumed, r.msg, r.spray);
             if weapons_spray {
-                weapons.spray = 3.0;
+                weapons.spray = firefighter_spray();
                 weapons.spray_acc = 1.0;
             }
             if !msg.is_empty() {
@@ -2212,6 +2251,16 @@ pub fn weapon_system(
                 hud.time_left = 1.5;
             }
         }
+    }
+    // GMDX Short Fuse (DeusExPlayer.ReloadWeapon): with a Demolition weapon up, Reload toggles the short fuse.
+    if keys.just_pressed(KeyCode::KeyR)
+        && h.stats.governing_skill.as_deref() == Some("SkillDemolition")
+        && crate::perks::has("PerkShortFuse")
+    {
+        let on = crate::grenades::toggle_short_fuse();
+        hud.text = if on { "Short Fuse Enabled".into() } else { "Short Fuse Disabled".into() };
+        hud.time_left = 2.0;
+        crate::sound::play_player("DeusExSounds.Generic.Beep4", 0.8, 1024.0);
     }
     // Reload on R, or automatically when the clip is empty and ammo remains.
     let can_reload =
@@ -2425,11 +2474,27 @@ pub fn weapon_system(
                         ownerless: false,
                     });
                 }
+                // GMDX Plasma Breeder (WeaponPlasmaRifle.OnProjectileFired): a free plasma round every PerkValue
+                // (5) bolts fired (never checked against the maximum, as in GMDX).
+                if h.stats.class == "WeaponPlasmaRifle" {
+                    if let Some(v) = crate::perks::value_if("PerkPlasmaBreeder") {
+                        let n = PLASMA_BRED.fetch_add(h.stats.shots_per_fire() as u32, std::sync::atomic::Ordering::Relaxed)
+                            + h.stats.shots_per_fire() as u32;
+                        if n as f32 >= v {
+                            PLASMA_BRED.store(0, std::sync::atomic::Ordering::Relaxed);
+                            match inv.0.ammo.iter_mut().find(|x| x.0 == "AmmoPlasma") {
+                                Some(e) => e.1 += 1,
+                                None => inv.0.ammo.push(("AmmoPlasma".to_string(), 1)),
+                            }
+                        }
+                    }
+                }
             } else if h.stats.hand_to_hand {
                 // The swing (FireSound) starts now; the blow lands at the HandToHandAttack notify.
                 h.melee_pending = true;
             } else {
                 let mut ricocheted = false;
+                let slugs_from = pawn_hits.0.len();
                 for _ in 0..h.stats.shots_per_fire() {
                     let dir = if h.stats.hand_to_hand {
                         fw
@@ -2595,8 +2660,11 @@ pub fn weapon_system(
                                 .push((eye + dir * range * hit.fraction - dir * 1.0, dir));
                         }
                         if is_pawn {
-                            // ProcessTraceHit: damage scaled by skill (1 - 2 * skill value).
-                            let dmg = h.stats.hit_damage * h.stats.damage_mult();
+                            // ProcessTraceHit: damage scaled by skill (1 - 2 * skill value); GMDX Hollow Points on
+                            // animals.
+                            let dmg = h.stats.hit_damage
+                                * h.stats.damage_mult()
+                                * crate::perks::hollow_points_mult(h.stats.ammo_class.as_deref(), &a.class);
                             pawn_hits.0.push(crate::damage::PawnHit {
                                 blocker: b,
                                 damage: dmg,
@@ -2608,13 +2676,29 @@ pub fn weapon_system(
                         }
                     }
                 }
+                // GMDX Stopping Power (TraceFire bDoExtraSlugDamage): every slug of a shotgun blast into one pawn,
+                // and the last does extra. GMDX's 8 slugs get two slugs' worth (+25%); with the original's 5 the
+                // last slug does 1 + 0.25 x slugs so the blast stays +25%.
+                let n = h.stats.shots_per_fire();
+                if n > 1 && crate::perks::has("PerkStoppingPower") {
+                    let hits = &mut pawn_hits.0[slugs_from..];
+                    if hits.len() == n && hits.iter().all(|x| x.blocker == hits[0].blocker) {
+                        if let Some(last) = hits.last_mut() {
+                            last.damage *= 1.0 + 0.25 * n as f32;
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Animate the view model.
+    // Animate the view model (only when the pose changed since the last write).
     let f = h.clip.frame();
-    for (pi, hm) in h.handles.iter().enumerate() {
+    let f_used = if h.clip.looping { f } else { f.min(h.clip.frames as f32 - 1.001) };
+    let pose = (h.clip.start, h.clip.frames, (f_used * 1000.0) as u32);
+    let pose_changed = h.last_pose != Some(pose);
+    h.last_pose = Some(pose);
+    for (pi, hm) in h.handles.iter().enumerate().filter(|_| pose_changed) {
         let part = &h.parts[pi];
         if let Some(mut m) = meshes.get_mut(hm) {
             let pos: Vec<[f32; 3]> = part
@@ -2644,8 +2728,14 @@ pub fn weapon_system(
     // Light the weapon from the static lights around the player a few times a second (every frame while a
     // dynamic light such as a muzzle flash or the flashlight is on).
     h.relight -= dt;
-    let dyn_on = !crate::dynlight::current().is_empty();
-    if h.relight <= 0.0 || dyn_on {
+    // A dynamic light near enough to matter (a lamp across the map used to relight - and re-upload - the view
+    // model every frame).
+    let eye_now = bevy_to_ue(cam.translation.to_array());
+    let dyn_on = crate::dynlight::current().iter().any(|l| {
+        let d2 = (0..3).map(|k| (l.pos[k] - eye_now[k]).powi(2)).sum::<f32>();
+        d2 < (l.radius + 96.0).powi(2)
+    });
+    if h.relight <= 0.0 || (dyn_on && h.relight <= 0.15) {
         h.relight = 0.2;
         let eye = bevy_to_ue(cam.translation.to_array());
         let all = crate::dynlight::lights(&level.0.lights);
@@ -2963,6 +3053,18 @@ pub fn muzzle_flash_system(
     }
 }
 
+/// GMDX Plasma Breeder: bolts fired since the last free round (breedCount).
+static PLASMA_BRED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// FireExtinguisher Activated: 3 s of spray (GMDX Firefighter: a second longer).
+fn firefighter_spray() -> f32 {
+    if crate::perks::has("PerkFirefighter") {
+        4.0
+    } else {
+        3.0
+    }
+}
+
 /// Pickups in hand (binoculars, medkits, tools) never fire; they have their own use on the button.
 fn weapons_can_fire(w: &WeaponStats) -> bool {
     w.class != "POVCorpse" && !w.item
@@ -3069,19 +3171,23 @@ pub fn activate_pickup(
             // HealPlayer with the Medicine skill: MedicalHiss.
             crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
             msg = format!("Healed {} points", n as i32);
+            // GMDX Toxicologist: a medkit also cures poison (StopPoison, drugEffectTimer 0).
+            if crate::perks::has("PerkToxicologist") {
+                ph.cure_poison();
+            }
         }
         "Sodacan" => {
-            heal(ph, 2.0);
+            heal(ph, crate::perks::food(2.0));
             crate::sound::play_player(&crate::travel::voice("DeusExSounds.Player.MaleBurp"), 1.0, 0.0);
         }
-        "Candybar" => heal(ph, 2.0),
-        "SoyFood" => heal(ph, 5.0),
+        "Candybar" => heal(ph, crate::perks::food(2.0)),
+        "SoyFood" => heal(ph, crate::perks::food(5.0)),
         "Liquor40oz" => {
-            heal(ph, 2.0);
+            heal(ph, crate::perks::food(2.0));
             ph.drug_timer += 10.0;
         }
         "WineBottle" => {
-            heal(ph, 2.0);
+            heal(ph, crate::perks::food(2.0));
             ph.drug_timer += 5.0;
         }
         "Cigarettes" => {
@@ -3116,7 +3222,7 @@ pub fn activate_pickup(
             });
         }
         "LiquorBottle" => {
-            heal(ph, 2.0);
+            heal(ph, crate::perks::food(2.0));
             ph.drug_timer += 5.0;
         }
         "VialCrack" => {
@@ -3126,9 +3232,11 @@ pub fn activate_pickup(
         }
         "VialAmbrosia" => msg = "Strange...nothing happens...".into(),
         "BioelectricCell" => {
-            ph.energy = (ph.energy + 25.0).min(100.0);
+            // GMDX Biogenic: PerkValue (5) more.
+            let n = 25.0 + crate::perks::value_if("PerkBiogenic").unwrap_or(0.0);
+            ph.energy = (ph.energy + n).min(100.0);
             crate::sound::play_player("DeusExSounds.Generic.BioElectricHiss", 1.0, 256.0);
-            msg = "Recharged 25 points".into();
+            msg = format!("Recharged {} points", n as i32);
         }
         "FireExtinguisher" => {
             ph.on_fire = None;
@@ -3235,4 +3343,72 @@ mod penetrate_tests {
         println!("{through} of {tried} wood / glass walls let a shot through");
         assert!(tried > 0);
     }
+}
+
+/// Builds each weapon and tool the player carries once, tiny and out of the way in front of the view-model camera,
+/// for a few frames after a map loads or something new is picked up: its textures are read and uploaded, its
+/// meshes made and its render pipelines compiled then, so drawing it later doesn't stall (HDTP's high-resolution
+/// weapons froze the game for seconds the first time they came out).
+#[allow(clippy::too_many_arguments)]
+pub fn prewarm_view_models_system(
+    mut commands: Commands,
+    inv: Res<PlayerInventory>,
+    weapons: Res<Weapons>,
+    mut assets: ResMut<RuntimeAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    root: Single<Entity, With<ViewModelRoot>>,
+    mut done: Local<std::collections::HashSet<String>>,
+    mut cur: Local<Option<(Entity, u32)>>,
+    mut map_gen: Local<u64>,
+) {
+    if crate::loader::new_map(&mut map_gen) {
+        done.clear();
+        if let Some((e, _)) = cur.take() {
+            if let Ok(mut ec) = commands.get_entity(e) {
+                ec.despawn();
+            }
+        }
+    }
+    if std::env::var_os("DXVIEW_NO_PREWARM").is_some() {
+        return;
+    }
+    if let Some((e, n)) = cur.as_mut() {
+        *n += 1;
+        if *n >= 3 {
+            if let Ok(mut ec) = commands.get_entity(*e) {
+                ec.despawn();
+            }
+            *cur = None;
+        }
+        return;
+    }
+    let held = weapons.held.as_ref().map(|h| h.stats.class.clone());
+    let next = inv
+        .0
+        .items
+        .iter()
+        .map(|i| i.def.class.clone())
+        .find(|c| !done.contains(c) && held.as_deref() != Some(c.as_str()));
+    let Some(class) = next else { return };
+    done.insert(class.clone());
+    let d = assets.classes.defaults(&class);
+    let Some(mut stats) = weapon_stats(&class, &d) else { return };
+    if let Some(m) = weapons.mods.get(&class) {
+        apply_mods(&mut stats, m);
+    }
+    let t0 = std::time::Instant::now();
+    let warm = commands
+        .spawn((
+            Transform::from_xyz(0.0, 0.0, -0.3).with_scale(Vec3::splat(0.001)),
+            Visibility::Visible,
+        ))
+        .id();
+    commands.entity(*root).add_child(warm);
+    let _ = build_held(stats, &d, None, &mut assets, &mut images, &mut meshes, &mut materials, &mut commands, warm);
+    if std::env::var_os("DXVIEW_PROF").is_some() {
+        println!("prewarm: {class} in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    *cur = Some((warm, 0));
 }

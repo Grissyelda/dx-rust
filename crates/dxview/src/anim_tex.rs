@@ -35,7 +35,7 @@ pub fn register(lib: &mut dx_level::TexLib, path: &str, handle: &Handle<Image>, 
         let img = if masked {
             lib.load_image_masked(p)
         } else {
-            lib.load(p).map(|(t, mips)| dx_level::TextureImage { name: p.clone(), width: t.width(), height: t.height(), mips })
+            lib.load(p).map(|(t, mips)| dx_level::TextureImage { name: p.clone(), width: t.width(), height: t.height(), mips, bc1: false })
         };
         match img {
             Some(i) => frames.push(crate::make_image(&i)),

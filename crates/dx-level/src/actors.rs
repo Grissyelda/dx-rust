@@ -273,6 +273,11 @@ pub fn build(
                 }
             }
         }
+        if std::env::var("DXL_PROPLOG").is_ok_and(|c| c.eq_ignore_ascii_case(&class)) {
+            for p in props.iter().filter(|p| ["Mesh", "MultiSkins", "Skin", "Texture", "DrawScale"].iter().any(|n| p.name.eq_ignore_ascii_case(n))) {
+                println!("PROP {}.{}[{}] = {:?}", e.name, p.name, p.index, p.value);
+            }
+        }
         if find(&props, "Location").is_none() {
             continue;
         }
@@ -352,24 +357,27 @@ pub fn build(
                     // guard) need it even when the texture isn't flagged bMasked; opaque sections ignore alpha.
                     // Procedural FireTextures (the aug canister's Nano_SFX_A, the bio cell's BioCell_SFX) have no
                     // stored picture: a warmed-up frame stands in, and dxview animates it by name.
-                    if lib.load(tp).is_none() {
-                        let mut f = lib.load_fire(tp)?;
-                        for _ in 0..40 {
-                            f.step();
-                        }
-                        let mut data = Vec::new();
-                        f.rgba(&mut data);
-                        textures.push(TextureImage { name: tp.to_string(), width: f.width as u32, height: f.height as u32, mips: vec![data] });
-                        return Some((textures.len() - 1, false));
+                    if let Some((t, img)) = lib.load_gpu(tp, true) {
+                        textures.push(img);
+                        return Some((textures.len() - 1, t.masked));
                     }
-                    let masked = lib.load(tp)?.0.masked;
-                    let img = lib.load_image_masked(tp)?;
-                    textures.push(TextureImage { name: tp.to_string(), width: img.width, height: img.height, mips: img.mips });
-                    Some((textures.len() - 1, masked))
+                    let mut f = lib.load_fire(tp)?;
+                    for _ in 0..40 {
+                        f.step();
+                    }
+                    let mut data = Vec::new();
+                    f.rgba(&mut data);
+                    textures.push(TextureImage { name: tp.to_string(), width: f.width as u32, height: f.height as u32, mips: vec![data], bc1: false });
+                    Some((textures.len() - 1, false))
                 })
                 .clone()
         };
         let parts = mesh_parts(&m, &mesh_pkg, classes, p, style, actor_unlit, draw_scale, frame, &mut resolve);
+        if std::env::var("DXL_PROPLOG").is_ok_and(|c| c.eq_ignore_ascii_case(&a.class)) {
+            for pt in &parts {
+                println!("PART {} slots {:?} tex {:?} class {:?} verts {}", a.class, pt.slots, pt.texture.map(|i| textures[i].name.clone()), pt.class, pt.positions.len());
+            }
+        }
         if parts.is_empty() {
             if dbg { eprintln!("{}: no parts", a.class); }
             continue;

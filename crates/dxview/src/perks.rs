@@ -79,6 +79,26 @@ pub const ORDER: &[&str] = &[
     "PerkSocketJockey",
 ];
 
+/// Perks left out of the menus: they need a GMDX system we don't have (NPC helmets, the secondary item slot, the
+/// rocket-cam, stamina, the STOP! worm, stacking LAWs, wall sockets, biocell recharging) or would only give back
+/// what the original game already does (Chameleon: camo already fools lasers; Turret Domination: every turret
+/// setting already works). PerkSystem.IsVisible does the same for a few of them.
+pub const HIDDEN: &[&str] = &[
+    "PerkArmorPiercing",
+    "PerkInventive",
+    "PerkHeavilyTweaked",
+    "PerkMobileOrdnance",
+    "PerkFilterUpgrade",
+    "PerkFieldRepair",
+    "PerkChameleon",
+    "PerkAdrenalineRush",
+    "PerkEndurance",
+    "PerkModder",
+    "PerkTurretDomination",
+    "PerkLawfare",
+    "PerkSocketJockey",
+];
+
 /// One perk's defaults.
 #[derive(Clone, Debug, Default)]
 pub struct Perk {
@@ -166,6 +186,9 @@ pub fn init(root: &std::path::Path) {
     };
     let mut list = Vec::new();
     for class in ORDER {
+        if HIDDEN.contains(class) {
+            continue;
+        }
         let d = gm.defaults(class);
         if d.is_empty() {
             continue;
@@ -296,6 +319,88 @@ pub fn purchase(class: &str) -> bool {
 
 /// Perk.OnPerkPurchase / OnMapLoadAndPurchase for the perks that do something at once.
 fn on_purchase(_class: &str) {}
+
+/// The player's item in hand (class, bHandToHand), for perks that test inHand at damage time.
+static IN_HAND: Mutex<Option<(String, bool)>> = Mutex::new(None);
+
+pub fn set_in_hand(w: Option<(&str, bool)>) {
+    if let Ok(mut h) = IN_HAND.lock() {
+        match (h.as_ref(), w) {
+            (Some((c, b)), Some((nc, nb))) if c == nc && *b == nb => {}
+            _ => *h = w.map(|(c, b)| (c.to_string(), b)),
+        }
+    }
+}
+
+fn in_hand() -> Option<(String, bool)> {
+    IN_HAND.lock().ok().and_then(|h| h.clone())
+}
+
+/// The player has this class in hand.
+pub fn holding(class: &str) -> bool {
+    in_hand().is_some_and(|(c, _)| c.eq_ignore_ascii_case(class))
+}
+
+/// PerkPiercing.GetPiercingPerkMult: a low-tech blade or club in hand does PerkValue x damage to bots and security
+/// systems (Robot / SecurityCamera / AutoTurretGun / AlarmUnit TakeDamage, the player's damage only).
+pub fn piercing_mult(target_class: &str, robot: bool) -> f32 {
+    let Some(v) = value_if("PerkPiercing") else { return 1.0 };
+    let low_tech = in_hand().is_some_and(|(c, _)| {
+        matches!(c.as_str(), "WeaponCombatKnife" | "WeaponShuriken" | "WeaponCrowbar" | "WeaponNanoSword" | "WeaponBaton")
+    });
+    let security = ["SecurityCamera", "AutoTurretGun", "AlarmUnit"]
+        .iter()
+        .any(|b| crate::classtree::is_a(target_class, b));
+    if low_tech && (robot || security) {
+        v
+    } else {
+        1.0
+    }
+}
+
+/// Piercing's flinch: with a hand-to-hand weapon in hand the pawn's pain cooldown (TakeHitTimer) is 1.3 s.
+pub fn flinch_time() -> Option<f32> {
+    (has("PerkPiercing") && in_hand().is_some_and(|(_, h2h)| h2h)).then_some(1.3)
+}
+
+/// Hollow Points (DeusExWeapon.ProcessTraceHit): 10mm rounds do PerkValue x damage to animals.
+pub fn hollow_points_mult(ammo: Option<&str>, target_class: &str) -> f32 {
+    match value_if("PerkHollowPoints") {
+        Some(v) if ammo.is_some_and(|a| a.eq_ignore_ascii_case("Ammo10mm")) && crate::classtree::is_a(target_class, "Animal") => v,
+        _ => 1.0,
+    }
+}
+
+/// Glutton (RSDEdible.GetHealAmount): food and drink heal 1.5 x as much, rounded up.
+pub fn food(amount: f32) -> f32 {
+    if has("PerkGlutton") {
+        (amount * 1.5 + 0.9).floor()
+    } else {
+        amount
+    }
+}
+
+/// Hemorrhage: shuriken hits from the player waiting to start a bleed, (blocker, damage).
+static BLEED: Mutex<Vec<(usize, f32)>> = Mutex::new(Vec::new());
+
+/// A player's shuriken hit this pawn with Hemorrhage owned (DeusExProjectile: damageType 'Bleed').
+pub fn mark_bleed(blocker: usize, damage: f32) {
+    if let Ok(mut b) = BLEED.lock() {
+        b.push((blocker, damage));
+    }
+}
+
+/// The pawn's hit of `damage` was such a shuriken: StartBleed.
+pub fn take_bleed(blocker: usize, damage: f32) -> bool {
+    let Ok(mut b) = BLEED.lock() else { return false };
+    match b.iter().position(|&(x, d)| x == blocker && (d - damage).abs() < 0.01) {
+        Some(i) => {
+            b.swap_remove(i);
+            true
+        }
+        None => false,
+    }
+}
 
 /// A new game: no perks.
 pub fn new_game() {

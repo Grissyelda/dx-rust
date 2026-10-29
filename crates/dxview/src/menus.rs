@@ -661,6 +661,27 @@ impl Enhance {
             ("SmoothLean", "Gameplay", "Smooth Leaning", "Leaning eases in and out, works while crouch-walking, and at a corner your eyes lean on past where your body stops so you can peek."),
             ("MeleeArc", "Gameplay", "Melee Sweeps An Arc", "Knives, batons, prods and swords also hit whatever stands just to either side of your aim, at three quarters damage."),
             ("DTSEnergy", "Gameplay", "Dragon's Tooth Uses Bioenergy", "Each swing of the Dragon's Tooth sword costs 5 bioelectric energy; with none left the blade goes dark and won't swing (after GMDX)."),
+            // GMDX bugfixes.
+            ("FixSkillAwardOnce", "Fixes", "Skill Awards Pay Once", "A one-time skill point award set off by an event pays only once; in the original a repeated event paid again (GMDX / Shifter fix)."),
+            ("FixTurretAnimals", "Fixes", "Turrets Ignore Animals", "Gun turrets don't waste their fire on rats, birds and dogs (GMDX fix)."),
+            ("FixBlastDoors", "Fixes", "Explosions Break Strong Doors", "An explosion is dealt in five rings, so in the original no ring of even a big blast could beat a sturdy door's damage threshold. With this, a blast strong enough as a whole damages the door (GMDX fix; changes the balance)."),
+            ("FixGibLoot", "Fixes", "Gibbed Bodies Drop Their Weapons", "Someone blown apart throws out the weapons they carried instead of losing them (GMDX / G-Flex fix; changes the balance)."),
+            ("FixCarryJump", "Fixes", "Muscle Aug Jumps While Carrying", "With the Microfibral Muscle aug on you can jump while carrying heavier things, as the aug was meant to allow (GMDX fix; changes the balance)."),
+            // GMDX quality of life.
+            ("ToolCounts", "Interface", "Tools Owned / Needed", "Locks and devices show how many lockpicks or multitools you have against how many they need, as 2/3 picks (GMDX)."),
+            ("ItemCounts", "Interface", "Item Count Labels", "A stack of items lying about shows how many there are, as Medkit (3) (GMDX)."),
+            ("DuplicateKeys", "Interface", "Show Duplicate Keys", "A nano key you already have on the ring is marked (Duplicate) (GMDX)."),
+            ("SearchedText", "Interface", "Mark Searched Bodies", "Bodies you've already searched say [Searched] (GMDX)."),
+            ("AmmoTotal", "Interface", "Ammo Display Shows Rounds", "The ammo display counts the rounds left instead of whole clips (GMDX's Accurate Ammo Display)."),
+            ("AmmoMaxCyan", "Interface", "Show Full Ammo", "The ammo count turns cyan when you carry all you can of that ammo (GMDX)."),
+            ("ShowMaxStacks", "Interface", "Show Stack Limits", "Inventory items show how many more you can carry, as Count: 3/15 (GMDX)."),
+            ("PickupSize", "Interface", "No Room Message Shows Size", "When something won't fit, the message says how much room it needs, as [2x3] (GMDX)."),
+            ("StreamlinedRepairBot", "Interface", "Streamlined Repair Bots", "A repair bot that is still recharging says how long it will be instead of opening its screen (GMDX)."),
+            ("FasterInfolinks", "Interface", "Faster Infolinks", "Infolinks waiting their turn follow straight on, without the pause between them (GMDX)."),
+            ("DropStacks", "Interface", "Drop Whole Stacks", "Shift + Drop on the inventory screen drops the whole stack at once (GMDX)."),
+            ("SmartBinoculars", "Gameplay", "Scope Key Takes Out Binoculars", "With nothing in your hands, the scope key takes out the binoculars (GMDX's Smart Binocular Selection)."),
+            ("RestrictedCombatMusic", "Sound", "Combat Music Needs Two Attackers", "The combat music only starts when at least two enemies are fighting you, so one far-off guard doesn't set it off (GMDX)."),
+            ("NoStrobeLights", "Visuals", "No Flickering Lights", "Flickering and blinking lights burn steady (GMDX's Lighting Accessibility, for photosensitive players)."),
         ] {
             let mut c = debug_mode_choice();
             c.key = key.into();

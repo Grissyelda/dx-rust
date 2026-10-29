@@ -140,8 +140,18 @@ pub fn frob_target_system(
     mut hl: ResMut<FrobHighlight>,
     hacking: Res<crate::devices::Hacking>,
     grenades: Query<&crate::grenades::Grenade>,
+    inv: Res<crate::pickups::PlayerInventory>,
 ) {
     let _prof = crate::prof::scope("frobui::frob_target_system");
+    // GMDX Tool Windows: Tool Display Style (setting ToolCounts): "owned/needed picks".
+    let owned = |class: &str| inv.0.items.iter().filter(|i| i.def.class == class).map(|i| i.count).sum::<u32>();
+    let tool_text = |needed: i32, class: &str, one: &str, many: &str| {
+        if crate::settings::get("ToolCounts") > 0.5 {
+            format!("{}/{} {}", owned(class), needed, many)
+        } else {
+            format!("{} {}", needed, if needed == 1 { one } else { many })
+        }
+    };
     hl.timer -= time.delta_secs();
     if hl.timer > 0.0 {
         return;
@@ -194,12 +204,7 @@ pub fn frob_target_system(
                             // The number of lockpicks it takes at the current Lockpicking skill.
                             let n = ((rt.lock_strength / crate::movers::lockpick_skill()) + 0.99)
                                 as i32;
-                            format!(
-                                "{}  ({} {})",
-                                pct(rt.lock_strength),
-                                n,
-                                if n == 1 { "pick" } else { "picks" }
-                            )
+                            format!("{}  ({})", pct(rt.lock_strength), tool_text(n, "Lockpick", "pick", "picks"))
                         } else {
                             "INF".into()
                         },
@@ -270,10 +275,9 @@ pub fn frob_target_system(
                     } else {
                         let tools = ((s / crate::devices::tech_skill()) + 0.99) as i32;
                         format!(
-                            "{text}\nBypass Str: {}%  ({} {})",
+                            "{text}\nBypass Str: {}%  ({})",
                             (s * 100.0 + 0.5) as i32,
-                            tools,
-                            if tools == 1 { "tool" } else { "tools" }
+                            tool_text(tools, "Multitool", "tool", "tools")
                         )
                     };
                 }
@@ -292,6 +296,38 @@ pub fn frob_target_system(
                     },
                 ));
             }
+        }
+    }
+    // GMDX Wireless Strength: nothing in reach, a hackable device further along the view while holding a multitool.
+    if hits.is_empty() {
+        if let Some((b, t)) = crate::devices::wireless_target(lvl, &blockers, &hacking, eye, dir) {
+            let c = blockers.list[b];
+            let a = &lvl.actors[c.actor];
+            let s = *hacking.strength.get(&b).unwrap_or(&match find(&a.props, "hackStrength") {
+                Some(Value::Float(v)) => *v as f64,
+                _ => 0.2,
+            });
+            let tools = ((s / crate::devices::tech_skill()) + 0.99) as i32;
+            let text = format!(
+                "{}\nBypass Str: {}%  ({})",
+                display_name(&a.props),
+                (s * 100.0 + 0.5) as i32,
+                tool_text(tools, "Multitool", "tool", "tools")
+            );
+            hits.push((
+                t,
+                c.radius,
+                false,
+                false,
+                Highlight {
+                    center: c.center,
+                    ext: DVec3::new(c.radius, c.radius, c.height),
+                    mover: false,
+                    text,
+                    mover_idx: None,
+                    blocker: Some(b),
+                },
+            ));
         }
     }
     // Grenades stuck to walls (and lying about): the same box as the pickup (frobbing one disarms it).
@@ -339,7 +375,25 @@ pub fn frob_target_system(
         );
         if let Some(t) = ray_cylinder(eye, end, center, r + 4.0, h + 4.0) {
             if t <= wall + 0.01 {
-                let name = str_prop(&it.props, "ItemName");
+                let mut name = str_prop(&it.props, "ItemName");
+                // GMDX Interaction: Show Item Count Labels (setting ItemCounts): "Medkit (3)" for a stack.
+                if crate::settings::get("ItemCounts") > 0.5 {
+                    if let Some(Value::Int(n)) = find(&it.props, "NumCopies") {
+                        if *n > 1 {
+                            name = format!("{name} ({n})");
+                        }
+                    }
+                }
+                // GMDX Tool Windows: Show Duplicate Keys (setting DuplicateKeys): a key already on the ring.
+                if it.class == "NanoKey" && crate::settings::get("DuplicateKeys") > 0.5 {
+                    let id = match find(&it.props, "KeyID") {
+                        Some(Value::Name(n)) => n.clone(),
+                        _ => String::new(),
+                    };
+                    if !id.is_empty() && crate::keys::list().iter().any(|(k, _)| k.eq_ignore_ascii_case(&id)) {
+                        name = format!("{name} (Duplicate)");
+                    }
+                }
                 hits.push((
                     t,
                     r,
@@ -372,13 +426,17 @@ pub fn frob_target_system(
             if t <= wall + 0.01 {
                 let a = &lvl.actors[n.actor];
                 let fam = str_prop(&a.props, "FamiliarName");
-                let text = if n.knocked_out {
+                let mut text = if n.knocked_out {
                     "Unconscious".to_string()
                 } else if fam.is_empty() {
                     "Dead Body".into()
                 } else {
                     format!("Dead Body ({fam})")
                 };
+                // GMDX Tool Windows: Show Carcass Searched State (setting SearchedText): "[Searched]" in front.
+                if n.searched && crate::settings::get("SearchedText") > 0.5 {
+                    text = format!("[Searched] {text}");
+                }
                 hits.push((
                     t,
                     r,

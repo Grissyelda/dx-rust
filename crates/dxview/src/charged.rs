@@ -25,6 +25,15 @@ pub struct Charged {
 #[derive(Resource, Default)]
 pub struct ActiveCharged(pub Vec<Charged>);
 
+/// Extra charge to take off an active pickup (GMDX Blast Padding: the armour pays for the blast it soaks up).
+static DRAIN: std::sync::Mutex<Vec<(String, f32)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn drain(class: &str, amount: f32) {
+    if let Ok(mut d) = DRAIN.lock() {
+        d.push((class.to_string(), amount));
+    }
+}
+
 pub fn is_charged(class: &str) -> bool {
     matches!(
         class,
@@ -171,8 +180,14 @@ pub fn charged_system(
         }
     }
     let mut expired = Vec::new();
+    let extra = DRAIN.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default();
     for c in active.0.iter_mut() {
         c.charge -= c.drain * 10.0 * dt;
+        for (class, n) in &extra {
+            if *class == c.class {
+                c.charge -= n;
+            }
+        }
         if c.charge <= 0.0 {
             expired.push(c.expire.clone());
             if let Some(snd) = &c.deactivate_snd {

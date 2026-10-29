@@ -81,6 +81,46 @@ pub struct Projectile {
     pub ambient_snd: Option<(String, f32, f32, f32)>,
     /// A projectile that gives off light (Fireball, PlasmaBolt, DartFlare...): its LightHue/Saturation/Brightness/Radius.
     pub light: Option<crate::dynlight::Spec>,
+    /// GMDX Hemorrhage: a player's shuriken makes the pawn it hits bleed.
+    pub bleed: bool,
+    /// GMDX Controlled Burn: a player's flame goes on through the first pawn it hits (and never hurts it twice).
+    pub pierce: bool,
+    pub already_hit: Option<usize>,
+    /// GMDX Sharp-Eyed: a particle trail rides this projectile (particles::add_tracked id).
+    pub trail: Option<u64>,
+    /// GMDX Blast Energy: a plasma rifle bolt of the player's whose blast reaches further out.
+    pub blast_energy: bool,
+}
+
+impl Projectile {
+    /// DeusExProjectile Exploding: the staggered blast. GMDX Blast Energy (PlasmaBolt, approximated on the five
+    /// rings): each ring at 0.75 and one more flat ring of half Damage over the whole radius, so the middle stays
+    /// about the same and the edge takes much more.
+    fn booms(&self, at: DVec3, r: f64) -> Vec<crate::explosion::Boom> {
+        let mut v = vec![crate::explosion::Boom {
+            pos: at,
+            damage: if self.blast_energy { self.damage * 0.75 } else { self.damage },
+            radius: r,
+            damage_type: self.damage_type,
+            from: self.from,
+            rings: true,
+            fireball: true,
+            fx: 1,
+        }];
+        if self.blast_energy {
+            v.push(crate::explosion::Boom {
+                pos: at,
+                damage: self.damage * 0.5,
+                radius: r,
+                damage_type: self.damage_type,
+                from: self.from,
+                rings: false,
+                fireball: false,
+                fx: 0,
+            });
+        }
+        v
+    }
 }
 
 impl Projectile {
@@ -189,10 +229,17 @@ pub fn launch_system(
             l.speed.unwrap_or(f("speed", 2000.0) as f64)
         };
         let damage = f("Damage", 10.0) * l.mult;
-        let damage_type = match find(&d, "DamageType") {
+        let mut damage_type = match find(&d, "DamageType") {
             Some(Value::Name(n)) => damage_type_of(n),
             _ => "Shot",
         };
+        // GMDX perks on the player's own projectiles.
+        let by_player = l.from.is_none() && !l.ownerless && !l.still;
+        let short_class = l.class.rsplit('.').next().unwrap_or(&l.class).to_string();
+        // Human Combustion (DartFlare.PostBeginPlay): flare darts set people alight.
+        if by_player && short_class == "DartFlare" && crate::perks::has("PerkHumanCombustion") {
+            damage_type = "Flamed";
+        }
         let stick = !matches!(find(&d, "bStickToWall"), Some(Value::Bool(false)))
             && find(&d, "cloudRadius").is_none();
         let rot = yaw_pitch(l.dir);
@@ -260,9 +307,9 @@ pub fn launch_system(
                 .or_else(|| crate::weapons::image_for(&mut assets, &mut images, &tex));
                 let tex_size = assets
                     .lib
-                    .load_image(&tex)
-                    .or_else(|| assets.lib.load_wet(&tex))
-                    .map(|t| t.width as f32)
+                    .width(&tex)
+                    .map(|w| w as f32)
+                    .or_else(|| assets.lib.load_wet(&tex).map(|t| t.width as f32))
                     .or_else(|| assets.lib.load_fire(&tex).map(|f| f.width as f32))
                     .unwrap_or(64.0);
                 let material = materials.add(StandardMaterial {
@@ -333,8 +380,44 @@ pub fn launch_system(
                 byte("LightRadius", 64) as f32,
             )
         });
-        let short = l.class.rsplit('.').next().unwrap_or(&l.class).to_string();
+        let short = short_class;
         let tracer = short == "Tracer" || short == "SniperTracer";
+        let bleed = by_player && short == "Shuriken" && crate::perks::has("PerkHemmorhage");
+        let pierce = by_player && short == "Fireball" && crate::perks::has("PerkControlledBurn");
+        // Sharp-Eyed (Dart.Timer / Shuriken.Timer): a trail of FlatFXTex46 on every dart and throwing knife while
+        // the player has the perk (whoever threw it, as in GMDX).
+        let trail = (!tracer
+            && crate::perks::has("PerkSharpEyed")
+            && (short.starts_with("Dart") || short == "Shuriken"))
+            .then(|| {
+                let id = root.to_bits() | (1 << 59);
+                crate::particles::add_tracked(
+                    crate::particles::GenSpec {
+                        pos: l.pos,
+                        dir: DVec3::Z,
+                        tex: "DeusExItems.Skins.FlatFXTex46".into(),
+                        draw_scale: 0.07,
+                        check: 0.03,
+                        frequency: 1.0,
+                        rise: 0.0,
+                        eject: 0.0,
+                        life: 0.5,
+                        random: false,
+                        follow: None,
+                        gravity: false,
+                        lifespan: None,
+                        spawn_sound: None,
+                    },
+                    id,
+                );
+                id
+            });
+        // Rocket Rigger (Rocket.PostBeginPlay): the player's GEP and WP rockets blast out to 576.
+        let rigged = by_player && matches!(short.as_str(), "Rocket" | "RocketWP") && crate::perks::has("PerkHERocket");
+        let blast_energy = by_player
+            && short == "PlasmaBolt"
+            && crate::perks::holding("WeaponPlasmaRifle")
+            && crate::perks::has("PerkBlastEnergy");
         commands.entity(root).insert(Projectile {
             tracer,
             class: short,
@@ -357,7 +440,7 @@ pub fn launch_system(
             sprite: sprite_fx,
             parts,
             explodes: if matches!(find(&d, "bExplodes"), Some(Value::Bool(true))) {
-                Some(f("blastRadius", 128.0) as f64)
+                Some(if rigged { 576.0 } else { f("blastRadius", 128.0) as f64 })
             } else {
                 None
             },
@@ -370,6 +453,11 @@ pub fn launch_system(
                 _ => std::f64::consts::PI,
             },
             max_range: f("maxRange", 24000.0) as f64,
+            bleed,
+            pierce,
+            already_hit: None,
+            trail,
+            blast_energy,
         });
     }
 }
@@ -395,8 +483,27 @@ pub fn projectile_system(
         ResMut<Assets<StandardMaterial>>,
     ),
     mut booms: ResMut<crate::explosion::Explosions>,
+    mut trails: Local<Vec<u64>>,
 ) {
     let _prof = crate::prof::scope("projectiles::projectile_system");
+    // Sharp-Eyed trails: follow their projectile; one that stuck or is gone stops its generator.
+    let mut live = Vec::new();
+    for (_, p, _) in &q {
+        if let Some(id) = p.trail {
+            if p.stuck {
+                crate::particles::untrack(id);
+            } else {
+                crate::particles::track(id, p.pos);
+                live.push(id);
+            }
+        }
+    }
+    for id in trails.iter() {
+        if !live.contains(id) {
+            crate::particles::untrack(*id);
+        }
+    }
+    *trails = live;
     let dt = time.delta_secs().min(0.05);
     let lvl = &level.0;
     let player_cyl = Cylinder {
@@ -525,16 +632,7 @@ pub fn projectile_system(
         if p.life <= 0.0 {
             if let Some(r) = p.explodes.filter(|_| true) {
                 p.impact(p.pos);
-                booms.0.push(crate::explosion::Boom {
-                    pos: p.pos,
-                    damage: p.damage,
-                    radius: r,
-                    damage_type: p.damage_type,
-                    from: p.from,
-                    rings: true,
-                    fireball: true,
-                    fx: 1,
-                });
+                booms.0.extend(p.booms(p.pos, r));
             }
             commands.entity(e).despawn();
             continue;
@@ -597,7 +695,7 @@ pub fn projectile_system(
         let world = World {
             level: lvl,
             blockers: &blockers.list,
-            ignore: p.from,
+            ignore: p.from.or(p.already_hit),
             pushable: None,
             movers: Some(&mv.rt),
         };
@@ -637,16 +735,7 @@ pub fn projectile_system(
             if f < 1.0 {
                 let at = start + (end - start) * f - p.vel.normalize_or_zero() * 4.0;
                 p.impact(at);
-                booms.0.push(crate::explosion::Boom {
-                    pos: at,
-                    damage: p.damage,
-                    radius: r,
-                    damage_type: p.damage_type,
-                    from: p.from,
-                    rings: true,
-                    fireball: true,
-                    fx: 1,
-                });
+                booms.0.extend(p.booms(at, r));
                 commands.entity(e).despawn();
                 continue;
             }
@@ -681,6 +770,16 @@ pub fn projectile_system(
                         attacker: p.from,
                         attacker_pos: at - p.vel.normalize_or_zero() * 64.0,
                     });
+                    if p.bleed {
+                        crate::perks::mark_bleed(b, p.damage);
+                    }
+                    // Controlled Burn: the flame isn't destroyed by the first pawn (pawnAlreadyHit) and flies on.
+                    if p.pierce && p.already_hit.is_none() {
+                        p.already_hit = Some(b);
+                        p.pos = end;
+                        tf.translation = Vec3::from(ue_to_bevy(p.pos.as_vec3().to_array()));
+                        continue;
+                    }
                 } else {
                     deco_hits.0.push(crate::destruct::DecoHit {
                         blocker: b,
