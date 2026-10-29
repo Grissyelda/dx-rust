@@ -300,6 +300,7 @@ pub fn frob_system(
         if find(p, "GroundSpeed").is_some()
             || !(crate::devices::is_hackable(p)
                 || crate::fixtures::is_fixture(&level.actors[c.actor].class)
+                || crate::augmentique::is_spawner(&level.actors[c.actor].class)
                 || crate::computers::is_terminal(&level.actors[c.actor].class)
                 || !crate::devices::name_prop(p, "Event").is_empty()
                 || !crate::devices::name_prop(p, "textTag").is_empty())
@@ -678,6 +679,14 @@ pub fn frob_system(
                                 | "WeaponNanoVirusGrenade"
                         );
                         let rounds = if grenade { 1 } else { rnd() + 1 };
+                        // Augmentique: the owner's weapon skin is found (GetSkinFromCarcass / UnlockSkin).
+                        let item_name = match find(&d, "ItemName") {
+                            Some(Value::Str(n)) => n.clone(),
+                            _ => String::new(),
+                        };
+                        if let Some(m) = crate::augmentique::take_weapon_from(&a.class, &class, &item_name) {
+                            crate::classic_hud::client_message(&m);
+                        }
                         let owned = inv.0.items.iter().any(|x| x.def.class == class);
                         if let Some(m) = give_weapon(&mut inv.0, &class, &d, rounds, &mut assets) {
                             msgs.push(m);
@@ -756,6 +765,15 @@ pub fn frob_system(
                 .as_deref()
                 .filter(|t| only_tool && (*t == "Multitool" || *t == "Lockpick"));
             println!("FROB device {} ({})", a.name, a.class);
+            // Augmentique's outfit boxes (OutfitSpawner.Frob -> SpawnerPickup, then the box goes).
+            if crate::augmentique::is_spawner(&a.class) {
+                if let Some(msg) = crate::augmentique::spawner_pickup(&a.props) {
+                    crate::classic_hud::client_message(&msg);
+                }
+                let tag = crate::devices::name_prop(&a.props, "Tag");
+                crate::scriptworld::push(crate::scriptworld::ActorReq::Destroy(crate::scriptworld::ActorSel::tag(&tag)));
+                return;
+            }
             // Computers and ATMs log you in (Computers.Frob / ATM.Frob).
             if crate::computers::is_terminal(&a.class) {
                 crate::computers::frob(blockers.list[b].actor);

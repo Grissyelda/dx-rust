@@ -120,7 +120,20 @@ pub fn mission_system(
                 fl.set(f, FlagValue::Bool(v), 0);
             }
         }
+        // Augmentique (OutfitManager.Setup): finishing the game or the training makes this playthrough's outfits
+        // permanent; the outfit worn has its JCOutfits_Equipped_ flag.
+        if crate::augmentique::active() {
+            if (st.mission > 90 || st.mission == 0) && !crate::menus::intro_map() {
+                crate::augmentique::copy_to_global();
+            }
+        }
         st.seed = 0x9E37_79B9_7F4A_7C15 ^ (st.map.len() as u64);
+    }
+    // EquipOutfit's flags.
+    if let Ok(mut q) = crate::augmentique::FLAGS.lock() {
+        for f in q.drain(..) {
+            fl.set(&f, FlagValue::Bool(true), 0);
+        }
     }
     if crate::save::restoring() || crate::menus::intro_map() {
         return;

@@ -217,6 +217,18 @@ pub fn lights_at(level: &dx_level::Level, center: [f32; 3], half_h: f32) -> Vec<
     v
 }
 
+/// The flashlight cone (enhancement): a spot light that follows the view.
+#[derive(Component)]
+pub struct FlashCone;
+
+/// Enhancement: a flashlight cone with soft spill instead of the beam light (setting FlashlightCone).
+pub fn flashlight_cone() -> bool {
+    crate::settings::get("FlashlightCone") > 0.5
+}
+
+/// Lights for the vertex-lit meshes only (the flashlight beam while the cone lights the world).
+static CPU_ONLY: Mutex<Vec<LightInfo>> = Mutex::new(Vec::new());
+
 /// The dynamic lights on right now.
 pub fn current() -> Vec<LightInfo> {
     CURRENT.lock().map(|c| c.clone()).unwrap_or_default()
@@ -430,6 +442,9 @@ pub fn dynlight_system(
     }
     if let Ok(mut c) = CURRENT.lock() {
         *c = active.iter().map(|(l, _)| *l).collect();
+        if let Ok(x) = CPU_ONLY.lock() {
+            c.extend(x.iter().copied());
+        }
     }
 
     // The nearest ones become GPU point lights for the BSP. Calibrated so that at half the radius the light adds what
@@ -521,12 +536,26 @@ pub fn relight_system(
 /// units a minute). Two Beam lights: one 64 units short of where the view meets something (up to 1024 away), its
 /// radius growing with distance (4 + 5.12 x dist / 1024); one small glow at the player's shoulders.
 pub fn aug_light_system(
+    mut commands: Commands,
     level: Res<LevelRes>,
     player: Res<Player>,
-    cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>)>,
+    cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>, Without<FlashCone>)>,
+    mut cone: Query<(&mut SpotLight, &mut Transform, &mut Visibility), With<FlashCone>>,
+    st: Option<Res<DynLights>>,
 ) {
     let _prof = crate::prof::scope("dynlight::aug_light_system");
-    if !crate::abilities::aug_active("AugLight") {
+    let on = crate::abilities::aug_active("AugLight");
+    let cone_on = on && flashlight_cone();
+    if !cone_on {
+        for (mut sl, _, mut vis) in &mut cone {
+            sl.intensity = 0.0;
+            *vis = Visibility::Hidden;
+        }
+    }
+    if let Ok(mut c) = CPU_ONLY.lock() {
+        c.clear();
+    }
+    if !on {
         return;
     }
     let eye = DVec3::new(
@@ -541,12 +570,53 @@ pub fn aug_light_system(
     let dist = range * h.fraction;
     let size = (dist / range).clamp(0.0, 1.0) as f32;
     let beam = Spec::new(32, 140, 192, size * 5.12 + 4.0);
-    hold(
-        crate::sound::key_of("aug-light-beam"),
-        eye + fwd * dist - fwd * 64.0,
-        beam,
-        0.0,
-    );
+    let beam_at = eye + fwd * dist - fwd * 64.0;
+    if cone_on {
+        // Enhancement (Flashlight Cone): a real spot light from the shoulder with a soft edge and shadows lights the
+        // world; the meshes are still vertex-lit by the original beam light (CPU only, so the BSP isn't lit twice).
+        // Its strength follows the beam's: at the spot it looks at, about what the beam light gives 64 units off.
+        if let Ok(mut c) = CPU_ONLY.lock() {
+            c.push(beam.info(beam_at, 1.0));
+        }
+        let r_m = beam.info(beam_at, 1.0).radius * dx_level::METERS_PER_UNIT;
+        let k = (1.5f32 * 192.0 / 255.0).min(1.0).powf(2.2);
+        let gain = st.as_ref().map_or(1.0, |s| s.gain);
+        let d = (dist.max(64.0) / 64.0) as f32;
+        let intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * gain * d * d * 5.0 * std::env::var("DXVIEW_CONE_GAIN").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
+        let c = hsv_white(32, 140);
+        let right = cam.right().as_vec3();
+        let pos = cam.translation + right * 10.0 * dx_level::METERS_PER_UNIT - Vec3::Y * 6.0 * dx_level::METERS_PER_UNIT;
+        let look = cam.translation + cam.forward().as_vec3() * (dist as f32 * dx_level::METERS_PER_UNIT).max(1.0);
+        let tf = Transform::from_translation(pos).looking_at(look, Vec3::Y);
+        match cone.iter_mut().next() {
+            Some((mut sl, mut t, mut vis)) => {
+                if std::env::var_os("DXVIEW_CONELOG").is_some() {
+                    println!("CONE dist {dist:.0} intensity {intensity:.0} at {:?}", tf.translation);
+                }
+                sl.intensity = intensity;
+                sl.color = Color::srgb(c[0], c[1], c[2]);
+                *t = tf;
+                *vis = Visibility::Inherited;
+            }
+            None => {
+                commands.spawn((
+                    SpotLight {
+                        intensity,
+                        color: Color::srgb(c[0], c[1], c[2]),
+                        range: 2048.0 * dx_level::METERS_PER_UNIT,
+                        inner_angle: 0.16,
+                        outer_angle: 0.48,
+                        shadow_maps_enabled: std::env::var_os("DXVIEW_CONE_NOSHADOW").is_none(),
+                        ..default()
+                    },
+                    tf,
+                    FlashCone,
+                ));
+            }
+        }
+    } else {
+        hold(crate::sound::key_of("aug-light-beam"), beam_at, beam, 0.0);
+    }
     let flat = DVec3::new(fwd.x, fwd.y, 0.0).normalize_or_zero();
     let glow_at = player.body.location
         + DVec3::new(0.0, 0.0, player.eye_height)

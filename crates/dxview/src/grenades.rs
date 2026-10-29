@@ -200,7 +200,11 @@ pub fn grenade_system(
     let lvl = &level.0;
     // New grenades.
     for (class, pos, dir, from, wall) in throws.0.drain(..) {
-        let d = assets.classes.defaults(&class);
+        let mut d = assets.classes.defaults(&class);
+        // Augmentique: the player's grenade skin (ApplyProjectileSkinFrom).
+        if from.is_none() {
+            crate::augmentique::apply_projectile_skin(&mut d, &format!("Weapon{class}"));
+        }
         let speed = match find(&d, "speed") {
             Some(Value::Float(v)) => *v as f64,
             _ => 1000.0,

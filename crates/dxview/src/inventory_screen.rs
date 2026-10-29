@@ -81,6 +81,15 @@ const DETAIL_H: i32 = 55;
 /// The object belt copy (PersonaInventoryObjectBelt 631 x 69 at the bottom right, its belt at +90).
 const BELT: (i32, i32) = (SCREEN_W - 631 + 90, SCREEN_H - 69);
 
+/// The nav bar's labels: Augmentique adds Outfits (PersonaNavBarWindow.CreateOutfitsButton, GMDX).
+pub(crate) fn nav_labels() -> Vec<&'static str> {
+    let mut v = NAV_LABELS.to_vec();
+    if crate::augmentique::active() {
+        v.push("|&Outfits");
+    }
+    v
+}
+
 pub(crate) const NAV_LABELS: [&str; 8] = [
     "|&Inventory",
     "|&Health",
@@ -140,6 +149,8 @@ enum Row {
     /// An ammunition entry (icon + text) in the ammo list.
     AmmoEntry(String, String),
     Checkbox(String, bool),
+    /// Augmentique: "Current Skin: X" with Prev / Next (PersonaInfoWindow.AddSkinsButtons, GMDX).
+    Skin(String),
 }
 
 #[derive(Resource)]
@@ -405,7 +416,11 @@ fn weapon_info(
     assets: &mut RuntimeAssets,
 ) -> (String, Vec<Row>) {
     let name = str_p(d, "ItemName");
-    let mut rows = vec![Row::Text("Weapon Stats:".into()), Row::Line];
+    let mut rows = Vec::new();
+    if crate::augmentique::active() && crate::augmentique::skin_count(class) > 1 {
+        rows.push(Row::Skin(format!("Current Skin: {}", crate::augmentique::skin_name(class))));
+    }
+    rows.extend([Row::Text("Weapon Stats:".into()), Row::Line]);
     let names = ammo_names(d);
     let h2h = bool_p(d, "bHandToHand");
     let reload = int_p(d, "ReloadCount", 0);
@@ -736,6 +751,8 @@ enum Hit {
     KeyRing,
     Ammo,
     AmmoButton(String),
+    SkinPrev,
+    SkinNext,
     Checkbox,
     Info,
     None,
@@ -748,7 +765,8 @@ pub(crate) struct Layout {
 }
 
 pub(crate) fn layout(f: &Fonts) -> Layout {
-    let nav = bar_layout(&f.headers, &NAV_LABELS, 23, 534, true);
+    let labels = nav_labels();
+    let nav = bar_layout(&f.headers, &labels, 23, 534, true);
     let exit = bar_layout(&f.headers, &["E|&xit"], 573, 48, true)[0];
     let mut acts = vec![Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo];
     let mut labels = vec!["|&Equip", "|&Use", "|&Drop", "Change Amm|&o"];
@@ -848,6 +866,15 @@ fn hit_test(
                     }
                 }
                 Row::Checkbox(..) => return Hit::Checkbox,
+                Row::Skin(_) => {
+                    let right = INFO.0 + INFO.2 - 6;
+                    if inside(p, (right - 84, y, 40, 16)) {
+                        return Hit::SkinPrev;
+                    }
+                    if inside(p, (right - 42, y, 40, 16)) {
+                        return Hit::SkinNext;
+                    }
+                }
                 _ => {}
             }
         }
@@ -874,6 +901,7 @@ fn layout_rows(rows: &[Row], f: &Fonts) -> Vec<(i32, i32, Row)> {
                 (wrap(&f.small, t, width - 46).len() as i32 * f.small.height).max(37)
             }
             Row::Checkbox(..) => 14,
+            Row::Skin(_) => 18,
         };
         out.push((y, h, r.clone()));
         y += h;
@@ -929,7 +957,8 @@ pub fn inventory_screen_system(
                     },
                     Visibility::Hidden,
                     Pickable::IGNORE,
-                    GlobalZIndex(40 + which),
+                    // (the outfits screen's view and its overlay sit at 41 / 42, under the cursor)
+                    GlobalZIndex(40 + which * 3),
                 ))
                 .id();
             if which == 0 {
@@ -967,6 +996,20 @@ pub fn inventory_screen_system(
     }
     // While a note is being typed into, its keys aren't screen hotkeys (PersonaEditWindow keeps all but Tab
     // and Escape); with a message box up, Escape answers it.
+    // Dev aid: DXVIEW_PERSONA=<screen> opens that persona screen once the map has run 2 s (8 = outfits).
+    if let Ok(v) = std::env::var("DXVIEW_PERSONA") {
+        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !DONE.load(Ordering::Relaxed) && real.elapsed_secs() > 2.0 && !crate::menus::open() {
+            DONE.store(true, Ordering::Relaxed);
+            st.open = true;
+            // "<screen>:<n>": the skills screen with the perk list (1 the skill's, 2 general).
+            let (scr, mode) = v.split_once(':').unwrap_or((v.as_str(), "0"));
+            st.screen = scr.parse().unwrap_or(0);
+            st.persona.set_perk_mode(mode.parse().unwrap_or(0));
+            vtime.pause();
+            cursor_opts.grab_mode = bevy::window::CursorGrabMode::None;
+        }
+    }
     let editing = st.open && st.persona.editing();
     let f1 = binds.action_just_pressed("Inventory screen") && st.bot.is_none() && !editing;
     let f2 = binds.action_just_pressed("Goals / notes screen") && st.bot.is_none() && !editing;
@@ -1143,6 +1186,16 @@ pub fn inventory_screen_system(
             crate::snap::set_page_map(None);
             r
         };
+        // Augmentique's outfits screen: its 3D view of JC and the widgets on it (outfit_view.rs).
+        crate::outfit_view::request(st.persona.view.map(|rect| crate::outfit_view::Request {
+            rect,
+            ox,
+            oy,
+            d,
+            sf,
+            low_camera: st.persona.outfit_cam,
+            overlay: st.persona.overlay.take(),
+        }));
         match act {
             Some(crate::persona::Act::Exit) => {
                 if let Some((e, _)) = st.bot.take() {
@@ -1334,6 +1387,12 @@ pub fn inventory_screen_system(
                 Hit::KeyRing => select(st, Sel::KeyRing, &inv),
                 Hit::Ammo => select(st, Sel::Ammo, &inv),
                 Hit::Checkbox => st.show_ammo_desc = !st.show_ammo_desc,
+                Hit::SkinPrev | Hit::SkinNext => {
+                    if let Some(Sel::Item(c)) = st.sel.clone() {
+                        crate::augmentique::cycle_skin(class_of(&c), if hit == Hit::SkinNext { 1 } else { -1 });
+                        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+                    }
+                }
                 Hit::AmmoButton(a) => {
                     if let Some(Sel::Item(c)) = st.sel.clone() {
                         load_ammo(
@@ -2187,6 +2246,7 @@ fn draw_frame(
             0
         }
     };
+    let labels = nav_labels();
     for (i, (x, w)) in lay.nav.iter().enumerate() {
         // The current screen's button is insensitive (btnInventory.SetSensitivity(False)).
         let s = if i == 0 { 3 } else { state(Btn::Nav(i), true) };
@@ -2198,7 +2258,7 @@ fn draw_frame(
             *x,
             8,
             *w,
-            NAV_LABELS[i],
+            labels[i],
             s,
             true,
         );
@@ -2626,6 +2686,12 @@ fn draw_info(
                         l,
                     );
                 }
+            }
+            Row::Skin(text) => {
+                let right = INFO.0 + INFO.2 - 6;
+                c.text(&f.headers, x, y + 1, width - 90, 16, HAlign::Left, VAlign::Center, crate::menuui::h_col(7), text);
+                draw_button(c, hud, assets, &f.headers, right - 84, y, 40, "Prev", 0, true);
+                draw_button(c, hud, assets, &f.headers, right - 42, y, 40, "Next", 0, true);
             }
             Row::Checkbox(text, on) => {
                 if let Some(t) = hud.ui(

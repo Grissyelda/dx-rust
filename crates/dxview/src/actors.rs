@@ -807,6 +807,18 @@ pub fn deco_physics(
                     kind: crate::stealth::NoiseKind::Loud,
                 });
             }
+            // Enhancement (Thrown Objects Make Noise): anything the player throws is heard landing, however softly,
+            // further for heavy things, and every armed pawn in earshot goes to look.
+            if d.thrown_by_player && crate::stealth::thrown_noise() && (vz <= -60.0 || landed_flat.length() > 60.0) {
+                noises.0.push(crate::stealth::Noise {
+                    pos: d.body.location,
+                    volume: 1.0,
+                    radius: (600.0 + d.mass as f32 * 6.0).clamp(600.0, 1400.0),
+                    maker: None,
+                    instigator: Some(crate::ai::Target::Player),
+                    kind: crate::stealth::NoiseKind::Alert,
+                });
+            }
             // DeusExDecoration.Landed: explosives go off landing faster than 425 in any direction, others when
             // falling faster than 500.
             let explosive = matches!(

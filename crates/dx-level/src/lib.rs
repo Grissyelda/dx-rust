@@ -158,12 +158,19 @@ pub struct TexLib {
     /// The game's System folder: textures embedded in code packages (mesh skins) live in `.u` files there.
     sys_dir: PathBuf,
     pkgs: HashMap<String, Option<Package>>,
+    /// New Vision (an HD texture mod): its packages of the same names, opened lazily.
+    hd_pkgs: HashMap<String, Option<Package>>,
+    /// While set, textures come from an HD texture mod where it has them (level surfaces and mesh skins; not
+    /// sprites or the UI, whose sizes come from the picture).
+    pub hd_scope: bool,
+    /// Textures taken from the HD texture mod so far.
+    pub hd_used: usize,
 }
 
 impl TexLib {
     /// Texture loader for a game install (looks in `Textures/*.utx`, then `System/*.u`).
     pub fn new(game_root: &Path) -> TexLib {
-        TexLib { dir: textures_dir(game_root), sys_dir: game_root.join("System"), pkgs: HashMap::new() }
+        TexLib { dir: textures_dir(game_root), sys_dir: game_root.join("System"), pkgs: HashMap::new(), hd_pkgs: HashMap::new(), hd_scope: false, hd_used: 0 }
     }
 
     /// The game's System folder.
@@ -317,7 +324,74 @@ impl TexLib {
         (frames.len() > 1).then_some((frames, rates.0, rates.1))
     }
 
+    fn hd_package(&mut self, name: &str) -> Option<&Package> {
+        let key = name.to_ascii_lowercase();
+        if !self.hd_pkgs.contains_key(&key) {
+            let p = unreal_pkg::paths::hd_texture_dirs()
+                .iter()
+                .find_map(|d| unreal_pkg::paths::find_ci(d, &format!("{name}.utx")))
+                .and_then(|f| Package::open(f).ok());
+            self.hd_pkgs.insert(key.clone(), p);
+        }
+        self.hd_pkgs.get(&key).and_then(|p| p.as_ref())
+    }
+
+    /// The HD texture mod's version of a texture, when it has one stored compressed (New Vision keeps the game's
+    /// palettized mips and adds a DXT1 set at up to 1024 x 1024; its USize / VSize stay the game's).
+    fn load_hd_tex(&mut self, path: &str, force_mask: bool) -> Option<(Texture, Vec<Vec<u8>>)> {
+        if !self.hd_scope || !unreal_pkg::paths::has_hd_textures() {
+            return None;
+        }
+        let (pkg_name, rest) = path.split_once('.')?;
+        let pkg = self.hd_package(pkg_name)?;
+        let e = pkg.find_export_of_class(rest, "Texture")?;
+        if pkg.class_name(e.class_index) != "Texture" {
+            return None;
+        }
+        let mut tex = objects::read_texture(pkg, e).ok()?;
+        if tex.format == unreal_pkg::objects::tex_format::P8 {
+            return None;
+        }
+        if force_mask {
+            tex.masked = true;
+        }
+        let mut mips = Vec::new();
+        for level in 0..tex.mips.len() {
+            match tex.mip_to_rgba8(level, None) {
+                Some(m) => mips.push(m),
+                None => break,
+            }
+        }
+        if mips.is_empty() {
+            return None;
+        }
+        // Masked textures: DXT1's punch-through alpha already marks the see-through texels; opaque ones keep
+        // alpha 255 everywhere.
+        if !tex.masked {
+            for m in &mut mips {
+                for px in m.chunks_exact_mut(4) {
+                    px[3] = 255;
+                }
+            }
+        }
+        Some((tex, mips))
+    }
+
+    /// A texture's size as the game lays it out (USize / VSize): UVs on level surfaces are in these texels even
+    /// when an HD texture with more pixels is drawn.
+    pub fn logical_size(t: &Texture) -> (u32, u32) {
+        let ip = |n: &str, d: u32| match unreal_pkg::props::find(&t.props, n) {
+            Some(unreal_pkg::props::Value::Int(v)) if *v > 0 => *v as u32,
+            _ => d,
+        };
+        (ip("USize", t.width()), ip("VSize", t.height()))
+    }
+
     fn load_ext(&mut self, path: &str, force_mask: bool) -> Option<(Texture, Vec<Vec<u8>>)> {
+        if let Some(hd) = self.load_hd_tex(path, force_mask) {
+            self.hd_used += 1;
+            return Some(hd);
+        }
         let (pkg_name, rest) = path.split_once('.')?;
         let pkg = self.package(pkg_name)?;
         let e = pkg.find_export_of_class(rest, "Texture")?;
@@ -592,10 +666,13 @@ pub fn build_level(
     let baked = lighting::bake(pkg, &model, classes);
     let mut stats = LevelStats { nodes: model.nodes.len(), ..Default::default() };
     let sys_dir = tex_dir.parent().map(|p| p.join("System")).unwrap_or_default();
-    let mut lib = TexLib { dir: tex_dir.to_path_buf(), sys_dir, pkgs: HashMap::new() };
+    let mut lib = TexLib { dir: tex_dir.to_path_buf(), sys_dir, pkgs: HashMap::new(), hd_pkgs: HashMap::new(), hd_scope: false, hd_used: 0 };
     let mut textures: Vec<TextureImage> = Vec::new();
     // material object ref -> (texture index, masked)
     let mut tex_cache: HashMap<i32, Option<(usize, bool)>> = HashMap::new();
+    // The game's texel size of each level texture (UVs use it; an HD texture has more pixels).
+    let mut logical: HashMap<usize, (f32, f32)> = HashMap::new();
+    lib.hd_scope = true;
     let mut batch_index: HashMap<(Option<usize>, SurfaceClass, bool, [i32; 2], Option<[i32; 4]>, bool), usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
     let mut bmin = [f32::MAX; 3];
@@ -749,6 +826,8 @@ pub fn build_level(
                     return None;
                 };
                 let idx = textures.len();
+                let (lw, lh) = TexLib::logical_size(&t);
+                logical.insert(idx, (lw as f32, lh as f32));
                 textures.push(TextureImage { name: path.clone(), width: t.width(), height: t.height(), mips });
                 Some((idx, t.masked))
             })
@@ -760,7 +839,9 @@ pub fn build_level(
                 (None, false)
             }
         };
-        let (tw, th) = tex_idx.map(|i| (textures[i].width as f32, textures[i].height as f32)).unwrap_or((256.0, 256.0));
+        let (tw, th) = tex_idx
+            .map(|i| logical.get(&i).copied().unwrap_or((textures[i].width as f32, textures[i].height as f32)))
+            .unwrap_or((256.0, 256.0));
 
         let is_water = tex_idx.map(|i| textures[i].name.to_ascii_lowercase().contains("water")).unwrap_or(false);
         let water_opaque = is_water && surf.poly_flags & pf::PORTAL != 0 && surf.poly_flags & pf::TRANSLUCENT == 0;
@@ -875,11 +956,14 @@ pub fn build_level(
                 let path = pkg.object_path(material);
                 let (t, mips) = lib.load(&path)?;
                 let idx = textures.len();
+                let (lw, lh) = TexLib::logical_size(&t);
+                logical.insert(idx, (lw as f32, lh as f32));
                 textures.push(TextureImage { name: path.clone(), width: t.width(), height: t.height(), mips });
                 Some((idx, t.masked))
             });
             let (i, m) = (*entry)?;
-            Some((i, m, textures[i].width as f32, textures[i].height as f32))
+            let (w, h) = logical.get(&i).copied().unwrap_or((textures[i].width as f32, textures[i].height as f32));
+            Some((i, m, w, h))
         };
         movers::build(pkg, &actor_list, &mut resolve)
     };
@@ -932,6 +1016,9 @@ pub fn build_level(
                 }
             }
         }
+    }
+    if lib.hd_used > 0 {
+        println!("level: {} HD textures", lib.hd_used);
     }
     Ok(Level {
         nano_keys,

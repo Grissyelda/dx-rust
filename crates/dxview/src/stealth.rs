@@ -23,6 +23,14 @@ pub enum NoiseKind {
     WeaponFire,
     /// AISendEvent('Distress'): a pawn crying out in pain or dying; `instigator` is whoever hurt it.
     Distress,
+    /// Enhancement (thrown objects / found bodies): something worth a look; any armed pawn that hears it goes to
+    /// see, whoever made it (a LoudNoise needs an enemy instigator).
+    Alert,
+}
+
+/// Enhancement: thrown objects make noises guards investigate (setting ThrownNoise).
+pub fn thrown_noise() -> bool {
+    crate::settings::get("ThrownNoise") > 0.5
 }
 
 #[derive(Debug, Clone)]

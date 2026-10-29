@@ -91,9 +91,9 @@ impl MeshCache {
         if !self.meshes.contains_key(full) {
             let v = (|| {
                 let (pk, rest) = full.split_once('.')?;
-                let pkg = classes.packages.get(&pk.to_ascii_lowercase())?;
-                let e = pkg.find_export_by_path(rest)?;
-                Some((mesh::read_lod_mesh(pkg, e).ok()?, pk.to_string()))
+                let pkg = classes.package(pk)?;
+                let e = pkg.find_export_of_class(rest, "Mesh")?;
+                Some((mesh::read_lod_mesh(&pkg, e).ok()?, pk.to_string()))
             })();
             self.meshes.insert(full.to_string(), v);
         }
@@ -200,24 +200,9 @@ pub struct MeshActor {
 
 /// Property values the game sets on actors of a class before they're built (e.g. PlayerSkin: DeusExPlayer
 /// .UpdatePlayerSkin gives Paul, his carcass and JC's double the skin the player chose): (class, property, index,
-/// value).
-static OVERRIDES: std::sync::RwLock<Vec<(String, String, u32, Value)>> = std::sync::RwLock::new(Vec::new());
-
+/// value). They're ClassDb's "travel" override layer, so class defaults read anywhere carry them too.
 pub fn set_overrides(v: Vec<(String, String, u32, Value)>) {
-    if let Ok(mut o) = OVERRIDES.write() {
-        *o = v;
-    }
-}
-
-pub fn apply_overrides(class: &str, props: &mut Vec<Property>) {
-    let Ok(o) = OVERRIDES.read() else { return };
-    for (c, name, index, value) in o.iter() {
-        if !c.eq_ignore_ascii_case(class) {
-            continue;
-        }
-        props.retain(|p| !(p.name.eq_ignore_ascii_case(name) && p.index == *index));
-        props.push(Property { name: name.clone(), index: *index, value: value.clone() });
-    }
+    unreal_pkg::classes::set_override_layer("travel", v);
 }
 
 /// What a class's BeginPlay / PostBeginPlay changes on its own properties before anything reads them:
@@ -256,6 +241,16 @@ pub fn class_begin_play(classes: &mut ClassDb, class: &str, props: &mut Vec<Prop
     }
 }
 
+/// A mod's extra actors for a map: (map name) -> [(class, name, full properties incl. Location)].
+pub type ExtraActors = Box<dyn Fn(&str) -> Vec<(String, String, Vec<Property>)> + Send + Sync>;
+static EXTRA_ACTORS: std::sync::RwLock<Option<ExtraActors>> = std::sync::RwLock::new(None);
+
+pub fn set_extra_actors(f: Option<ExtraActors>) {
+    if let Ok(mut h) = EXTRA_ACTORS.write() {
+        *h = f;
+    }
+}
+
 pub fn build(
     pkg: &Package,
     classes: &mut ClassDb,
@@ -269,7 +264,6 @@ pub fn build(
             continue;
         }
         let Some(mut props) = classes.actor_properties(pkg, e) else { continue };
-        apply_overrides(&class, &mut props);
         // References to imported objects (a ClassProximityType, a FragmentClass, a sound set in the map) read as
         // their path, the same as class defaults do.
         for p in props.iter_mut() {
@@ -284,6 +278,14 @@ pub fn build(
         }
         class_begin_play(classes, &class, &mut props);
         actors.push(ActorInfo { name: e.name.clone(), class, export: i as i32 + 1, props });
+    }
+    // Actors a mod adds to this map (Augmentique's outfit boxes, from GMDX Augmented's copy of the map).
+    if let Ok(h) = EXTRA_ACTORS.read() {
+        if let Some(f) = h.as_ref() {
+            for (class, name, props) in f(pkg.self_name.as_deref().unwrap_or("")) {
+                actors.push(ActorInfo { name, class, export: -1, props });
+            }
+        }
     }
 
     let mut cache = MeshCache { meshes: HashMap::new() };
@@ -436,7 +438,7 @@ pub fn mesh_parts(
             // Texture order as in Unreal: MultiSkins[i]; else for slot 0 the actor Skin; else the mesh's own.
             let ti = mat.texture_index.max(0) as u32;
             let mesh_tex = m.textures.get(ti as usize).filter(|&&r| r != 0).and_then(|&r| {
-                let mp = classes.packages.get(&mesh_pkg.to_ascii_lowercase())?;
+                let mp = classes.package(mesh_pkg)?;
                 Some(if r > 0 { format!("{mesh_pkg}.{}", mp.object_path(r)) } else { mp.object_path(r) })
             });
             let tex_path = path(p, "MultiSkins", ti)
@@ -549,9 +551,9 @@ pub fn anim_mesh(m: &LodMesh) -> AnimMesh {
 /// Load a mesh by path (e.g. `DeusExItems.Glock`) from the code packages.
 pub fn load_mesh(classes: &ClassDb, full: &str) -> Option<(LodMesh, String)> {
     let (pk, rest) = full.split_once('.')?;
-    let pkg = classes.packages.get(&pk.to_ascii_lowercase())?;
-    let e = pkg.find_export_by_path(rest)?;
-    Some((mesh::read_lod_mesh(pkg, e).ok()?, pk.to_string()))
+    let pkg = classes.package(pk)?;
+    let e = pkg.find_export_of_class(rest, "Mesh")?;
+    Some((mesh::read_lod_mesh(&pkg, e).ok()?, pk.to_string()))
 }
 
 /// Unreal-style actor lighting for one part placed at `location`/`rotation`: per-vertex distance falloff

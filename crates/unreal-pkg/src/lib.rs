@@ -6,6 +6,7 @@
 
 pub mod classes;
 pub mod paths;
+pub mod mods;
 pub mod gamedir;
 pub mod mesh;
 pub mod objects;
@@ -13,7 +14,7 @@ pub mod props;
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const PACKAGE_TAG: u32 = 0x9E2A_83C1;
 
@@ -186,18 +187,39 @@ pub struct Package {
     pub exports: Vec<Export>,
     /// Package name from the file name (set by `open`), used to resolve same-package references.
     pub self_name: Option<String>,
-    data: Vec<u8>,
+    data: std::sync::Arc<Vec<u8>>,
+}
+
+/// File contents shared by every Package opened on the same file (HDTP's packages are hundreds of MB, and many
+/// parts of the game open their own Package / ClassDb).
+static FILES: std::sync::Mutex<Vec<(PathBuf, std::sync::Weak<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
+
+fn read_shared(real: &Path) -> std::io::Result<std::sync::Arc<Vec<u8>>> {
+    if let Ok(mut f) = FILES.lock() {
+        f.retain(|(_, w)| w.strong_count() > 0);
+        if let Some(a) = f.iter().find(|(p, _)| p == real).and_then(|(_, w)| w.upgrade()) {
+            return Ok(a);
+        }
+        let a = std::sync::Arc::new(std::fs::read(real)?);
+        f.push((real.to_path_buf(), std::sync::Arc::downgrade(&a)));
+        return Ok(a);
+    }
+    Ok(std::sync::Arc::new(std::fs::read(real)?))
 }
 
 impl Package {
     pub fn open(path: impl AsRef<Path>) -> Result<Package> {
         let real = crate::paths::resolve(path.as_ref());
-        let mut p = Self::from_bytes(std::fs::read(&real)?)?;
+        let mut p = Self::from_shared(read_shared(&real)?)?;
         p.self_name = path.as_ref().file_stem().map(|s| s.to_string_lossy().into_owned());
         Ok(p)
     }
 
     pub fn from_bytes(data: Vec<u8>) -> Result<Package> {
+        Self::from_shared(std::sync::Arc::new(data))
+    }
+
+    fn from_shared(data: std::sync::Arc<Vec<u8>>) -> Result<Package> {
         let (version, licensee, names, imports, exports) = {
             let mut r = Reader::new(&data, 0);
             let tag = r.u32()?;

@@ -728,6 +728,8 @@ pub struct Npc {
     pub alarm_timer: f32,
     /// HandlingEnemy should consider Alerting first.
     pub alert_pending: bool,
+    /// Enhancement (Bodies Raise Alarms): the body that sent this pawn to the alarm; it searches there after.
+    pub body_alarm: Option<DVec3>,
     /// Alerting: (alarm index, seconds of the push animation left once there).
     pub alert: Option<(usize, f32)>,
     /// Bodies already reacted to (Carcasses[4], by blocker), and CarcassCheckTimer.
@@ -1101,6 +1103,7 @@ impl Npc {
             },
             alarm_timer: 0.0,
             alert_pending: false,
+            body_alarm: None,
             alert: None,
             carcasses_seen: Vec::new(),
             carcass_check: 0.0,
@@ -2818,6 +2821,8 @@ pub fn npc_system(
         alliances: imsim_core::alliance::AllianceTable,
         pos: DVec3,
         emit_carcass: bool,
+        /// Any body (dead or unconscious, not a robot) - for the Bodies Raise Alarms enhancement.
+        any_body: bool,
         killer_alliance: String,
         on_ground: bool,
         vel: DVec3,
@@ -2836,6 +2841,7 @@ pub fn npc_system(
             alliances: n.alliances.clone(),
             pos: d.body.location,
             emit_carcass: n.emit_carcass && !n.carried,
+            any_body: n.state == NpcState::Dead && !n.carried && !n.hp_body.robot && !n.animal,
             killer_alliance: n.killer_alliance.clone(),
             on_ground: d.body.physics != imsim_core::body::BodyPhysics::Falling,
             vel: d.body.velocity,
@@ -3919,6 +3925,20 @@ pub fn npc_system(
                             }
                         }
                     }
+                    NoiseKind::Alert => {
+                        if !(lf.loud_noise && npc.react_loud) || npc.weapon.is_none() {
+                            continue;
+                        }
+                        if n.maker == Some(Target::Pawn(npc.blocker)) {
+                            continue;
+                        }
+                        if npc.state == NpcState::Idle {
+                            npc.set_seek_location(n.pos, SeekKind::Sound, false);
+                            npc.enter_seeking();
+                        } else if npc.state == NpcState::Seeking && now - npc.last_seen > 2.0 {
+                            npc.reseek(n.pos, SeekKind::Sound);
+                        }
+                    }
                     NoiseKind::Distress => {
                         // HandleDistress: a friend in trouble who has seen their attacker.
                         if !(lf.distress && (npc.hate_distress || npc.react_distress || npc.fear_distress)) {
@@ -4063,9 +4083,10 @@ pub fn npc_system(
             && npc.carcass_check <= 0.0
         {
             npc.carcass_check = 0.1;
+            let body_alarms = body_alarms();
             let found = pawns.iter().find(|p| {
                 p.dead
-                    && p.emit_carcass
+                    && (p.emit_carcass || body_alarms && p.any_body)
                     && p.on_ground
                     && p.blocker != npc.blocker
                     && !npc.carcasses_seen.contains(&p.blocker)
@@ -4086,6 +4107,24 @@ pub fn npc_system(
                     npc.enter_seeking();
                 } else {
                     npc.reseek(p.pos, SeekKind::Carcass);
+                }
+                // Enhancement (Bodies Raise Alarms): an armed pawn who finds a friend's body runs for the nearest
+                // alarm (then searches the body), or else shouts so others nearby come and look.
+                if body_alarms && npc.weapon.is_some() && npc.alarm_timer <= 0.0 && npc.alliances.friendly_to(&p.alliance) {
+                    let me_b = npc.blocker;
+                    let al = npc.alliances.clone();
+                    if let Some(i) = alarms.find_target(me_b, me.center, |a| al.hostile_to(a) || a == "Player") {
+                        alarms.units[i].associated = Some(me_b);
+                        npc.alert = Some((i, 0.0));
+                        npc.state = NpcState::Alerting;
+                        npc.route = None;
+                        npc.body_alarm = Some(p.pos);
+                        println!("PAWN {} runs for the alarm (a body)", lvl.actors[npc.actor].name);
+                    } else {
+                        npc.alarm_timer = 30.0;
+                        let me = Some(Target::Pawn(npc.blocker));
+                        new_noises.push(Noise { pos: me_center_of(&blockers, npc.blocker), volume: 1.0, radius: 1200.0, maker: me, instigator: None, kind: NoiseKind::Alert });
+                    }
                 }
                 println!(
                     "PAWN {} found a body (killed by {})",
@@ -4595,7 +4634,11 @@ pub fn npc_system(
                                 alarms.units[i].associated = None;
                                 npc.alert = None;
                                 npc.anim = "";
-                                if npc.raise_alarm == 0 {
+                                if let Some(at) = npc.body_alarm.take() {
+                                    // Pushed because of a body: now search there.
+                                    npc.set_seek_location(at, SeekKind::Carcass, false);
+                                    npc.enter_seeking();
+                                } else if npc.raise_alarm == 0 {
                                     npc.state = NpcState::Attacking;
                                 } else {
                                     npc.enter_fleeing();
@@ -5943,7 +5986,10 @@ pub fn npc_weapon_models(
         let Some(mesh) = w.third_mesh.clone() else {
             continue;
         };
-        let d = assets.classes.defaults(&w.class);
+        let mut d = assets.classes.defaults(&w.class);
+        // Augmentique: a skin for this owner's weapon (WeaponSkinManager.SetDefaultSkin).
+        let npc_class = level.0.actors.get(npc.actor).map(|a| a.class.clone()).unwrap_or_default();
+        crate::augmentique::apply_weapon_skin(&mut d, &w.class, &crate::augmentique::npc_skin(&npc_class, &w.class), false);
         let root = commands
             .spawn((Transform::default(), Visibility::Hidden, HeldRoot))
             .id();
@@ -5971,6 +6017,7 @@ pub fn npc_weapon_models(
                     root,
                     &parts,
                     &handles,
+                    None,
                     None,
                 )
             } else {
@@ -6252,6 +6299,11 @@ mod weapon_choice_tests {
             assert!(crate::spawn::hostile_animal_alliance(c).is_none());
         }
     }
+}
+
+/// Enhancement: bodies (dead or unconscious) found by guards raise the alarm (setting BodyAlarms).
+pub fn body_alarms() -> bool {
+    crate::settings::get("BodyAlarms") > 0.5
 }
 
 fn me_center_of(blockers: &Blockers, b: usize) -> DVec3 {

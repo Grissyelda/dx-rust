@@ -89,22 +89,22 @@ reflecting surface is a full extra render).
 9. Debug menu with the original's cheats (done).
 10. The original settings screens moved onto the searchable list (done).
 11. Use to grab and Jump to let go of ladders (done).
-12. Dragon's Tooth energy balancing.
+12. Dragon's Tooth energy balancing (done).
 
 ### Medium (systems whose pieces exist)
-13. HUD customisation: toggle, scale and fade each part.
-14. Bodies, dead or unconscious, raising alarms when found.
-15. Thrown objects making noises that guards investigate.
-16. Footstep loudness by floor surface.
-17. Weapon inertia and head-bob.
-18. A better flashlight: a cone with soft spill.
-19. Debris and decals kept across map loads.
-20. Perks earned with skill points.
-21. Bullets through thin wood and glass (high-calibre rounds).
-22. Smoother leaning and a peek assist.
-23. Melee that sweeps an arc.
+13. HUD customisation: toggle, scale and fade each part (done).
+14. Bodies, dead or unconscious, raising alarms when found (done).
+15. Thrown objects making noises that guards investigate (done).
+16. Footstep loudness by floor surface (done).
+17. Weapon inertia (done).
+18. A better flashlight: a cone with soft spill (done).
+19. Debris and decals kept across map loads and saves (done).
+20. Perks bought with skill points, from GMDX: Augmented Edition (the Skills screen is done; effects in progress).
+21. Bullets through thin wood and breakable glass (done).
+22. Smoother leaning and a peek assist (done).
+23. Melee that sweeps an arc (done).
 24. Weapon mods shown on the weapon: scope, laser sight, silencer and other fitted mods drawn on the view model and
-    the third-person gun.
+    the third-person gun (done, with the Visible Attachments mod).
 
 ### Large (new rendering, audio or interaction work)
 25. Sway-based aiming, a dynamic crosshair and aim-down-sights (optional).
@@ -127,14 +127,17 @@ reflecting surface is a full extra render).
 
 ### Very large (needs skeletons, new content, or touches the whole engine)
 38. Smarter AI (opt-in), including stealth that respects darkness more than the original's guards do.
-39. HD textures and models, PBR and smoother animation.
+39. HD textures and models (done with the HDTP and New Vision mods, switchable in Settings), PBR and smoother
+    animation.
 40. JC's body visible in first person.
 41. Diegetic damage, healing and augs shown on the body.
 42. Ragdolls and posable models.
 43. Cloth and wetness.
 44. Computers shown in the world while it keeps running.
 45. More NPCs and livelier locations.
-46. **Lay D Denton Project support** (done in code; being tested).
+46. **Mod support** (done in code; being tested): the Lay D Denton Project, HDTP, New Vision, Visible
+    Attachments, Augmentique (outfits and weapon skins) and GMDX: Augmented Edition (perks, bugfixes and
+    quality-of-life options), any number at once from the launcher's Mods page.
 47. No loading screens.
 48. Co-op and deathmatch multiplayer.
 

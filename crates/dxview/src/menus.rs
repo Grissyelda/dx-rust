@@ -650,8 +650,17 @@ impl Enhance {
             ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab types a keypad code, logins are filled in."),
             ("DialogueHotkeys", "Interface", "Dialogue Hotkeys", "Number the first four conversation choices; keys 1-4 pick them."),
             ("InventorySort", "Interface", "Inventory Auto-Sort", "A Sort button on the inventory screen packs the items neatly, weapons first."),
-            ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish and many more blood splats stay on the ground."),
+            ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish, many more blood splats stay, and blood, bullet holes and casings are still there when you come back to a map or load a save."),
             ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord."),
+            ("BodyAlarms", "AI", "Bodies Raise Alarms", "Guards who find a friend's body - dead or unconscious - run for the nearest alarm and then search the spot; with no alarm about they shout and others come to look."),
+            ("ThrownNoise", "AI", "Thrown Objects Make Noise", "Anything you throw is heard where it lands or bounces - further for heavy things - and armed guards in earshot go to look. Good for distractions."),
+            ("SurfaceFootsteps", "AI", "Footsteps Louder On Hard Floors", "Carpet and grass muffle your steps, metal and water give you away; guards hear you by what you walk on."),
+            ("WeaponInertia", "Visuals", "Weapon Inertia", "The weapon in your hands trails a little behind when you turn (GMDX's Viewmodel Inertia)."),
+            ("FlashlightCone", "Visuals", "Flashlight Cone", "The flashlight augmentation casts a soft-edged cone with shadows from your shoulder instead of a pool of light where you look."),
+            ("BulletPenetration", "Gameplay", "Bullets Through Thin Walls", "Bullets go on through thin wood (walls, doors) and breakable glass, doing less damage on the other side. Bulletproof glass stays bulletproof."),
+            ("SmoothLean", "Gameplay", "Smooth Leaning", "Leaning eases in and out, works while crouch-walking, and at a corner your eyes lean on past where your body stops so you can peek."),
+            ("MeleeArc", "Gameplay", "Melee Sweeps An Arc", "Knives, batons, prods and swords also hit whatever stands just to either side of your aim, at three quarters damage."),
+            ("DTSEnergy", "Gameplay", "Dragon's Tooth Uses Bioenergy", "Each swing of the Dragon's Tooth sword costs 5 bioelectric energy; with none left the blade goes dark and won't swing (after GMDX)."),
         ] {
             let mut c = debug_mode_choice();
             c.key = key.into();
@@ -660,6 +669,66 @@ impl Enhance {
             c.value = crate::settings::get(key);
             c.saved = c.value;
             items.push(tag(c, group));
+        }
+        // Mod switches, listed while the mod is on in the launcher.
+        for (key, id, lbl, help) in [
+            ("HDTextures", "newvision", "HD Textures (New Vision)", "New Vision's high-resolution textures on the world and on models. Changes take effect when the next map loads."),
+            ("HDModels", "hdtp", "HD Items And Objects (HDTP)", "HDTP's detailed weapons, pickups and decorations. Changes take effect when the next map loads."),
+            ("HDCharacters", "hdtp", "HD Characters (HDTP)", "HDTP's detailed people and their faces. Changes take effect when the next map loads."),
+        ] {
+            if unreal_pkg::mods::active(id).is_none() {
+                continue;
+            }
+            let mut c = debug_mode_choice();
+            c.key = key.into();
+            c.label = lbl.into();
+            c.help = help.into();
+            c.value = crate::settings::get(key);
+            c.saved = c.value;
+            items.push(tag(c, "Mods"));
+        }
+        if crate::augmentique::active() {
+            let mut c = debug_mode_choice();
+            c.key = "AugNPCs".into();
+            c.label = "Outfits On People (Augmentique)".into();
+            c.help = "People in the world wear random outfits: none, everyone but the main characters, or everyone. Takes effect when the next map loads.".into();
+            c.kind = ChoiceKind::Enum(vec!["None".into(), "Generic People".into(), "Everyone".into()]);
+            c.value = crate::settings::get("AugNPCs");
+            c.saved = c.value;
+            items.push(tag(c, "Mods"));
+            let mut c = debug_mode_choice();
+            c.key = "AugAllOutfits".into();
+            c.label = "All Outfits Unlocked (Augmentique)".into();
+            c.help = "Every outfit is in the Outfits screen from the start, instead of found in boxes in GMDX Augmented's maps. Takes effect on the next start.".into();
+            c.value = crate::settings::get("AugAllOutfits");
+            c.saved = c.value;
+            items.push(tag(c, "Mods"));
+        }
+        // HUD customisation: each part shown or hidden, sized, faded.
+        for (key, name) in crate::classic_hud::HUD_PARTS {
+            let mut c = debug_mode_choice();
+            c.key = format!("HUD_{key}_Hide");
+            c.label = format!("{name}: Hidden");
+            c.help = format!("Hide the {} on the HUD.", name.to_ascii_lowercase());
+            c.value = crate::settings::get(&c.key);
+            c.saved = c.value;
+            items.push(tag(c, "HUD"));
+            let mut c = debug_mode_choice();
+            c.key = format!("HUD_{key}_Size");
+            c.label = format!("{name}: Size");
+            c.help = format!("The {}'s size on screen; it stays in its corner.", name.to_ascii_lowercase());
+            c.kind = ChoiceKind::Enum(crate::classic_hud::HUD_SIZES.iter().map(|v| v.0.to_string()).collect());
+            c.value = crate::settings::get(&c.key);
+            c.saved = c.value;
+            items.push(tag(c, "HUD"));
+            let mut c = debug_mode_choice();
+            c.key = format!("HUD_{key}_Fade");
+            c.label = format!("{name}: Opacity");
+            c.help = format!("How see-through the {} is.", name.to_ascii_lowercase());
+            c.kind = ChoiceKind::Enum(crate::classic_hud::HUD_FADES.iter().map(|v| v.0.to_string()).collect());
+            c.value = crate::settings::get(&c.key);
+            c.saved = c.value;
+            items.push(tag(c, "HUD"));
         }
         let mut lip = debug_mode_choice();
         lip.key = "SmoothLipSync".into();

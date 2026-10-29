@@ -50,14 +50,14 @@ pub struct HudLayer {
     #[sampler(1)]
     pub tex: Handle<Image>,
     /// x = the Brightness setting's gamma, applied to the UI too (the original's brightness lifts the whole
-    /// screen, menus included).
+    /// screen, menus included); y = opacity (HUD customisation's fade, 1 = as drawn).
     #[uniform(2)]
     pub gamma: Vec4,
 }
 
 impl HudLayer {
     pub fn new(tex: Handle<Image>) -> HudLayer {
-        HudLayer { tex, gamma: Vec4::new(ui_gamma(), 0.0, 0.0, 0.0) }
+        HudLayer { tex, gamma: Vec4::new(ui_gamma(), 1.0, 0.0, 0.0) }
     }
 }
 
@@ -912,6 +912,9 @@ pub fn classic_hud_system(
     let tiny = hud.font(assets, "FontTiny");
     for w in Win::ALL {
         let (x, y, ww, wh, visible) = layout(w);
+        // Enhancement: HUD customisation (each part hidden, sized and faded on its own).
+        let (show, k, alpha) = hud_part(w);
+        let visible = visible && show;
         if !visible {
             // Hidden windows keep their last image: no canvas, no upload (a hidden ConLower alone was a
             // screen-wide f32 canvas allocated, cleared and converted every frame).
@@ -1079,7 +1082,7 @@ pub fn classic_hud_system(
             hud.last.insert(w, bytes);
         }
         }
-        for (hw, mut node, mut vis, _) in &mut nodes {
+        for (hw, mut node, mut vis, mat) in &mut nodes {
             if hw.0 != w {
                 continue;
             }
@@ -1091,12 +1094,26 @@ pub fn classic_hud_system(
             if *vis != want {
                 *vis = want;
             }
+            // Sized about the screen corner it sits nearest.
+            let (sx, sy) = if k == 1.0 {
+                (x as f32, y as f32)
+            } else {
+                let fx = if x * 2 + ww < sw { x as f32 } else { (x + ww) as f32 - ww as f32 * k };
+                let fy = if y * 2 + wh < sh { y as f32 } else { (y + wh) as f32 - wh as f32 * k };
+                (fx, fy)
+            };
+            let lf = |v: f32| v * s as f32 / window.scale_factor();
             let (l, t, wd, ht) = (
-                Val::Px(to_logical(x)),
-                Val::Px(to_logical(y)),
-                Val::Px(to_logical(ww)),
-                Val::Px(to_logical(wh)),
+                Val::Px(lf(sx)),
+                Val::Px(lf(sy)),
+                Val::Px(lf(ww as f32 * k)),
+                Val::Px(lf(wh as f32 * k)),
             );
+            if layers.get(&mat.0).is_some_and(|m| m.gamma.y != alpha) {
+                if let Some(mut m) = layers.get_mut(&mat.0) {
+                    m.gamma.y = alpha;
+                }
+            }
             if node.left != l || node.top != t || node.width != wd || node.height != ht {
                 node.left = l;
                 node.top = t;
@@ -1105,6 +1122,41 @@ pub fn classic_hud_system(
             }
         }
     }
+}
+
+/// The HUD parts that can be customised: (window, settings key part, label).
+pub const HUD_PARTS: &[(&str, &str)] = &[
+    ("Hit", "Health Display"),
+    ("Compass", "Compass"),
+    ("Ammo", "Ammo Display"),
+    ("Belt", "Object Belt"),
+    ("Log", "Message Log"),
+    ("Active", "Augmentations / Active Items"),
+    ("Damage", "Damage Indicators"),
+];
+
+/// Size and opacity choices (index 0 = as the original).
+pub const HUD_SIZES: [(&str, f32); 6] = [("100%", 1.0), ("50%", 0.5), ("75%", 0.75), ("125%", 1.25), ("150%", 1.5), ("200%", 2.0)];
+pub const HUD_FADES: [(&str, f32); 4] = [("100%", 1.0), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25)];
+
+/// (shown, size, opacity) of a HUD window: settings HUD_<Part>_Hide / _Size / _Fade.
+fn hud_part(w: Win) -> (bool, f32, f32) {
+    let key = match w {
+        Win::Hit => "Hit",
+        Win::Compass => "Compass",
+        Win::Ammo => "Ammo",
+        Win::Belt => "Belt",
+        Win::Log => "Log",
+        Win::Active => "Active",
+        Win::Damage => "Damage",
+        _ => return (true, 1.0, 1.0),
+    };
+    let g = |n: &str| crate::settings::get(&format!("HUD_{key}_{n}")).round() as usize;
+    (
+        g("Hide") == 0,
+        HUD_SIZES.get(g("Size")).map_or(1.0, |v| v.1),
+        HUD_FADES.get(g("Fade")).map_or(1.0, |v| v.1),
+    )
 }
 
 /// HUDActiveAugsBorder / HUDActiveItemsBorder metrics: border width, top/bottom margins around the icon column,

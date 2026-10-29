@@ -16,10 +16,12 @@ fn lift(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
     let c = textureSample(hud_texture, hud_sampler, in.uv);
+    // gamma.y: the layer's opacity (HUD customisation fades a part; premultiplied, so everything scales).
+    let k = gamma.y;
     if (c.a > 0.001) {
         // Premultiplied: lift the colour, not the coverage.
-        return vec4(lift(min(c.rgb / c.a, vec3(1.0))) * c.a, c.a);
+        return vec4(lift(min(c.rgb / c.a, vec3(1.0))) * c.a, c.a) * k;
     }
     // Additive (translucent) texels.
-    return vec4(lift(c.rgb), c.a);
+    return vec4(lift(c.rgb), c.a) * k;
 }

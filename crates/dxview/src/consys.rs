@@ -3170,7 +3170,7 @@ pub fn con_view_system(
             .id();
         let map = |p: [f32; 3]| dx_level::ue_to_bevy(p);
         if let Some((lm, parts, handles)) = crate::weapons::spawn_mesh_parts(
-            crate::travel::jc_mesh(),
+            &crate::travel::jc_mesh(),
             1.0,
             &d,
             &mut assets,

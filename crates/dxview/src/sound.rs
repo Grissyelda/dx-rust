@@ -977,6 +977,27 @@ pub fn sound_system(
 /// DeusExPlayer.PlayFootStep / ScriptedPawn.PlayFootStep: the step sound for a floor texture group.
 /// Returns (sound, volumeMultiplier for the AI noise).
 pub fn footstep_sound(group: Option<&str>, water: bool) -> (String, f32) {
+    let (snd, mult) = footstep_sound_base(group, water);
+    if crate::settings::get("SurfaceFootsteps") <= 0.5 {
+        return (snd, mult);
+    }
+    // Enhancement (Footstep Loudness by Surface): soft floors hide you, metal and water give you away.
+    let m = if water {
+        1.4
+    } else {
+        match group.unwrap_or("").to_ascii_lowercase().as_str() {
+            "textile" | "paper" => 0.35,
+            "foliage" | "earth" => 0.45,
+            "metal" | "ladder" => 1.5,
+            "ceramic" | "glass" | "tiles" => 1.0,
+            "wood" => 0.85,
+            _ => 0.7,
+        }
+    };
+    (snd, m)
+}
+
+fn footstep_sound_base(group: Option<&str>, water: bool) -> (String, f32) {
     let r = frand();
     let pick = |base: &str, n: u32| {
         format!(

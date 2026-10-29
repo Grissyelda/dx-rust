@@ -172,7 +172,11 @@ pub fn launch_system(
         })
         .collect();
     for l in launches.0.drain(..).chain(gas) {
-        let d = assets.classes.defaults(&l.class);
+        let mut d = assets.classes.defaults(&l.class);
+        // Augmentique: rockets from the player's skinned GEP gun.
+        if l.from.is_none() && l.class.starts_with("Rocket") {
+            crate::augmentique::apply_projectile_skin(&mut d, "WeaponGEPGun");
+        }
         let f = |n: &str, dflt: f32| match find(&d, n) {
             Some(Value::Float(v)) => *v,
             Some(Value::Int(v)) => *v as f32,

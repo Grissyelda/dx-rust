@@ -134,6 +134,47 @@ fn spawn_puff(
     ));
 }
 
+/// A decal on the level (not on a mover) that the Casings And Blood Stay enhancement keeps with the level.
+#[derive(Component)]
+pub struct KeepDecal {
+    pub tex: String,
+    /// A bullet hole (depth-biased, exposure-compensated) rather than a blood splat.
+    pub hole: bool,
+}
+
+/// A saved decal: texture, Bevy transform (translation, rotation, uniform scale).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct DecalSave {
+    pub tex: String,
+    pub pos: [f32; 3],
+    pub rot: [f32; 4],
+    pub size: f32,
+    pub hole: bool,
+}
+
+static RESTORE: std::sync::Mutex<Vec<DecalSave>> = std::sync::Mutex::new(Vec::new());
+
+/// Put saved decals back (drawn by impacts_system on its next run).
+pub fn restore_decals(d: &[DecalSave]) {
+    if let Ok(mut r) = RESTORE.lock() {
+        r.extend(d.iter().cloned());
+    }
+}
+
+/// The decal material: modulated over the surface (holes exposure-compensated so mid-grey leaves the wall alone).
+pub fn decal_material(img: Handle<Image>, hole: bool) -> StandardMaterial {
+    StandardMaterial {
+        base_color_texture: Some(img),
+        base_color: if hole { Color::LinearRgba(LinearRgba::rgb(4.59, 4.59, 4.59)) } else { Color::WHITE },
+        unlit: true,
+        double_sided: true,
+        cull_mode: None,
+        alpha_mode: AlphaMode::Multiply,
+        depth_bias: if hole { 40.0 } else { 0.0 },
+        ..default()
+    }
+}
+
 /// Every decal made here, oldest first (capped).
 #[derive(Resource, Default)]
 pub struct Decals(pub std::collections::VecDeque<Entity>);
@@ -174,6 +215,23 @@ pub fn impacts_system(
             if let Ok(mut q) = q.lock() {
                 q.clear();
             }
+        }
+    }
+    // Decals put back from the level's saved state (Casings And Blood Stay).
+    for d in RESTORE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        let Some(img) = modulated_image_for(&mut assets, &mut images, &d.tex) else { continue };
+        let mat = materials.add(decal_material(img, d.hole));
+        let quad = meshes.add(Rectangle::new(1.0, 1.0));
+        let tf = Transform::from_translation(Vec3::from(d.pos))
+            .with_rotation(Quat::from_array(d.rot))
+            .with_scale(Vec3::splat(d.size));
+        let ue = dx_level::bevy_to_ue(d.pos);
+        let pos = DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64);
+        let mut e = commands.spawn((Mesh3d(quad), MeshMaterial3d(mat), tf, KeepDecal { tex: d.tex.clone(), hole: d.hole }));
+        if d.hole {
+            e.insert(BulletDecal { age: 0.0, life: 20.0, pos });
+            let id = e.id();
+            decals.0.push_back(id);
         }
     }
     if *seed == 0 {
@@ -329,17 +387,7 @@ pub fn impacts_system(
         let width = assets.lib.load_image(tex).map(|t| t.width as f32).unwrap_or(64.0);
         let size = width * scale;
         let normal = Vec3::from(ue_to_bevy(h.normal.as_vec3().to_array())).normalize_or_zero();
-        let mat = materials.add(StandardMaterial {
-            base_color_texture: Some(img),
-            // Modulated (the decal blends over the wall): exposure-compensated so mid-grey leaves the wall as it is.
-            base_color: Color::LinearRgba(LinearRgba::rgb(4.59, 4.59, 4.59)),
-            unlit: true,
-            double_sided: true,
-            cull_mode: None,
-            alpha_mode: AlphaMode::Multiply,
-            depth_bias: 40.0,
-            ..default()
-        });
+        let mat = materials.add(decal_material(img, true));
         let quad = meshes.add(Rectangle::new(1.0, 1.0));
         let at = h.at + h.normal * 0.2;
         let world_pos = Vec3::from(ue_to_bevy(at.as_vec3().to_array()));
@@ -356,6 +404,9 @@ pub fn impacts_system(
         };
         let life = 18.0 + 5.0 * rnd() as f32;
         let e = commands.spawn((Mesh3d(quad), MeshMaterial3d(mat), tf, BulletDecal { age: 0.0, life, pos: at })).id();
+        if parent.is_none() {
+            commands.entity(e).insert(KeepDecal { tex: tex.to_string(), hole: true });
+        }
         if let Some((pe, _)) = parent {
             commands.entity(pe).add_child(e);
         }
