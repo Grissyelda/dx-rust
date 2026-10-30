@@ -270,7 +270,11 @@ pub fn weather_system(
     }
     let me = player.body.location;
     let pvel = player.body.velocity;
+    // PrecipRad 650 made the rain a visible column round JC: ours falls over a far wider square with the same
+    // drops per area (the mod's rate scaled by the area), so its edge is out where the streaks are too thin to see.
     let rad = 650.0f64;
+    let wide = WIDE_RAD;
+    let area_k = ((wide / rad) * (wide / rad)) as f32;
     // Precipitator.Timer: the batch height grows from 300 to 600 so the first drops reach the ground quickly.
     st.height = (st.height + dt * 60000.0 * 0.01).min(600.0);
     let eye = {
@@ -283,10 +287,10 @@ pub fn weather_system(
     };
     let yaw_fwd = DVec3::new(fwd.x, fwd.y, 0.0).normalize_or_zero();
     // PrecipDensity drops every PrecipFreq (0.01 s).
-    st.acc += dt * st.density / 0.01;
+    st.acc += dt * st.density / 0.01 * area_k;
     let mut n = st.acc.floor() as usize;
     st.acc -= n as f32;
-    n = n.min(400);
+    n = n.min(2500);
     for _ in 0..n {
         if st.drops.len() >= MAX_DROPS {
             break;
@@ -294,8 +298,8 @@ pub fn weather_system(
         // Precipitator.RandomSpawn.
         let pos = me + pvel * rad / 1200.0 + yaw_fwd * (rad / 4.0) - prof.wind
             + DVec3::new(
-                (rnd(&mut seed) - 0.5) * rad * 2.0,
-                (rnd(&mut seed) - 0.5) * rad * 2.0,
+                (rnd(&mut seed) - 0.5) * wide * 2.0,
+                (rnd(&mut seed) - 0.5) * wide * 2.0,
                 st.height as f64 + (rnd(&mut seed) - 0.5) * 150.0,
             );
         let z = lvl.collision.zone_at(pos);
@@ -378,14 +382,17 @@ pub fn weather_system(
     let mut idx = Vec::with_capacity(st.drops.len() * 6);
     for d in &st.drops {
         let dir = (d.vel - pvel * DVec3::new(0.2, 0.2, 0.0)).normalize_or_zero();
-        let to_eye = (eye - d.pos).normalize_or_zero();
-        let side = dir.cross(to_eye).normalize_or_zero() * 0.6;
+        let to_eye = eye - d.pos;
+        // Far streaks get wider and dimmer by the same amount (the same light on screen) instead of thinning to
+        // flickering sub-pixel lines.
+        let spread = (to_eye.length() / 500.0).max(1.0);
+        let side = dir.cross(to_eye.normalize_or_zero()).normalize_or_zero() * 0.6 * spread;
         let tail = d.pos - dir * d.len as f64;
         let b = |p: DVec3| Vec3::from(ue_to_bevy(p.as_vec3().to_array())).to_array();
         let k = pos.len() as u32;
         pos.extend([b(d.pos - side), b(d.pos + side), b(tail + side), b(tail - side)]);
         uv.extend([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
-        let g = d.glow * ambient;
+        let g = d.glow * ambient / spread as f32;
         col.extend([[g, g, g, 1.0]; 4]);
         idx.extend([k, k + 1, k + 2, k, k + 2, k + 3]);
     }
@@ -494,7 +501,9 @@ mod tests {
     }
 }
 
-const MAX_DROPS: usize = 2500;
+const MAX_DROPS: usize = 7000;
+/// Half the side of the square the drops fall in (Unreal units).
+const WIDE_RAD: f64 = 1800.0;
 const MAX_SPLASHES: usize = 1500;
 
 /// Fills the quad buffers up to `cap` quads with collapsed (zero-area, black) ones: the meshes keep one size, so the

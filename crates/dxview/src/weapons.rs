@@ -1017,6 +1017,7 @@ fn build_held(
     materials: &mut Assets<StandardMaterial>,
     commands: &mut Commands,
     root: Entity,
+    quiet: bool,
 ) -> Option<Held> {
     let t0 = std::time::Instant::now();
     let _log = LogOnDrop(t0, stats.class.clone());
@@ -1081,7 +1082,7 @@ fn build_held(
         }
     }
     // DeusExWeapon BringUp: Owner.PlaySound(SelectSound, SLOT_None,,, 1024).
-    if let Some(snd) = &stats.snd.select {
+    if let Some(snd) = stats.snd.select.as_ref().filter(|_| !quiet) {
         crate::sound::play_player(snd, stats.snd.volume, 1024.0);
     }
     Some(Held {
@@ -1297,6 +1298,7 @@ pub fn select_system(
                 &mut materials,
                 &mut commands,
                 *root,
+                false,
             ) {
                 weapons.held = Some(h);
                 weapons.corpse = Some(body);
@@ -1448,6 +1450,7 @@ pub fn select_system(
                     &mut materials,
                     &mut commands,
                     *root,
+                    false,
                 ) {
                     clips.0.entry(class).or_insert(h.stats.reload_count);
                     weapons.held = Some(h);
@@ -3406,8 +3409,11 @@ pub fn prewarm_view_models_system(
     mut done: Local<std::collections::HashSet<String>>,
     mut cur: Local<Option<(Entity, u32)>>,
     mut map_gen: Local<u64>,
+    mut frames: Local<u32>,
+    level: Res<crate::LevelRes>,
 ) {
     if crate::loader::new_map(&mut map_gen) {
+        *frames = 0;
         done.clear();
         if let Some((e, _)) = cur.take() {
             if let Ok(mut ec) = commands.get_entity(e) {
@@ -3415,7 +3421,17 @@ pub fn prewarm_view_models_system(
             }
         }
     }
-    if std::env::var_os("DXVIEW_NO_PREWARM").is_some() {
+    // Not on the title map or the intro (the player's kit there is only for show), and not during cut scenes: wait.
+    // A few frames in (a cut scene has started by then) and only where JC can actually draw a weapon.
+    *frames = frames.saturating_add(1);
+    let m = level.0.name.to_ascii_lowercase();
+    if std::env::var_os("DXVIEW_NO_PREWARM").is_some()
+        || *frames < 20
+        || crate::menus::intro_map()
+        || crate::cinematic::active()
+        || m.starts_with("00_intro")
+        || m.starts_with("99_endgame")
+    {
         return;
     }
     if let Some((e, n)) = cur.as_mut() {
@@ -3445,12 +3461,13 @@ pub fn prewarm_view_models_system(
     let t0 = std::time::Instant::now();
     let warm = commands
         .spawn((
-            Transform::from_xyz(0.0, 0.0, -0.3).with_scale(Vec3::splat(0.001)),
+            // A speck in the middle of the view: drawn (so its pipelines and textures get made) but never seen.
+            Transform::from_xyz(0.0, 0.0, -0.3).with_scale(Vec3::splat(0.0002)),
             Visibility::Visible,
         ))
         .id();
     commands.entity(*root).add_child(warm);
-    let _ = build_held(stats, &d, None, &mut assets, &mut images, &mut meshes, &mut materials, &mut commands, warm);
+    let _ = build_held(stats, &d, None, &mut assets, &mut images, &mut meshes, &mut materials, &mut commands, warm, true);
     if std::env::var_os("DXVIEW_PROF").is_some() {
         println!("prewarm: {class} in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
     }

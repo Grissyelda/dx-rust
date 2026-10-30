@@ -85,12 +85,25 @@ pub fn projectile_dir(forward: DVec3, right: DVec3, up: DVec3, accuracy: f64, se
 }
 
 /// A weapon you can aim down the sights of: a gun or launcher (not melee, thrown, a tool or anything consumed).
+const NO_SIGHTS: &[&str] = &[
+    "WeaponProd",
+    "WeaponGEPGun",
+    "WeaponLAW",
+    "WeaponShuriken",
+    "WeaponLAM",
+    "WeaponGasGrenade",
+    "WeaponEMPGrenade",
+    "WeaponNanoVirusGrenade",
+];
+
 pub fn sightable(h: &crate::weapons::Held) -> bool {
     let st = &h.stats;
     !st.hand_to_hand
         && !st.item
         && !st.has_scope
         && st.class.starts_with("Weapon")
+        // No sights to look down: the riot prod, the shoulder-fired launchers, thrown weapons.
+        && !NO_SIGHTS.iter().any(|c| st.class.eq_ignore_ascii_case(c))
         && st.ammo_class.as_deref().is_some_and(|a| !a.to_ascii_lowercase().contains("ammonone"))
 }
 

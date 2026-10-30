@@ -753,3 +753,64 @@ pub fn sound_actors(pkg: &Package, classes: &mut ClassDb) -> (Vec<AmbientSoundIn
     }
     (out, song)
 }
+
+/// A crouched walk for meshes that have none (the women's meshes: GFM_Trench, so Lay D Denton in third person):
+/// the last frame of Crouch (fully down) with each Walk frame's leg motion added - the movement of every vertex
+/// below the hips away from the walk's average pose, a little shortened. The upper body (and the weapon triangle)
+/// keep the crouch. Ours: the original has no such animation (LDDP loops Crouch).
+pub fn synth_crouch_walk(am: &mut AnimMesh) {
+    let has = |n: &str| am.seqs.iter().any(|s| s.name.eq_ignore_ascii_case(n));
+    if has("CrouchWalk") {
+        return;
+    }
+    let find = |n: &str| am.seqs.iter().find(|s| s.name.eq_ignore_ascii_case(n)).cloned();
+    let (Some(crouch), Some(walk)) = (find("Crouch"), find("Walk")) else { return };
+    let fv = am.frame_verts;
+    let base_f = (crouch.start_frame.max(0) + crouch.num_frames.max(1) - 1) as usize;
+    let (w0, wn) = (walk.start_frame.max(0) as usize, walk.num_frames.max(1) as usize);
+    if (base_f + 1) * fv > am.verts.len() || (w0 + wn) * fv > am.verts.len() || fv == 0 {
+        return;
+    }
+    let mut mean = vec![[0.0f32; 3]; fv];
+    for f in w0..w0 + wn {
+        for v in 0..fv {
+            let p = am.verts[f * fv + v];
+            for k in 0..3 {
+                mean[v][k] += p[k] / wn as f32;
+            }
+        }
+    }
+    let (lo, hi) = mean.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[2]), a.1.max(p[2])));
+    let h = (hi - lo).max(1.0);
+    let (full, none) = (lo + 0.42 * h, lo + 0.56 * h);
+    let weight: Vec<f32> = mean
+        .iter()
+        .map(|p| {
+            let t = ((none - p[2]) / (none - full)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        })
+        .collect();
+    const STRIDE: f32 = 0.5;
+    let start = am.frames;
+    for f in w0..w0 + wn {
+        for v in 0..fv {
+            let b = am.verts[base_f * fv + v];
+            let p = am.verts[f * fv + v];
+            let k = weight[v] * STRIDE;
+            am.verts.push([b[0] + (p[0] - mean[v][0]) * k, b[1] + (p[1] - mean[v][1]) * k, b[2] + (p[2] - mean[v][2]) * k]);
+        }
+        if let Some(t) = am.weapon_tri.get(base_f).copied() {
+            am.weapon_tri.push(t);
+        }
+    }
+    am.frames += wn;
+    am.seqs.push(unreal_pkg::mesh::AnimSeq {
+        name: "CrouchWalk".into(),
+        group: String::new(),
+        start_frame: start as i32,
+        num_frames: wn as i32,
+        // GM_Trench's CrouchWalk: 9 frames at 5 a second.
+        rate: wn as f32 * 5.0 / 9.0,
+        notifies: Vec::new(),
+    });
+}

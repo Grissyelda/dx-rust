@@ -4,7 +4,7 @@
 //!   bsp_shadow.wgsl darkens the BSP's lightmap by it (Bevy only applies it to ambient light, and the world's light
 //!   is all lightmap), so corners, grates and the ground under crates and furniture darken. It needs MSAA off on
 //!   every camera drawing into the window; SMAA on the last one smooths the edges instead.
-//! - Soft Shadows: the real-time shadow lights (shadowlight.rs), the flashlight's cone and the light-shaft spots get
+//! - Soft Shadows: the real-time shadow lights (shadowlight.rs) get
 //!   a light size, so their shadows are filtered with percentage-closer soft shadows: sharp where the caster meets
 //!   the ground, blurring as the shadow stretches away (contact hardening).
 
@@ -23,7 +23,6 @@ pub fn soft_on() -> bool {
 
 /// Size of the lights for soft shadows (metres): a lamp's bulb and shade, more or less.
 const POINT_SIZE: f32 = 0.12;
-const SPOT_SIZE: f32 = 0.08;
 
 #[allow(clippy::type_complexity)]
 pub fn postfx_system(
@@ -64,13 +63,13 @@ pub fn postfx_system(
             p.radius = if soft { POINT_SIZE } else { 0.0 };
         }
     }
-    // Only the flashlight's cone lights surfaces; the light-shaft spots only light the air, where a hard shadow
-    // edge is invisible and PCSS would cost for nothing.
+    // The flashlight's cone shines from next to the eye, where its shadows are thin edges: PCSS there only added
+    // speckled noise on grazing walls. Its shadows stay hard (and the light-shaft spots only light the air).
     for mut s in &mut spots {
-        let want = soft_on() && s.shadow_maps_enabled;
+        let want = false;
         if s.soft_shadows_enabled != want {
             s.soft_shadows_enabled = want;
-            s.radius = if want { SPOT_SIZE } else { 0.0 };
+            s.radius = 0.0;
         }
     }
 }

@@ -354,14 +354,16 @@ pub fn shafts_system(
             }
         }
     }
-    // The flashlight's beam in the air: a light of its own that lights only the haze (the Flashlight Cone's light
-    // grows with the distance it reaches, which in the haze blew out the screen), modest, and from a little ahead
-    // of the shoulder so the air right at the lens doesn't flare.
+    // The flashlight's beam in the air: a light of its own for the haze (the Flashlight Cone's light grows with the
+    // distance it reaches, which in the haze blew out the screen), modest. It shines from where the flashlight does
+    // and the same way (it lights surfaces too: anywhere else it made a second pool), a little ahead so the air right
+    // at the lens doesn't flare - but never past half the way to the wall in front (ahead of a wall it lit what was
+    // behind it, and through the double-sided wall the far side's shadows showed).
     let aug = crate::abilities::aug_active("AugLight");
+    let flash = crate::dynlight::flashlight();
     for (mut sl, mut tf, mut vis) in &mut beam {
-        if aug {
-            let f = cam_tf.forward().as_vec3();
-            let pos = cam_tf.translation + cam_tf.right().as_vec3() * 0.19 - Vec3::Y * 0.11 + f * 0.6;
+        if let (true, Some((from, f, reach))) = (aug, flash) {
+            let pos = from + f * (reach * 0.5).min(0.6);
             *tf = Transform::from_translation(pos).looking_to(f, Vec3::Y);
             sl.intensity = 60.0;
             sl.color = {
