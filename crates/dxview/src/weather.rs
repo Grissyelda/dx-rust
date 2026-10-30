@@ -397,14 +397,10 @@ pub fn weather_system(
         m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
         m.insert_indices(Indices::U32(idx));
     }
-    // Splash droplets: small camera-facing quads (particleDrawScale 0.1 of a 32-texel drop, fading).
+    // Splashlets: short streaks along each droplet's motion, facing the camera.
     let right = {
         let r = cam.right().as_vec3();
         DVec3::new(r.x as f64, r.z as f64, r.y as f64)
-    };
-    let up = {
-        let u = cam.up().as_vec3();
-        DVec3::new(u.x as f64, u.z as f64, u.y as f64)
     };
     let mut pos = Vec::with_capacity(st.splashes.len() * 4);
     let mut uv = Vec::with_capacity(st.splashes.len() * 4);

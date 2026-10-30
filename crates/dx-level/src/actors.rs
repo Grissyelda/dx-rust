@@ -416,10 +416,9 @@ pub fn build(
 }
 
 
-/// Eyelid fix for repainted faces (Helios): the original meshes blink by pulling the upper lid's edge down over the
-/// eye, which stretches the strip of picture between the lid crease and the top of the eye over it - at the original
-/// 128 x 128 a blur that reads as a lid, on a detailed face a painted eye. When on, dxview slides those vertices'
-/// texture coordinates up to the crease as they close (actors::lid_uvs), so the closed lid shows skin.
+/// Repainted faces (Helios): the original meshes blink by pulling the upper lid's edge down over the eye, which
+/// stretches the strip of picture between the lid crease and the top of the eye over it - at the original 128 x 128 a
+/// blur that reads as a lid, on a detailed face a painted eye. When on, dxview's faces don't blink.
 pub static LID_FIX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Build the textured parts of a mesh posed at `frame`, in actor-local Unreal space.

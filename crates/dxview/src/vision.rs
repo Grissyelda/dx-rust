@@ -82,6 +82,18 @@ pub fn vision_system(
         s.on = on;
         if on { s.heat.clone() } else { HashSet::new() }
     };
+    // Nothing glowing and nothing left to give back: don't walk every mesh part.
+    if heat.is_empty() && hot_std.is_empty() && hot_anim.is_empty() {
+        for mut b in &mut post {
+            if b.nv != 0.0 || on {
+                b.nv = if on { 1.0 } else { 0.0 };
+                b.nv_t = time.elapsed_secs() % 100.0;
+                b.nv_ir = 0.0;
+                b.nv_box = 0.0;
+            }
+        }
+        return;
+    }
     let t = time.elapsed_secs();
     for mut b in &mut post {
         let nv = if on { 1.0 } else { 0.0 };

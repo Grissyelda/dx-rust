@@ -3259,9 +3259,6 @@ pub fn con_view_system(
                     })
                     .collect();
                 m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-                if let Some(uv) = crate::actors::lid_uvs(&p.mesh, &p.parts[pi], face.as_ref(), still) {
-                    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-                }
             }
         }
     }

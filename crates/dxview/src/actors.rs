@@ -204,7 +204,9 @@ pub fn update_face(f: &mut Face, mesh: &dx_level::actors::AnimMesh, dt: f32) -> 
         f.blink_timer += dt;
         if f.blink_timer > blink_every {
             f.blink_timer = 0.0;
-            if crate::sound::frand() < 0.4 {
+            // Helios faces don't blink: the original lids close by stretching the strip of picture over the eye,
+            // which on a repainted face is the eye itself (dx_level::actors::LID_FIX).
+            if crate::sound::frand() < 0.4 && !dx_level::actors::LID_FIX.load(std::sync::atomic::Ordering::Relaxed) {
                 f.blink = Some(0.0);
             }
         }
@@ -255,56 +257,6 @@ pub fn face_offset(mesh: &dx_level::actors::AnimMesh, key: &FaceKey, still: usiz
         }
     }
     o
-}
-
-/// Helios eyelids (dx_level::actors::LID_FIX): the part's texture coordinates with each blinking lid vertex slid up
-/// toward the crease above it as far as the blink has closed it, or None when the part has no lid (or the fix is off).
-/// Lid vertices = those the Blink sequence moves a little (the lid edges; the glasses' far-moving hidden bits are left
-/// alone); the crease = the nearest still vertex above it in the picture in a face they share.
-pub fn lid_uvs(mesh: &dx_level::actors::AnimMesh, part: &dx_level::actors::MeshPart, key: Option<&FaceKey>, still: usize) -> Option<Vec<[f32; 2]>> {
-    if !dx_level::actors::LID_FIX.load(std::sync::atomic::Ordering::Relaxed) {
-        return None;
-    }
-    let (bs, bn, _) = seq_start(mesh, "Blink")?;
-    let fv = mesh.frame_verts;
-    let at = |fr: usize, v: usize| mesh.verts.get(fr * fv + v).copied().unwrap_or([0.0; 3]);
-    let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-    // Per part vertex: the lid's full travel (0 = not a lid vertex).
-    let travel: Vec<f32> = part
-        .vert_ids
-        .iter()
-        .map(|&v| {
-            let d = (bs..bs + bn).map(|f| dist(at(f, v as usize), at(still, v as usize))).fold(0.0, f32::max);
-            if d > 1.0 && d < 40.0 { d } else { 0.0 }
-        })
-        .collect();
-    if travel.iter().all(|t| *t == 0.0) {
-        return None;
-    }
-    // How closed it is now.
-    let amount = |i: usize| -> f32 {
-        let Some(bf) = key.and_then(|k| k.3) else { return 0.0 };
-        let fr = (bf as f32 / 64.0).min(bn as f32 - 1.0);
-        let v = part.vert_ids[i] as usize;
-        (dist(mesh.sample(bs, bn, fr, v), at(still, v)) / travel[i]).clamp(0.0, 1.0)
-    };
-    // Every face with a lid vertex in it (the faces are drawn with their own copies of their corners) slides its
-    // corners' V up as far as the lid has closed, to a row two texels above the face's top edge: the strip of skin
-    // between the eye and the brow (a repainted eye can reach the crease row itself).
-    let mut uv = part.uvs.clone();
-    for tri in part.indices.chunks_exact(3) {
-        let k = tri.iter().map(|&i| i as usize).filter(|&i| travel[i] > 0.0).map(amount).fold(0.0f32, f32::max);
-        if k <= 0.0 {
-            continue;
-        }
-        let top = tri.iter().map(|&i| part.uvs[i as usize][1]).fold(f32::MAX, f32::min);
-        let to = (top - 2.0 / 255.0).max(0.0);
-        for &i in tri {
-            let i = i as usize;
-            uv[i][1] = part.uvs[i][1] + (to - part.uvs[i][1]) * k;
-        }
-    }
-    Some(uv)
 }
 
 /// Which `Level::mesh_actors` entry an entity draws.
@@ -1127,9 +1079,6 @@ pub fn animate(
                     }
                 }
                 _ => m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos.collect::<Vec<[f32; 3]>>()),
-            }
-            if let Some(uv) = lid_uvs(&anim.mesh, part, face.as_ref(), still) {
-                m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
             }
         }
     }

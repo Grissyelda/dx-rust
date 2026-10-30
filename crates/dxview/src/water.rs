@@ -383,6 +383,7 @@ pub struct OceanRing;
 pub fn ocean_ring(
     mirrors: &crate::mirror::Mirrors,
     batches: &[dx_level::Batch],
+    sheet_pts: &[[f32; 3]],
 ) -> Option<(Mesh, Handle<WaterMaterial>)> {
     // The biggest flat water plane, if it's sea-sized (indoor pools and fountains get none).
     let plane = mirrors
@@ -475,29 +476,66 @@ pub fn ocean_ring(
     let steps = [0.0f32, 3.0, 7.0, 13.0, 22.0, 36.0, 60.0, 100.0, 170.0, 300.0, 520.0, 900.0, 1600.0, 2800.0];
     let (lo, hi) = (Vec2::new(plane.min.x, plane.min.z), Vec2::new(plane.max.x, plane.max.z));
     let rect = |e: f32| (lo - Vec2::splat(e), hi + Vec2::splat(e));
+    // Every band splits each side at the same places - where the (tessellated) sheet has vertices on that edge of its
+    // bounds, plus enough more to keep pieces under 2.5 m - so neighbouring bands, and the sheet and the first band,
+    // meet vertex to vertex: no T-junctions for the swell to open into cracks.
+    let (w, l) = ((hi.x - lo.x).max(1e-3), (hi.y - lo.y).max(1e-3));
+    let side_len = [w, l, w, l];
+    let mut ts: [Vec<f32>; 4] = [vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]];
+    for p in sheet_pts.iter().filter(|p| (p[1] - y).abs() < 0.05) {
+        let (x, z) = (p[0], p[2]);
+        let on = |a: f32, b: f32| (a - b).abs() < 2e-3;
+        if on(z, lo.y) && x >= lo.x && x <= hi.x {
+            ts[0].push((x - lo.x) / w);
+        }
+        if on(x, hi.x) && z >= lo.y && z <= hi.y {
+            ts[1].push((z - lo.y) / l);
+        }
+        if on(z, hi.y) && x >= lo.x && x <= hi.x {
+            ts[2].push((hi.x - x) / w);
+        }
+        if on(x, lo.x) && z >= lo.y && z <= hi.y {
+            ts[3].push((hi.y - z) / l);
+        }
+    }
+    for (side, t) in ts.iter_mut().enumerate() {
+        t.sort_by(|a, b| a.total_cmp(b));
+        t.dedup_by(|a, b| (*a - *b).abs() < 1e-5);
+        let mut filled = Vec::with_capacity(t.len() * 2);
+        for k in 0..t.len() {
+            filled.push(t[k]);
+            if let Some(&next) = t.get(k + 1) {
+                let gap = (next - t[k]) * side_len[side];
+                let n = (gap / 2.5).ceil() as usize;
+                for j in 1..n {
+                    filled.push(t[k] + (next - t[k]) * j as f32 / n as f32);
+                }
+            }
+        }
+        *t = filled;
+    }
     let (mut pos, mut nrm, mut uv, mut uv1, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::<u32>::new());
     for s in steps.windows(2) {
         let (ia, ib) = (rect(s[0]), rect(s[1]));
-        // Segments along each side: about as long as the band is wide (at least 2 m).
-        let seg_len = (s[1] - s[0]).max(2.0);
         // Corners of the inner and outer rectangles, counter-clockwise: (x0,z0) (x1,z0) (x1,z1) (x0,z1).
         let corners = |r: (Vec2, Vec2)| [Vec2::new(r.0.x, r.0.y), Vec2::new(r.1.x, r.0.y), Vec2::new(r.1.x, r.1.y), Vec2::new(r.0.x, r.1.y)];
         let (ci, co) = (corners(ia), corners(ib));
         for side in 0..4 {
             let (a0, a1) = (ci[side], ci[(side + 1) % 4]);
             let (b0, b1) = (co[side], co[(side + 1) % 4]);
-            let n = ((b0.distance(b1)) / seg_len).ceil().clamp(1.0, 600.0) as usize;
-            for k in 0..n {
-                let (t0, t1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
-                let q = [a0.lerp(a1, t0), a0.lerp(a1, t1), b0.lerp(b1, t1), b0.lerp(b1, t0)];
-                let base = pos.len() as u32;
-                for v in q {
+            let t = &ts[side];
+            let row = pos.len() as u32;
+            for &tk in t {
+                for v in [a0.lerp(a1, tk), b0.lerp(b1, tk)] {
                     pos.push([v.x, y, v.y]);
                     nrm.push([0.0, 1.0, 0.0]);
                     uv.push(uv_at(v.x, v.y));
                     uv1.push(edge_light(v));
                 }
-                idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            }
+            for k in 0..t.len().saturating_sub(1) as u32 {
+                let (i0, o0, i1, o1) = (row + 2 * k, row + 2 * k + 1, row + 2 * k + 2, row + 2 * k + 3);
+                idx.extend([i0, i1, o1, i0, o1, o0]);
             }
         }
     }
