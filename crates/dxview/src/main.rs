@@ -1190,6 +1190,7 @@ fn setup(
     mut bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
 ) {
     let mut water_list = water::WaterMats::default();
+    let mut backing_mat: Option<Handle<StandardMaterial>> = None;
     let mut bsp_cache: std::collections::HashMap<AssetId<StandardMaterial>, Handle<shadowlight::BspMaterial>> = Default::default();
     let level = &level.0;
     let mut mirrors = mirror::Mirrors::default();
@@ -1291,8 +1292,24 @@ fn setup(
                 water_list.mats.push(wm.clone());
                 water_list.opaque.push(b.water_opaque);
                 mirror::add_water(&mut mirrors, &wm, &b.positions);
+                // Flat sheets get a dark backing under their moving surface (see water::WaterBacking).
+                let (lo, hi) = b.positions.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[1]), a.1.max(p[1])));
+                if hi - lo < 0.05 {
+                    let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
+                    commands.spawn((
+                        Mesh3d(meshes.add(water::backing_mesh(&b.positions, &b.indices))),
+                        MeshMaterial3d(back),
+                        Visibility::Hidden,
+                        water::WaterBacking { y: hi },
+                        RenderLayers::layer(mirror::LAYER),
+                        bevy::light::NotShadowCaster,
+                        bevy::light::NotShadowReceiver,
+                    ));
+                }
                 // Water isn't lightmapped: the shadow pairs (shadowlight.rs) would black it out under a shadow.
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(wm), bevy::light::NotShadowReceiver))
+                // On the mirror faces' layer: only the world camera draws water (the reflection cameras would only clip
+                // it away again).
+                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(wm), bevy::light::NotShadowReceiver, RenderLayers::layer(mirror::LAYER)))
             }
             // PF_Mirrored: the same surface with the reflection added (mirror.rs).
             Some(plane) => {
@@ -1338,11 +1355,25 @@ fn setup(
     }
 
     if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches) {
+        if let (Some(bevy::mesh::VertexAttributeValues::Float32x3(p)), Some(Indices::U32(i))) = (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices()) {
+            let y = p.first().map_or(0.0, |v| v[1]);
+            let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
+            commands.spawn((
+                Mesh3d(meshes.add(water::backing_mesh(p, i))),
+                MeshMaterial3d(back),
+                Visibility::Hidden,
+                water::WaterBacking { y },
+                RenderLayers::layer(mirror::LAYER),
+                bevy::light::NotShadowCaster,
+                bevy::light::NotShadowReceiver,
+            ));
+        }
         let mut e = commands.spawn((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(mat),
             Visibility::Hidden,
             water::OceanRing,
+            RenderLayers::layer(mirror::LAYER),
             bevy::light::NotShadowReceiver,
             bevy::light::NotShadowCaster,
         ));

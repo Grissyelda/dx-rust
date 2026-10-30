@@ -288,37 +288,22 @@ pub fn lid_uvs(mesh: &dx_level::actors::AnimMesh, part: &dx_level::actors::MeshP
         let v = part.vert_ids[i] as usize;
         (dist(mesh.sample(bs, bn, fr, v), at(still, v)) / travel[i]).clamp(0.0, 1.0)
     };
+    // Every face with a lid vertex in it (the faces are drawn with their own copies of their corners) slides its
+    // corners' V up as far as the lid has closed, to a row two texels above the face's top edge: the strip of skin
+    // between the eye and the brow (a repainted eye can reach the crease row itself).
     let mut uv = part.uvs.clone();
-    let mut target: Vec<Option<f32>> = vec![None; uv.len()];
     for tri in part.indices.chunks_exact(3) {
-        for &a in tri {
-            let a = a as usize;
-            if travel[a] == 0.0 {
-                continue;
-            }
-            for &b in tri {
-                let b = b as usize;
-                if travel[b] == 0.0 && part.uvs[b][1] < part.uvs[a][1] - 0.5 / 255.0 {
-                    let t = target[a].get_or_insert(f32::MIN);
-                    *t = t.max(part.uvs[b][1]);
-                }
-            }
-        }
-    }
-    let mut any = false;
-    for i in 0..uv.len() {
-        if travel[i] == 0.0 {
-            continue;
-        }
-        let k = amount(i);
+        let k = tri.iter().map(|&i| i as usize).filter(|&i| travel[i] > 0.0).map(amount).fold(0.0f32, f32::max);
         if k <= 0.0 {
             continue;
         }
-        let to = target[i].filter(|t| *t > f32::MIN).unwrap_or(part.uvs[i][1] - 2.0 / 255.0);
-        uv[i][1] = part.uvs[i][1] + (to - part.uvs[i][1]) * k;
-        any = true;
+        let top = tri.iter().map(|&i| part.uvs[i as usize][1]).fold(f32::MAX, f32::min);
+        let to = (top - 2.0 / 255.0).max(0.0);
+        for &i in tri {
+            let i = i as usize;
+            uv[i][1] = part.uvs[i][1] + (to - part.uvs[i][1]) * k;
+        }
     }
-    let _ = any;
     Some(uv)
 }
 
