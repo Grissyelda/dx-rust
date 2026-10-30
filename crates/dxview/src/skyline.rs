@@ -464,7 +464,88 @@ pub fn panorama(lvl: &dx_level::Level) -> Option<Panorama> {
             });
         }
     });
+    clean_edges(&mut rgba, w, h);
     Some(Panorama { w, h, rgba, e_lo, e_hi })
+}
+
+/// The photo panels carry a dark matte line round their buildings, and see-through texels are black: under linear
+/// filtering both showed as a dark outline against the clouds. Trim the edge texel (and the next one where it's
+/// darker than the building inside it), then bleed the edge colour out into the see-through texels (alpha stays 0),
+/// so filtering at the silhouette only mixes building colours.
+fn clean_edges(rgba: &mut [u8], w: usize, h: usize) {
+    let idx = |x: i64, y: i64| -> Option<usize> {
+        if y < 0 || y >= h as i64 {
+            return None;
+        }
+        Some((y as usize * w + x.rem_euclid(w as i64) as usize) * 4)
+    };
+    let luma = |p: &[u8]| p[0] as f32 * 0.3 + p[1] as f32 * 0.59 + p[2] as f32 * 0.11;
+    const N8: [(i64, i64); 8] = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)];
+    for pass in 0..2 {
+        let src = rgba.to_vec();
+        for y in 0..h as i64 {
+            for x in 0..w as i64 {
+                let o = idx(x, y).unwrap();
+                if src[o + 3] == 0 {
+                    continue;
+                }
+                let edge = N8.iter().any(|(dx, dy)| idx(x + dx, y + dy).is_some_and(|n| src[n + 3] == 0));
+                if !edge {
+                    continue;
+                }
+                let cut = if pass == 0 {
+                    true
+                } else {
+                    // Average of the opaque texels two steps in (away from the hole).
+                    let (mut sum, mut n) = (0.0, 0);
+                    for (dx, dy) in N8 {
+                        if let Some(q) = idx(x + dx * 2, y + dy * 2) {
+                            if src[q + 3] != 0 {
+                                sum += luma(&src[q..q + 4]);
+                                n += 1;
+                            }
+                        }
+                    }
+                    n > 0 && luma(&src[o..o + 4]) < 0.75 * sum / n as f32
+                };
+                if cut {
+                    rgba[o..o + 4].copy_from_slice(&[0, 0, 0, 0]);
+                }
+            }
+        }
+    }
+    // Bleed colour 4 texels out (alpha untouched).
+    let mut filled: Vec<bool> = rgba.chunks_exact(4).map(|p| p[3] != 0).collect();
+    for _ in 0..4 {
+        let src = rgba.to_vec();
+        let was = filled.clone();
+        for y in 0..h as i64 {
+            for x in 0..w as i64 {
+                let i = y as usize * w + x as usize;
+                if was[i] {
+                    continue;
+                }
+                let (mut c, mut n) = ([0u32; 3], 0u32);
+                for (dx, dy) in N8 {
+                    if let Some(q) = idx(x + dx, y + dy) {
+                        if was[q / 4] {
+                            for k in 0..3 {
+                                c[k] += src[q + k] as u32;
+                            }
+                            n += 1;
+                        }
+                    }
+                }
+                if n > 0 {
+                    let o = i * 4;
+                    for k in 0..3 {
+                        rgba[o + k] = (c[k] / n) as u8;
+                    }
+                    filled[i] = true;
+                }
+            }
+        }
+    }
 }
 
 /// The photo skyline (see the module notes). False when the map's sky has no photo panels.

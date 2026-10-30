@@ -134,6 +134,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("Mantling", 0.0),
     ("CarryCover", 0.0),
     ("ThirdPerson", 0.0),
+    ("ThirdPersonCamera", 0.0),
     ("OutfitBoxes", 0.0),
     ("AtmosphericFog", 0.0),
     ("LightHalos", 0.0),

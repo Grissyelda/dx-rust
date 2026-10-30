@@ -35,17 +35,10 @@ fn modern_glow(color: [f32; 3]) -> Image {
             let u = (x as f32 + 0.5) / N as f32 * 2.0 - 1.0;
             let v = (y as f32 + 0.5) / N as f32 * 2.0 - 1.0;
             let r2 = u * u + v * v;
+            // A small hot core and a soft gaussian bloom (no streaks or spikes), gone at the picture's rim.
+            let rim = (1.0 - r2).max(0.0);
             let core = (-r2 / 0.006).exp();
-            let halo = (-r2 / 0.16).exp() * 0.5 * (1.0 - r2.sqrt()).max(0.0);
-            let streak = (-(v * v) / 0.0012).exp() * (-(u.abs()) * 2.6).exp() * 0.45;
-            let spike = {
-                let a = u.abs().min(v.abs());
-                let b = ((u - v).abs() / 1.414).min((u + v).abs() / 1.414);
-                let s1 = (-(a * a) / 0.00025).exp() * (-r2.sqrt() * 3.2).exp();
-                let s2 = (-(b * b) / 0.00025).exp() * (-r2.sqrt() * 4.5).exp();
-                (s1 * 0.5 + s2 * 0.25).min(1.0)
-            };
-            let glow = halo + streak + spike;
+            let glow = ((-r2 / 0.035).exp() * 0.5 + (-r2 / 0.2).exp() * 0.2) * rim;
             let a = (core + glow).min(1.0);
             // The core whitens; the halo keeps the light's colour.
             let w = core.min(1.0);
@@ -71,6 +64,9 @@ pub fn spawn_coronas(
     let mut cache: std::collections::HashMap<(String, [u32; 3]), Handle<Image>> =
         std::collections::HashMap::new();
     for (i, c) in level.coronas.iter().enumerate() {
+        if std::env::var_os("DXVIEW_CORONALOG").is_some() {
+            println!("CORONA {i} at bevy {:?} scale {} tex {}", ue_to_bevy(c.pos), c.draw_scale, c.texture);
+        }
         let key = (c.texture.clone(), c.color.map(|v| (v * 1000.0) as u32));
         let modern = modern();
         let key = if modern { (String::from("#modern"), key.1) } else { key };
@@ -185,11 +181,16 @@ pub fn corona_system(
                 let to = Vec3::from(ue_to_bevy(co.pos)) - tf.translation;
                 let cosv = to.normalize_or_zero().dot(*tf.forward());
                 if cosv > 0.0 {
-                    // Modern: a larger, softer glow that brightens as the view turns onto it.
-                    let mut size = co.draw_scale * width * if modern { 0.3 } else { 0.2 };
+                    let mut size = co.draw_scale * width * 0.2;
                     if modern {
-                        strength = 0.55 + 0.45 * cosv * cosv;
-                        size *= 0.8 + 0.2 * cosv;
+                        // Modern: a bloom the size of a real glow round the bulb (about two metres across at
+                        // draw scale 1), so it shrinks with distance like the lamp; never below a few pixels.
+                        let world_r = 60.0 * co.draw_scale.clamp(0.3, 2.0);
+                        let right = *tf.right() * world_r * dx_level::METERS_PER_UNIT;
+                        let edge = camera.world_to_viewport(gt, Vec3::from(ue_to_bevy(co.pos)) + right);
+                        let r_px = edge.map_or(0.0, |e| (e - v).length());
+                        size = (r_px * 2.0).clamp(width * 0.02, width * 0.12);
+                        strength = 0.6 + 0.4 * cosv * cosv;
                     }
                     node.left = Val::Px(v.x - size * 0.5);
                     node.top = Val::Px(v.y - size * 0.5);

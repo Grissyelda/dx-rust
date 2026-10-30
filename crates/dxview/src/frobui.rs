@@ -162,6 +162,8 @@ pub fn frob_target_system(
     let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
     let f = cam.forward().as_vec3();
     let dir = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
+    // Third person: toward what the camera's centre line is on.
+    let dir = crate::thirdperson::aim_dir(lvl, eye, dir);
     let end = eye + dir * FROB_DIST;
     let wall = lvl.collision.trace(eye, end, DVec3::splat(1.0)).fraction;
 

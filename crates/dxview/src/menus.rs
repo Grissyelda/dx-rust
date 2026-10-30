@@ -690,9 +690,9 @@ impl Enhance {
             ("Elements", "Gameplay", "Elemental Reactions", "Electric shocks run through water to everyone standing in it (you too), people on fire set others they touch alight, and fire caught by someone in water goes out."),
             ("Mantling", "Gameplay", "Mantling", "Jump at a ledge you can reach - up to about the height of your arms - and you climb onto it; jump at a low obstacle and you vault onto it. Not while crouched or carrying anything heavy."),
             ("CarryCover", "Gameplay", "Carried Objects As Cover", "A crate or anything else of some weight held in front of you stops the bullets meant for you, and takes the damage itself (it can break)."),
-            ("ThirdPerson", "Gameplay", "Third Person View", "H switches between first person and a view over JC's shoulder (J swaps the shoulder). The camera keeps out of walls and comes in closer while you aim with the scope key; first person is where you start."),
+            ("ThirdPerson", "Gameplay", "Third Person View", "H switches between first person and a view of JC from behind (J swaps the side the camera sits on). The camera keeps out of walls and comes in closer while you aim with the scope key; first person is where you start. See Third Person Camera for how it turns."),
             ("AtmosphericFog", "Visuals", "Atmospheric Fog", "A thin night haze over distance, thicker in the rain, so far-off buildings and the skyline melt into the dark."),
-            ("ModernCoronas", "Visuals", "Modern Coronas", "Lamps and lights glow with a drawn halo - a bright core, a soft wide glow, a faint streak and thin diffraction spikes in the light's colour - that fades in and out smoothly, instead of the original's corona pictures."),
+            ("ModernCoronas", "Visuals", "Modern Coronas", "Lamps and lights get a soft bloom in the light's colour round a small bright core, sized to the lamp so it shrinks with distance, fading in and out smoothly, instead of the original's corona pictures."),
             ("LightHalos", "Visuals", "Light Halos", "The air around lamps glows softly with their colour, fading as you get close; brighter in the rain."),
             ("Skyline", "Visuals", "3D Skyline", "The city beyond the map in 3D: where the sky has the original skyline photos (New York) they are cut into low-poly buildings at their own distances, so the picture is the same but shifts as you move; elsewhere procedural blocks - Hong Kong's dense towers, Paris's low roofs - with lit windows and roof lights."),
             ("Bloom", "Visuals", "Glow And Bloom", "Glowing things - camera lenses and alarm lights, laser tripwires, nano canisters, JC's sunglasses - are brighter than white and bleed a soft glow into the dark around them."),
@@ -760,6 +760,16 @@ impl Enhance {
             c.value = crate::settings::get("Weather");
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "ThirdPersonCamera".into();
+            c.label = "Third Person Camera".into();
+            c.help = "Free: the camera turns around JC with the mouse or right stick, he runs the way you push and turns to face it, faces where the camera looks while you aim or shoot, and fidgets when left alone. Shoulder: a fixed view over his shoulder that turns with him.".into();
+            c.kind = ChoiceKind::Enum(vec!["Free".into(), "Shoulder".into()]);
+            c.value = crate::settings::get("ThirdPersonCamera");
+            c.saved = c.value;
+            items.push(tag(c, "Gameplay"));
         }
         {
             let mut c = debug_mode_choice();

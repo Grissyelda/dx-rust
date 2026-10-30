@@ -262,6 +262,7 @@ pub fn frob_system(
     let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
     let f = tf.forward().as_vec3();
     let dir = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
+    let dir = crate::thirdperson::aim_dir(&level.0, eye, dir);
     let end = eye + dir * 112.0;
     let small = DVec3::splat(1.0);
     let level = &level.0;
