@@ -14,6 +14,16 @@ use bevy::{
     window::{CursorGrabMode, CursorOptions},
 };
 mod abilities;
+mod weather;
+mod shadowlight;
+mod aimmode;
+mod fx;
+mod elements;
+mod mantle;
+mod thirdperson;
+mod atmosphere;
+mod skyline;
+mod audiofx;
 mod anim_tex;
 mod actors;
 mod gpuanim;
@@ -116,7 +126,7 @@ pub struct LevelRes(pub Level);
 
 /// Materials whose UVs scroll over time (auto-panning surfaces, water).
 #[derive(Resource, Default)]
-struct UvScroll(Vec<(Handle<StandardMaterial>, Vec2, bool)>);
+struct UvScroll(Vec<(Handle<StandardMaterial>, Vec2, bool)>, Vec<(Handle<shadowlight::BspMaterial>, Vec2)>);
 
 #[derive(Component)]
 pub struct FlyCam {
@@ -831,6 +841,16 @@ fn main() {
         .add_systems(Update, (augdisplay::augdisplay_system, augdisplay::vision_system, augdisplay::aug_text_system))
         .init_resource::<particles::Particles>()
         .add_systems(Update, particles::particle_system.after(devices::device_system).after(fixtures::fixture_system))
+        .add_systems(Update, weather::weather_system.after(fly))
+        .add_systems(Update, (shadowlight::shadow_light_system.after(fly), shadowlight::tag_casters_system))
+        .add_systems(Update, fx::fx_system.after(fly))
+        .add_systems(Update, thirdperson::toggle_system)
+        .add_systems(Update, audiofx::soundscape_system)
+        .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system))
+        .add_systems(First, thirdperson::restore_system)
+        .add_systems(PostUpdate, thirdperson::place_system.before(bevy::transform::TransformSystems::Propagate))
+        .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
+        .add_systems(Update, aimmode::aim_mode_system.after(hud::aim_system).before(weapons::weapon_system).before(hud::crosshair_system))
         .add_systems(Update, (eggs::matrix_system, eggs::warren_system))
         .add_systems(
             PreUpdate,
@@ -873,9 +893,10 @@ fn main() {
         .add_plugins(bevy::pbr::MaterialPlugin::<gpuanim::AnimMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<mirror::MirrorMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<water::WaterMaterial>::default())
+        .add_plugins(bevy::pbr::MaterialPlugin::<shadowlight::BspMaterial>::default())
         .init_resource::<water::WaterMats>()
         .init_resource::<gpuanim::GpuAnim>()
-        .add_systems(Startup, (gpuanim::setup_anim_shader, mirror::setup_mirror_shader, water::setup_water_shader, install_crash_log))
+        .add_systems(Startup, (gpuanim::setup_anim_shader, mirror::setup_mirror_shader, water::setup_water_shader, shadowlight::setup_bsp_shader, install_crash_log))
         .add_systems(
             Update,
             (
@@ -899,7 +920,7 @@ fn main() {
             >::default(),
         )
         .add_systems(Startup, dynlight::setup_gamma_shader)
-        .add_systems(loader::LevelSetup, dynlight::setup_dynlights)
+        .add_systems(loader::LevelSetup, (dynlight::setup_dynlights, shadowlight::setup_shadow_lights))
         .add_systems(
             Update,
             (
@@ -1129,8 +1150,10 @@ fn setup(
     root_dir: Res<pickups::GameRoot>,
     mut mirror_mats: ResMut<Assets<mirror::MirrorMaterial>>,
     mut water_mats: ResMut<Assets<water::WaterMaterial>>,
+    mut bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
 ) {
     let mut water_list = water::WaterMats::default();
+    let mut bsp_cache: std::collections::HashMap<AssetId<StandardMaterial>, Handle<shadowlight::BspMaterial>> = Default::default();
     let level = &level.0;
     let mut mirrors = mirror::Mirrors::default();
     let lightmap_handle: Option<Handle<Image>> = level.lightmap.as_ref().map(|a| {
@@ -1216,9 +1239,13 @@ fn setup(
             // Water: the WetTexture source picture rippled by the water shader (water.rs).
             _ if b.class == SurfaceClass::Water && !b.sky => {
                 let base = materials.get(&mat).cloned().unwrap_or_default();
-                let wm = water_mats.add(water::material(base, b.water_opaque));
+                let ph = mirror::placeholder(&mut mirrors, &mut images);
+                let wm = water_mats.add(water::material(base, b.water_opaque, ph));
                 water_list.mats.push(wm.clone());
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(wm)))
+                water_list.opaque.push(b.water_opaque);
+                mirror::add_water(&mut mirrors, &wm, &b.positions);
+                // Water isn't lightmapped: the shadow pairs (shadowlight.rs) would black it out under a shadow.
+                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(wm), bevy::light::NotShadowReceiver))
             }
             // PF_Mirrored: the same surface with the reflection added (mirror.rs).
             Some(plane) => {
@@ -1228,13 +1255,26 @@ fn setup(
                 // the mirror from behind).
                 commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mm), RenderLayers::layer(mirror::LAYER)))
             }
-            None => commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat))),
+            // The lit world: StandardMaterial plus the real-time shadow pass over its lightmap (shadowlight.rs).
+            None => {
+                let bm = bsp_cache
+                    .entry(mat.id())
+                    .or_insert_with(|| {
+                        let h = bsp_mats.add(shadowlight::bsp_material(materials.get(&mat).cloned().unwrap_or_default()));
+                        if let Some((_, speed, _)) = scrollers.0.iter().find(|(m, _, w)| m.id() == mat.id() && !*w) {
+                            scrollers.1.push((h.clone(), *speed));
+                        }
+                        h
+                    })
+                    .clone();
+                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm)))
+            }
         };
         if b.sky {
             let off = Vec3::from(level.sky_origin.unwrap_or([0.0; 3]));
             e.insert((Transform::from_translation(-off), RenderLayers::layer(1)));
         }
-        if let Some(h) = &lightmap_handle {
+        if let Some(h) = lightmap_handle.as_ref().filter(|_| std::env::var_os("DXVIEW_NO_LIGHTMAP").is_none()) {
             e.insert(Lightmap {
                 image: h.clone(),
                 uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
@@ -1947,6 +1987,8 @@ fn fly(
         }
         // Wounded legs and torso slow you down; with no legs you crawl.
         params.ground_speed *= leg_speed;
+        // Modern Aiming: walking pace down the sights.
+        params.ground_speed *= crate::aimmode::speed_mult();
         // Always Run: Shift walks; off, you walk unless Shift is held.
         let walk_key = keys.pressed(KeyCode::ShiftLeft) != !crate::settings::always_run();
         if walk_key || player.crouched {
@@ -1977,7 +2019,34 @@ fn fly(
             Vec::new()
         };
         let was_walking = player.body.physics == Physics::Walking;
-        for i in 0..steps {
+        // Enhancement (Mantling, mantle.rs): Jump at a ledge climbs it; while climbing nothing else moves you.
+        let mut climbing = false;
+        if crate::mantle::active() {
+            if player.swimming || player.noclip {
+                crate::mantle::cancel();
+            } else if let Some((pos, done)) = crate::mantle::step(dt) {
+                player.body.location = pos;
+                player.body.velocity = DVec3::ZERO;
+                player.body.physics = if done { Physics::Walking } else { Physics::Falling };
+                climbing = true;
+            }
+        } else if crate::mantle::on()
+            && !player.crouched
+            && !player.swimming
+            && !drone
+            && carried_mass <= carry_limit
+            && (jump
+                || (keys.pressed(KeyCode::Space)
+                    && player.body.physics == Physics::Falling
+                    && player.body.velocity.z < 250.0))
+        {
+            let fwd = if wish.length_squared() > 0.1 { wish } else { fu.normalize_or_zero() };
+            if crate::mantle::try_start(&world, player.body.location, &params, fwd) {
+                climbing = true;
+            }
+        }
+        let jump = jump && !climbing;
+        for i in 0..if climbing { 0 } else { steps } {
             let vz = player.body.velocity.z;
             player
                 .body
@@ -2298,9 +2367,16 @@ fn uv_scroll(
     time: Res<Time>,
     scroll: Res<UvScroll>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
 ) {
     let _prof = crate::prof::scope("main::uv_scroll");
     let t = time.elapsed_secs();
+    for (h, speed) in &scroll.1 {
+        if let Some(mut m) = bsp_mats.get_mut(h) {
+            let off = *speed * t;
+            m.base.uv_transform = bevy::math::Affine2::from_translation(Vec2::new(off.x.fract(), off.y.fract()));
+        }
+    }
     for (h, speed, water) in &scroll.0 {
         if let Some(mut m) = materials.get_mut(h) {
             let mut off = *speed * t;

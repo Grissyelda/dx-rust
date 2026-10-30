@@ -28,12 +28,21 @@ pub struct WaterParams {
     pub far: Vec4,
     /// Rings: Bevy x, z (meters), start time, strength (0 = unused).
     pub rings: [Vec4; RINGS],
+    /// Enhancement "Modern Water": x 1 = on, y 1 = the reflection image holds this plane's reflection, z rain on the
+    /// surface 0..1, w how strongly the waves bend the reflection.
+    pub m: Vec4,
+    /// Modern water's deep colour (rgb) and how see-through it is straight down (a).
+    pub tint: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct WaterExt {
     #[uniform(100)]
     pub params: WaterParams,
+    /// The planar reflection of this water's plane (mirror.rs slots), when Modern Water is on.
+    #[texture(101)]
+    #[sampler(102)]
+    pub reflection: Handle<Image>,
 }
 
 impl MaterialExtension for WaterExt {
@@ -104,8 +113,17 @@ pub fn ripple(at: DVec3, strength: f32) {
 #[derive(Resource, Default)]
 pub struct WaterMats {
     pub mats: Vec<Handle<WaterMaterial>>,
+    /// Drawn solid in the original (a portal sheet without PF_Translucent), by material.
+    pub opaque: Vec<bool>,
     rings: [Vec4; RINGS],
     next: usize,
+    modern: Option<bool>,
+}
+
+/// Enhancement "Modern Water" (setting ModernWater): reflections, a body colour and see-through depth, detailed
+/// waves, rain rings - a shader-pack look instead of the original's translucent picture.
+pub fn modern() -> bool {
+    crate::settings::get("ModernWater") > 0.5
 }
 
 /// Each frame: time and the live rings into every water material.
@@ -124,16 +142,33 @@ pub fn water_system(time: Res<Time>, mut wm: ResMut<WaterMats>, mut mats: ResMut
         }
     }
     let rings = wm.rings;
-    for h in &wm.mats {
+    let modern = modern();
+    let switched = wm.modern != Some(modern);
+    wm.modern = Some(modern);
+    let rain = (crate::weather::density() / 14.0).clamp(0.0, 1.0);
+    for (i, h) in wm.mats.iter().enumerate() {
         if let Some(mut m) = mats.get_mut(h) {
             m.extension.params.t.x = t;
             m.extension.params.rings = rings;
+            m.extension.params.m.x = if modern { 1.0 } else { 0.0 };
+            m.extension.params.m.z = rain;
+            if switched {
+                let opaque = wm.opaque.get(i).copied().unwrap_or(false);
+                m.base.alpha_mode = match (opaque, modern) {
+                    (true, _) => AlphaMode::Opaque,
+                    (false, true) => AlphaMode::Blend,
+                    (false, false) => AlphaMode::Add,
+                };
+                m.base.perceptual_roughness = if modern { 0.07 } else { 1.0 };
+                m.base.reflectance = if modern { 0.5 } else { 0.05 };
+            }
         }
     }
 }
 
-/// The water material for a level batch (its source picture, translucent).
-pub fn material(base: StandardMaterial, opaque: bool) -> WaterMaterial {
+/// The water material for a level batch (its source picture, translucent). `placeholder` stands in for the
+/// reflection until a mirror slot holds this plane.
+pub fn material(base: StandardMaterial, opaque: bool, placeholder: Handle<Image>) -> WaterMaterial {
     WaterMaterial {
         base: StandardMaterial {
             base_color: Color::WHITE,
@@ -154,7 +189,11 @@ pub fn material(base: StandardMaterial, opaque: bool) -> WaterMaterial {
                 ),
                 far: Vec4::new(30.0, 120.0, std::env::var("DXVIEW_WATER_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0), 0.0),
                 rings: [Vec4::ZERO; RINGS],
+                m: Vec4::new(0.0, 0.0, 0.0, std::env::var("DXVIEW_WATER_BEND").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03)),
+                // Night harbour water: dark blue-green, a fair way see-through looking straight down.
+                tint: Vec4::new(0.010, 0.030, 0.034, 0.45),
             },
+            reflection: placeholder,
         },
     }
 }

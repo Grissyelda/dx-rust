@@ -194,6 +194,9 @@ pub struct Level {
     pub nano_keys: Vec<(String, String, String)>,
     /// Per BSP zone: water (WaterZone / bWaterZone) and its fluid friction.
     pub zone_water: Vec<Option<f32>>,
+    /// Per BSP zone: open to the sky (it has fake-backdrop faces looking into the sky room; the sky room itself
+    /// excluded) - where weather falls.
+    pub zone_sky: Vec<bool>,
     /// AI path network (NavigationPoints + ReachSpecs).
     pub nav: nav::NavGraph,
     /// Blocking actor cylinders (decorations, pawns), Unreal units.
@@ -781,6 +784,7 @@ pub fn build_level(
             [g("TexUPanSpeed"), g("TexVPanSpeed")]
         })
         .collect();
+    let mut zone_sky: Vec<bool> = vec![false; model.zone_actors.len().max(1)];
     let zone_water: Vec<Option<f32>> = model
         .zone_actors
         .iter()
@@ -909,6 +913,15 @@ pub fn build_level(
         if surf.poly_flags & pf::INVISIBLE != 0 || (surf.poly_flags & pf::PORTAL != 0 && !water_portal) {
             stats.skipped_invisible += 1;
             continue;
+        }
+        if surf.poly_flags & pf::FAKE_BACKDROP != 0 {
+            for z in node.zone {
+                if z > 0 && !sky_zones.contains(&(z as usize)) {
+                    if let Some(f) = zone_sky.get_mut(z as usize) {
+                        *f = true;
+                    }
+                }
+            }
         }
         if surf.poly_flags & pf::FAKE_BACKDROP != 0 && std::env::var("DXL_SHOW_BACKDROP").is_err() {
             stats.skipped_backdrop += 1;
@@ -1179,6 +1192,7 @@ pub fn build_level(
         movers,
         nav,
         zone_water,
+        zone_sky,
         lights,
         actors: actor_list,
         sky_origin: sky_loc.map(ue_to_bevy),

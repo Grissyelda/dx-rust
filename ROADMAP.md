@@ -114,23 +114,27 @@ re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
     the third-person gun (done, with the Visible Attachments mod).
 
 ### Large (new rendering, audio or interaction work)
-25. Sway-based aiming, a dynamic crosshair and aim-down-sights (optional).
-26. Real-time shadows for pawns and movers.
-27. New particle effects.
-28. Elemental reactions (electricity through water).
-29. Mantling and vaulting.
-30. Carried heavy objects as cover.
-31. **Optional third-person view** with modern third-person shooter controls: an over-the-shoulder camera that
-     keeps out of walls, shoulder swap, aim-to-zoom, and leaning and crouching cover. JC's body already exists for
-     mirrors, with his animations and the weapon in his hand, so the work is the camera, aiming from it (trace
-     from the camera, fire from the gun), the HUD reticle and stealth balance. It's a toggle, and first person stays
-     the default.
-32. Volumetric fog and light shafts.
-33. Better clouds and a 3D skyline.
-34. Remastered sound effects and a dynamic soundscape.
-35. Sound propagation and room reverb.
-36. New outfits found in the levels.
-37. Dynamic weather and time of day.
+25. Sway-based aiming, a dynamic crosshair and aim-down-sights (done: Modern Aiming).
+26. Real-time shadows for pawns and movers (done: shadows from the map's own lamps, as dark as the light each lamp
+    put into the lightmap at that spot).
+27. New particle effects (done: Enhanced Effects - impacts by surface, explosion sparks and smoke, barrel smoke,
+    blood spray).
+28. Elemental reactions (done: shocks run through water, fire spreads by touch, water puts fire out).
+29. Mantling and vaulting (done).
+30. Carried heavy objects as cover (done).
+31. **Optional third-person view** (done: over the shoulder, H to switch, J to swap shoulders, keeps out of walls,
+    closer while aiming, shots aimed at the crosshair; first person stays the default). Still to come: cover
+    leaning and crouching from third person.
+32. Volumetric fog and light shafts (done as Atmospheric Fog and Light Halos).
+33. Better clouds and a 3D skyline (done: procedural city blocks with lit windows beyond the city maps' edges, and a
+    slow cloud layer).
+34. Remastered sound effects and a dynamic soundscape (done: better playback, speech ducking, a soundscape of
+    far-off dogs, gulls and wind from the game's own sounds).
+35. Sound propagation and room reverb (done).
+36. New outfits found in the levels (done: without GMDX's maps, Augmentique's outfits can be hidden in boxes across
+    the original campaign).
+37. Dynamic weather (done: rain from the Precipitation mod, per map, steady or coming and going). Time of day is not
+    planned.
 
 ### Very large (needs skeletons, new content, or touches the whole engine)
 38. Smarter AI (opt-in), including stealth that respects darkness more than the original's guards do.

@@ -84,6 +84,7 @@ pub fn blood_system(
         ((*seed >> 33) as f64) / (1u64 << 31) as f64
     };
     for (at, dir) in fx.0.drain(..) {
+        crate::fx::blood(at, dir);
         // BloodSpurt: DrawScale 1 - FRand()*0.5, PlayAnim('Spurt'), LifeSpan 0.5.
         let sd = assets.classes.defaults("BloodSpurt");
         let scale = 1.0 - rnd() as f32 * 0.5;

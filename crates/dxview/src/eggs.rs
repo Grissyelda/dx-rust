@@ -43,6 +43,7 @@ pub struct MatrixState {
     /// Materials changed, with their own texture to put back.
     std_orig: HashMap<AssetId<StandardMaterial>, Option<Handle<Image>>>,
     anim_orig: HashMap<AssetId<AnimMaterial>, Option<Handle<Image>>>,
+    bsp_orig: HashMap<AssetId<crate::shadowlight::BspMaterial>, Option<Handle<Image>>>,
     shown: Option<usize>,
 }
 
@@ -53,6 +54,7 @@ pub fn matrix_system(
     mut images: ResMut<Assets<Image>>,
     mut std_mats: ResMut<Assets<StandardMaterial>>,
     mut anim_mats: ResMut<Assets<AnimMaterial>>,
+    mut bsp_mats: ResMut<Assets<crate::shadowlight::BspMaterial>>,
     mut st: Local<MatrixState>,
 ) {
     let on = MATRIX.load(Ordering::Relaxed);
@@ -65,6 +67,11 @@ pub fn matrix_system(
             }
             for (id, orig) in st.anim_orig.drain() {
                 if let Some(mut m) = anim_mats.get_mut(id) {
+                    m.base.base_color_texture = orig;
+                }
+            }
+            for (id, orig) in st.bsp_orig.drain() {
+                if let Some(mut m) = bsp_mats.get_mut(id) {
                     m.base.base_color_texture = orig;
                 }
             }
@@ -125,6 +132,23 @@ pub fn matrix_system(
                 continue;
             }
             st.anim_orig.insert(id, Some(tex));
+        }
+        m.base.base_color_texture = Some(cur.clone());
+    }
+    // The world's BSP (shadowlight::BspMaterial).
+    let bsp_ids: Vec<AssetId<crate::shadowlight::BspMaterial>> = bsp_mats.ids().collect();
+    for id in bsp_ids {
+        let known = st.bsp_orig.contains_key(&id);
+        if known && !changed {
+            continue;
+        }
+        let Some(mut m) = bsp_mats.get_mut(id) else { continue };
+        let Some(tex) = m.base.base_color_texture.clone() else { continue };
+        if !known {
+            if matches!(m.base.alpha_mode, AlphaMode::Add) || frame_ids.contains(&tex.id()) {
+                continue;
+            }
+            st.bsp_orig.insert(id, Some(tex));
         }
         m.base.base_color_texture = Some(cur.clone());
     }

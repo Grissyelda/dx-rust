@@ -677,7 +677,7 @@ pub fn fov_system(
     };
     let aspect = (w.width() / w.height().max(1.0)).max(0.1);
     let world_fov = crate::cinematic::fov()
-        .unwrap_or_else(|| crate::drug::drug_fov(&ph, zoom.0.unwrap_or(DEFAULT_FOV), &mut n));
+        .unwrap_or_else(|| crate::aimmode::fov(crate::drug::drug_fov(&ph, zoom.0.unwrap_or(DEFAULT_FOV), &mut n)));
     for (mut p, is_vm) in &mut cams {
         let fov = if is_vm { DEFAULT_FOV } else { world_fov };
         let vfov = 2.0 * ((fov.to_radians() / 2.0).tan() / aspect).atan();
@@ -1686,11 +1686,19 @@ pub fn weapon_system(
     } else {
         -1.0
     };
-    let off = [
+    let mut off = [
         h.stats.view_offset[0] * k,
         ysign * h.stats.view_offset[1] * k + side,
         h.stats.view_offset[2] * k + up,
     ];
+    // Modern Aiming: down the sights the weapon comes in to the middle of the view, raised to the eye.
+    let ads = crate::aimmode::ads();
+    if ads > 0.0 {
+        let e = ads * ads * (3.0 - 2.0 * ads);
+        off[0] += (off[0] * 0.85 - off[0]) * e;
+        off[1] += (0.0 - off[1]) * e;
+        off[2] += (off[2] * 0.5 + 1.5 - off[2]) * e;
+    }
     root.translation = Vec3::from(view_to_cam(off));
     // GMDX (Sarge) CalcDrawOffset "Viewmodel Inertia" (setting WeaponInertia): the world-space draw offset eases
     // toward where it should be at deltaTime x inertiaSpeed, so the weapon trails the view when turning. Not while
@@ -2337,6 +2345,13 @@ pub fn weapon_system(
             if h.stats.muzzle_flash {
                 let f = cam.forward().as_vec3();
                 let fwd = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero();
+                {
+                    let r = cam.right().as_vec3();
+                    let rt = DVec3::new(r.x as f64, r.z as f64, r.y as f64);
+                    let e = bevy_to_ue(cam.translation.to_array());
+                    let e = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
+                    crate::fx::muzzle(e + fwd * 40.0 + rt * 8.0 - DVec3::Z * 8.0, fwd);
+                }
                 crate::dynlight::flash(
                     player.body.location + fwd * player.params.radius * 2.0,
                     crate::dynlight::MUZZLE_FLASH,
@@ -2397,6 +2412,8 @@ pub fn weapon_system(
                 conv(cam.right().as_vec3()),
                 conv(cam.up().as_vec3()),
             );
+            // Third person: from the eyes toward what the over-the-shoulder crosshair is on.
+            let fw = crate::thirdperson::aim_dir(&level.0, eye, fw);
             if *seed == 0 {
                 *seed = 0x9E37_79B9_7F4A_7C15;
             }
@@ -2452,7 +2469,7 @@ pub fn weapon_system(
             } else if let Some(class) = h.stats.projectile_for(h.stats.ammo_class.as_deref()) {
                 // Projectile weapons (mini-crossbow): launch from just in front of the eyes.
                 for _ in 0..h.stats.shots_per_fire() {
-                    let dir = crate::projectiles::projectile_dir(fw, acc, &mut seed);
+                    let dir = crate::aimmode::projectile_dir(fw, rt, up, acc, &mut seed);
                     // Locked on: the rocket gets the target and tracks it.
                     let track = if h.stats.can_track && h.lock_mode == 4 {
                         h.lock_target
@@ -2499,7 +2516,7 @@ pub fn weapon_system(
                     let dir = if h.stats.hand_to_hand {
                         fw
                     } else {
-                        spread_dir(fw, rt, up, acc, range, &mut seed)
+                        crate::aimmode::shot_dir(fw, rt, up, acc, range, &mut seed)
                     };
                     let end = eye + dir * range;
                     let world = World {

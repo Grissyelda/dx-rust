@@ -673,10 +673,17 @@ pub fn init(root: &std::path::Path) {
     }
     // Outfits found in GMDX Augmented's maps (else all are open).
     let gmdx_maps = unreal_pkg::mods::active("gmdx").and_then(|d| unreal_pkg::mods::find_rel(&d, "Maps"));
-    ALL_UNLOCKED.store(gmdx_maps.is_none() || crate::settings::get("AugAllOutfits") > 0.5, std::sync::atomic::Ordering::Relaxed);
+    // Without GMDX's maps: our own boxes in the original maps (setting OutfitBoxes), else all open.
+    let own_boxes = gmdx_maps.is_none() && crate::settings::get("OutfitBoxes") > 0.5;
+    ALL_UNLOCKED.store(
+        (gmdx_maps.is_none() && !own_boxes) || crate::settings::get("AugAllOutfits") > 0.5,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     unreal_pkg::classes::set_instance_hook(Some(Box::new(npc_hook)));
     if let Some(maps) = gmdx_maps {
         init_spawners(&sys, maps);
+    } else if own_boxes {
+        init_own_boxes(&mut db, root);
     }
     // Dev aids: DXVIEW_AUGLOG lists the outfits; DXVIEW_OUTFIT=<id> wears one from the start.
     if std::env::var("DXVIEW_AUGLOG").is_ok() {
@@ -789,6 +796,173 @@ fn spawner_actors(map: &str) -> Vec<(String, String, Vec<Property>)> {
             println!("AUG spawner {map} {} {class} at {:?}", e.name, find(&props, "Location"));
         }
         out.push((class, format!("AugSpawner_{}", e.name), props));
+    }
+    out
+}
+
+// ---- Our own outfit boxes in the original maps (Enhancement "Outfit Boxes In The Original Maps", ROADMAP v2 #36) ----
+//
+// GMDX Augmented hides Augmentique's outfits in boxes in its own versions of the maps. Without GMDX the outfits are
+// all open from the start; with this setting they are spread over the campaign instead, one or two to a map, each in
+// a box (GMDX's OutfitSpawner2 look: the dart box at x3 with Augmentique's BoxTex1) set down in front of a clothes
+// rack, a couch, a chair or the like - the first map in `OWN_MAPS` that has one of those gets the outfits due there.
+
+/// Maps that take boxes, in the order the campaign reaches them.
+const OWN_MAPS: &[&str] = &[
+    "01_NYC_UNATCOHQ", "02_NYC_Hotel", "02_NYC_Smug", "02_NYC_FreeClinic", "02_NYC_Bar", "03_NYC_AirfieldHeliBase",
+    "03_NYC_UNATCOHQ", "04_NYC_Hotel", "04_NYC_Smug", "04_NYC_NSFHQ", "05_NYC_UNATCOHQ", "06_HongKong_WanChai_Market",
+    "06_HongKong_WanChai_Street", "06_HongKong_WanChai_Underworld", "06_HongKong_VersaLife", "06_HongKong_TongBase",
+    "06_HongKong_Storage", "08_NYC_Hotel", "08_NYC_Smug", "08_NYC_Bar", "09_NYC_Ship", "09_NYC_Dockyard",
+    "10_Paris_Club", "10_Paris_Chateau", "10_Paris_Metro", "11_Paris_Everett", "11_Paris_Cathedral",
+    "12_Vandenberg_Cmd", "14_Vandenberg_Sub", "14_OceanLab_Lab", "15_Area51_Bunker", "15_Area51_Final",
+];
+
+/// Things a box is set down in front of, best first.
+const OWN_ANCHORS: &[&str] = &[
+    "ClothesRack", "CouchLeather", "ChairLeather", "Couch", "Bed", "Toilet", "Toilet2", "OfficeChair", "Chair1",
+    "HKChair", "Plant1", "Plant2", "Plant3", "BoxSmall", "CrateUnbreakableSmall", "TrashCan1",
+];
+
+struct OwnBoxes {
+    maps_dir: std::path::PathBuf,
+    /// The box's properties on top of DeusExDecoration's.
+    props: Vec<Property>,
+    /// Anchor class -> (collision radius, height) from its defaults.
+    anchors: HashMap<String, (f64, f64)>,
+}
+
+static OWN: RwLock<Option<OwnBoxes>> = RwLock::new(None);
+
+fn init_own_boxes(db: &mut unreal_pkg::classes::ClassDb, root: &std::path::Path) {
+    let mut props = db.defaults("DeusExDecoration");
+    let mut set = |n: &str, v: Value| {
+        props.retain(|p| !p.name.eq_ignore_ascii_case(n));
+        props.push(Property { name: n.into(), index: 0, value: v });
+    };
+    set("Mesh", Value::Path("DeusExItems.AmmoDart".into()));
+    set("DrawScale", Value::Float(3.0));
+    set("CollisionRadius", Value::Float(25.5));
+    set("CollisionHeight", Value::Float(6.0));
+    set("Mass", Value::Float(20.0));
+    set("bPushable", Value::Bool(false));
+    set("bInvincible", Value::Bool(true));
+    if let Some(t) = find_texture("BoxTex1", 0, &Default::default()) {
+        set("Skin", Value::Path(t.clone()));
+        set("Texture", Value::Path(t));
+    }
+    let mut anchors = HashMap::new();
+    for a in OWN_ANCHORS {
+        let d = db.defaults(a);
+        let f = |n: &str, dflt: f64| match find(&d, n) {
+            Some(Value::Float(v)) => *v as f64,
+            _ => dflt,
+        };
+        anchors.insert(a.to_ascii_lowercase(), (f("CollisionRadius", 20.0), f("CollisionHeight", 20.0)));
+    }
+    if let Ok(mut o) = OWN.write() {
+        *o = Some(OwnBoxes { maps_dir: root.join("Maps"), props, anchors });
+    }
+    dx_level::actors::set_extra_actors(Some(Box::new(own_box_actors)));
+}
+
+fn hash(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+}
+
+/// The outfits due in `map` (an even share of the campaign, in order) still to be found.
+fn own_outfits_for(map: &str) -> Vec<(String, String)> {
+    let Some(mi) = OWN_MAPS.iter().position(|m| m.eq_ignore_ascii_case(map)) else { return Vec::new() };
+    let Ok(dg) = DATA.read() else { return Vec::new() };
+    let Some(d) = dg.as_ref() else { return Vec::new() };
+    let mut all: Vec<&Outfit> = d
+        .outfits
+        .iter()
+        .skip(1)
+        .filter(|o| o.id != "default" && !o.pickup_name.is_empty() && d.groups[o.group].correct_gender(female()))
+        .collect();
+    all.sort_by(|a, b| a.id.cmp(&b.id));
+    all.dedup_by(|a, b| a.id == b.id);
+    let n = all.len();
+    all.into_iter()
+        .enumerate()
+        .filter(|(j, _)| j * OWN_MAPS.len() / n.max(1) == mi)
+        .map(|(_, o)| (o.id.clone(), o.pickup_name.clone()))
+        .filter(|(id, _)| !is_unlocked(id))
+        .collect()
+}
+
+fn own_box_actors(map: &str) -> Vec<(String, String, Vec<Property>)> {
+    let mut out = Vec::new();
+    if ALL_UNLOCKED.load(std::sync::atomic::Ordering::Relaxed) {
+        return out;
+    }
+    let due = own_outfits_for(map);
+    if due.is_empty() {
+        return out;
+    }
+    let Ok(g) = OWN.read() else { return out };
+    let Some(own) = g.as_ref() else { return out };
+    let Some(file) = unreal_pkg::paths::find_ci(&own.maps_dir, &format!("{map}.dx")) else { return out };
+    let Ok(pkg) = unreal_pkg::Package::open(&file) else { return out };
+    // The map's furniture: (tier, location, yaw, radius, height).
+    let mut spots: Vec<(usize, [f32; 3], i32, f64, f64)> = Vec::new();
+    for e in &pkg.exports {
+        let class = pkg.class_name(e.class_index).to_ascii_lowercase();
+        let Some(tier) = OWN_ANCHORS.iter().position(|a| a.eq_ignore_ascii_case(&class)) else { continue };
+        let mut r = unreal_pkg::Reader::new(pkg.export_data(e), 0);
+        if e.flags & unreal_pkg::props::RF_HAS_STACK != 0 && unreal_pkg::props::skip_state_frame(&mut r).is_err() {
+            continue;
+        }
+        let Ok(own_p) = unreal_pkg::props::read_properties(&pkg, &mut r) else { continue };
+        let Some(Value::Vector(loc)) = find(&own_p, "Location") else { continue };
+        let yaw = match find(&own_p, "Rotation") {
+            Some(Value::Rotator(r)) => r[1],
+            _ => 0,
+        };
+        let (dr, dh) = own.anchors.get(&class).copied().unwrap_or((20.0, 20.0));
+        let f = |n: &str, d: f64| match find(&own_p, n) {
+            Some(Value::Float(v)) => *v as f64,
+            _ => d,
+        };
+        spots.push((tier, *loc, yaw, f("CollisionRadius", dr), f("CollisionHeight", dh)));
+    }
+    if spots.is_empty() {
+        return out;
+    }
+    spots.sort_by_key(|s| s.0);
+    let best = spots[0].0;
+    let mut pool: Vec<_> = spots.iter().filter(|s| s.0 <= best + 2).cloned().collect();
+    for (id, pickup_name) in due {
+        if pool.is_empty() {
+            break;
+        }
+        let k = (hash(&id) % pool.len() as u64) as usize;
+        let (_, loc, yaw, rad, height) = pool.remove(k);
+        // In front of it (its yaw), on the floor (just above, and falling the rest).
+        let a = yaw as f64 / 65536.0 * std::f64::consts::TAU;
+        let fwd = [a.cos(), a.sin()];
+        let d = rad + 30.0;
+        let at = [
+            loc[0] as f64 + fwd[0] * d,
+            loc[1] as f64 + fwd[1] * d,
+            loc[2] as f64 - height + 6.0 + 4.0,
+        ];
+        let mut props = own.props.clone();
+        let mut set = |n: &str, v: Value| {
+            props.retain(|p| !p.name.eq_ignore_ascii_case(n));
+            props.push(Property { name: n.into(), index: 0, value: v });
+        };
+        set("Location", Value::Vector([at[0] as f32, at[1] as f32, at[2] as f32]));
+        set("Rotation", Value::Rotator([0, yaw.wrapping_add(16384), 0]));
+        set("Physics", Value::Byte(2));
+        set("Id", Value::Str(id.clone()));
+        set("ItemName", Value::Str(pickup_name));
+        let tag = format!("AugBox_{id}");
+        set("Tag", Value::Name(tag.clone()));
+        if std::env::var("DXVIEW_AUGLOG").is_ok() {
+            println!("AUG own box {map} {id} at {at:?}");
+        }
+        out.push(("OutfitSpawner2".to_string(), tag, props));
     }
     out
 }

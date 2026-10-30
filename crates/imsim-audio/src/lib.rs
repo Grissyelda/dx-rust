@@ -187,6 +187,10 @@ pub struct VoiceParams {
     pub pan: f32,
     pub pitch: f32,
     pub looping: bool,
+    /// Low-pass amount: 1 = open, toward 0 = muffled (a wall between). Smoothed.
+    pub filter: f32,
+    /// Send to the room reverb (0..1).
+    pub reverb: f32,
 }
 
 impl Default for VoiceParams {
@@ -196,6 +200,8 @@ impl Default for VoiceParams {
             pan: 0.0,
             pitch: 1.0,
             looping: false,
+            filter: 1.0,
+            reverb: 0.0,
         }
     }
 }
@@ -210,8 +216,88 @@ struct Voice {
     /// Smoothed left/right gains (move toward the targets over a few ms to avoid zipper noise).
     gl: f32,
     gr: f32,
+    /// Low-pass state (left, right) and the smoothed coefficient.
+    lp: [f32; 2],
+    lpk: f32,
     started: bool,
     done: bool,
+}
+
+/// Freeverb (Jezar's, public domain design): 8 parallel combs and 4 series all-passes per side.
+struct Reverb {
+    combs: [[Comb; 8]; 2],
+    alls: [[AllPass; 4]; 2],
+    room: f32,
+    damp: f32,
+    wet: f32,
+}
+
+struct Comb {
+    buf: Vec<f32>,
+    i: usize,
+    store: f32,
+}
+
+struct AllPass {
+    buf: Vec<f32>,
+    i: usize,
+}
+
+impl Comb {
+    fn tick(&mut self, x: f32, feedback: f32, damp: f32) -> f32 {
+        let y = self.buf[self.i];
+        self.store = y * (1.0 - damp) + self.store * damp;
+        self.buf[self.i] = x + self.store * feedback;
+        self.i = (self.i + 1) % self.buf.len();
+        y
+    }
+}
+
+impl AllPass {
+    fn tick(&mut self, x: f32) -> f32 {
+        let b = self.buf[self.i];
+        let y = -x + b;
+        self.buf[self.i] = x + b * 0.5;
+        self.i = (self.i + 1) % self.buf.len();
+        y
+    }
+}
+
+impl Reverb {
+    fn new(rate: u32) -> Reverb {
+        let k = rate as f32 / 44100.0;
+        let len = |n: usize, side: usize| (((n + side * 23) as f32) * k).max(1.0) as usize;
+        let comb = |n: usize, side: usize| Comb { buf: vec![0.0; len(n, side)], i: 0, store: 0.0 };
+        let ap = |n: usize, side: usize| AllPass { buf: vec![0.0; len(n, side)], i: 0 };
+        let cl = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
+        let al = [556, 441, 341, 225];
+        Reverb {
+            combs: [0, 1].map(|s| cl.map(|n| comb(n, s))),
+            alls: [0, 1].map(|s| al.map(|n| ap(n, s))),
+            room: 0.5,
+            damp: 0.5,
+            wet: 0.0,
+        }
+    }
+
+    fn process(&mut self, inp: &[f32], out: &mut [f32]) {
+        let feedback = 0.7 + 0.28 * self.room;
+        let damp = 0.4 * self.damp;
+        let frames = inp.len() / 2;
+        for f in 0..frames {
+            let x = (inp[f * 2] + inp[f * 2 + 1]) * 0.015;
+            for side in 0..2 {
+                let mut acc = 0.0;
+                for c in self.combs[side].iter_mut() {
+                    acc += c.tick(x, feedback, damp);
+                }
+                for a in self.alls[side].iter_mut() {
+                    acc = a.tick(acc);
+                }
+                out[f * 2 + side] += acc * self.wet;
+            }
+        }
+    }
 }
 
 /// Music fade lengths in seconds for Unreal's EMusicTransition.
@@ -249,14 +335,30 @@ struct State {
     sfx_volume: f32,
     music_volume: f32,
     max_voices: usize,
+    /// Better playback: 4-point interpolation and constant-power panning.
+    hq: bool,
+    reverb: Option<Reverb>,
+    /// The reverb's targets (room size, damping, wet level); eased toward.
+    reverb_want: (f32, f32, f32),
+}
+
+/// 4-point, 3rd-order Hermite interpolation between y1 and y2 (x 0..1).
+fn hermite(x: f32, y0: f32, y1: f32, y2: f32, y3: f32) -> f32 {
+    let c1 = 0.5 * (y2 - y0);
+    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    ((c3 * x + c2) * x + c1) * x + y1
 }
 
 impl State {
     fn mix(&mut self, out: &mut [f32], channels: usize) {
         let frames = out.len() / channels;
         let mut buf = vec![0.0f32; frames * 2];
+        let reverb_on = self.reverb_want.2 > 0.0 || self.reverb.as_ref().is_some_and(|r| r.wet > 1e-4);
+        let mut send = if reverb_on { vec![0.0f32; frames * 2] } else { Vec::new() };
         let rate = self.rate as f64;
         let smooth = 1.0 - (-1.0 / (0.004 * self.rate as f32)).exp();
+        let hq = self.hq;
         for v in self.voices.iter_mut() {
             if v.done {
                 continue;
@@ -269,12 +371,23 @@ impl State {
             }
             let pan = v.p.pan.clamp(-1.0, 1.0);
             let vol = (v.p.volume * self.sfx_volume).clamp(0.0, 1.0);
-            let (tl, tr) = (vol * (1.0 - pan).min(1.0), vol * (1.0 + pan).min(1.0));
+            let (tl, tr) = if hq {
+                // Constant power: the centre isn't louder or quieter than the sides.
+                let a = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+                (vol * a.cos() * std::f32::consts::SQRT_2, vol * a.sin() * std::f32::consts::SQRT_2)
+            } else {
+                (vol * (1.0 - pan).min(1.0), vol * (1.0 + pan).min(1.0))
+            };
+            // One-pole low-pass: open at 1, about 600 Hz at 0.
+            let fc = 600.0 * (40.0f32).powf(v.p.filter.clamp(0.0, 1.0));
+            let k_want = if v.p.filter >= 0.999 { 1.0 } else { 1.0 - (-std::f32::consts::TAU * fc / self.rate as f32).exp() };
             if !v.started {
                 v.started = true;
                 v.gl = tl;
                 v.gr = tr;
+                v.lpk = k_want;
             }
+            let rsend = v.p.reverb.clamp(0.0, 1.0);
             let step = c.rate as f64 / rate * v.p.pitch.max(0.05) as f64;
             let (ls, le) = if v.p.looping {
                 c.loop_range.unwrap_or((0, n))
@@ -301,7 +414,21 @@ impl State {
                 } else {
                     i
                 };
-                let (l, r) = if ch == 1 {
+                let (mut l, mut r) = if hq {
+                    // The frames before i and after j, wrapping in a loop, held at the ends otherwise.
+                    let prev = if i > ls { i - 1 } else if v.p.looping && le > ls { le - 1 } else { i };
+                    let next = if j + 1 < le { j + 1 } else if v.p.looping { ls } else { j };
+                    if ch == 1 {
+                        let s = hermite(t, c.data[prev], c.data[i], c.data[j], c.data[next]);
+                        (s, s)
+                    } else {
+                        let at = |k: usize, o: usize| c.data[k * ch + o];
+                        (
+                            hermite(t, at(prev, 0), at(i, 0), at(j, 0), at(next, 0)),
+                            hermite(t, at(prev, 1), at(i, 1), at(j, 1), at(next, 1)),
+                        )
+                    }
+                } else if ch == 1 {
                     let s = c.data[i] + (c.data[j] - c.data[i]) * t;
                     (s, s)
                 } else {
@@ -311,14 +438,38 @@ impl State {
                         c.data[a + 1] + (c.data[b + 1] - c.data[a + 1]) * t,
                     )
                 };
+                v.lpk += (k_want - v.lpk) * smooth;
+                if v.lpk < 0.999 {
+                    v.lp[0] += (l - v.lp[0]) * v.lpk;
+                    v.lp[1] += (r - v.lp[1]) * v.lpk;
+                    l = v.lp[0];
+                    r = v.lp[1];
+                } else {
+                    v.lp = [l, r];
+                }
                 v.gl += (tl - v.gl) * smooth;
                 v.gr += (tr - v.gr) * smooth;
                 buf[f * 2] += l * v.gl;
                 buf[f * 2 + 1] += r * v.gr;
+                if reverb_on && rsend > 0.0 {
+                    send[f * 2] += l * v.gl * rsend;
+                    send[f * 2 + 1] += r * v.gr * rsend;
+                }
                 v.pos += step;
             }
         }
         self.voices.retain(|v| !v.done);
+        if reverb_on {
+            let rate = self.rate;
+            let (room, damp, wet) = self.reverb_want;
+            let rv = self.reverb.get_or_insert_with(|| Reverb::new(rate));
+            // Ease the room over about half a second (per block).
+            let k = (frames as f32 / (0.5 * rate as f32)).min(1.0);
+            rv.room += (room - rv.room) * k;
+            rv.damp += (damp - rv.damp) * k;
+            rv.wet += (wet - rv.wet) * k;
+            rv.process(&send, &mut buf);
+        }
         let mv = self.music_volume;
         for t in self.tracks.iter_mut() {
             for f in 0..frames {
@@ -384,6 +535,9 @@ impl Audio {
             sfx_volume: 1.0,
             music_volume: 1.0,
             max_voices: 48,
+            hq: false,
+            reverb: None,
+            reverb_want: (0.5, 0.5, 0.0),
         }));
         let (tx, rx) = std::sync::mpsc::channel::<Option<u32>>();
         let st = state.clone();
@@ -459,10 +613,33 @@ impl Audio {
             p,
             gl: 0.0,
             gr: 0.0,
+            lp: [0.0; 2],
+            lpk: 1.0,
             started: false,
             done: false,
         });
         id
+    }
+
+    /// Better playback (4-point interpolation, constant-power pan) on or off.
+    pub fn set_quality(&self, hq: bool) {
+        self.state.lock().unwrap().hq = hq;
+    }
+
+    /// The room reverb: room size 0..1, damping 0..1, wet level (0 = off). Eased toward.
+    pub fn set_reverb(&self, room: f32, damp: f32, wet: f32) {
+        self.state.lock().unwrap().reverb_want = (room.clamp(0.0, 1.0), damp.clamp(0.0, 1.0), wet.max(0.0));
+    }
+
+    /// Update many voices' filter and reverb send under one lock: (id, filter, reverb).
+    pub fn set_fx_many(&self, list: &[(VoiceId, f32, f32)]) {
+        let mut s = self.state.lock().unwrap();
+        for &(id, filter, reverb) in list {
+            if let Some(v) = s.voices.iter_mut().find(|v| v.id == id) {
+                v.p.filter = filter;
+                v.p.reverb = reverb;
+            }
+        }
     }
 
     pub fn set(&self, id: VoiceId, volume: f32, pan: f32, pitch: f32) {
@@ -808,6 +985,9 @@ mod tests {
             sfx_volume: 1.0,
             music_volume: 1.0,
             max_voices: 8,
+            hq: false,
+            reverb: None,
+            reverb_want: (0.5, 0.5, 0.0),
         };
         let clip = Arc::new(Clip {
             data: vec![0.5; 100],
@@ -822,6 +1002,8 @@ mod tests {
             p: VoiceParams::default(),
             gl: 0.0,
             gr: 0.0,
+            lp: [0.0; 2],
+            lpk: 1.0,
             started: false,
             done: false,
         });
@@ -830,5 +1012,27 @@ mod tests {
         assert!((out[0] - 0.5).abs() < 1e-3 && (out[1] - 0.5).abs() < 1e-3);
         assert_eq!(out[250], 0.0);
         assert!(s.voices.is_empty());
+    }
+
+    #[test]
+    fn hermite_passes_through_points() {
+        assert!((hermite(0.0, 0.0, 1.0, 2.0, 3.0) - 1.0).abs() < 1e-6);
+        assert!((hermite(1.0, 0.0, 1.0, 2.0, 3.0) - 2.0).abs() < 1e-6);
+        assert!((hermite(0.5, 0.0, 1.0, 2.0, 3.0) - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reverb_rings_on() {
+        let mut r = Reverb::new(44100);
+        r.wet = 1.0;
+        r.room = 0.8;
+        let mut inp = vec![0.0f32; 2 * 8000];
+        inp[0] = 1.0;
+        inp[1] = 1.0;
+        let mut out = vec![0.0f32; 2 * 8000];
+        r.process(&inp, &mut out);
+        // Silent before the shortest comb, ringing after it.
+        assert!(out[..200].iter().all(|x| x.abs() < 1e-9));
+        assert!(out[2400..].iter().any(|x| x.abs() > 1e-5));
     }
 }

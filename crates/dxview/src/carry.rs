@@ -44,6 +44,12 @@ pub fn muscle_mult() -> f64 {
 #[allow(clippy::too_many_arguments)]
 /// Something (a decoration or a body) is in our hands.
 static CARRYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Enhancement (Carried Objects As Cover): a crate or anything of 15 or more held in front of you stops enemy
+/// bullets (and takes their damage). Ours; the original turns a carried decoration's collision off.
+pub fn cover_on() -> bool {
+    crate::settings::get("CarryCover") > 0.5
+}
+
 pub fn carrying() -> bool {
     CARRYING.load(std::sync::atomic::Ordering::Relaxed)
 }

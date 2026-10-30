@@ -422,6 +422,9 @@ pub fn explosion_system(
     blasts.0.clear();
     let lvl = &level.0;
     for b in booms.0.drain(..) {
+        if b.fireball {
+            crate::fx::explosion(b.pos, b.radius as f32);
+        }
         // The pad feels blasts near the player (ours): strength by size, falling off over four blast radii.
         if b.fireball || b.rings || b.damage_type == "EMP" {
             let d = (b.pos - player.body.location).length() as f32;
