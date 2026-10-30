@@ -7,6 +7,12 @@
 //! - Night Clouds: a slow cloud layer high over the open-air maps, faintly lit from below by the city.
 //!
 //! Each map's buildings come from a seed of its name, so they're the same every visit.
+//!
+//! Where the map's sky room has masked skyline photos (the NYskybox panels of the New York maps), the skyline is
+//! built from those instead: the photos are unrolled into one panorama as seen from the sky room's viewpoint, cut
+//! into buildings by their silhouette, and each piece stands as a flat slab at its own distance from the map (side
+//! walls joining slabs at different depths) - the original picture, seen from the centre of the map exactly as
+//! before, but as low-poly 3D: it shifts as you move, and the sky room's flat panels are hidden.
 
 use crate::LevelRes;
 use bevy::asset::RenderAssetUsages;
@@ -60,6 +66,10 @@ pub struct SkylinePart;
 
 #[derive(Component)]
 pub struct CloudLayer;
+
+/// A masked skyline photo panel in the sky room (main.rs tags them): hidden while the photo skyline stands in.
+#[derive(Component)]
+pub struct SkyPanel;
 
 fn rnd(seed: &mut u64) -> f32 {
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -242,6 +252,7 @@ pub fn skyline_system(
     mut st: Local<SkyState>,
     mut map_gen: Local<u64>,
     parts: Query<Entity, Or<(With<SkylinePart>, With<CloudLayer>)>>,
+    mut panels: Query<&mut Visibility, With<SkyPanel>>,
     (mut meshes, mut materials, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>),
     mut last: Local<(bool, bool)>,
 ) {
@@ -268,10 +279,17 @@ pub fn skyline_system(
         let half = ((bmax.x - bmin.x).max(bmax.z - bmin.z) * 0.5).max(60.0);
         let ground = bmin.y;
         let mut seed = hash(&lvl.name) | 1;
+        let mut photo = false;
         if want.0 {
-            if let Some(c) = city(&lvl.name) {
-                build_skyline(&mut commands, &mut meshes, &mut materials, &mut images, &mut st, c, centre, half, ground, &mut seed);
+            photo = build_photo_skyline(&mut commands, &mut meshes, &mut materials, &mut images, lvl, centre, half, &mut seed);
+            if !photo {
+                if let Some(c) = city(&lvl.name) {
+                    build_skyline(&mut commands, &mut meshes, &mut materials, &mut images, &mut st, c, centre, half, ground, &mut seed);
+                }
             }
+        }
+        for mut v in &mut panels {
+            *v = if photo { Visibility::Hidden } else { Visibility::Inherited };
         }
         if want.1 && cloudy(&lvl.name) {
             let img = images.add(cloud_image(seed ^ 0xC10D));
@@ -417,4 +435,258 @@ fn build_skyline(
         bevy::light::NotShadowCaster,
         bevy::light::NotShadowReceiver,
     ));
+}
+
+/// One opaque texel's colour from a level texture (mip 0, wrapping), or None where it's see-through.
+fn texel(t: &dx_level::TextureImage, rgba: &[u8], u: f32, v: f32) -> [u8; 4] {
+    let x = ((u.rem_euclid(1.0)) * t.width as f32) as usize % t.width as usize;
+    let y = ((v.rem_euclid(1.0)) * t.height as f32) as usize % t.height as usize;
+    let o = (y * t.width as usize + x) * 4;
+    [rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]]
+}
+
+fn mip0_rgba(t: &dx_level::TextureImage) -> Option<Vec<u8>> {
+    let m = t.mips.first()?;
+    if t.bc1 {
+        dx_level::dds::decode_level(dx_level::dds::Format::Bc1, m, t.width, t.height)
+    } else if t.bc3 {
+        dx_level::dds::decode_level(dx_level::dds::Format::Bc3, m, t.width, t.height)
+    } else {
+        Some(m.clone())
+    }
+}
+
+/// The sky room's masked photo panels unrolled into a panorama (columns = azimuth all round, rows = elevation from
+/// `e_hi` down to `e_lo`), as seen from the sky room's viewpoint.
+pub struct Panorama {
+    pub w: usize,
+    pub h: usize,
+    pub rgba: Vec<u8>,
+    pub e_lo: f32,
+    pub e_hi: f32,
+}
+
+pub fn panorama(lvl: &dx_level::Level) -> Option<Panorama> {
+    let origin = Vec3::from(lvl.sky_origin?);
+    struct Tri {
+        p: [Vec3; 3],
+        uv: [Vec2; 3],
+        tex: usize,
+    }
+    let mut tris = Vec::new();
+    let mut decoded: std::collections::HashMap<usize, Vec<u8>> = Default::default();
+    let (mut e_lo, mut e_hi) = (f32::MAX, f32::MIN);
+    for b in lvl.batches.iter().filter(|b| b.sky && b.class == dx_level::SurfaceClass::Masked) {
+        let Some(ti) = b.texture else { continue };
+        if !decoded.contains_key(&ti) {
+            let Some(px) = mip0_rgba(&lvl.textures[ti]) else { continue };
+            decoded.insert(ti, px);
+        }
+        for t in b.indices.chunks_exact(3) {
+            let p = [0, 1, 2].map(|k| Vec3::from(b.positions[t[k] as usize]) - origin);
+            let uv = [0, 1, 2].map(|k| Vec2::from(b.uvs[t[k] as usize]));
+            for q in p {
+                let e = q.y.atan2(Vec2::new(q.x, q.z).length());
+                e_lo = e_lo.min(e);
+                e_hi = e_hi.max(e);
+            }
+            tris.push(Tri { p, uv, tex: ti });
+        }
+    }
+    if tris.is_empty() || e_hi <= e_lo {
+        return None;
+    }
+    let (w, h) = (2048usize, 192usize);
+    let mut rgba = vec![0u8; w * h * 4];
+    for c in 0..w {
+        let a = (c as f32 + 0.5) / w as f32 * std::f32::consts::TAU;
+        for r in 0..h {
+            let e = e_hi - (r as f32 + 0.5) / h as f32 * (e_hi - e_lo);
+            let d = Vec3::new(e.cos() * a.cos(), e.sin(), e.cos() * a.sin());
+            // Nearest opaque hit (a see-through texel lets a farther panel show).
+            let mut best: Option<(f32, [u8; 4])> = None;
+            for t in &tris {
+                let (e1, e2) = (t.p[1] - t.p[0], t.p[2] - t.p[0]);
+                let pv = d.cross(e2);
+                let det = e1.dot(pv);
+                if det.abs() < 1e-8 {
+                    continue;
+                }
+                let inv = 1.0 / det;
+                let tv = -t.p[0];
+                let u = tv.dot(pv) * inv;
+                if !(0.0..=1.0).contains(&u) {
+                    continue;
+                }
+                let qv = tv.cross(e1);
+                let v = d.dot(qv) * inv;
+                if v < 0.0 || u + v > 1.0 {
+                    continue;
+                }
+                let dist = e2.dot(qv) * inv;
+                if dist <= 0.0 || best.is_some_and(|b| b.0 <= dist) {
+                    continue;
+                }
+                let uv = t.uv[0] * (1.0 - u - v) + t.uv[1] * u + t.uv[2] * v;
+                let px = texel(&lvl.textures[t.tex], &decoded[&t.tex], uv.x, uv.y);
+                if px[3] > 127 {
+                    best = Some((dist, px));
+                }
+            }
+            if let Some((_, px)) = best {
+                let o = (r * w + c) * 4;
+                rgba[o..o + 4].copy_from_slice(&[px[0], px[1], px[2], 255]);
+            }
+        }
+    }
+    Some(Panorama { w, h, rgba, e_lo, e_hi })
+}
+
+/// The photo skyline (see the module notes). False when the map's sky has no photo panels.
+#[allow(clippy::too_many_arguments)]
+fn build_photo_skyline(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    lvl: &dx_level::Level,
+    centre: Vec3,
+    half: f32,
+    seed: &mut u64,
+) -> bool {
+    let Some(pano) = panorama(lvl) else { return false };
+    let (w, h) = (pano.w, pano.h);
+    let opaque = |c: usize, r: usize| pano.rgba[(r * w + c % w) * 4 + 3] > 0;
+    // Each column's silhouette: (top row, bottom row) of its opaque run, or None.
+    let cols: Vec<Option<(usize, usize)>> = (0..w)
+        .map(|c| {
+            let top = (0..h).find(|&r| opaque(c, r))?;
+            let bot = (0..h).rev().find(|&r| opaque(c, r))?;
+            Some((top, bot))
+        })
+        .collect();
+    if cols.iter().all(|c| c.is_none()) {
+        return false;
+    }
+    // Pieces: runs of columns cut where the roofline jumps (a new building) or every 40 columns.
+    let mut pieces: Vec<(usize, usize)> = Vec::new();
+    let mut c = 0;
+    while c < w {
+        if cols[c].is_none() {
+            c += 1;
+            continue;
+        }
+        let start = c;
+        c += 1;
+        while c < w && c - start < 40 {
+            match (cols[c - 1], cols[c]) {
+                (Some(a), Some(b)) if (a.0 as i32 - b.0 as i32).abs() <= 3 => c += 1,
+                _ => break,
+            }
+        }
+        // Keep thin slivers with their neighbour.
+        if c - start < 4 && c < w && cols[c].is_some() {
+            while c < w && c - start < 4 && cols[c].is_some() {
+                c += 1;
+            }
+        }
+        pieces.push((start, c));
+    }
+    // The viewpoint the photo was taken from: the map's middle at the player's start height (or the bounds' middle).
+    let eye_y = lvl.player_start.as_ref().map(|p| p.position[1] + 1.0).unwrap_or(centre.y);
+    let base = (half + 1500.0).min(3300.0);
+    let img = {
+        let mut im = Image::new(
+            Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+            TextureDimension::D2,
+            pano.rgba.clone(),
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        im.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            mag_filter: ImageFilterMode::Linear,
+            min_filter: ImageFilterMode::Linear,
+            ..default()
+        });
+        images.add(im)
+    };
+    let front_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(img),
+        unlit: true,
+        double_sided: true,
+        cull_mode: None,
+        alpha_mode: AlphaMode::Mask(0.5),
+        ..default()
+    });
+    let wall_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.035, 0.03, 0.035),
+        unlit: true,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let elev = |r: f32| pano.e_hi - r / h as f32 * (pano.e_hi - pano.e_lo);
+    let at = |col: f32, row: f32, rad: f32| -> [f32; 3] {
+        let a = col / w as f32 * std::f32::consts::TAU;
+        let e = elev(row);
+        [centre.x + a.cos() * rad, eye_y + e.tan() * rad, centre.z + a.sin() * rad]
+    };
+    // Depth per piece: taller buildings tend to stand farther back (they show over the near ones), plus a little
+    // noise, so neighbours sit at different depths.
+    let depth: Vec<f32> = pieces
+        .iter()
+        .map(|&(a, b)| {
+            let top = (a..b).filter_map(|c| cols[c].map(|x| x.0)).min().unwrap_or(h);
+            let tall = 1.0 - top as f32 / h as f32;
+            base * (0.82 + 0.3 * tall + 0.12 * rnd(seed))
+        })
+        .collect();
+    let (mut fp, mut fu, mut fi) = (Vec::new(), Vec::new(), Vec::<u32>::new());
+    let (mut wp, mut wi) = (Vec::new(), Vec::<u32>::new());
+    for (k, &(a, b)) in pieces.iter().enumerate() {
+        let rad = depth[k];
+        let top = (a..b).filter_map(|c| cols[c].map(|x| x.0)).min().unwrap_or(0) as f32;
+        let bot = (a..b).filter_map(|c| cols[c].map(|x| x.1)).max().unwrap_or(h - 1) as f32 + 1.0;
+        // The front: one quad per few columns (keeps the chord close to the circle), photo-textured and masked.
+        let n = (b - a).div_ceil(8);
+        for s in 0..n {
+            let c0 = a as f32 + (s * 8) as f32;
+            let c1 = (a as f32 + ((s + 1) * 8) as f32).min(b as f32);
+            let q = fp.len() as u32;
+            fp.extend([at(c0, bot, rad), at(c1, bot, rad), at(c1, top, rad), at(c0, top, rad)]);
+            let (u0, u1) = (c0 / w as f32, c1 / w as f32);
+            let (v0, v1) = (top / h as f32, bot / h as f32);
+            fu.extend([[u0, v1], [u1, v1], [u1, v0], [u0, v0]]);
+            fi.extend([q, q + 1, q + 2, q, q + 2, q + 3]);
+        }
+        // A side wall to the next piece where they touch (no gap in the photo) and sit at different depths, up to
+        // the lower of the two roofs at the seam.
+        let next = (k + 1) % pieces.len();
+        let (na, _) = pieces[next];
+        if na == b % w && next != k {
+            let (Some(l), Some(r)) = (cols[b - 1], cols[b % w]) else { continue };
+            let seam_top = l.0.max(r.0) as f32;
+            let seam_bot = l.1.max(r.1) as f32 + 1.0;
+            let (r0, r1) = (rad, depth[next]);
+            if (r0 - r1).abs() > 1.0 {
+                let col = b as f32;
+                let q = wp.len() as u32;
+                wp.extend([at(col, seam_bot, r0), at(col, seam_bot, r1), at(col, seam_top, r1), at(col, seam_top, r0)]);
+                wi.extend([q, q + 1, q + 2, q, q + 2, q + 3]);
+            }
+        }
+    }
+    let mut fm = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    fm.insert_attribute(Mesh::ATTRIBUTE_POSITION, fp);
+    fm.insert_attribute(Mesh::ATTRIBUTE_UV_0, fu);
+    fm.insert_indices(Indices::U32(fi));
+    commands.spawn((Mesh3d(meshes.add(fm)), MeshMaterial3d(front_mat), Transform::default(), SkylinePart, bevy::light::NotShadowCaster, bevy::light::NotShadowReceiver));
+    if !wp.is_empty() {
+        let mut wm = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        wm.insert_attribute(Mesh::ATTRIBUTE_POSITION, wp);
+        wm.insert_indices(Indices::U32(wi));
+        commands.spawn((Mesh3d(meshes.add(wm)), MeshMaterial3d(wall_mat), Transform::default(), SkylinePart, bevy::light::NotShadowCaster, bevy::light::NotShadowReceiver));
+    }
+    true
 }

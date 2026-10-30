@@ -6,6 +6,8 @@
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
     mesh_view_bindings::view,
+    mesh_functions,
+    view_transformations::position_world_to_clip,
 }
 
 struct WaterParams {
@@ -32,6 +34,7 @@ fn wave(p: vec2<f32>, t: f32, a: f32, len: f32, speed: f32, amp: f32) -> vec3<f3
 
 fn field(p: vec2<f32>, t: f32) -> vec3<f32> {
     var f = wave(p, t, 0.35, 6.0, 1.1, 0.50);
+    f += wave(p, t, 0.90, 17.0, 2.1, 0.85);
     f += wave(p, t, 1.95, 3.3, 0.85, 0.30);
     f += wave(p, t, 4.10, 1.8, 0.65, 0.18);
     f += wave(p, t, 2.75, 0.95, 0.45, 0.10);
@@ -182,12 +185,12 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         // Waves bend the reflection, less far away (where a pixel spans more water).
         uv += vec2<f32>(-g.x, g.y) * water.m.w / (1.0 + dist * 0.05);
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
-        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb;
+        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.7;
     }
     // The body: the lit WetTexture tinted dark, so lamp pools and the lightmap's shadows still show in it.
-    let body = water.tint.rgb + lit.rgb * 0.35;
+    let body = water.tint.rgb + lit.rgb * 0.2;
     // Physically water reflects 2% straight down; a little more than Schlick at middle angles reads better.
-    let k_refl = clamp(fres + 0.22 * pow(1.0 - ndv, 2.0) + 0.05, 0.0, 1.0);
+    let k_refl = clamp(fres + 0.18 * pow(1.0 - ndv, 2.0) + 0.03, 0.0, 1.0);
     var col = mix(body, refl, k_refl);
     // A faint moon glint, nearby only.
     let l = normalize(vec3<f32>(0.35, 1.0, 0.2));
@@ -195,12 +198,78 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     col += vec3<f32>(pow(max(dot(n, hv), 0.0), 400.0) * 0.06 * fine);
     // See-through looking straight down, opaque at grazing angles.
     let alpha = clamp(mix(water.tint.a, 1.0, fres * 1.5 + 0.15), 0.0, 1.0);
-    let fade = 1.0 - smoothstep(water.far.x * 2.0, water.far.y * 2.0, dist);
+    // No fade: the sea runs on past the map's edge (water.rs ocean ring) to the horizon.
     var out: FragmentOutput;
-    out.color = vec4<f32>(col, alpha * fade);
+    out.color = vec4<f32>(col, alpha);
     // DXVIEW_WATER_DEBUG=2: the reflection alone (red where this plane has none).
     if (water.far.z > 1.5) {
         out.color = select(vec4<f32>(1.0, 0.0, 0.0, 1.0), vec4<f32>(refl * 3.0, 1.0), water.m.y > 0.5);
     }
+    return out;
+}
+
+// The swell alone (height in its own units): what the surface rises and falls by (x far.w metres) and what floating
+// things ride (water::bob). Keep in step with water::WAVES.
+fn swell_h(p: vec2<f32>, t: f32) -> f32 {
+    var h = 0.0;
+    h += wave(p, t, 0.35, 6.0, 1.1, 0.50).x;
+    h += wave(p, t, 0.90, 17.0, 2.1, 0.85).x;
+    h += wave(p, t, 1.95, 3.3, 0.85, 0.30).x;
+    h += wave(p, t, 4.10, 1.8, 0.65, 0.18).x;
+    h += wave(p, t, 2.75, 0.95, 0.45, 0.10).x;
+    h += wave(p, t, 5.30, 0.55, 0.38, 0.06).x;
+    return h;
+}
+
+struct Vertex {
+    @builtin(instance_index) instance_index: u32,
+    @location(0) position: vec3<f32>,
+#ifdef VERTEX_NORMALS
+    @location(1) normal: vec3<f32>,
+#endif
+#ifdef VERTEX_UVS_A
+    @location(2) uv: vec2<f32>,
+#endif
+#ifdef VERTEX_UVS_B
+    @location(3) uv_b: vec2<f32>,
+#endif
+#ifdef VERTEX_COLORS
+    @location(5) color: vec4<f32>,
+#endif
+};
+
+// Modern Water: the surface itself moves with the swell (far.w metres per unit of swell; 0 = flat as the original).
+@vertex
+fn vertex(vertex: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    let ii = vertex.instance_index;
+    let world_from_local = mesh_functions::get_world_from_local(ii);
+    var wp = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
+#ifdef VERTEX_NORMALS
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(vertex.normal, ii);
+    if (water.far.w > 0.0 && abs(out.world_normal.y) > 0.7) {
+        // Full near the eye, flat far away (where a vertex is many waves apart and the far sea meets the map's).
+        let de = length(view.world_position.xz - wp.xz);
+        let k = 1.0 - smoothstep(90.0, 220.0, de);
+        wp.y += swell_h(wp.xz, water.t.x) * water.far.w * k;
+    }
+#endif
+    out.world_position = wp;
+    out.position = position_world_to_clip(wp.xyz);
+#ifdef VERTEX_UVS_A
+    out.uv = vertex.uv;
+#endif
+#ifdef VERTEX_UVS_B
+    out.uv_b = vertex.uv_b;
+#endif
+#ifdef VERTEX_COLORS
+    out.color = vertex.color;
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    out.instance_index = ii;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(ii, world_from_local[3]);
+#endif
     return out;
 }

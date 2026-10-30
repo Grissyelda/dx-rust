@@ -16,6 +16,10 @@ use bevy::{
 mod abilities;
 mod weather;
 mod shadowlight;
+mod glow;
+mod vision;
+mod shafts;
+mod postfx;
 mod aimmode;
 mod fx;
 mod elements;
@@ -587,12 +591,22 @@ fn main() {
     if let Ok(v) = std::env::var("DXVIEW_MOD") {
         mods.extend(v.split(';').filter(|x| !x.trim().is_empty()).map(|x| PathBuf::from(x.trim())));
     }
+    // DDS override packs (Helios) installed the way kentie's renderer reads them, in the game's own Textures
+    // folder: used without setting anything up in the launcher.
+    if !enabled.iter().any(|(m, _)| m.id == "helios") {
+        if let Some(m) = unreal_pkg::mods::def("helios") {
+            if let Some(p) = unreal_pkg::mods::locate(m, &PathBuf::from(&root).join("Textures")) {
+                enabled.push((m, p));
+            }
+        }
+    }
     if !enabled.is_empty() || !mods.is_empty() {
         println!("dxview: mods {:?}", enabled.iter().map(|(m, p)| format!("{}={}", m.id, p.display())).collect::<Vec<_>>());
     }
     unreal_pkg::paths::set(&PathBuf::from(&root), mods);
     unreal_pkg::mods::activate(&enabled);
     unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
+    hdtp::apply_dds_filter();
     travel::init_lddp();
     hdtp::init(&PathBuf::from(&root));
     hdtp::build_layer();
@@ -838,6 +852,10 @@ fn main() {
         .add_systems(Update, credits::credits_system)
         .add_systems(Update, projgen::projgen_system)
         .add_systems(Update, fogball::fogball_system)
+        .add_systems(Update, water::ocean_system)
+        .add_systems(Update, glow::glow_system)
+        .add_systems(Update, (shafts::shafts_system.after(dynlight::aug_light_system), postfx::postfx_system))
+        .add_systems(Update, vision::vision_system.after(augdisplay::vision_system))
         .add_systems(Update, (augdisplay::augdisplay_system, augdisplay::vision_system, augdisplay::aug_text_system))
         .init_resource::<particles::Particles>()
         .add_systems(Update, particles::particle_system.after(devices::device_system).after(fixtures::fixture_system))
@@ -1088,6 +1106,22 @@ fn detect_bc1(dev: Option<Res<bevy::render::renderer::RenderDevice>>) {
 /// can't take them, then they decode to RGBA8.
 pub fn image_data(t: &dx_level::TextureImage) -> (TextureFormat, Vec<u8>, u32) {
     let mut data = Vec::new();
+    if t.bc3 {
+        if GPU_BC.load(std::sync::atomic::Ordering::Relaxed) {
+            for m in &t.mips {
+                data.extend_from_slice(m);
+            }
+            return (TextureFormat::Bc3RgbaUnormSrgb, data, t.mips.len() as u32);
+        }
+        let mut n = 0;
+        for (k, m) in t.mips.iter().enumerate() {
+            let (w, h) = ((t.width >> k).max(1), (t.height >> k).max(1));
+            let Some(px) = dx_level::dds::decode_level(dx_level::dds::Format::Bc3, m, w, h) else { break };
+            data.extend_from_slice(&px);
+            n += 1;
+        }
+        return (TextureFormat::Rgba8UnormSrgb, data, n.max(1));
+    }
     if t.bc1 && GPU_BC.load(std::sync::atomic::Ordering::Relaxed) {
         for m in &t.mips {
             data.extend_from_slice(m);
@@ -1230,11 +1264,21 @@ fn setup(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
-        mesh.insert_indices(Indices::U32(b.indices.clone()));
+        if b.class == SurfaceClass::Water && !b.sky {
+            // Fine enough for the surface to move with the swell (Modern Water's waves).
+            let (p, n, u, u1, i) = water::tessellate(&b.positions, &b.normals, &b.uvs, &b.uvs1, &b.indices, 2.0);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, u);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, u1);
+            mesh.insert_indices(Indices::U32(i));
+        } else {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
+            mesh.insert_indices(Indices::U32(b.indices.clone()));
+        }
         let mut e = match b.mirror {
             // Water: the WetTexture source picture rippled by the water shader (water.rs).
             _ if b.class == SurfaceClass::Water && !b.sky => {
@@ -1270,9 +1314,16 @@ fn setup(
                 commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm)))
             }
         };
+        if !b.sky && b.texture.is_some_and(|t| level.textures[t].name.eq_ignore_ascii_case("CoreTexMisc.Marker_sky")) {
+            // The map's edge walls (sky marker faces at the water line): hidden while the open sea runs past them.
+            e.insert(water::EdgeWall);
+        }
         if b.sky {
             let off = Vec3::from(level.sky_origin.unwrap_or([0.0; 3]));
             e.insert((Transform::from_translation(-off), RenderLayers::layer(1)));
+            if b.class == SurfaceClass::Masked {
+                e.insert(skyline::SkyPanel);
+            }
         }
         if let Some(h) = lightmap_handle.as_ref().filter(|_| std::env::var_os("DXVIEW_NO_LIGHTMAP").is_none()) {
             e.insert(Lightmap {
@@ -1283,6 +1334,19 @@ fn setup(
         }
     }
 
+    if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches) {
+        let mut e = commands.spawn((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(mat),
+            Visibility::Hidden,
+            water::OceanRing,
+            bevy::light::NotShadowReceiver,
+            bevy::light::NotShadowCaster,
+        ));
+        if let Some(h) = lightmap_handle.as_ref().filter(|_| std::env::var_os("DXVIEW_NO_LIGHTMAP").is_none()) {
+            e.insert(Lightmap { image: h.clone(), uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0), bicubic_sampling: false });
+        }
+    }
     mirror::spawn_camera(&mut commands, &mirrors);
     commands.insert_resource(mirrors);
     commands.insert_resource(mirror::MirrorBodyRes::default());
@@ -1338,6 +1402,7 @@ fn setup(
     // AnimNext loops (screens, monitors, TV noise) on the level's surfaces and meshes.
     anim_tex::reset();
     for (i, t) in level.textures.iter().enumerate() {
+        glow::register(&handles[i], &t.name);
         let masked = t.has_alpha_holes();
         anim_tex::register(&mut runtime_assets.lib, &t.name, &handles[i], masked, true);
     }

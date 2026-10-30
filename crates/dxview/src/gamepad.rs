@@ -86,6 +86,8 @@ pub enum PadAction {
     InvGoals,
     NextBelt,
     PrevBelt,
+    /// Tap: third person view (when that Enhancement is on, else Change ammo); hold: Change ammo.
+    ViewAmmo,
     /// Hold for the augmentation wheel.
     AugWheel,
     /// The pause menu (Escape).
@@ -104,7 +106,8 @@ pub const PAD_ACTIONS: &[(&str, PadAction, Option<PadBtn>)] = &[
     ("Lean left", PadAction::Game("Lean left"), Some(PadBtn::LB)),
     ("Lean right", PadAction::Game("Lean right"), Some(PadBtn::RB)),
     ("Walk (hold)", PadAction::Game("Walk (hold)"), Some(PadBtn::L3)),
-    ("Change ammo", PadAction::Game("Change ammo"), Some(PadBtn::R3)),
+    ("Third person (tap) / change ammo (hold)", PadAction::ViewAmmo, Some(PadBtn::R3)),
+    ("Change ammo", PadAction::Game("Change ammo"), None),
     ("Augmentation wheel (hold)", PadAction::AugWheel, Some(PadBtn::Up)),
     ("Flashlight", PadAction::Game("Augmentation F12 (light)"), Some(PadBtn::Down)),
     ("Previous belt item", PadAction::PrevBelt, Some(PadBtn::Left)),
@@ -430,6 +433,8 @@ pub struct HoldState {
     use_fired: bool,
     inv_t: f32,
     inv_fired: bool,
+    view_t: f32,
+    view_fired: bool,
     /// One-frame taps to send (input, frames left).
     taps: Vec<(Input, u8)>,
     scroll_acc: f32,
@@ -622,6 +627,31 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
                     }
                     h.inv_t = 0.0;
                     h.inv_fired = false;
+                }
+            }
+            PadAction::ViewAmmo => {
+                if crate::augwheel::takes(b) {
+                    h.view_t = 0.0;
+                    h.view_fired = true;
+                } else if held(b) {
+                    h.view_t += dt;
+                    if h.view_t >= 0.35 && !h.view_fired {
+                        h.view_fired = true;
+                        if let Some(k) = bound(key_map, "Change ammo") {
+                            h.taps.push((k, 2));
+                        }
+                    }
+                } else if h.view_t > 0.0 {
+                    if !h.view_fired {
+                        let act = if crate::thirdperson::enabled() { "Third person view" } else { "Change ammo" };
+                        if let Some(k) = bound(key_map, act) {
+                            h.taps.push((k, 2));
+                        }
+                    }
+                    h.view_t = 0.0;
+                    h.view_fired = false;
+                } else {
+                    h.view_fired = false;
                 }
             }
             PadAction::NextBelt => {

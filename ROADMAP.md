@@ -114,7 +114,9 @@ re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
     the third-person gun (done, with the Visible Attachments mod).
 
 ### Large (new rendering, audio or interaction work)
-25. Sway-based aiming, a dynamic crosshair and aim-down-sights (done: Modern Aiming).
+25. Sway-based aiming, a dynamic crosshair and aim-down-sights (done: Modern Aiming - a slight sway of the gun that
+    the crosshair follows, steadier as the weapon skill rises and almost still at Master; aim down the sights with
+    firearms only).
 26. Real-time shadows for pawns and movers (done: shadows from the map's own lamps, as dark as the light each lamp
     put into the lightmap at that spot).
 27. New particle effects (done: Enhanced Effects - impacts by surface, explosion sparks and smoke, barrel smoke,
@@ -125,9 +127,10 @@ re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
 31. **Optional third-person view** (done: over the shoulder, H to switch, J to swap shoulders, keeps out of walls,
     closer while aiming, shots aimed at the crosshair; first person stays the default). Still to come: cover
     leaning and crouching from third person.
-32. Volumetric fog and light shafts (done as Atmospheric Fog and Light Halos).
-33. Better clouds and a 3D skyline (done: procedural city blocks with lit windows beyond the city maps' edges, and a
-    slow cloud layer).
+32. Volumetric fog and light shafts (done: Atmospheric Fog, Light Halos, Light Shafts - the flashlight, spotlights
+    and moonlight through windows as beams in the air - and Local Fog in sewers and bars).
+33. Better clouds and a 3D skyline (done: the original skyline photos cut into low-poly buildings at their own
+    distances, procedural blocks where a map has no photo, and a slow cloud layer).
 34. Remastered sound effects and a dynamic soundscape (done: better playback, speech ducking, a soundscape of
     far-off dogs, gulls and wind from the game's own sounds).
 35. Sound propagation and room reverb (done).
@@ -136,10 +139,15 @@ re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
 37. Dynamic weather (done: rain from the Precipitation mod, per map, steady or coming and going). Time of day is not
     planned.
 
+Also done in this tier, as Enhancements: Modern Water (reflections, real waves, the open sea running on to the
+horizon past the map's edge), Glow And Bloom (lenses, lasers, nano canisters, JC's sunglasses), a Modern Vision
+Augmentation (image-intensifier night vision with flare, grain and white-hot bodies), Ambient Occlusion and Soft
+Shadows with contact hardening.
+
 ### Very large (needs skeletons, new content, or touches the whole engine)
 38. Smarter AI (opt-in), including stealth that respects darkness more than the original's guards do.
-39. HD textures and models (done with the HDTP and New Vision mods, switchable in Settings), PBR and smoother
-    animation.
+39. HD textures and models (done with the HDTP, New Vision and Helios mods - Helios dresses the people, HDTP the
+    items - switchable in Settings), PBR and smoother animation.
 40. JC's body visible in first person.
 41. Diegetic damage, healing and augs shown on the body.
 42. Ragdolls and posable models.

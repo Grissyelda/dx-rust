@@ -138,6 +138,12 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("AtmosphericFog", 0.0),
     ("LightHalos", 0.0),
     ("Skyline", 0.0),
+    ("Bloom", 0.0),
+    ("ModernVision", 0.0),
+    ("AmbientOcclusion", 0.0),
+    ("SoftShadows", 0.0),
+    ("LightShafts", 0.0),
+    ("FogVolumes", 0.0),
     ("Clouds", 0.0),
     ("HQAudio", 0.0),
     ("SoundOcclusion", 0.0),
@@ -148,6 +154,9 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("HDTextures", 1.0),
     ("HDModels", 1.0),
     ("HDCharacters", 1.0),
+    ("DdsCharacters", 1.0),
+    ("DdsItems", 1.0),
+    ("DdsWorld", 0.0),
     // Augmentique: NPC outfits (iEquipNPCs: 0 none, 1 all but unique characters, 2 everyone); every outfit open
     // from the start even when GMDX Augmented's maps can be searched for them.
     ("AugNPCs", 1.0),

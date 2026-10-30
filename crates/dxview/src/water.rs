@@ -46,6 +46,9 @@ pub struct WaterExt {
 }
 
 impl MaterialExtension for WaterExt {
+    fn vertex_shader() -> ShaderRef {
+        WATER_SHADER.into()
+    }
     fn fragment_shader() -> ShaderRef {
         WATER_SHADER.into()
     }
@@ -65,8 +68,9 @@ pub fn setup_water_shader(mut shaders: ResMut<Assets<Shader>>) {
 }
 
 /// The swell: (direction angle, wavelength m, speed m/s, amplitude). Shared with the shader (keep in step).
-const WAVES: [(f32, f32, f32, f32); 5] = [
+const WAVES: [(f32, f32, f32, f32); 6] = [
     (0.35, 6.0, 1.1, 0.50),
+    (0.90, 17.0, 2.1, 0.85),
     (1.95, 3.3, 0.85, 0.30),
     (4.10, 1.8, 0.65, 0.18),
     (2.75, 0.95, 0.45, 0.10),
@@ -88,8 +92,14 @@ pub fn swell(x: f32, z: f32, t: f32) -> (f32, f32, f32) {
     (h, gx, gz)
 }
 
-/// How far a floating thing rises and falls on the swell, Unreal units.
+/// How far a floating thing rises and falls on the swell, Unreal units (the original's gentle rocking; with Modern
+/// Water the surface itself moves by WAVE_M metres per unit of swell and floating things ride it).
 const BOB: f64 = 3.0;
+pub const WAVE_M: f32 = 0.2;
+
+fn bob_units() -> f64 {
+    if modern() { WAVE_M as f64 / dx_level::METERS_PER_UNIT as f64 } else { BOB }
+}
 
 /// Vertical offset (Unreal units) and tilt (pitch, roll in Unreal rotator units) for something floating at an
 /// Unreal-space spot.
@@ -98,7 +108,7 @@ pub fn bob(at: DVec3, t: f64) -> (f64, i32, i32) {
     let (h, gx, gz) = swell(p[0], p[2], t as f32);
     // Slope in Unreal X (Bevy x) and Unreal Y (Bevy z), scaled down to a gentle tilt.
     let k = 600.0;
-    (h as f64 * BOB, (gx * k) as i32, (gz * k) as i32)
+    (h as f64 * bob_units(), (gx * k) as i32, (gz * k) as i32)
 }
 
 static RINGS_Q: Mutex<Vec<(DVec3, f32)>> = Mutex::new(Vec::new());
@@ -152,6 +162,7 @@ pub fn water_system(time: Res<Time>, mut wm: ResMut<WaterMats>, mut mats: ResMut
             m.extension.params.rings = rings;
             m.extension.params.m.x = if modern { 1.0 } else { 0.0 };
             m.extension.params.m.z = rain;
+            m.extension.params.far.w = if modern { WAVE_M } else { 0.0 };
             if switched {
                 let opaque = wm.opaque.get(i).copied().unwrap_or(false);
                 m.base.alpha_mode = match (opaque, modern) {
@@ -208,5 +219,209 @@ mod tests {
         let (hz, _, _) = super::swell(3.0, -2.0 + e, 1.5);
         assert!(((hx - h0) / e - gx).abs() < 0.05);
         assert!(((hz - h0) / e - gz).abs() < 0.05);
+    }
+}
+
+/// Water sheets split until no edge is longer than `max` (Bevy metres), so the surface can move with the swell
+/// (Modern Water). Positions, normals and both UV sets are interpolated.
+#[allow(clippy::type_complexity)]
+pub fn tessellate(
+    pos: &[[f32; 3]],
+    nrm: &[[f32; 3]],
+    uv: &[[f32; 2]],
+    uv1: &[[f32; 2]],
+    idx: &[u32],
+    max: f32,
+) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 2]>, Vec<u32>) {
+    let (mut p, mut n, mut u, mut u1) = (pos.to_vec(), nrm.to_vec(), uv.to_vec(), uv1.to_vec());
+    let mut out = Vec::new();
+    let mut mids: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+    let mut stack: Vec<[u32; 3]> = idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+    let budget = 400_000usize;
+    while let Some(t) = stack.pop() {
+        let d = |a: u32, b: u32, p: &Vec<[f32; 3]>| Vec3::from(p[a as usize]).distance(Vec3::from(p[b as usize]));
+        let e = [d(t[0], t[1], &p), d(t[1], t[2], &p), d(t[2], t[0], &p)];
+        let (k, &l) = e.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
+        if l <= max || p.len() > budget {
+            out.extend_from_slice(&t);
+            continue;
+        }
+        let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+        let key = (a.min(b), a.max(b));
+        let m = *mids.entry(key).or_insert_with(|| {
+            let mix3 = |x: [f32; 3], y: [f32; 3]| [(x[0] + y[0]) * 0.5, (x[1] + y[1]) * 0.5, (x[2] + y[2]) * 0.5];
+            let mix2 = |x: [f32; 2], y: [f32; 2]| [(x[0] + y[0]) * 0.5, (x[1] + y[1]) * 0.5];
+            p.push(mix3(p[a as usize], p[b as usize]));
+            n.push(n[a as usize]);
+            u.push(mix2(u[a as usize], u[b as usize]));
+            if !u1.is_empty() {
+                u1.push(mix2(u1[a as usize], u1[b as usize]));
+            }
+            (p.len() - 1) as u32
+        });
+        stack.push([a, m, c]);
+        stack.push([m, b, c]);
+    }
+    (p, n, u, u1, out)
+}
+
+/// The open sea past the map's edge (Modern Water): a ring of water at the height of the map's largest water sheet,
+/// from that sheet's bounds out to the horizon, with the same material (reflection, tint, swell) - so the water
+/// seems to go on for ever instead of stopping at the edge of the map. Shown only with Modern Water on.
+#[derive(Component)]
+pub struct OceanRing;
+
+pub fn ocean_ring(
+    mirrors: &crate::mirror::Mirrors,
+    batches: &[dx_level::Batch],
+) -> Option<(Mesh, Handle<WaterMaterial>)> {
+    // The biggest flat water plane, if it's sea-sized (indoor pools and fountains get none).
+    let plane = mirrors
+        .planes
+        .iter()
+        .filter(|p| p.water && !p.water_mats.is_empty())
+        .max_by(|a, b| {
+            let ar = |p: &crate::mirror::Plane| (p.max.x - p.min.x) * (p.max.z - p.min.z);
+            ar(a).total_cmp(&ar(b))
+        })?;
+    let (w, l) = (plane.max.x - plane.min.x, plane.max.z - plane.min.z);
+    if w.min(l) < 60.0 {
+        return None;
+    }
+    let y = plane.d;
+    // The sheet's texture mapping, continued: uv = A (x, z) + c from one of its triangles.
+    let mut map: Option<[f32; 6]> = None;
+    'find: for b in batches.iter().filter(|b| b.class == dx_level::SurfaceClass::Water && !b.sky) {
+        for t in b.indices.chunks_exact(3) {
+            let p: Vec<Vec3> = t.iter().map(|&i| Vec3::from(b.positions[i as usize])).collect();
+            if p.iter().any(|q| (q.y - y).abs() > 0.05) {
+                continue;
+            }
+            let uv: Vec<Vec2> = t.iter().map(|&i| Vec2::from(b.uvs[i as usize])).collect();
+            let (e1, e2) = (Vec2::new(p[1].x - p[0].x, p[1].z - p[0].z), Vec2::new(p[2].x - p[0].x, p[2].z - p[0].z));
+            let det = e1.x * e2.y - e1.y * e2.x;
+            if det.abs() < 1e-3 {
+                continue;
+            }
+            let (f1, f2) = (uv[1] - uv[0], uv[2] - uv[0]);
+            // [f1 f2] = A [e1 e2]  ->  A = [f1 f2] [e1 e2]^-1
+            let inv = [e2.y / det, -e2.x / det, -e1.y / det, e1.x / det];
+            let a = [f1.x * inv[0] + f2.x * inv[2], f1.x * inv[1] + f2.x * inv[3], f1.y * inv[0] + f2.y * inv[2], f1.y * inv[1] + f2.y * inv[3]];
+            let c = [uv[0].x - a[0] * p[0].x - a[1] * p[0].z, uv[0].y - a[2] * p[0].x - a[3] * p[0].z];
+            map = Some([a[0], a[1], c[0], a[2], a[3], c[1]]);
+            break 'find;
+        }
+    }
+    let m = map.unwrap_or([0.01, 0.0, 0.0, 0.0, 0.01, 0.0]);
+    let uv_at = |x: f32, z: f32| [m[0] * x + m[1] * z + m[2], m[3] * x + m[4] * z + m[5]];
+    // Lit like the sheet's nearest edge: each ring vertex takes the lightmap spot of the closest sheet vertex, so the
+    // moonlight on the water runs on past the edge without a seam.
+    let sheet: Vec<(Vec2, [f32; 2])> = batches
+        .iter()
+        .filter(|b| b.class == dx_level::SurfaceClass::Water && !b.sky)
+        .flat_map(|b| b.positions.iter().zip(b.uvs1.iter()))
+        .filter(|(p, _)| (p[1] - y).abs() < 0.05)
+        .map(|(p, l)| (Vec2::new(p[0], p[2]), *l))
+        .collect();
+    let nearest = |v: Vec2| -> [f32; 2] {
+        sheet
+            .iter()
+            .min_by(|a, b| a.0.distance_squared(v).total_cmp(&b.0.distance_squared(v)))
+            .map(|s| s.1)
+            .unwrap_or([0.0, 0.0])
+    };
+    // Sampled every 2 m round the sheet's bounds (perimeter position -> lightmap spot), then looked up by where a
+    // ring vertex's nearest point on the bounds lies.
+    let (blo, bhi) = (Vec2::new(plane.min.x, plane.min.z), Vec2::new(plane.max.x, plane.max.z));
+    let (bw, bl) = (bhi.x - blo.x, bhi.y - blo.y);
+    let perim = 2.0 * (bw + bl);
+    let along = |t: f32| -> Vec2 {
+        let t = t.rem_euclid(perim);
+        if t < bw {
+            Vec2::new(blo.x + t, blo.y)
+        } else if t < bw + bl {
+            Vec2::new(bhi.x, blo.y + (t - bw))
+        } else if t < 2.0 * bw + bl {
+            Vec2::new(bhi.x - (t - bw - bl), bhi.y)
+        } else {
+            Vec2::new(blo.x, bhi.y - (t - 2.0 * bw - bl))
+        }
+    };
+    let samples: Vec<[f32; 2]> = (0..(perim / 2.0).ceil() as usize).map(|k| nearest(along(k as f32 * 2.0))).collect();
+    let edge_light = |v: Vec2| -> [f32; 2] {
+        let c = v.clamp(blo, bhi);
+        // Which side the clamped point is on, and how far along the perimeter.
+        let t = if (c.y - blo.y).abs() < 1e-3 {
+            c.x - blo.x
+        } else if (c.x - bhi.x).abs() < 1e-3 {
+            bw + (c.y - blo.y)
+        } else if (c.y - bhi.y).abs() < 1e-3 {
+            bw + bl + (bhi.x - c.x)
+        } else {
+            2.0 * bw + bl + (bhi.y - c.y)
+        };
+        samples.get(((t / 2.0).round() as usize).min(samples.len().saturating_sub(1))).copied().unwrap_or([0.0, 0.0])
+    };
+    // Bands out from the sheet's edge, wider and wider (fine near the edge so the swell can move it, coarse far out).
+    let steps = [0.0f32, 3.0, 7.0, 13.0, 22.0, 36.0, 60.0, 100.0, 170.0, 300.0, 520.0, 900.0, 1600.0, 2800.0];
+    let (lo, hi) = (Vec2::new(plane.min.x, plane.min.z), Vec2::new(plane.max.x, plane.max.z));
+    let rect = |e: f32| (lo - Vec2::splat(e), hi + Vec2::splat(e));
+    let (mut pos, mut nrm, mut uv, mut uv1, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::<u32>::new());
+    for s in steps.windows(2) {
+        let (ia, ib) = (rect(s[0]), rect(s[1]));
+        // Segments along each side: about as long as the band is wide (at least 2 m).
+        let seg_len = (s[1] - s[0]).max(2.0);
+        // Corners of the inner and outer rectangles, counter-clockwise: (x0,z0) (x1,z0) (x1,z1) (x0,z1).
+        let corners = |r: (Vec2, Vec2)| [Vec2::new(r.0.x, r.0.y), Vec2::new(r.1.x, r.0.y), Vec2::new(r.1.x, r.1.y), Vec2::new(r.0.x, r.1.y)];
+        let (ci, co) = (corners(ia), corners(ib));
+        for side in 0..4 {
+            let (a0, a1) = (ci[side], ci[(side + 1) % 4]);
+            let (b0, b1) = (co[side], co[(side + 1) % 4]);
+            let n = ((b0.distance(b1)) / seg_len).ceil().clamp(1.0, 600.0) as usize;
+            for k in 0..n {
+                let (t0, t1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
+                let q = [a0.lerp(a1, t0), a0.lerp(a1, t1), b0.lerp(b1, t1), b0.lerp(b1, t0)];
+                let base = pos.len() as u32;
+                for v in q {
+                    pos.push([v.x, y, v.y]);
+                    nrm.push([0.0, 1.0, 0.0]);
+                    uv.push(uv_at(v.x, v.y));
+                    uv1.push(edge_light(v));
+                }
+                idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            }
+        }
+    }
+    let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv1);
+    mesh.insert_indices(bevy::mesh::Indices::U32(idx));
+    Some((mesh, plane.water_mats[0].clone()))
+}
+
+/// The map's edge walls (BSP faces with the sky marker texture outside the sky room: drawn black at the water's
+/// edge). Hidden while the open sea shows, which would otherwise end at them.
+#[derive(Component)]
+pub struct EdgeWall;
+
+/// The open sea shows only with Modern Water (and the edge walls go).
+pub fn ocean_system(
+    mut q: Query<&mut Visibility, (With<OceanRing>, Without<EdgeWall>)>,
+    mut walls: Query<&mut Visibility, (With<EdgeWall>, Without<OceanRing>)>,
+) {
+    let on = modern() && !q.is_empty();
+    let want = if on { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut q {
+        if *v != want {
+            *v = want;
+        }
+    }
+    let wall = if on { Visibility::Hidden } else { Visibility::Inherited };
+    for mut v in &mut walls {
+        if *v != wall {
+            *v = wall;
+        }
     }
 }

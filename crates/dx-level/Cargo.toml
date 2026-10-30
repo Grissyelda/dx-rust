@@ -7,6 +7,7 @@ version.workspace = true
 [dependencies]
 glam = "0.32"
 unreal-pkg = { path = "../unreal-pkg" }
+bcdec_rs = "0.2.1"
 
 [dev-dependencies]
 imsim-core = { path = "../imsim-core" }

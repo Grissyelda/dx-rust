@@ -89,7 +89,12 @@ struct Splash {
     pos: DVec3,
     vel: DVec3,
     life: f32,
+    max: f32,
 }
+
+/// The rain's own render layer: the world view draws it, mirror / water reflection cameras don't (a reflected drop
+/// close to the water reads as a streak floating under the surface).
+pub const RAIN_LAYER: usize = 9;
 
 #[derive(Default)]
 pub struct WeatherState {
@@ -237,8 +242,8 @@ pub fn weather_system(
             })
         };
         let drop_tex = image_for(&mut assets, &mut images, "Precipitation.Skins.Raindrop");
-        let splash_tex = image_for(&mut assets, &mut images, "Effects.Generated.WtrDrpSmall")
-            .or_else(|| image_for(&mut assets, &mut images, "DeusExItems.Skins.FlatFXTex46"));
+        // Splashlets: little streaks thrown up and out of the impact (the drop texture, stretched along the motion).
+        let splash_tex = drop_tex.clone().or_else(|| image_for(&mut assets, &mut images, "Effects.Generated.WtrDrpSmall"));
         let m = meshes.add(empty(MAX_DROPS));
         let sm = meshes.add(empty(MAX_SPLASHES));
         let mat = add_mat(&mut materials, drop_tex);
@@ -250,6 +255,7 @@ pub fn weather_system(
                 Transform::default(),
                 Visibility::Visible,
                 RainMesh,
+                bevy::camera::visibility::RenderLayers::layer(RAIN_LAYER),
                 bevy::camera::visibility::NoFrustumCulling,
                 bevy::light::NotShadowCaster,
                 bevy::light::NotShadowReceiver,
@@ -337,10 +343,17 @@ pub fn weather_system(
         d.life > 0.0
     });
     for (at, n) in splashes {
-        for _ in 0..(1 + (rnd(&mut seed) * 2.0) as usize) {
-            let r = DVec3::new(rnd(&mut seed) - 0.5, rnd(&mut seed) - 0.5, rnd(&mut seed) - 0.5) * 1.0;
-            let dir = (n + r * 0.5).normalize_or_zero();
-            st.splashes.push(Splash { pos: at + n * 1.0, vel: dir * 35.0 + DVec3::new(0.0, 0.0, 40.0), life: 0.4 });
+        // A crown: 3-5 droplets thrown out round the impact, mostly up off the surface.
+        let t1 = if n.z.abs() < 0.9 { n.cross(DVec3::Z) } else { n.cross(DVec3::X) }.normalize_or_zero();
+        let t2 = n.cross(t1);
+        let count = 3 + (rnd(&mut seed) * 3.0) as usize;
+        let a0 = rnd(&mut seed) as f64 * std::f64::consts::TAU;
+        for k in 0..count {
+            let a = a0 + k as f64 / count as f64 * std::f64::consts::TAU + (rnd(&mut seed) as f64 - 0.5) * 0.8;
+            let out = (t1 * a.cos() + t2 * a.sin()) * (25.0 + rnd(&mut seed) as f64 * 45.0);
+            let up = n * (45.0 + rnd(&mut seed) as f64 * 55.0);
+            let life = (0.18 + rnd(&mut seed) * 0.17) as f32;
+            st.splashes.push(Splash { pos: at + n * 0.5, vel: out + up, life, max: life });
         }
     }
     for at in rings.into_iter().take(12) {
@@ -352,7 +365,7 @@ pub fn weather_system(
     }
     st.splashes.retain_mut(|s| {
         s.life -= dt;
-        s.vel.z -= 950.0 * dt as f64 * 0.5;
+        s.vel.z -= 950.0 * dt as f64;
         s.pos += s.vel * dt as f64;
         s.life > 0.0
     });
@@ -398,13 +411,18 @@ pub fn weather_system(
     let mut col = Vec::with_capacity(st.splashes.len() * 4);
     let mut idx = Vec::with_capacity(st.splashes.len() * 6);
     for s in &st.splashes {
+        // A short streak along the droplet's motion, facing the camera.
         let k = pos.len() as u32;
-        let sz = 1.6;
         let b = |p: DVec3| Vec3::from(ue_to_bevy(p.as_vec3().to_array())).to_array();
-        let (r, u) = (right * sz, up * sz);
-        pos.extend([b(s.pos - r - u), b(s.pos + r - u), b(s.pos + r + u), b(s.pos - r + u)]);
+        let speed = s.vel.length().max(1.0);
+        let dir = s.vel / speed;
+        let to_eye = (eye - s.pos).normalize_or_zero();
+        let side = dir.cross(to_eye).normalize_or(right) * 0.35;
+        let len = (speed * 0.025).clamp(1.0, 4.0);
+        let tail = s.pos - dir * len;
+        pos.extend([b(s.pos - side), b(s.pos + side), b(tail + side), b(tail - side)]);
         uv.extend([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
-        let g = (s.life / 0.4).clamp(0.0, 1.0) * 0.6;
+        let g = (s.life / s.max.max(0.01)).clamp(0.0, 1.0) * 0.5;
         col.extend([[g, g, g, 1.0]; 4]);
         idx.extend([k, k + 1, k + 2, k, k + 2, k + 3]);
     }

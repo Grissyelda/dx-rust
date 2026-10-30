@@ -138,3 +138,91 @@ pub fn find_ci(dir: &Path, name: &str) -> Option<PathBuf> {
 pub fn exists(path: &Path) -> bool {
     resolve(path).is_file() || path.is_file()
 }
+
+// ---- DDS texture overrides (kentie's Direct3D 10 renderer layout; Helios and other packs) ----
+//
+// A pack is a folder (usually the game's own Textures folder) holding `<Package>/<Group>/<Name>.dds` for textures it
+// replaces; `<Name>.bump.dds` / `.height.dds` / `.detail.dds` are extra maps for the same texture and are not
+// replacements. Which packages are taken is up to the game (`set_dds_filter`).
+
+static DDS: RwLock<Option<DdsIndex>> = RwLock::new(None);
+
+struct DdsIndex {
+    /// "package/group/name" (lower case) -> file.
+    files: std::collections::HashMap<String, PathBuf>,
+    /// Package names (lower case) whose overrides are used.
+    allow: Option<Vec<String>>,
+    /// Package names never used.
+    deny: Vec<String>,
+}
+
+/// Index the DDS packs under these folders (each one a Textures-style folder). Returns how many files were found.
+pub fn set_dds(dirs: &[PathBuf]) -> usize {
+    let mut files = std::collections::HashMap::new();
+    fn walk(base: &Path, dir: &Path, depth: usize, out: &mut std::collections::HashMap<String, PathBuf>) {
+        if depth > 4 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, depth + 1, out);
+                continue;
+            }
+            let Some(name) = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()) else { continue };
+            let Some(stem) = name.strip_suffix(".dds") else { continue };
+            if stem.ends_with(".bump") || stem.ends_with(".height") || stem.ends_with(".detail") {
+                continue;
+            }
+            let Ok(rel) = p.parent().unwrap_or(base).strip_prefix(base) else { continue };
+            let mut key: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase()).collect();
+            if key.is_empty() {
+                continue;
+            }
+            key.push(stem.to_string());
+            out.entry(key.join("/")).or_insert(p);
+        }
+    }
+    for d in dirs {
+        walk(d, d, 0, &mut files);
+    }
+    let n = files.len();
+    if let Ok(mut g) = DDS.write() {
+        *g = if n > 0 { Some(DdsIndex { files, allow: None, deny: Vec::new() }) } else { None };
+    }
+    n
+}
+
+/// Which packages' overrides are used: `allow` = only these (None = all), `deny` = never these.
+pub fn set_dds_filter(allow: Option<Vec<String>>, deny: Vec<String>) {
+    if let Ok(mut g) = DDS.write() {
+        if let Some(i) = g.as_mut() {
+            i.allow = allow.map(|v| v.iter().map(|s| s.to_ascii_lowercase()).collect());
+            i.deny = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
+        }
+    }
+}
+
+/// Any DDS overrides indexed.
+pub fn has_dds() -> bool {
+    DDS.read().map(|g| g.is_some()).unwrap_or(false)
+}
+
+/// The override for a texture path ("Package.Group.Name" or "Package.Name"), if a pack has one and its package
+/// is allowed.
+pub fn dds_for(path: &str) -> Option<PathBuf> {
+    let g = DDS.read().ok()?;
+    let idx = g.as_ref()?;
+    let key = path.to_ascii_lowercase().replace('.', "/");
+    let pkg = key.split('/').next()?;
+    if idx.deny.iter().any(|d| d == pkg) {
+        return None;
+    }
+    if let Some(a) = &idx.allow {
+        if !a.iter().any(|x| x == pkg) {
+            return None;
+        }
+    }
+    idx.files.get(&key).cloned()
+}

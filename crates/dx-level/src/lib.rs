@@ -20,6 +20,7 @@ pub mod movers;
 pub mod nav;
 pub mod firetex;
 pub mod skincolor;
+pub mod dds;
 
 pub const METERS_PER_UNIT: f32 = 1.0 / 52.5;
 
@@ -56,13 +57,17 @@ pub struct TextureImage {
     /// as stored (8 bytes per 4 x 4 block), handed to the GPU still compressed.
     pub mips: Vec<Vec<u8>>,
     pub bc1: bool,
+    /// The mips are DXT5 (BC3) blocks as stored (16 bytes per 4 x 4 block): DDS override packs.
+    pub bc3: bool,
 }
 
 impl TextureImage {
     /// Has see-through texels (alpha 0): RGBA with a zero alpha, or DXT1 blocks in 3-colour mode using index 3.
     pub fn has_alpha_holes(&self) -> bool {
         let Some(m) = self.mips.first() else { return false };
-        if self.bc1 {
+        if self.bc3 {
+            m.chunks_exact(16).any(|b| b[0] == 0 || b[1] == 0)
+        } else if self.bc1 {
             bc1_has_holes(m)
         } else {
             m.chunks_exact(4).any(|p| p[3] == 0)
@@ -232,6 +237,8 @@ pub struct TexLib {
     pub hd_scope: bool,
     /// Textures taken from the HD texture mod so far.
     pub hd_used: usize,
+    /// Textures taken from a DDS override pack so far.
+    pub dds_used: usize,
     /// Texture properties read without decoding pixels: (USize, VSize, bMasked).
     info: HashMap<String, Option<(u32, u32, bool)>>,
 }
@@ -239,7 +246,7 @@ pub struct TexLib {
 impl TexLib {
     /// Texture loader for a game install (looks in `Textures/*.utx`, then `System/*.u`).
     pub fn new(game_root: &Path) -> TexLib {
-        TexLib { dir: textures_dir(game_root), sys_dir: game_root.join("System"), pkgs: HashMap::new(), hd_pkgs: HashMap::new(), hd_scope: false, hd_used: 0, info: HashMap::new() }
+        TexLib { dir: textures_dir(game_root), sys_dir: game_root.join("System"), pkgs: HashMap::new(), hd_pkgs: HashMap::new(), hd_scope: false, hd_used: 0, dds_used: 0, info: HashMap::new() }
     }
 
     /// A texture's size (USize / VSize) and bMasked from its properties alone - no pixels are decoded.
@@ -283,7 +290,7 @@ impl TexLib {
     /// Decode a texture by full path (`Package.Group.Name`) with all mips.
     pub fn load_image(&mut self, path: &str) -> Option<TextureImage> {
         let (t, mips) = self.load_ext(path, false)?;
-        Some(TextureImage { name: path.to_string(), width: t.width(), height: t.height(), mips, bc1: false })
+        Some(TextureImage { name: path.to_string(), width: t.width(), height: t.height(), mips, bc1: false, bc3: false })
     }
 
     /// A WetTexture (procedural ripples over a SourceTexture) as a still: the source picture through the wet
@@ -314,13 +321,13 @@ impl TexLib {
         if mips.is_empty() {
             return None;
         }
-        Some(TextureImage { name: path.to_string(), width: src.width(), height: src.height(), mips, bc1: false })
+        Some(TextureImage { name: path.to_string(), width: src.width(), height: src.height(), mips, bc1: false, bc3: false })
     }
 
     /// Like `load_image` but palette index 0 is always transparent (UI icons are drawn masked).
     pub fn load_image_masked(&mut self, path: &str) -> Option<TextureImage> {
         let (t, mips) = self.load_ext(path, true)?;
-        Some(TextureImage { name: path.to_string(), width: t.width(), height: t.height(), mips, bc1: false })
+        Some(TextureImage { name: path.to_string(), width: t.width(), height: t.height(), mips, bc1: false, bc3: false })
     }
 
     fn package(&mut self, name: &str) -> Option<&Package> {
@@ -492,6 +499,9 @@ impl TexLib {
     /// A texture for the GPU: DXT1 ones (the HD mod's version first) stay compressed when the device takes BC1
     /// and nothing has to see through blocks the game draws opaque; the rest decode to RGBA8 as `load_ext`.
     pub fn load_gpu(&mut self, path: &str, force_mask: bool) -> Option<(Texture, TextureImage)> {
+        if let Some(r) = self.load_dds(path, force_mask, true) {
+            return Some(r);
+        }
         if bc1_supported() {
             let hd = if self.hd_scope && unreal_pkg::paths::has_hd_textures() { self.read_raw(path, true) } else { None };
             let from_hd = hd.is_some();
@@ -501,7 +511,7 @@ impl TexLib {
                         if from_hd {
                             self.hd_used += 1;
                         }
-                        let img = TextureImage { name: path.to_string(), width: tex.width(), height: tex.height(), mips, bc1: true };
+                        let img = TextureImage { name: path.to_string(), width: tex.width(), height: tex.height(), mips, bc1: true, bc3: false };
                         return Some((tex, img));
                     }
                 }
@@ -512,7 +522,7 @@ impl TexLib {
             // The texture's own bMasked (force_mask only decides how it decodes).
             t.masked = unreal_pkg::props::find(&t.props, "bMasked").is_some_and(|v| matches!(v, unreal_pkg::props::Value::Bool(true)));
         }
-        let img = TextureImage { name: path.to_string(), width: t.width(), height: t.height(), mips, bc1: false };
+        let img = TextureImage { name: path.to_string(), width: t.width(), height: t.height(), mips, bc1: false, bc3: false };
         Some((t, img))
     }
 
@@ -527,7 +537,59 @@ impl TexLib {
         objects::read_texture(pkg, e).ok()
     }
 
+    /// A DDS override pack's version of a texture (unreal_pkg::paths::dds_for), with the game texture's properties
+    /// (its USize / VSize still lay out the UVs) and mips sized like the picture. `gpu`: DXT1 / DXT5 stay
+    /// compressed when the device takes them; everything else decodes to RGBA8.
+    pub fn load_dds(&mut self, path: &str, force_mask: bool, gpu: bool) -> Option<(Texture, TextureImage)> {
+        if !self.hd_scope {
+            return None;
+        }
+        let file = unreal_pkg::paths::dds_for(path)?;
+        let mut tex = self.read_raw(path, false)?;
+        let bytes = std::fs::read(&file).ok()?;
+        let d = dds::parse(&bytes)?;
+        if force_mask {
+            tex.masked = true;
+        }
+        let (bc1, bc3, mips) = match d.format {
+            dds::Format::Bc1 if gpu && bc1_supported() => (true, false, d.mips.clone()),
+            dds::Format::Bc3 if gpu && bc1_supported() => (false, true, d.mips.clone()),
+            _ => {
+                let mut m = dds::decode_all(&d);
+                // Masked textures see through where alpha is low; opaque ones ignore alpha.
+                if !tex.masked {
+                    for lvl in &mut m {
+                        for px in lvl.chunks_exact_mut(4) {
+                            px[3] = 255;
+                        }
+                    }
+                }
+                (false, false, m)
+            }
+        };
+        if mips.is_empty() {
+            return None;
+        }
+        // The picture's sizes (callers take width / height from the texture); data stays with the image.
+        let (mut w, mut h) = (d.width.max(1), d.height.max(1));
+        tex.mips = mips
+            .iter()
+            .map(|_| {
+                let m = unreal_pkg::objects::Mip { width: w, height: h, data: Vec::new() };
+                w = (w / 2).max(1);
+                h = (h / 2).max(1);
+                m
+            })
+            .collect();
+        self.dds_used += 1;
+        let img = TextureImage { name: path.to_string(), width: d.width, height: d.height, mips, bc1, bc3 };
+        Some((tex, img))
+    }
+
     fn load_ext(&mut self, path: &str, force_mask: bool) -> Option<(Texture, Vec<Vec<u8>>)> {
+        if let Some((t, img)) = self.load_dds(path, force_mask, false) {
+            return Some((t, img.mips));
+        }
         if let Some(hd) = self.load_hd_tex(path, force_mask) {
             self.hd_used += 1;
             return Some(hd);
@@ -807,7 +869,7 @@ pub fn build_level(
     let baked = lighting::bake(pkg, &model, classes);
     let mut stats = LevelStats { nodes: model.nodes.len(), ..Default::default() };
     let sys_dir = tex_dir.parent().map(|p| p.join("System")).unwrap_or_default();
-    let mut lib = TexLib { dir: tex_dir.to_path_buf(), sys_dir, pkgs: HashMap::new(), hd_pkgs: HashMap::new(), hd_scope: false, hd_used: 0, info: HashMap::new() };
+    let mut lib = TexLib { dir: tex_dir.to_path_buf(), sys_dir, pkgs: HashMap::new(), hd_pkgs: HashMap::new(), hd_scope: false, hd_used: 0, dds_used: 0, info: HashMap::new() };
     let mut textures: Vec<TextureImage> = Vec::new();
     // material object ref -> (texture index, masked)
     let mut tex_cache: HashMap<i32, Option<(usize, bool)>> = HashMap::new();
@@ -978,7 +1040,7 @@ pub fn build_level(
                 let idx = textures.len();
                 let (lw, lh) = TexLib::logical_size(&t);
                 logical.insert(idx, (lw as f32, lh as f32));
-                textures.push(TextureImage { name: path.clone(), width: t.width(), height: t.height(), mips: mips.mips, bc1: mips.bc1 });
+                textures.push(TextureImage { name: path.clone(), width: t.width(), height: t.height(), mips: mips.mips, bc1: mips.bc1, bc3: mips.bc3 });
                 Some((idx, t.masked))
             })
             .clone();
@@ -1108,7 +1170,7 @@ pub fn build_level(
                 let idx = textures.len();
                 let (lw, lh) = TexLib::logical_size(&t);
                 logical.insert(idx, (lw as f32, lh as f32));
-                textures.push(TextureImage { name: path.clone(), width: t.width(), height: t.height(), mips: mips.mips, bc1: mips.bc1 });
+                textures.push(TextureImage { name: path.clone(), width: t.width(), height: t.height(), mips: mips.mips, bc1: mips.bc1, bc3: mips.bc3 });
                 Some((idx, t.masked))
             });
             let (i, m) = (*entry)?;
@@ -1240,7 +1302,7 @@ fn synth_water(name: &str) -> TextureImage {
         mips.push(m);
         sz = ns;
     }
-    TextureImage { name: name.to_string(), width: n as u32, height: n as u32, mips, bc1: false }
+    TextureImage { name: name.to_string(), width: n as u32, height: n as u32, mips, bc1: false, bc3: false }
 }
 
 /// Location (Unreal units) of the first SkyZoneInfo actor.

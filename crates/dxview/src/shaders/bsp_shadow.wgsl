@@ -103,6 +103,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         );
     }
 #endif
+#ifdef SCREEN_SPACE_AMBIENT_OCCLUSION
+#ifdef LIGHTMAP
+    // Ambient Occlusion (postfx.rs): the world's light is its lightmap, so that's what corners darken.
+    let ao = textureLoad(view_bindings::screen_space_ambient_occlusion_texture, vec2<i32>(in.position.xy), 0i).r;
+    pbr_input.lightmap_light *= mix(1.0, ao, 0.85);
+#endif
+#endif
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
         out.color = apply_pbr_lighting(pbr_input);

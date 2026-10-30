@@ -367,7 +367,7 @@ pub fn build(
                     }
                     let mut data = Vec::new();
                     f.rgba(&mut data);
-                    textures.push(TextureImage { name: tp.to_string(), width: f.width as u32, height: f.height as u32, mips: vec![data], bc1: false });
+                    textures.push(TextureImage { name: tp.to_string(), width: f.width as u32, height: f.height as u32, mips: vec![data], bc1: false, bc3: false });
                     Some((textures.len() - 1, false))
                 })
                 .clone()
