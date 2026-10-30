@@ -820,22 +820,28 @@ pub fn phonemes(c: &imsim_audio::Clip) -> Vec<u8> {
         stats.push(((e / n as f32).sqrt(), z as f32 / n as f32));
         i += win;
     }
-    let peak = stats.iter().map(|s| s.0).fold(0.0f32, f32::max).max(1e-4);
+    // Loudness relative to the line's typical voiced level (the 85th percentile, not the single loudest moment, so
+    // ordinary syllables open the mouth properly instead of hovering near closed).
+    let mut sorted: Vec<f32> = stats.iter().map(|s| s.0).filter(|r| *r > 1e-4).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let peak = sorted.get(sorted.len() * 85 / 100).copied().unwrap_or(1e-4).max(1e-4);
     stats
         .iter()
         .enumerate()
         .map(|(k, &(rms, zcr))| {
             let a = rms / peak;
-            if a < 0.1 {
+            if a < 0.12 {
                 b'X'
             } else if zcr > 0.3 {
-                if a < 0.35 { b'F' } else { b'T' }
-            } else if a > 0.7 {
+                if a < 0.4 { b'F' } else { b'T' }
+            } else if a > 0.8 {
                 if k % 3 == 0 { b'O' } else { b'A' }
-            } else if a > 0.45 {
-                if zcr > 0.12 { b'E' } else { b'O' }
+            } else if a > 0.5 {
+                if zcr > 0.12 { b'E' } else { b'A' }
             } else if a > 0.25 {
-                if zcr > 0.12 { b'E' } else { b'U' }
+                if zcr > 0.12 { b'E' } else { b'O' }
+            } else if a > 0.18 {
+                b'U'
             } else {
                 b'M'
             }

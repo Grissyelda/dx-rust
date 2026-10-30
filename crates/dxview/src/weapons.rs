@@ -1007,6 +1007,44 @@ impl Drop for LogOnDrop {
     }
 }
 
+/// DeusExWeapon state Reload's start: ReloadBegin (or straight into the looping Reload) for the reload time.
+/// HDTP's pistol and rifle meshes have one Reload sequence and no begin / end ("bLazyAnims"): HDTP plays it once
+/// at a rate that makes it last the reload time plus the vanilla begin + end (1.14 s pistol, 1.5 s rifle), and the
+/// reload is done when it ends - looping it for the reload time cut it off half way.
+fn begin_reload_clip(h: &mut Held) {
+    h.timer = h.stats.reload_time + h.stats.skill * h.stats.reload_time;
+    let has = |n: &str| h.mesh.seqs.iter().any(|s| s.name.eq_ignore_ascii_case(n));
+    if !has("ReloadBegin") && !has("ReloadEnd") {
+        if let Some(mut c) = Clip::named(&h.mesh, "Reload", false) {
+            let len = c.frames as f32 / c.rate.max(0.1);
+            let offset = match h.stats.class.as_str() {
+                "WeaponPistol" => 1.14,
+                "WeaponRifle" => 1.5,
+                _ => 0.0,
+            };
+            let total = (h.timer + offset).max(0.2);
+            c.rate *= len / total;
+            h.clip = c;
+            h.phase = 4;
+            // HDTP plays the reload-end sound as the animation starts.
+            if let Some(s) = &h.stats.snd.reload_end {
+                crate::sound::play_player(s, 1.0, 1024.0);
+            }
+            return;
+        }
+    }
+    match Clip::named(&h.mesh, "ReloadBegin", false) {
+        Some(c) => {
+            h.clip = c;
+            h.phase = 0;
+        }
+        None => {
+            h.clip = Clip::named(&h.mesh, "Reload", true).unwrap_or(h.clip.clone());
+            h.phase = 1;
+        }
+    }
+}
+
 fn build_held(
     stats: WeaponStats,
     defaults: &[Property],
@@ -2074,7 +2112,7 @@ pub fn weapon_system(
                 None => h.phase = 3,
             }
         }
-        WState::Reloading if (h.phase == 2 && h.clip.done()) || h.phase == 3 => {
+        WState::Reloading if (h.phase == 2 && h.clip.done()) || h.phase == 3 || (h.phase == 4 && h.clip.done()) => {
             if let Some(a) = h.stats.ammo_class.clone() {
                 if let Some(entry) = inv.0.ammo.iter_mut().find(|x| x.0 == a) {
                     let need = h.stats.reload_count.saturating_sub(loaded);
@@ -2272,17 +2310,7 @@ pub fn weapon_system(
                 if let Some(s) = &h.stats.snd.reload_begin {
                     crate::sound::play_player(s, 1.0, 1024.0);
                 }
-                h.timer = h.stats.reload_time + h.stats.skill * h.stats.reload_time;
-                match Clip::named(&h.mesh, "ReloadBegin", false) {
-                    Some(c) => {
-                        h.clip = c;
-                        h.phase = 0;
-                    }
-                    None => {
-                        h.clip = Clip::named(&h.mesh, "Reload", true).unwrap_or(h.clip.clone());
-                        h.phase = 1;
-                    }
-                }
+                begin_reload_clip(h);
             }
             None => {
                 hud.text = "No other ammo for this weapon".into();
@@ -2311,17 +2339,7 @@ pub fn weapon_system(
         if let Some(s) = &h.stats.snd.reload_begin {
             crate::sound::play_player(s, 1.0, 1024.0);
         }
-        h.timer = h.stats.reload_time + h.stats.skill * h.stats.reload_time;
-        match Clip::named(&h.mesh, "ReloadBegin", false) {
-            Some(c) => {
-                h.clip = c;
-                h.phase = 0;
-            }
-            None => {
-                h.clip = Clip::named(&h.mesh, "Reload", true).unwrap_or(h.clip.clone());
-                h.phase = 1;
-            }
-        }
+        begin_reload_clip(h);
     } else if h.state == WState::Idle && locked && pulled && h.stats.class == "WeaponNanoSword" && dts_energy() && ph.energy < 1.0 {
         // Enhancement (Dragon's Tooth energy, after GMDX's ChargeManager): no bioenergy, no blade.
         hud.text = "Not enough bioelectric energy".into();

@@ -160,10 +160,11 @@ fn seq_start(mesh: &dx_level::actors::AnimMesh, name: &str) -> Option<(usize, us
 
 /// Advance LipSynch; returns what to layer this frame (None = nothing).
 pub fn update_face(f: &mut Face, mesh: &dx_level::actors::AnimMesh, dt: f32) -> Option<FaceKey> {
-    // Enhancement "Smooth Lip Sync" (after Joe Wintergreen's lipsync mod): phonemes blend over 0.36 s instead of
-    // 0.1, the mouth eases shut over 0.3 s, blinks are checked every 0.5 s and play at a fifth of the speed.
+    // Enhancement "Smooth Lip Sync" (after Joe Wintergreen's lipsync mod): phonemes blend over 0.16 s instead of
+    // snapping in 0.1, the mouth eases shut over 0.25 s, blinks are checked every 0.5 s and play at a fifth of the
+    // speed. (Joe's 0.36 s blend never let the mouth reach a shape before the next one came: lips barely parted.)
     let smooth = crate::settings::get("SmoothLipSync") > 0.5;
-    let (speak_t, close_t, blink_every, blink_rate) = if smooth { (0.36, 0.3, 0.5, 0.2) } else { (0.1, 0.1, 2.0, 1.0) };
+    let (speak_t, close_t, blink_every, blink_rate) = if smooth { (0.16, 0.25, 0.5, 0.2) } else { (0.1, 0.1, 2.0, 1.0) };
     let closed = seq_start(mesh, "MouthClosed").map(|s| s.0);
     let cur = |f: &Face| f.mouth.map(|(a, b, k)| if k >= 0.5 { b } else { a });
     if let Some(p) = f.phoneme {

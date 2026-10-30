@@ -4,7 +4,7 @@
 //!   Hong Kong's denser and taller ones, Paris's low blocks - in clusters that rise and fall around the horizon,
 //!   dark against the sky with scattered lit windows and the odd red light on a roof, like the skyline photos in the
 //!   original sky boxes. They are outside the level, so they only show through the open sky, never through walls.
-//! - Night Clouds: a slow cloud layer high over the open-air maps, faintly lit from below by the city.
+//! - Night Clouds: see clouds.rs (volumetric). `cloudy` picks the maps.
 //!
 //! Each map's buildings come from a seed of its name, so they're the same every visit.
 //!
@@ -25,19 +25,15 @@ pub fn skyline_on() -> bool {
     crate::settings::get("Skyline") > 0.5
 }
 
-pub fn clouds_on() -> bool {
-    crate::settings::get("Clouds") > 0.5
-}
-
 #[derive(Clone, Copy, PartialEq)]
-enum City {
+pub enum City {
     NewYork,
     HongKong,
     Paris,
 }
 
 /// Which skyline a map gets (file name without .dx). Indoor maps get none (no sky, so nothing would show anyway).
-fn city(map: &str) -> Option<City> {
+pub fn city(map: &str) -> Option<City> {
     let m = map.to_ascii_lowercase();
     let m = m.trim_end_matches(".dx");
     if m.starts_with("00_") || m.contains("mj12lab") || m.starts_with("99_") {
@@ -56,16 +52,14 @@ fn city(map: &str) -> Option<City> {
 }
 
 /// Clouds over every map open to the sky except the sea floor.
-fn cloudy(map: &str) -> bool {
+pub fn cloudy(map: &str) -> bool {
     let m = map.to_ascii_lowercase();
-    !(m.starts_with("14_oceanlab") || m.starts_with("00_intro") || m == "dx" || m == "dx.dx")
+    !(m.starts_with("14_oceanlab") || m.starts_with("00_intro") || m.starts_with("99_endgame") || m == "dx" || m == "dx.dx")
 }
 
 #[derive(Component)]
 pub struct SkylinePart;
 
-#[derive(Component)]
-pub struct CloudLayer;
 
 /// A masked skyline photo panel in the sky room (main.rs tags them): hidden while the photo skyline stands in.
 #[derive(Component)]
@@ -134,53 +128,6 @@ fn windows_image(c: City, seed: &mut u64) -> Image {
     img
 }
 
-/// A tiling cloud cover: fBm value noise, white with alpha.
-fn cloud_image(seed: u64) -> Image {
-    const N: usize = 256;
-    let mut s = seed | 1;
-    let grids: Vec<(usize, Vec<f32>)> = [8usize, 16, 32, 64]
-        .iter()
-        .map(|&g| (g, (0..g * g).map(|_| rnd(&mut s)).collect()))
-        .collect();
-    let sample = |g: usize, v: &[f32], x: f32, y: f32| {
-        let (fx, fy) = (x * g as f32, y * g as f32);
-        let (x0, y0) = (fx.floor() as usize % g, fy.floor() as usize % g);
-        let (x1, y1) = ((x0 + 1) % g, (y0 + 1) % g);
-        let (tx, ty) = (fx.fract(), fy.fract());
-        let (tx, ty) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
-        let a = v[y0 * g + x0] + (v[y0 * g + x1] - v[y0 * g + x0]) * tx;
-        let b = v[y1 * g + x0] + (v[y1 * g + x1] - v[y1 * g + x0]) * tx;
-        a + (b - a) * ty
-    };
-    let mut px = Vec::with_capacity(N * N * 4);
-    for y in 0..N {
-        for x in 0..N {
-            let (u, v) = (x as f32 / N as f32, y as f32 / N as f32);
-            let mut n = 0.0;
-            let mut amp = 0.5;
-            for (g, vals) in &grids {
-                n += sample(*g, vals, u, v) * amp;
-                amp *= 0.5;
-            }
-            let a = ((n - 0.42) * 3.2).clamp(0.0, 1.0);
-            let shade = (190.0 + 65.0 * (n - 0.4).clamp(0.0, 1.0)) as u8;
-            px.extend([shade, shade, shade, (a * 255.0) as u8]);
-        }
-    }
-    let mut img = Image::new(
-        Extent3d { width: N as u32, height: N as u32, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        px,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::Repeat,
-        address_mode_v: ImageAddressMode::Repeat,
-        ..ImageSamplerDescriptor::linear()
-    });
-    img
-}
 
 /// One box building: four walls (windowed) and a dark roof. `uv0` picks its part of the window atlas.
 fn add_box(
@@ -240,7 +187,6 @@ fn add_box(
 #[derive(Default)]
 pub struct SkyState {
     built_for: u64,
-    clouds: Option<Handle<StandardMaterial>>,
     beacons: Vec<(Vec3, Handle<StandardMaterial>)>,
 }
 
@@ -251,24 +197,29 @@ pub fn skyline_system(
     level: Res<LevelRes>,
     mut st: Local<SkyState>,
     mut map_gen: Local<u64>,
-    parts: Query<Entity, Or<(With<SkylinePart>, With<CloudLayer>)>>,
+    parts: Query<Entity, With<SkylinePart>>,
     mut panels: Query<&mut Visibility, With<SkyPanel>>,
     (mut meshes, mut materials, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>),
     mut last: Local<(bool, bool)>,
 ) {
     let lvl = &level.0;
     let fresh = crate::loader::new_map(&mut map_gen);
-    let want = (skyline_on(), clouds_on());
+    let want = (skyline_on(), false);
     if fresh || want != *last {
         *last = want;
         for e in &parts {
             commands.entity(e).despawn();
         }
-        st.clouds = None;
         st.beacons.clear();
         st.built_for = 0;
         let outdoors = lvl.zone_sky.iter().any(|s| *s);
-        if !outdoors {
+        // The intro and the endings: one map holding many scenes, whose sky-room backdrops stand in for walls and
+        // distant streets; a skyline ring round the whole map showed through those "walls".
+        let m = lvl.name.to_ascii_lowercase();
+        if !outdoors || m.starts_with("00_intro") || m.starts_with("99_endgame") {
+            for mut v in &mut panels {
+                *v = Visibility::Inherited;
+            }
             return;
         }
         let (bmin, bmax) = (Vec3::from(lvl.bounds_min), Vec3::from(lvl.bounds_max));
@@ -291,71 +242,9 @@ pub fn skyline_system(
         for mut v in &mut panels {
             *v = if photo { Visibility::Hidden } else { Visibility::Inherited };
         }
-        if want.1 && cloudy(&lvl.name) {
-            let img = images.add(cloud_image(seed ^ 0xC10D));
-            // Lit from below by the city: a dull orange-grey over New York and Hong Kong, grey elsewhere.
-            let tint = match city(&lvl.name) {
-                Some(City::NewYork) | Some(City::HongKong) => Color::srgba(0.16, 0.13, 0.12, 0.85),
-                Some(City::Paris) => Color::srgba(0.13, 0.12, 0.12, 0.8),
-                None => Color::srgba(0.08, 0.09, 0.11, 0.8),
-            };
-            let mat = materials.add(StandardMaterial {
-                base_color: tint,
-                base_color_texture: Some(img),
-                unlit: true,
-                double_sided: true,
-                cull_mode: None,
-                alpha_mode: AlphaMode::Blend,
-                fog_enabled: false,
-                ..default()
-            });
-            // A grid sheet high above, fading to nothing at its rim (vertex alpha).
-            let size = (half * 30.0).clamp(3000.0, 12000.0);
-            let n = 24;
-            let mut pos = Vec::new();
-            let mut uv = Vec::new();
-            let mut col = Vec::new();
-            let mut idx = Vec::new();
-            for j in 0..=n {
-                for i in 0..=n {
-                    let (fx, fz) = (i as f32 / n as f32 * 2.0 - 1.0, j as f32 / n as f32 * 2.0 - 1.0);
-                    let r = (fx * fx + fz * fz).sqrt();
-                    let a = (1.0 - r).clamp(0.0, 1.0).powf(0.7);
-                    pos.push([centre.x + fx * size, 0.0, centre.z + fz * size]);
-                    uv.push([fx * 6.0, fz * 6.0]);
-                    col.push([1.0, 1.0, 1.0, a]);
-                }
-            }
-            for j in 0..n {
-                for i in 0..n {
-                    let k = (j * (n + 1) + i) as u32;
-                    let w = (n + 1) as u32;
-                    idx.extend([k, k + w, k + 1, k + 1, k + w, k + w + 1]);
-                }
-            }
-            let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-            m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-            m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-            m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
-            m.insert_indices(Indices::U32(idx));
-            let height = bmax.y + (half * 1.2).clamp(150.0, 600.0);
-            commands.spawn((
-                Mesh3d(meshes.add(m)),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_xyz(0.0, height, 0.0),
-                CloudLayer,
-                bevy::light::NotShadowCaster,
-                bevy::light::NotShadowReceiver,
-            ));
-            st.clouds = Some(mat);
-        }
     }
-    // Clouds drift; roof beacons blink.
+    // Roof beacons blink.
     let t = time.elapsed_secs();
-    if let Some(m) = st.clouds.as_ref().and_then(|h| materials.get_mut(h)) {
-        let mut m = m;
-        m.uv_transform = bevy::math::Affine2::from_translation(Vec2::new((t * 0.0015).fract(), (t * 0.0006).fract()));
-    }
     for (k, (_, h)) in st.beacons.iter().enumerate() {
         let on = ((t * 0.7 + k as f32 * 0.37) % 1.0) < 0.5;
         if let Some(mut m) = materials.get_mut(h) {

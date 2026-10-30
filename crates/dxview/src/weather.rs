@@ -115,6 +115,9 @@ pub struct WeatherState {
     exposure: f32,
     exposure_check: f32,
     sky_near: f32,
+    /// How high rain can start over each 128-unit cell (the sky zone's ceiling above, or RAIN_TOP), by the player's
+    /// height band.
+    ceiling: std::collections::HashMap<(i32, i32, i32), f64>,
 }
 
 #[derive(Component)]
@@ -275,8 +278,9 @@ pub fn weather_system(
     let rad = 650.0f64;
     let wide = WIDE_RAD;
     let area_k = ((wide / rad) * (wide / rad)) as f32;
-    // Precipitator.Timer: the batch height grows from 300 to 600 so the first drops reach the ground quickly.
-    st.height = (st.height + dt * 60000.0 * 0.01).min(600.0);
+    // Precipitator.Timer: the batch height grows from 300 so the first drops reach the ground quickly - ours on up
+    // to RAIN_TOP (the mod's 600 had them start in plain sight a few metres overhead), capped by the sky above.
+    st.height = (st.height + dt * 60000.0 * 0.01).min(RAIN_TOP as f32);
     let eye = {
         let e = dx_level::bevy_to_ue(cam.translation.to_array());
         DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64)
@@ -296,19 +300,32 @@ pub fn weather_system(
             break;
         }
         // Precipitator.RandomSpawn.
-        let pos = me + pvel * rad / 1200.0 + yaw_fwd * (rad / 4.0) - prof.wind
+        let mut pos = me + pvel * rad / 1200.0 + yaw_fwd * (rad / 4.0) - prof.wind
             + DVec3::new(
                 (rnd(&mut seed) - 0.5) * wide * 2.0,
                 (rnd(&mut seed) - 0.5) * wide * 2.0,
-                st.height as f64 + (rnd(&mut seed) - 0.5) * 150.0,
+                0.0,
             );
+        let key = ((pos.x / 128.0).floor() as i32, (pos.y / 128.0).floor() as i32, (me.z / 256.0).floor() as i32);
+        let top = *st.ceiling.entry(key).or_insert_with(|| {
+            let base = DVec3::new((key.0 as f64 + 0.5) * 128.0, (key.1 as f64 + 0.5) * 128.0, me.z + 64.0);
+            let up = base + DVec3::new(0.0, 0.0, RAIN_TOP + 200.0);
+            let h = lvl.collision.trace(base, up, DVec3::ZERO);
+            base.z + (RAIN_TOP + 200.0) * h.fraction - 24.0
+        });
+        let want = me.z + st.height as f64 + (rnd(&mut seed) - 0.5) * 150.0;
+        pos.z = want.min(top - rnd(&mut seed) * 60.0);
+        if pos.z < me.z + 40.0 {
+            continue;
+        }
         let z = lvl.collision.zone_at(pos);
         if z <= 0 || !lvl.zone_sky.get(z as usize).copied().unwrap_or(false) {
             continue;
         }
         // Raindrop.Randomize.
         let vel = DVec3::new(0.0, 0.0, -900.0 - rnd(&mut seed) * 800.0) + prof.wind;
-        let life = 1.0f32;
+        // Long enough to reach the ground from the top (it ends where it lands).
+        let life = ((pos.z - me.z + 600.0) / -vel.z).clamp(1.0, 4.0) as f32;
         let end = pos + vel * life as f64;
         let h = lvl.collision.trace(pos, end, DVec3::ZERO);
         let hit = (h.fraction < 1.0).then(|| (pos + (end - pos) * h.fraction, h.normal));
@@ -317,7 +334,7 @@ pub fn weather_system(
             vel,
             hit,
             life,
-            len: 0.2 * (1.0 + rnd(&mut seed) as f32 * 4.0) * 70.0,
+            len: 8.0 + rnd(&mut seed) as f32 * 22.0,
             glow: 0.3 + rnd(&mut seed) as f32 * 0.6,
         });
     }
@@ -385,8 +402,8 @@ pub fn weather_system(
         let to_eye = eye - d.pos;
         // Far streaks get wider and dimmer by the same amount (the same light on screen) instead of thinning to
         // flickering sub-pixel lines.
-        let spread = (to_eye.length() / 500.0).max(1.0);
-        let side = dir.cross(to_eye.normalize_or_zero()).normalize_or_zero() * 0.6 * spread;
+        let spread = (to_eye.length() / 400.0).max(1.0);
+        let side = dir.cross(to_eye.normalize_or_zero()).normalize_or_zero() * 0.35 * spread;
         let tail = d.pos - dir * d.len as f64;
         let b = |p: DVec3| Vec3::from(ue_to_bevy(p.as_vec3().to_array())).to_array();
         let k = pos.len() as u32;
@@ -501,9 +518,11 @@ mod tests {
     }
 }
 
-const MAX_DROPS: usize = 7000;
+const MAX_DROPS: usize = 9000;
 /// Half the side of the square the drops fall in (Unreal units).
-const WIDE_RAD: f64 = 1800.0;
+const WIDE_RAD: f64 = 1500.0;
+/// How high over the player rain starts, sky permitting (Unreal units).
+const RAIN_TOP: f64 = 1800.0;
 const MAX_SPLASHES: usize = 1500;
 
 /// Fills the quad buffers up to `cap` quads with collapsed (zero-area, black) ones: the meshes keep one size, so the
