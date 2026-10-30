@@ -668,7 +668,7 @@ pub fn vision_system(
     }
     for e in tagged.iter().filter(|e| !want.contains(e)) {
         if let Ok(mut ec) = commands.get_entity(*e) {
-            ec.remove::<bevy::camera::visibility::RenderLayers>();
+            ec.remove::<(bevy::camera::visibility::RenderLayers, crate::shadowlight::ShadowCaster)>();
         }
     }
     for e in want.iter().filter(|e| !tagged.contains(e)) {

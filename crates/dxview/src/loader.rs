@@ -421,6 +421,7 @@ fn reset_modules() {
     crate::abilities::reset_level();
     crate::shake::reset_level();
     crate::particles::reset_level();
+    crate::weather::reset_level();
     crate::projgen::reset_level();
     crate::missions::reset_level();
     crate::ai::reset_level();

@@ -70,6 +70,8 @@ pub const ACTIONS: &[(&str, Input)] = &[
     ("Spawn menu (debug)", K(KeyCode::Insert)),
     ("Unlock all doors (debug)", K(KeyCode::PageUp)),
     ("Debug overlay", K(KeyCode::PageDown)),
+    ("Third person view", K(KeyCode::KeyH)),
+    ("Swap shoulder (third person)", K(KeyCode::KeyJ)),
 ];
 
 /// Opens and closes the editor; not rebindable so it can't be lost (F10 is an augmentation key, as in the original).
@@ -754,9 +756,9 @@ mod tests {
             .iter()
             .position(|a| a.0 == "Jump / swim up")
             .unwrap();
-        b.map[jump] = Input::Key(KeyCode::KeyJ);
+        b.map[jump] = Input::Key(KeyCode::KeyK);
         assert_eq!(
-            b.outputs(Input::Key(KeyCode::KeyJ)),
+            b.outputs(Input::Key(KeyCode::KeyK)),
             vec![Input::Key(KeyCode::Space)]
         );
         assert!(b.outputs(Input::Key(KeyCode::Space)).is_empty());

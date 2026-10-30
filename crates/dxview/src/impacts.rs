@@ -297,6 +297,10 @@ pub fn impacts_system(
             Source::Turret => (true, false, true),
         };
         let spot = h.at + h.normal;
+        // Enhanced Effects: sparks / dust / splinters by what the wall is made of.
+        if !h2h || mover.is_some() {
+            crate::fx::impact(h.at, h.normal, h.dir, lvl.wall_group(h.at.to_array(), h.normal.to_array()));
+        }
         // A puff of smoke (SmokeTrail: DrawScale x 0.3, 0.25 s) half the time.
         if pen && !h2h && rnd() < 0.5 {
             spawn_puff(&mut commands, &mut assets, &mut images, &mut meshes, &mut materials, spot, 0.03, 0.25);

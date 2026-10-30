@@ -5189,8 +5189,38 @@ pub fn npc_system(
                                     let dir = spread_dir(fwd, right, up, acc, range, &mut npc.seed);
                                     let end = my_eye + dir * range;
                                     let wh = world.trace(my_eye, end, DVec3::splat(0.5));
-                                    let ph_hit =
+                                    let mut ph_hit =
                                         trace_cylinder(&player_cyl, my_eye, end, DVec3::splat(0.5));
+                                    // Enhancement (Carried Objects As Cover, carry.rs): what you hold in front of
+                                    // you takes the bullets meant for you (the original turns its collision off).
+                                    if let Some(hc) = carrying.held.as_ref().filter(|h| crate::carry::cover_on() && h.mass >= 15.0 && !w.hand_to_hand) {
+                                        let box_cyl = Cylinder {
+                                            center: blockers.list[hc.blocker].center,
+                                            radius: hc.radius,
+                                            height: hc.height,
+                                            actor: usize::MAX,
+                                        };
+                                        if let Some(c) = trace_cylinder(&box_cyl, my_eye, end, DVec3::splat(0.5)) {
+                                            let nearer_than_player = ph_hit.is_none_or(|p| c.fraction <= p.fraction);
+                                            if c.fraction < wh.fraction && nearer_than_player && !ph.dead {
+                                                let at = my_eye + (end - my_eye) * c.fraction;
+                                                crate::fx::impact(at, -dir, dir, Some("wood"));
+                                                crate::sound::play(
+                                                    &format!("DeusExSounds.Generic.Ricochet{}", 1 + (crate::sound::frand() * 4.0) as u32 % 4),
+                                                    at,
+                                                    0.8,
+                                                    1024.0,
+                                                    1.0,
+                                                );
+                                                deco_hits.0.push(crate::destruct::DecoHit {
+                                                    blocker: hc.blocker,
+                                                    damage: w.hit_damage,
+                                                    damage_type: w.damage_type(npc.ammo.as_deref()),
+                                                });
+                                                ph_hit = None;
+                                            }
+                                        }
+                                    }
                                     // TraceFire's tracer (10mm / 30.06 / 7.62mm, one slug, half the time).
                                     if !w.hand_to_hand
                                         && w.shots_per_fire() == 1
@@ -6183,6 +6213,8 @@ pub fn npc_weapon_models(
             if npc.weapon.as_ref().map_or(false, |w| w.muzzle_flash) {
                 let at = dx_level::bevy_to_ue(tf.translation.to_array());
                 let c = DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64);
+                let fwd = DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0);
+                crate::fx::muzzle(c + fwd * (npc.params.radius + 24.0) + DVec3::Z * npc.params.height * 0.4, fwd);
                 crate::dynlight::flash(
                     c + DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0) * npc.params.radius * 2.0,
                     crate::dynlight::MUZZLE_FLASH,

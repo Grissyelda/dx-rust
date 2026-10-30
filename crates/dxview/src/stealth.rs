@@ -173,6 +173,8 @@ pub fn footstep_system(
         lvl.floor_group(b.location.to_array(), player.params.height * 2.0)
     };
     let (snd, mult) = crate::sound::footstep_sound(group, water);
+    // Out in the rain (Precipitation's RainStep): a splash on top, the step itself a little softer on carpet / grass.
+    let volume = if water { volume } else { volume * crate::weather::rain_step(group, volume, range, pitch) };
     crate::dualsense::event(crate::dualsense::Haptic::Step(if water { Some("Water".into()) } else { group.map(|g| g.to_string()) }));
     crate::sound::play_owned(
         crate::sound::PLAYER,

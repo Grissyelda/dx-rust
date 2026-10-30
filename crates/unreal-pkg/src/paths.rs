@@ -30,6 +30,11 @@ pub fn set_addons(addons: Vec<PathBuf>, hd_textures: Vec<PathBuf>) {
     }
 }
 
+/// The game folder, once set.
+pub fn root() -> Option<PathBuf> {
+    STATE.read().ok().and_then(|g| g.as_ref().map(|(r, _)| r.clone()))
+}
+
 pub fn addons() -> Vec<PathBuf> {
     ADDONS.read().map(|a| a.clone()).unwrap_or_default()
 }

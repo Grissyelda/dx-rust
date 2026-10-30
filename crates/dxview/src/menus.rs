@@ -680,7 +680,22 @@ impl Enhance {
             ("FasterInfolinks", "Interface", "Faster Infolinks", "Infolinks waiting their turn follow straight on, without the pause between them (GMDX)."),
             ("DropStacks", "Interface", "Drop Whole Stacks", "Shift + Drop on the inventory screen drops the whole stack at once (GMDX)."),
             ("SmartBinoculars", "Gameplay", "Scope Key Takes Out Binoculars", "With nothing in your hands, the scope key takes out the binoculars (GMDX's Smart Binocular Selection)."),
+            ("HQAudio", "Sound", "Better Sound Playback", "Smoother playback of the game's sounds (finer resampling, even panning), and the rest of the sound steps back a little while someone is speaking."),
+            ("SoundOcclusion", "Sound", "Sound Through Walls", "Sounds behind a wall are quieter and muffled; ones you can hear around a corner or through a doorway only a little."),
+            ("RoomReverb", "Sound", "Room Reverb", "An echo shaped by where you are: long in big halls, short in corridors, faint outdoors, dull underwater."),
+            ("Soundscape", "Sound", "Soundscape", "Far-off life around the open-air maps - dogs, gulls by the water, gusts of wind (more in the rain) - now and then, quietly, from the game's own sounds."),
             ("RestrictedCombatMusic", "Sound", "Combat Music Needs Two Attackers", "The combat music only starts when at least two enemies are fighting you, so one far-off guard doesn't set it off (GMDX)."),
+            ("ModernAim", "Gameplay", "Modern Aiming", "Shots go where your sights drift instead of scattering at random, and the crosshair follows that point; the accuracy brackets always show. Hold the scope key (Z or LT) with a weapon that has no scope to aim down the sights: steadier, a little zoom, walking pace."),
+            ("EnhancedFX", "Visuals", "Enhanced Effects", "More particles: sparks off metal, dust off stone, splinters off wood and splashes off water where bullets hit; spark showers and rolling smoke from explosions; smoke from gun barrels; a spray of blood on hits."),
+            ("Elements", "Gameplay", "Elemental Reactions", "Electric shocks run through water to everyone standing in it (you too), people on fire set others they touch alight, and fire caught by someone in water goes out."),
+            ("Mantling", "Gameplay", "Mantling", "Jump at a ledge you can reach - up to about the height of your arms - and you climb onto it; jump at a low obstacle and you vault onto it. Not while crouched or carrying anything heavy."),
+            ("CarryCover", "Gameplay", "Carried Objects As Cover", "A crate or anything else of some weight held in front of you stops the bullets meant for you, and takes the damage itself (it can break)."),
+            ("ThirdPerson", "Gameplay", "Third Person View", "H switches between first person and a view over JC's shoulder (J swaps the shoulder). The camera keeps out of walls and comes in closer while you aim with the scope key; first person is where you start."),
+            ("AtmosphericFog", "Visuals", "Atmospheric Fog", "A thin night haze over distance, thicker in the rain, so far-off buildings and the skyline melt into the dark."),
+            ("LightHalos", "Visuals", "Light Halos", "The air around lamps glows softly with their colour, fading as you get close; brighter in the rain."),
+            ("Skyline", "Visuals", "3D Skyline", "Procedural city blocks beyond the edges of the city maps - New York's towers, Hong Kong's denser ones, Paris's low roofs - dark with scattered lit windows and blinking roof lights, seen wherever the sky is open."),
+            ("Clouds", "Visuals", "Night Clouds", "A slow-moving cloud layer over the open-air maps, faintly lit from below by the city."),
+            ("ModernWater", "Visuals", "Modern Water", "Water with real reflections of what's around it, a dark see-through body, fine wind waves, rain rings and glints from the lights - like a modern shader pack. Costs an extra render near water."),
             ("NoStrobeLights", "Visuals", "No Flickering Lights", "Flickering and blinking lights burn steady (GMDX's Lighting Accessibility, for photosensitive players)."),
         ] {
             let mut c = debug_mode_choice();
@@ -693,6 +708,7 @@ impl Enhance {
         }
         // Mod switches, listed while the mod is on in the launcher.
         for (key, id, lbl, help) in [
+            ("OutfitBoxes", "augmentique", "Outfit Boxes In The Original Maps", "Without GMDX's maps, Augmentique's outfits are hidden in boxes across the campaign - a few in a map, by a clothes rack, a couch or a chair - instead of all being open. Takes effect on the next start."),
             ("HDTextures", "newvision", "HD Textures (New Vision)", "New Vision's high-resolution textures on the world and on models. Changes take effect when the next map loads."),
             ("HDModels", "hdtp", "HD Items And Objects (HDTP)", "HDTP's detailed weapons, pickups and decorations. Changes take effect when the next map loads."),
             ("HDCharacters", "hdtp", "HD Characters (HDTP)", "HDTP's detailed people and their faces. Changes take effect when the next map loads."),
@@ -724,6 +740,26 @@ impl Enhance {
             c.value = crate::settings::get("AugAllOutfits");
             c.saved = c.value;
             items.push(tag(c, "Mods"));
+        }
+        if crate::weather::available() {
+            let mut c = debug_mode_choice();
+            c.key = "Weather".into();
+            c.label = "Rain (Precipitation)".into();
+            c.help = "Rain on the maps where it fits - New York, Hong Kong, the docks, a little over Paris - falling wherever the sky is open, splashing, with its sound. Dynamic lets it come and go.".into();
+            c.kind = ChoiceKind::Enum(vec!["Off".into(), "Steady".into(), "Dynamic".into()]);
+            c.value = crate::settings::get("Weather");
+            c.saved = c.value;
+            items.push(tag(c, "Visuals"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "RealtimeShadows".into();
+            c.label = "Real-Time Shadows".into();
+            c.help = "People and objects cast moving shadows from the lamps around them, as dark as the light they block. Low uses the two strongest lights near you, High four.".into();
+            c.kind = ChoiceKind::Enum(vec!["Off".into(), "Low".into(), "High".into()]);
+            c.value = crate::settings::get("RealtimeShadows");
+            c.saved = c.value;
+            items.push(tag(c, "Visuals"));
         }
         // HUD customisation: each part shown or hidden, sized, faded.
         for (key, name) in crate::classic_hud::HUD_PARTS {
@@ -3118,6 +3154,8 @@ fn scroll_by(win: &mut Win, id: u8, d: i32) {
     }
     match &mut win.body {
         Body::Keys(k) if id == 0 => k.scroll = (k.scroll + d).max(0),
+        // The Enhancements list (list() clamps it to the end when it draws).
+        Body::Enhance(en) if id == 0 => en.scroll = (en.scroll + d).max(0),
         Body::SaveLoad(sl) if id == 0 => sl.scroll = (sl.scroll + d).max(0),
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = (ng.desc_scroll + d).max(0),
         _ => {}
@@ -3133,6 +3171,7 @@ fn set_scroll(win: &mut Win, id: u8, v: i32) {
     }
     match &mut win.body {
         Body::Keys(k) if id == 0 => k.scroll = v,
+        Body::Enhance(en) if id == 0 => en.scroll = v,
         Body::SaveLoad(sl) if id == 0 => sl.scroll = v,
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = v,
         _ => {}

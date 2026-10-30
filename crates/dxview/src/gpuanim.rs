@@ -26,6 +26,7 @@ use std::collections::HashMap;
 pub type AnimMaterial = ExtendedMaterial<StandardMaterial, VertAnim>;
 
 pub const ANIM_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("6f0c2f7e-1a8b-4c9d-9e2f-0d5b7a3c1e44");
+pub const ANIM_PREPASS_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("6f0c2f7e-1a8b-4c9d-9e2f-0d5b7a3c1e45");
 
 /// MeshTag meaning "draw the mesh's own positions" (CPU-posed this frame).
 pub const SENTINEL: u32 = u32::MAX;
@@ -48,8 +49,12 @@ impl MaterialExtension for VertAnim {
     fn enable_prepass() -> bool {
         false
     }
+    fn prepass_vertex_shader() -> ShaderRef {
+        ANIM_PREPASS_SHADER.into()
+    }
     fn enable_shadows() -> bool {
-        false
+        // Shadow maps (shadowlight.rs, the flashlight cone) draw animated meshes in their current pose.
+        true
     }
 }
 
@@ -57,6 +62,10 @@ pub fn setup_anim_shader(mut shaders: ResMut<Assets<Shader>>) {
     let _ = shaders.insert(
         &ANIM_SHADER,
         Shader::from_wgsl(include_str!("shaders/vert_anim.wgsl"), "dxview/vert_anim.wgsl"),
+    );
+    let _ = shaders.insert(
+        &ANIM_PREPASS_SHADER,
+        Shader::from_wgsl(include_str!("shaders/vert_anim_prepass.wgsl"), "dxview/vert_anim_prepass.wgsl"),
     );
 }
 

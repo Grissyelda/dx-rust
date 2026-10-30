@@ -62,6 +62,9 @@ pub struct Plane {
     pub mats: Vec<Handle<MirrorMaterial>>,
     /// The mirrored faces themselves (Bevy space).
     pub tris: Vec<[Vec3; 3]>,
+    /// A water surface (reflects only with Modern Water on), and its water materials.
+    pub water: bool,
+    pub water_mats: Vec<Handle<crate::water::WaterMaterial>>,
 }
 
 impl Mirrors {
@@ -191,9 +194,51 @@ pub fn material(
             max: hi,
             mats: vec![h.clone()],
             tris,
+            water: false,
+            water_mats: Vec::new(),
         }),
     }
     h
+}
+
+/// The placeholder reflection image (made once).
+pub fn placeholder(mirrors: &mut Mirrors, images: &mut Assets<Image>) -> Handle<Image> {
+    mirrors.image.get_or_insert_with(|| make_image(images, UVec2::new(16, 16))).clone()
+}
+
+/// A water batch (horizontal faces): its plane reflects like a mirror while Modern Water is on (water.rs). Not
+/// counted as a mirror face (`on_mirror`: blob shadows still fall on water).
+pub fn add_water(mirrors: &mut Mirrors, h: &Handle<crate::water::WaterMaterial>, positions: &[[f32; 3]]) {
+    if positions.is_empty() {
+        return;
+    }
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for p in positions {
+        lo = lo.min(Vec3::from(*p));
+        hi = hi.max(Vec3::from(*p));
+    }
+    // Only flat sheets (a water face that isn't level - a waterfall - doesn't reflect).
+    if hi.y - lo.y > 0.05 {
+        return;
+    }
+    let d = (lo.y + hi.y) * 0.5;
+    match mirrors.planes.iter_mut().find(|p| p.water && (p.d - d).abs() < 0.03) {
+        Some(p) => {
+            p.min = p.min.min(lo);
+            p.max = p.max.max(hi);
+            p.water_mats.push(h.clone());
+        }
+        None => mirrors.planes.push(Plane {
+            n: Vec3::Y,
+            d,
+            min: lo,
+            max: hi,
+            mats: Vec::new(),
+            tris: Vec::new(),
+            water: true,
+            water_mats: vec![h.clone()],
+        }),
+    }
 }
 
 /// Spawns this map's reflection cameras (once its mirrors are known): a sky-room and a world camera per slot.
@@ -236,6 +281,7 @@ pub fn mirror_system(
     main: Query<(&Transform, &Projection), (With<crate::FlyCam>, Without<crate::SkyCam>, Without<MirrorCam>)>,
     sky_main: Query<&Projection, (With<crate::SkyCam>, Without<MirrorCam>)>,
     mut cams: Query<(&MirrorCam, &mut Camera, &mut Transform, &mut Projection, &mut RenderTarget)>,
+    mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
 ) {
     if mirrors.planes.is_empty() {
         return;
@@ -294,7 +340,7 @@ pub fn mirror_system(
         .planes
         .iter()
         .enumerate()
-        .filter(|(_, p)| (p.n.dot(eye) - p.d).abs() >= 0.01 && visible(p))
+        .filter(|(_, p)| (!p.water || crate::water::modern()) && (p.n.dot(eye) - p.d).abs() >= 0.01 && visible(p))
         .map(|(i, p)| (i, eye.clamp(p.min, p.max).distance(eye)))
         .filter(|(_, d)| *d <= 40.0)
         .collect();
@@ -356,6 +402,17 @@ pub fn mirror_system(
                         m.extension.params.x = 1.0;
                     }
                     None => m.extension.params.x = 0.0,
+                }
+            }
+        }
+        for h in &mirrors.planes[pi].water_mats {
+            if let Some(mut m) = water_mats.get_mut(h) {
+                match &img {
+                    Some(i) => {
+                        m.extension.reflection = i.clone();
+                        m.extension.params.m.y = 1.0;
+                    }
+                    None => m.extension.params.m.y = 0.0,
                 }
             }
         }
@@ -447,7 +504,8 @@ pub fn mirror_body_system(
     let test = std::env::var("DXVIEW_MIRROR_BODY").is_ok();
     // Augmentique's outfits screen shows him too (outfit_view.rs).
     let outfits = crate::outfit_view::open();
-    let show = (outfits || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active();
+    // Third person (thirdperson.rs): the main camera draws him too.
+    let show = (outfits || crate::thirdperson::active() || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active();
     if let Some(b) = body.0.as_ref() {
         if b.gen != crate::augmentique::generation() {
             commands.entity(b.root).despawn();

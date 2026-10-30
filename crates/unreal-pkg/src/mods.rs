@@ -67,6 +67,13 @@ pub const MODS: &[ModDef] = &[
         help: "Outfits for JC and the people of the world (Augmentique): choose its folder",
     },
     ModDef {
+        id: "precipitation",
+        name: "Precipitation",
+        kind: ModKind::Addon,
+        marker: "System/Precipitation.u",
+        help: "Rain (Smoke39's Precipitation, also in GMDX Augmented's System folder): choose its folder",
+    },
+    ModDef {
         id: "gmdx",
         name: "GMDX Perks",
         kind: ModKind::Addon,

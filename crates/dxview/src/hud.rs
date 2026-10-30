@@ -157,7 +157,7 @@ pub fn aim_system(
         // Zoomed in: the shot goes where the (swaying) scope points.
         acc = 0.0;
     }
-    aim.accuracy = acc.max(0.0);
+    aim.accuracy = crate::aimmode::accuracy(acc.max(0.0));
 }
 
 pub fn spawn_crosshair(
@@ -245,7 +245,13 @@ pub fn crosshair_system(
         win.physical_width() as f32 / s,
         win.physical_height() as f32 / s,
     );
-    let (x, y) = ((w * 0.5).floor() - 1.0, (h * 0.5).floor() - 1.0);
+    // Modern Aiming: the crosshair and brackets sit on the drifting point of aim (aimmode.rs).
+    let (sx, sy) = {
+        let s = crate::aimmode::sway();
+        let half = (crate::aimmode::fov(crate::weapons::DEFAULT_FOV).to_radians() * 0.5).tan();
+        (s.x * 1000.0 / 1024.0 / half * w * 0.5, -s.y * 1000.0 / 1024.0 / half * w * 0.5)
+    };
+    let (x, y) = ((w * 0.5 + sx).floor() - 1.0, (h * 0.5 + sy).floor() - 1.0);
 
     // TraceLOS from the eye: what are we pointing at?
     let eye = bevy_to_ue(cam.translation.to_array());
@@ -309,8 +315,8 @@ pub fn crosshair_system(
         let (cw, ch) = (size.0 * px, size.1 * px);
         node.width = Val::Px(cw);
         node.height = Val::Px(ch);
-        node.left = Val::Px((w * px - cw) * 0.5);
-        node.top = Val::Px((h * px - ch) * 0.5);
+        node.left = Val::Px((w * px - cw) * 0.5 + sx * px);
+        node.top = Val::Px((h * px - ch) * 0.5 + sy * px);
     }
 
     // Brackets only for ranged weapons with a target in range. Looking through a rifle scope they always show,
@@ -319,7 +325,12 @@ pub fn crosshair_system(
         && weapons.held.as_ref().map_or(false, |h| {
             h.stats.has_scope && h.stats.class != "Binoculars"
         });
-    let show = !menu && scoped
+    let modern = crate::aimmode::on()
+        && !zoomed
+        && !menu
+        && weapons.held.as_ref().is_some_and(|hd| !hd.stats.hand_to_hand && !hd.stats.item);
+    let show = modern
+        || !menu && scoped
         || (!zoomed
             && !menu
             && match (weapons.held.as_ref(), target_dist) {

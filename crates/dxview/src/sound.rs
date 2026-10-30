@@ -499,6 +499,8 @@ struct Playing {
     volume: f32,
     radius: f32,
     pitch: f32,
+    /// Speech (slot TALK): never ducked.
+    talk: bool,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -529,6 +531,10 @@ pub struct SoundState {
     actor_ambients: Option<Vec<(usize, String, f64, f32, f32, Option<usize>)>>,
     /// Another song playing over the level's (the credits / quotes music): dynamic music waits.
     other_song: Option<imsim_audio::Song>,
+    /// Enhancements (audiofx.rs): occlusion cache, when the room was last measured, the HQ setting sent.
+    occl: crate::audiofx::Occluder,
+    room_t: f32,
+    hq_sent: Option<bool>,
 }
 
 /// ClientSetMusic with another song (Some(package.name)) or back to the level's song and section (None).
@@ -642,6 +648,9 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
         time: 0.0,
         actor_ambients: None,
         other_song: None,
+        occl: Default::default(),
+        room_t: 0.0,
+        hq_sent: None,
     }
 }
 
@@ -688,6 +697,39 @@ pub fn sound_system(
         }
     };
     let st = &mut *st;
+    // Enhancements (audiofx.rs): playback quality, the room's reverb, speech ducking, sound through walls.
+    let hq = crate::audiofx::hq_on();
+    if st.hq_sent != Some(hq) {
+        st.hq_sent = Some(hq);
+        st.audio.set_quality(hq);
+    }
+    st.room_t -= dt;
+    if st.room_t <= 0.0 {
+        st.room_t = 0.5;
+        if crate::audiofx::reverb_on() {
+            let (room, damp, wet) = crate::audiofx::room(&level.0, ear);
+            st.audio.set_reverb(room, damp, wet);
+        } else {
+            st.audio.set_reverb(0.5, 0.5, 0.0);
+        }
+    }
+    let talking = st.slots.iter().any(|((_, sl), (id, _))| *sl == slot::TALK && st.audio.is_playing(*id));
+    let duck_k = crate::audiofx::update_duck(talking, dt);
+    let occl_on = crate::audiofx::occlusion_on();
+    let reverb_on = crate::audiofx::reverb_on();
+    let lvl0 = &level.0;
+    // (gain multiplier, filter, reverb send) for a voice.
+    let mut fx = |occl: &mut crate::audiofx::Occluder, pos: Option<DVec3>, talk: bool| -> (f32, f32, f32) {
+        let duck = if talk { 1.0 } else { duck_k };
+        let send = if !reverb_on { 0.0 } else if pos.is_some() { 1.0 } else { 0.35 };
+        match pos {
+            Some(p) if occl_on => {
+                let (g, f) = occl.at(lvl0, ear, p, now);
+                (g * duck, f, send)
+            }
+            _ => (duck, 1.0, send),
+        }
+    };
 
     for (owner, sl) in STOPS
         .lock()
@@ -730,13 +772,17 @@ pub fn sound_system(
         let Some(clip) = st.bank.clip(&r.sound) else {
             continue;
         };
+        let talk = r.slot == slot::TALK;
+        let (g2, filter, reverb) = fx(&mut st.occl, r.pos, talk);
         let id = st.audio.play(
             clip,
             VoiceParams {
-                volume: r.volume * gain,
+                volume: r.volume * gain * g2,
                 pan,
                 pitch: r.pitch,
                 looping: false,
+                filter,
+                reverb,
             },
         );
         if r.slot != slot::NONE && r.owner != 0 {
@@ -749,6 +795,7 @@ pub fn sound_system(
                 volume: r.volume,
                 radius,
                 pitch: r.pitch,
+                talk,
             });
         }
     }
@@ -843,14 +890,18 @@ pub fn sound_system(
         .unwrap_or_default();
     let mut keep: HashMap<u64, ()> = HashMap::new();
     let mut updates = Vec::new();
+    let mut fx_updates = Vec::new();
     for h in holds {
         if keep.insert(h.key, ()).is_some() {
             continue;
         }
         let (gain, pan) = place(h.pos, h.radius);
+        let (g2, filter, reverb) = if gain > 0.0 { fx(&mut st.occl, h.pos, false) } else { (1.0, 1.0, 0.0) };
+        let gain = gain * g2;
         match st.held.get(&h.key) {
             Some((id, s)) if *s == h.sound && st.audio.is_playing(*id) => {
-                updates.push((*id, h.volume * gain, pan, h.pitch))
+                updates.push((*id, h.volume * gain, pan, h.pitch));
+                fx_updates.push((*id, filter, reverb));
             }
             other => {
                 if let Some((id, _)) = other {
@@ -864,6 +915,8 @@ pub fn sound_system(
                             pan,
                             pitch: h.pitch,
                             looping: true,
+                            filter,
+                            reverb,
                         },
                     );
                     st.held.insert(h.key, (id, h.sound.clone()));
@@ -888,11 +941,18 @@ pub fn sound_system(
     // One-shots follow the listener (the sources stay where they were made).
     let audio = &st.audio;
     st.playing.retain(|p| audio.is_playing(p.id));
-    for p in &st.playing {
+    let playing = std::mem::take(&mut st.playing);
+    for p in &playing {
         let (gain, pan) = place(p.pos, p.radius);
-        updates.push((p.id, p.volume * gain, pan, p.pitch));
+        let (g2, filter, reverb) = if gain > 0.0 { fx(&mut st.occl, p.pos, p.talk) } else { (1.0, 1.0, 0.0) };
+        updates.push((p.id, p.volume * gain * g2, pan, p.pitch));
+        fx_updates.push((p.id, filter, reverb));
     }
+    st.playing = playing;
     st.audio.set_many(&updates);
+    if occl_on || reverb_on || hq {
+        st.audio.set_fx_many(&fx_updates);
+    }
     st.slots
         .retain(|_, (id, t)| now - *t < 10.0 || audio.is_playing(*id));
 

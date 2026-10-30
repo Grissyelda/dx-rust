@@ -20,7 +20,7 @@ pub const CODE_PACKAGES: &[&str] = &[
 
 /// Mods' code packages, loaded after the game's when present (through a mod folder, paths.rs): the Lay D Denton
 /// Project's FemJC (its NPCs and JC's female carcass).
-pub const MOD_PACKAGES: &[&str] = &["FemJC", "Augmentique"];
+pub const MOD_PACKAGES: &[&str] = &["FemJC", "Augmentique", "Precipitation"];
 
 /// Packages opened by `ClassDb::package` (not code packages), shared process-wide.
 static SHARED: std::sync::Mutex<Option<HashMap<String, Option<std::sync::Arc<Package>>>>> = std::sync::Mutex::new(None);
@@ -157,6 +157,12 @@ impl ClassDb {
                 if pkg.exports.iter().any(|e| e.class_index == 0 && e.name.eq_ignore_ascii_case(class)) {
                     return Some(k);
                 }
+            }
+        }
+        // Packages put in by open_replacing under other names.
+        for (k, pkg) in &self.packages {
+            if pkg.exports.iter().any(|e| e.class_index == 0 && e.name.eq_ignore_ascii_case(class)) {
+                return Some(k.clone());
             }
         }
         None
