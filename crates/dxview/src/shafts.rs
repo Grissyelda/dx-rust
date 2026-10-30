@@ -192,7 +192,6 @@ pub fn shafts_system(
     mut images: ResMut<Assets<Image>>,
     mut spots: Query<(&ShaftSpot, &mut SpotLight, &mut Transform, &mut Visibility), (Without<FlyCam>, Without<ShaftBeam>, Without<crate::dynlight::FlashCone>)>,
     mut beam: Query<(&mut SpotLight, &mut Transform, &mut Visibility), (With<ShaftBeam>, Without<FlyCam>, Without<ShaftSpot>, Without<crate::dynlight::FlashCone>)>,
-    cone: Query<(Entity, &SpotLight, &Transform, &Visibility, Has<VolumetricLight>), (With<crate::dynlight::FlashCone>, Without<ShaftBeam>, Without<ShaftSpot>, Without<FlyCam>)>,
     mut st: Local<ShaftState>,
     mut map_gen: Local<u64>,
 ) {
@@ -355,30 +354,23 @@ pub fn shafts_system(
             }
         }
     }
-    // The flashlight: its cone carries the beam itself when it's on; otherwise a beam-only light follows the view.
-    let mut cone_lit = false;
-    for (e, sl, tf, vis, vol) in &cone {
-        let lit = sl.intensity > 0.0 && *vis != Visibility::Hidden;
-        cone_lit |= lit;
-        if !vol {
-            commands.entity(e).insert(VolumetricLight);
-        }
-        let _ = tf;
-    }
+    // The flashlight's beam in the air: a light of its own that lights only the haze (the Flashlight Cone's light
+    // grows with the distance it reaches, which in the haze blew out the screen), modest, and from a little ahead
+    // of the shoulder so the air right at the lens doesn't flare.
     let aug = crate::abilities::aug_active("AugLight");
     for (mut sl, mut tf, mut vis) in &mut beam {
-        if aug && !cone_lit {
+        if aug {
             let f = cam_tf.forward().as_vec3();
-            let pos = cam_tf.translation + cam_tf.right().as_vec3() * 0.19 - Vec3::Y * 0.11;
+            let pos = cam_tf.translation + cam_tf.right().as_vec3() * 0.19 - Vec3::Y * 0.11 + f * 0.6;
             *tf = Transform::from_translation(pos).looking_to(f, Vec3::Y);
-            sl.intensity = 9000.0;
+            sl.intensity = 60.0;
             sl.color = {
                 let c = dx_level::lighting::hsv_white(32, 140);
                 Color::srgb(c[0], c[1], c[2])
             };
             sl.range = 1024.0 * METERS_PER_UNIT;
-            sl.outer_angle = 0.42;
-            sl.inner_angle = 0.14;
+            sl.outer_angle = 0.36;
+            sl.inner_angle = 0.12;
             *vis = Visibility::Inherited;
         } else if *vis != Visibility::Hidden {
             sl.intensity = 0.0;
@@ -386,7 +378,7 @@ pub fn shafts_system(
         }
     }
     // No beam anywhere near (no flashlight, spotlight or moon through a window): the haze isn't marched at all.
-    let lit = aug || cone_lit || st.spots_lit > 0 || st.moon_on;
+    let lit = aug || st.spots_lit > 0 || st.moon_on;
     let want_v = if lit { Visibility::Inherited } else { Visibility::Hidden };
     for (_, mut v) in &mut haze {
         if *v != want_v {

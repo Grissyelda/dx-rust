@@ -32,6 +32,8 @@ struct State {
     eye: Option<Transform>,
     /// Where the camera was drawn this frame (Unreal units).
     cam: Option<DVec3>,
+    /// Extra height over the eye while crouched (units), eased: the crouched eye is down at the hips.
+    lift: f32,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -41,6 +43,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     dist: 0.0,
     eye: None,
     cam: None,
+    lift: 0.0,
 });
 
 /// Third person right now (the setting on and switched to it, nothing else holding the camera).
@@ -131,6 +134,7 @@ pub fn place_system(
     time: Res<Time>,
     level: Res<LevelRes>,
     keys: Res<ButtonInput<KeyCode>>,
+    player: Res<crate::Player>,
     mut cam: Single<&mut Transform, (With<FlyCam>, Without<SkyCam>)>,
 ) {
     let Ok(mut st) = STATE.lock() else { return };
@@ -152,7 +156,9 @@ pub fn place_system(
     let e = bevy_to_ue(eye_t.translation.to_array());
     let eye = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
     // Over the shoulder: back, to the side and a little up; walls pull it in (a sphere of 8 units).
-    let pivot = eye + rt * (st.side as f64 * 22.0) + DVec3::new(0.0, 0.0, 6.0);
+    let lift_want = if player.crouched { 24.0 } else { 0.0 };
+    st.lift += (lift_want - st.lift) * (dt * 6.0).min(1.0);
+    let pivot = eye + rt * (st.side as f64 * 22.0) + DVec3::new(0.0, 0.0, 6.0 + st.lift as f64);
     let side = level.0.collision.trace(eye, pivot, DVec3::splat(8.0));
     let pivot = eye + (pivot - eye) * side.fraction.max(0.0);
     let back = pivot - fw * st.dist as f64;

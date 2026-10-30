@@ -621,7 +621,8 @@ pub fn aug_light_system(
         let r_m = beam.info(beam_at, 1.0).radius * dx_level::METERS_PER_UNIT;
         let k = (1.5f32 * 192.0 / 255.0).min(1.0).powf(2.2);
         let gain = st.as_ref().map_or(1.0, |s| s.gain);
-        let d = (dist.max(64.0) / 64.0) as f32;
+        // (capped: aimed at the sky, the light needed to reach "the spot" 1024 units off blew out everything near)
+        let d = (dist.clamp(64.0, 256.0) / 64.0) as f32;
         let intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * gain * d * d * 5.0 * std::env::var("DXVIEW_CONE_GAIN").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         let c = hsv_white(32, 140);
         let right = cam.right().as_vec3();

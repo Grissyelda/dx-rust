@@ -627,12 +627,17 @@ pub fn mirror_body_system(
     } else if falling {
         ("Jump", false, 3.0)
     } else if player.crouched {
-        if shooting && ranged {
-            // PlayCrawling while firing loops CrouchShoot; still and aiming, its first frame.
-            ("CrouchShoot", moving || firing, 1.0)
+        if firing && ranged {
+            // PlayCrawling while firing: CrouchShoot, once per shot.
+            ("CrouchShoot", true, 1.0)
+        } else if aiming {
+            // Aiming crouched (moving or not): the gun held up - CrouchShoot's first frame.
+            ("CrouchShoot", false, 1.0)
         } else if moving {
-            // PlayCrawling: LoopAnim('CrouchWalk'), its legs in step with the ground covered.
-            ("CrouchWalk", true, (speed as f32 / (player.params.ground_speed as f32 * 0.3).max(1.0)).clamp(0.6, 2.0))
+            // PlayCrawling: LoopAnim('CrouchWalk'), its legs in step with the ground covered. Meshes without it
+            // (the women's GFM_Trench: Lay D Denton) loop Crouch, as LDDP's own PlayWalking does.
+            let walk = if b.mesh.seqs.iter().any(|s| s.name.eq_ignore_ascii_case("CrouchWalk")) { "CrouchWalk" } else { "Crouch" };
+            (walk, true, (speed as f32 / (player.params.ground_speed as f32 * 0.3).max(1.0)).clamp(0.6, 2.0))
         } else {
             ("Crouch", false, 1.0)
         }
@@ -661,7 +666,7 @@ pub fn mirror_body_system(
         ("BreatheLight", true, 1.0)
     };
     // Aim pose: frame 0 of Shoot / CrouchShoot held while aiming and not firing.
-    let aim_pose = aiming && !firing && !moving && !falling && !player.swimming;
+    let aim_pose = aiming && !firing && (!moving || player.crouched) && !falling && !player.swimming;
     if std::env::var_os("DXVIEW_BODYLOG").is_some() {
         static T: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
         if let Ok(mut t) = T.lock() {

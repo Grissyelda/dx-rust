@@ -1191,6 +1191,8 @@ fn setup(
 ) {
     let mut water_list = water::WaterMats::default();
     let mut backing_mat: Option<Handle<StandardMaterial>> = None;
+    // The tessellated water sheets' vertices (the open sea's first band meets them vertex to vertex).
+    let mut sheet_pts: Vec<[f32; 3]> = Vec::new();
     let mut bsp_cache: std::collections::HashMap<AssetId<StandardMaterial>, Handle<shadowlight::BspMaterial>> = Default::default();
     let level = &level.0;
     let mut mirrors = mirror::Mirrors::default();
@@ -1271,6 +1273,7 @@ fn setup(
         if b.class == SurfaceClass::Water && !b.sky {
             // Fine enough for the surface to move with the swell (Modern Water's waves).
             let (p, n, u, u1, i) = water::tessellate(&b.positions, &b.normals, &b.uvs, &b.uvs1, &b.indices, 2.0);
+            sheet_pts.extend_from_slice(&p);
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n);
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, u);
@@ -1354,7 +1357,7 @@ fn setup(
         }
     }
 
-    if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches) {
+    if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches, &sheet_pts) {
         if let (Some(bevy::mesh::VertexAttributeValues::Float32x3(p)), Some(Indices::U32(i))) = (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices()) {
             let y = p.first().map_or(0.0, |v| v[1]);
             let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();

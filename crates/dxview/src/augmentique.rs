@@ -18,7 +18,7 @@
 //! reloaded map dresses people the same way.
 
 use crate::uscript::{Host, Script, V};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::RwLock;
 use unreal_pkg::props::{find, Property, Value};
 
