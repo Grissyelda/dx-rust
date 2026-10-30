@@ -240,7 +240,7 @@ fn flash_spot_on(level: &dx_level::Level, center: [f32; 3]) -> Option<LightInfo>
     let c = DVec3::new(center[0] as f64, center[1] as f64, center[2] as f64);
     let to = c - f.eye;
     let d = to.length();
-    if d < 1.0 || d > f.reach + 400.0 {
+    if d < 1.0 || d > 2048.0 {
         return None;
     }
     let cos = to.dot(f.dir) / d;
@@ -254,8 +254,14 @@ fn flash_spot_on(level: &dx_level::Level, center: [f32; 3]) -> Option<LightInfo>
     if h.fraction < 0.999 {
         return None;
     }
-    // Strength falls off with distance like the cone's pool (full to 256 units, then dimming).
-    let fall = (1.0 - ((d - 256.0) / (f.reach + 400.0 - 256.0)).max(0.0)).clamp(0.0, 1.0);
+    // Strength falls off with distance as the cone's does: its intensity is set so the spot it points at (64..256
+    // units off) gets the full light; beyond that, inverse square. (It used to stay near full out to the reach +
+    // 400 units, so with the light pointed over open water things 20 m off lit up while the ground stayed dark.)
+    let x0 = f.reach.clamp(64.0, 256.0);
+    let fall = (x0 / d).powi(2).min(1.0);
+    if fall < 0.02 {
+        return None;
+    }
     let k = (k * k * (3.0 - 2.0 * k)) as f32 * fall as f32;
     let mut l = f.spec.info(c - to / d * 64.0, k);
     l.radius = 160.0;

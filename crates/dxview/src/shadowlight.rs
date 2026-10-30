@@ -49,8 +49,12 @@ impl MaterialExtension for BspShadow {
     fn fragment_shader() -> ShaderRef {
         BSP_SHADER.into()
     }
+    // In the prepass: with Ambient Occlusion (or Modern Water's depth) the camera has a depth / normal prepass, and
+    // without the world in it SSAO had no walls to work from, the water no seabed, and Bevy's forward pass (which
+    // loads opaque normals from the normal prepass when MSAA is off) lit the BSP with garbage normals: dark wedges
+    // and a dead flashlight.
     fn enable_prepass() -> bool {
-        false
+        true
     }
 }
 
@@ -344,3 +348,24 @@ pub fn tag_casters_system(
     }
 }
 
+
+/// Transparent meshes cast no shadows. Bevy's shadow pass draws every caster whatever its alpha mode, so decals
+/// (bullet holes, blood splats, blob shadows lying on the floor), effect sprites and the like dropped dark squares
+/// into the flashlight cone and the shadow lights. Anything new with a blended / additive / modulated material is
+/// marked NotShadowCaster.
+#[allow(clippy::type_complexity)]
+pub fn no_transparent_shadows_system(
+    mut commands: Commands,
+    q: Query<
+        (Entity, &MeshMaterial3d<StandardMaterial>),
+        (Without<bevy::light::NotShadowCaster>, Or<(Added<MeshMaterial3d<StandardMaterial>>, Changed<MeshMaterial3d<StandardMaterial>>)>),
+    >,
+    mats: Res<Assets<StandardMaterial>>,
+) {
+    for (e, h) in &q {
+        let Some(m) = mats.get(&h.0) else { continue };
+        if matches!(m.alpha_mode, AlphaMode::Blend | AlphaMode::Add | AlphaMode::Multiply | AlphaMode::Premultiplied | AlphaMode::AlphaToCoverage) {
+            commands.entity(e).insert(bevy::light::NotShadowCaster);
+        }
+    }
+}
