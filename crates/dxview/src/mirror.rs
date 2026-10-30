@@ -345,6 +345,16 @@ pub fn mirror_system(
         .filter(|(_, d)| *d <= 40.0)
         .collect();
     near.sort_by(|a, b| a.1.total_cmp(&b.1));
+    // One water plane reflects at a time (the nearest): each slot is two more renders of the scene.
+    let mut seen_water = false;
+    near.retain(|(i, _)| {
+        if !mirrors.planes[*i].water {
+            return true;
+        }
+        let keep = !seen_water;
+        seen_water = true;
+        keep
+    });
     // DXVIEW_MIRROR_SLOTS=n: at most n reflections (performance comparisons).
     let max = std::env::var("DXVIEW_MIRROR_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(SLOTS).min(SLOTS);
     near.truncate(max);
@@ -375,7 +385,9 @@ pub fn mirror_system(
         let nearest = want.first().copied();
         for k in 0..SLOTS {
             // The nearest reflection at full resolution, the others at half (they're farther and smaller on screen).
-            let size = if mirrors.slots[k].plane.is_some() && mirrors.slots[k].plane == nearest { full } else { (full / 2).max(UVec2::ONE) };
+            // Water's ripples hide resolution: always half.
+            let water = mirrors.slots[k].plane.is_some_and(|p| mirrors.planes[p].water);
+            let size = if mirrors.slots[k].plane.is_some() && mirrors.slots[k].plane == nearest && !water { full } else { (full / 2).max(UVec2::ONE) };
             if mirrors.slots[k].plane.is_some() && mirrors.slots[k].size != size {
                 let img = make_image(&mut images, size);
                 if let Some(old) = mirrors.slots[k].image.replace(img) {

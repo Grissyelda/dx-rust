@@ -30,8 +30,8 @@ pub fn postfx_system(
     mut commands: Commands,
     world: Query<(Entity, Has<ScreenSpaceAmbientOcclusion>), (With<crate::FlyCam>, Without<crate::SkyCam>)>,
     cams: Query<(Entity, &Msaa, Has<Smaa>, Has<crate::weapons::ViewModelCam>), Or<(With<crate::FlyCam>, With<crate::SkyCam>, With<crate::weapons::ViewModelCam>, With<crate::augdisplay::HeatCam>)>>,
-    mut points: Query<&mut PointLight, With<crate::shadowlight::ShadowLight>>,
-    mut spots: Query<&mut SpotLight>,
+    mut points: Query<(&mut PointLight, &crate::shadowlight::ShadowLight)>,
+    mut spots: Query<&mut SpotLight, With<crate::dynlight::FlashCone>>,
 ) {
     let ao = ao_on();
     for (e, has) in &world {
@@ -56,12 +56,16 @@ pub fn postfx_system(
         }
     }
     let soft = soft_on() && crate::shadowlight::level() > 0;
-    for mut p in &mut points {
+    // Soft shadows cost many shadow-map taps per pixel per light: the two strongest shadow lights get them.
+    for (mut p, sl) in &mut points {
+        let soft = soft && sl.slot() < 2;
         if p.soft_shadows_enabled != soft {
             p.soft_shadows_enabled = soft;
             p.radius = if soft { POINT_SIZE } else { 0.0 };
         }
     }
+    // Only the flashlight's cone lights surfaces; the light-shaft spots only light the air, where a hard shadow
+    // edge is invisible and PCSS would cost for nothing.
     for mut s in &mut spots {
         let want = soft_on() && s.shadow_maps_enabled;
         if s.soft_shadows_enabled != want {

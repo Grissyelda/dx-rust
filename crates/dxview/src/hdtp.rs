@@ -476,6 +476,9 @@ pub fn apply_dds_filter() {
         Some(chars.iter().chain(items.iter()).map(|s| s.to_string()).collect())
     };
     unreal_pkg::paths::set_dds_filter(allow, deny);
+    // Repainted faces: the closing lid samples skin, not the painted eye (dx_level::actors::LID_FIX).
+    let helios_faces = on("DdsCharacters") && unreal_pkg::mods::active("helios").is_some();
+    dx_level::actors::LID_FIX.store(helios_faces, std::sync::atomic::Ordering::Relaxed);
 }
 
 const VISUAL: &[&str] =
