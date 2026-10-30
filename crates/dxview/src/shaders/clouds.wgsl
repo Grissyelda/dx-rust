@@ -35,8 +35,9 @@ fn density(w: vec3<f32>, t: f32) -> f32 {
     let profile = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(mix(0.45, 0.75, p.shape.z), 1.0, h));
     // Coverage itself drifts over kilometres: banks of cloud with clear sky between.
     let big = textureSampleLevel(noise_tex, noise_smp, q * 0.23 + vec3<f32>(0.37, 0.71, t * p.wind.y * 0.2), 0.0).r;
-    let cover = clamp(p.slab.w + (big - 0.5) * 0.9, 0.05, 0.95);
+    let cover = clamp(p.slab.w + (big - 0.5) * 1.3, 0.0, 0.95);
     var d = (base - (1.0 - cover)) / max(cover, 0.05);
+    if (cover <= 0.02) { d = 0.0; }
     d = d * profile - (1.0 - detail) * p.shape.x;
     return clamp(d, 0.0, 1.0) * p.wind.w;
 }

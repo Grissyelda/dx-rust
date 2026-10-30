@@ -474,10 +474,12 @@ pub fn dynlight_system(
         .map(|mut h| std::mem::take(&mut *h))
         .unwrap_or_default();
     let mut seen = HashSet::new();
+    let mut active_keys: HashMap<u64, [f32; 3]> = HashMap::new();
     for (key, pos, spec, flicker) in held {
         if !seen.insert(key) {
             continue;
         }
+        active_keys.insert(key, pos.as_vec3().to_array());
         let mut scale = 1.0;
         if flicker > 0.0 {
             // A new random level about ten times a second, eased toward.
@@ -492,16 +494,26 @@ pub fn dynlight_system(
         }
         active.push((spec.info(pos, scale), spec));
     }
+    // The flashlight's beam light (no cone): on the BSP only; the meshes get the cone test (FlashSpot) instead,
+    // so a crate near where the beam hits isn't lit from behind a wall or outside the beam.
+    let beam_key = crate::sound::key_of("aug-light-beam");
+    let beam_pos = active_keys.get(&beam_key).copied();
     if let Ok(mut c) = CURRENT.lock() {
-        *c = active.iter().map(|(l, _)| *l).collect();
+        *c = active.iter().filter(|(l, _)| beam_pos.is_none_or(|b| l.pos != b)).map(|(l, _)| *l).collect();
         if let Ok(x) = CPU_ONLY.lock() {
             c.extend(x.iter().copied());
         }
     }
 
     // The nearest ones become GPU point lights for the BSP. Calibrated so that at half the radius the light adds what
-    // the lightmaps give there: ((1 - 0.5) x brightness x 3) in gamma space, then linear.
+    // the lightmaps give there: ((1 - 0.5) x brightness x 3) in gamma space, then linear. The flashlight's beam
+    // always gets a slot (sorted by distance it lost out to nearer lamps, and the pool it threw was gone).
     active.sort_by(|a, b| {
+        let fa = beam_pos.is_some_and(|p| a.0.pos == p);
+        let fb = beam_pos.is_some_and(|p| b.0.pos == p);
+        if fa != fb {
+            return fb.cmp(&fa);
+        }
         let da = DVec3::from_array(a.0.pos.map(|v| v as f64)).distance(eye);
         let db = DVec3::from_array(b.0.pos.map(|v| v as f64)).distance(eye);
         da.total_cmp(&db)
@@ -725,6 +737,9 @@ pub fn aug_light_system(
         hold(crate::sound::key_of("aug-light-beam"), beam_at, beam, 0.0);
         if let Ok(mut f) = FLASH.lock() {
             *f = Some((cam.translation, cam.forward().as_vec3(), dist as f32 * dx_level::METERS_PER_UNIT));
+        }
+        if let Ok(mut c) = FLASH_SPOT.lock() {
+            *c = Some(FlashSpot { eye, dir: fwd, reach: dist, spec: Spec::new(32, 140, 192, 4.0) });
         }
     }
     let flat = DVec3::new(fwd.x, fwd.y, 0.0).normalize_or_zero();

@@ -236,22 +236,23 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     }
 #endif
     // The reflection: this plane's mirror image when it has a slot, else a dim night sky.
-    var refl = vec3<f32>(0.006, 0.009, 0.016) + vec3<f32>(0.02, 0.025, 0.035) * pow(1.0 - ndv, 2.0);
+    var refl = vec3<f32>(0.004, 0.006, 0.011) + vec3<f32>(0.012, 0.016, 0.024) * pow(1.0 - ndv, 2.0);
     if (water.m.y > 0.5 && up > 0.0) {
         var uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
         uv.x = 1.0 - uv.x;
         // Waves bend the reflection, less far away (where a pixel spans more water).
         uv += vec2<f32>(-g.x, g.y) * water.m.w / (1.0 + dist * 0.05);
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
-        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.62;
+        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.5;
     }
     // The water body: its own deep colour, lit a little by the light falling into it (lamp pools glow blue-green).
-    let body = water.tint.rgb * 0.8 + light * vec3<f32>(0.014, 0.03, 0.036);
+    let body = water.tint.rgb * 0.55 + light * vec3<f32>(0.010, 0.022, 0.027);
     // Physically 2% straight down; a little more than Schlick at middle angles reads better.
     let k_refl = clamp(fres + 0.12 * pow(1.0 - ndv, 2.0), 0.0, 1.0);
     var col = mix(body, refl, k_refl);
     // Foam on the crests: where the swell peaks, broken up by drifting noise, thinning out with distance.
     let crest = f.x / 1.99;
+    // (the crest is the whole field; fine)
     let n1 = vnoise(p * 1.7 + vec2<f32>(t * 0.21, t * 0.13));
     let n2 = vnoise(p * 5.3 - vec2<f32>(t * 0.37, t * 0.29));
     let streaks = n1 * 0.65 + n2 * 0.35;
@@ -283,15 +284,10 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
 
 // The swell alone (height in its own units): what the surface rises and falls by (x far.w metres) and what floating
 // things ride (water::bob). Keep in step with water::WAVES.
+// Only the long swell (>= water::DISPLACE_MIN_LEN) moves the vertices: the mesh is 2 m, and the 6 m and shorter
+// waves came out as facets.
 fn swell_h(p: vec2<f32>, t: f32) -> f32 {
-    var h = 0.0;
-    h += wave(p, t, 0.35, 6.0, 1.1, 0.50).x;
-    h += wave(p, t, 0.90, 17.0, 2.1, 0.85).x;
-    h += wave(p, t, 1.95, 3.3, 0.85, 0.30).x;
-    h += wave(p, t, 4.10, 1.8, 0.65, 0.18).x;
-    h += wave(p, t, 2.75, 0.95, 0.45, 0.10).x;
-    h += wave(p, t, 5.30, 0.55, 0.38, 0.06).x;
-    return h;
+    return wave(p, t, 0.90, 17.0, 2.1, 0.85).x;
 }
 
 struct Vertex {

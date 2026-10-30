@@ -692,6 +692,7 @@ impl Enhance {
             ("CarryCover", "Gameplay", "Carried Objects As Cover", "A crate or anything else of some weight held in front of you stops the bullets meant for you, and takes the damage itself (it can break)."),
             ("ThirdPerson", "Gameplay", "Third Person View", "H switches between first person and a view over JC's shoulder (J swaps the shoulder). The camera keeps out of walls and comes in closer while you aim with the scope key; first person is where you start."),
             ("AtmosphericFog", "Visuals", "Atmospheric Fog", "A thin night haze over distance, thicker in the rain, so far-off buildings and the skyline melt into the dark."),
+            ("ModernCoronas", "Visuals", "Modern Coronas", "Lamps and lights glow with a drawn halo - a bright core, a soft wide glow, a faint streak and thin diffraction spikes in the light's colour - that fades in and out smoothly, instead of the original's corona pictures."),
             ("LightHalos", "Visuals", "Light Halos", "The air around lamps glows softly with their colour, fading as you get close; brighter in the rain."),
             ("Skyline", "Visuals", "3D Skyline", "The city beyond the map in 3D: where the sky has the original skyline photos (New York) they are cut into low-poly buildings at their own distances, so the picture is the same but shifts as you move; elsewhere procedural blocks - Hong Kong's dense towers, Paris's low roofs - with lit windows and roof lights."),
             ("Bloom", "Visuals", "Glow And Bloom", "Glowing things - camera lenses and alarm lights, laser tripwires, nano canisters, JC's sunglasses - are brighter than white and bleed a soft glow into the dark around them."),
@@ -700,7 +701,7 @@ impl Enhance {
             ("SoftShadows", "Visuals", "Soft Shadows", "Real-time shadows are sharp where an object meets the ground and soften as they stretch away from it (contact hardening), the way shadows from a lamp do. Needs Real-Time Shadows."),
             ("LightShafts", "Visuals", "Light Shafts", "Beams of light in the air: the flashlight's cone, spotlights and the moonlight through windows and grates show in the haze."),
             ("FogVolumes", "Visuals", "Local Fog", "Low mist lying over the water in sewers and other indoor waterways, and a smoky haze in the bars and clubs that catches the light."),
-            ("Clouds", "Visuals", "Night Clouds", "A slow-moving cloud layer over the open-air maps, faintly lit from below by the city."),
+            ("Clouds", "Visuals", "Night Clouds", "Volumetric clouds drifting over the open-air maps, lit by the moon and the city; in the rain they close into a dark overcast with lightning and thunder."),
             ("ModernWater", "Visuals", "Modern Water", "Water with real reflections of what's around it, a dark see-through body, fine wind waves, rain rings and glints from the lights - like a modern shader pack. Costs an extra render near water."),
             ("NoStrobeLights", "Visuals", "No Flickering Lights", "Flickering and blinking lights burn steady (GMDX's Lighting Accessibility, for photosensitive players)."),
         ] {
