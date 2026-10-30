@@ -96,6 +96,12 @@ pub struct ShadowLight {
     slot: usize,
 }
 
+impl ShadowLight {
+    pub fn slot(&self) -> usize {
+        self.slot
+    }
+}
+
 /// A mesh part already looked at by `tag_casters_system`.
 #[derive(Component)]
 pub struct ShadowCaster;

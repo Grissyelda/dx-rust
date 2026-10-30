@@ -852,6 +852,9 @@ fn main() {
         .add_systems(Update, credits::credits_system)
         .add_systems(Update, projgen::projgen_system)
         .add_systems(Update, fogball::fogball_system)
+        // Shadow map sizes: the real-time shadows' cube maps (4 lights x 6 faces) and the spot / moon maps.
+        .insert_resource(bevy::light::PointLightShadowMap { size: 512 })
+        .insert_resource(bevy::light::DirectionalLightShadowMap { size: 1024 })
         .add_systems(Update, water::ocean_system)
         .add_systems(Update, glow::glow_system)
         .add_systems(Update, (shafts::shafts_system.after(dynlight::aug_light_system), postfx::postfx_system))

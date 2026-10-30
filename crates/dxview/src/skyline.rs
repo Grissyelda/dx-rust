@@ -384,6 +384,7 @@ fn build_skyline(
     let mat = materials.add(StandardMaterial {
         base_color_texture: Some(img),
         unlit: true,
+        fog_enabled: false,
         ..default()
     });
     // Ring: from just past the map to a long way out. (min distance beyond the edge, depth, floors min..max)
@@ -617,13 +618,16 @@ fn build_photo_skyline(
         double_sided: true,
         cull_mode: None,
         alpha_mode: AlphaMode::Mask(0.5),
+        // The photo already has the distance in it; fog over it greyed it out.
+        fog_enabled: false,
         ..default()
     });
     let wall_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.035, 0.03, 0.035),
+        base_color: Color::srgb(0.03, 0.026, 0.03),
         unlit: true,
         double_sided: true,
         cull_mode: None,
+        fog_enabled: false,
         ..default()
     });
     let elev = |r: f32| pano.e_hi - r / h as f32 * (pano.e_hi - pano.e_lo);

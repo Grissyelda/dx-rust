@@ -76,6 +76,31 @@ fn detail(p: vec2<f32>, t: f32) -> vec2<f32> {
     return g * 0.3;
 }
 
+// The swell's gradient with each wave faded out once a pixel spans a good part of its length (no grain far off).
+// fp = the width of the water a pixel covers, metres.
+fn swell_grad_lod(p: vec2<f32>, t: f32, fp: f32) -> vec2<f32> {
+    var g = vec2<f32>(0.0);
+    g += wave(p, t, 0.35, 6.0, 1.1, 0.50).yz / (1.0 + pow(fp * 4.0 / 6.0, 2.0));
+    g += wave(p, t, 0.90, 17.0, 2.1, 0.85).yz / (1.0 + pow(fp * 4.0 / 17.0, 2.0));
+    g += wave(p, t, 1.95, 3.3, 0.85, 0.30).yz / (1.0 + pow(fp * 4.0 / 3.3, 2.0));
+    g += wave(p, t, 4.10, 1.8, 0.65, 0.18).yz / (1.0 + pow(fp * 4.0 / 1.8, 2.0));
+    g += wave(p, t, 2.75, 0.95, 0.45, 0.10).yz / (1.0 + pow(fp * 4.0 / 0.95, 2.0));
+    g += wave(p, t, 5.30, 0.55, 0.38, 0.06).yz / (1.0 + pow(fp * 4.0 / 0.55, 2.0));
+    return g;
+}
+
+// Smooth value noise (foam breakup).
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<f32>(1.0, 0.0));
+    let c = hash2(i + vec2<f32>(0.0, 1.0));
+    let d = hash2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
 fn hash2(c: vec2<f32>) -> f32 {
     return fract(sin(dot(c, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
@@ -161,7 +186,10 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // The fine waves and rain rings fade with distance (a pixel there covers many of them: no sparkle).
     let d_eye = length(view.world_position.xyz - in.world_position.xyz);
     let fine = 1.0 / (1.0 + d_eye * d_eye * 0.004);
-    let g = vec2<f32>(f.y, f.z) * 0.18 + (detail(p, t) + rain_rings(p, t, water.m.z)) * fine;
+    // A pixel's footprint on the water (grows at grazing angles too).
+    let to_eye0 = normalize(view.world_position.xyz - in.world_position.xyz);
+    let fp = d_eye * 0.0015 / max(abs(to_eye0.y), 0.08);
+    let g = swell_grad_lod(p, t, fp) * 0.18 + (detail(p, t) + rain_rings(p, t, water.m.z)) * fine;
     var displaced = in;
     displaced.uv = in.uv + g * 0.4;
     var pbr_input = pbr_input_from_standard_material(displaced, is_front);
@@ -192,6 +220,16 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // Physically water reflects 2% straight down; a little more than Schlick at middle angles reads better.
     let k_refl = clamp(fres + 0.18 * pow(1.0 - ndv, 2.0) + 0.03, 0.0, 1.0);
     var col = mix(body, refl, k_refl);
+    // Foam on the crests: where the swell (and its steepest chop) peaks, broken up by drifting noise; dim like
+    // everything else at night (the light on the water lifts it), thinning out with distance.
+    let crest = f.x / 1.99;
+    let n1 = vnoise(p * 1.7 + vec2<f32>(t * 0.21, t * 0.13));
+    let n2 = vnoise(p * 5.3 - vec2<f32>(t * 0.37, t * 0.29));
+    let streaks = n1 * 0.65 + n2 * 0.35;
+    var foam = smoothstep(0.45, 0.85, crest + (streaks - 0.5) * 0.55) * smoothstep(0.35, 0.75, streaks);
+    foam *= 1.0 / (1.0 + d_eye * d_eye * 0.0006);
+    let foam_col = max(lit.rgb * 0.9, vec3<f32>(0.035, 0.04, 0.045)) + vec3<f32>(0.02, 0.022, 0.024);
+    col = mix(col, foam_col, clamp(foam, 0.0, 1.0) * 0.55);
     // A faint moon glint, nearby only.
     let l = normalize(vec3<f32>(0.35, 1.0, 0.2));
     let hv = normalize(l + v);
