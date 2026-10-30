@@ -1691,17 +1691,36 @@ fn fly(
             }
         }
     }
+    // Third person's free camera: the look turns the camera round JC, not JC (thirdperson.rs).
+    if let Some((y, p)) = thirdperson::sync(cam.yaw, cam.pitch) {
+        cam.yaw = y;
+        cam.pitch = p;
+    }
+    let free_cam = thirdperson::free();
+    let mut looked = false;
     if cursor.grab_mode == CursorGrabMode::Locked {
         // MouseSensitivity (default 3) scales the look; Invert Mouse flips the pitch.
         let k = 0.0022 * crate::settings::mouse_sensitivity() / 3.0;
         let inv = if crate::settings::invert_mouse() { -1.0 } else { 1.0 };
-        cam.yaw -= motion.delta.x * k;
-        cam.pitch = (cam.pitch - inv * motion.delta.y * k).clamp(-1.55, 1.55);
         // The gamepad's right stick turns at a rate (gamepad.rs).
         let pad = gamepad::look_delta(time.delta_secs());
-        cam.yaw -= pad.x;
-        cam.pitch = (cam.pitch + pad.y).clamp(-1.55, 1.55);
+        let dyaw = motion.delta.x * k + pad.x;
+        let dpitch = -inv * motion.delta.y * k + pad.y;
+        looked = dyaw != 0.0 || dpitch != 0.0;
+        if free_cam {
+            thirdperson::orbit_look(dyaw, dpitch);
+        } else {
+            cam.yaw -= dyaw;
+            cam.pitch = (cam.pitch + dpitch).clamp(-1.55, 1.55);
+        }
     }
+    thirdperson::note_input(
+        looked
+            || keys.get_pressed().next().is_some()
+            || mouse.get_pressed().next().is_some()
+            || gamepad::move_axes().is_some_and(|a| a.length() > 0.1),
+        time.delta_secs(),
+    );
     if scroll.delta.y != 0.0 && player.noclip {
         cam.speed = (cam.speed * (1.0 + 0.15 * scroll.delta.y.signum())).clamp(0.5, 200.0);
     }
@@ -1738,8 +1757,14 @@ fn fly(
     }
     if !player.noclip {
         // Walk: WASD on the ground plane in Unreal space, Space jumps, Shift walks slowly.
-        let f = tf.forward().as_vec3();
-        let r = tf.right().as_vec3();
+        // (Free third-person camera: relative to the camera.)
+        let (f, r) = if free_cam {
+            let (oy, op) = thirdperson::orbit();
+            let q = Quat::from_rotation_y(oy) * Quat::from_rotation_x(op);
+            (q * Vec3::NEG_Z, q * Vec3::X)
+        } else {
+            (tf.forward().as_vec3(), tf.right().as_vec3())
+        };
         let (fu, ru) = (
             DVec3::new(f.x as f64, f.z as f64, 0.0),
             DVec3::new(r.x as f64, r.z as f64, 0.0),
@@ -1763,6 +1788,31 @@ fn fly(
             if !crate::inventory_screen::screen_open() && !crate::consys::third_person() {
                 wish = (fu * a.y as f64 + ru * a.x as f64).normalize_or_zero();
             }
+        }
+        // Free third-person camera: JC turns to face the way he moves, or where the camera looks while aiming or
+        // shooting (quickly, so the shot leaves the way he faces); his view pitch is the camera's.
+        if free_cam {
+            let dt = time.delta_secs().min(0.1);
+            let (oy, op) = thirdperson::orbit();
+            let aim_keys = keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || crate::aimmode::ads() > 0.3;
+            let fired = mouse.pressed(MouseButton::Left)
+                && weapons_res.held.as_ref().is_some_and(|h| !h.stats.item);
+            let carrying_now = carry::carrying();
+            let face_cam = thirdperson::facing_camera(aim_keys, fired && !carrying_now, dt);
+            let target = if face_cam {
+                Some((oy, 22.0))
+            } else if wish.length_squared() > 1e-6 {
+                // FlyCam yaw: forward = (-sin yaw, -cos yaw) in Unreal x / y.
+                Some(((-wish.x).atan2(-wish.y) as f32, 9.0))
+            } else {
+                None
+            };
+            if let Some((ty, rate)) = target {
+                let d = (ty - cam.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                cam.yaw += d * (dt * rate).min(1.0);
+            }
+            cam.pitch = op.clamp(-1.3, 1.2);
+            tf.rotation = Quat::from_rotation_y(cam.yaw) * Quat::from_rotation_x(cam.pitch) * Quat::from_rotation_z(-roll);
         }
         // AugDrone: the keys fly the drone (forward / strafe along the view, Jump / Duck up and down) and the
         // player stands frozen (PlayerWalking.ProcessMove: Velocity = 0).

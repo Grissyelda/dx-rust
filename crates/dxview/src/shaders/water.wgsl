@@ -127,7 +127,9 @@ fn rain_rings(p: vec2<f32>, t: f32, amount: f32) -> vec2<f32> {
     if (amount <= 0.001) {
         return g;
     }
-    let cell = 0.4;
+    // A ring grows to 0.385 m (+ its 0.05 m ripple); cells are bigger than that so the 3x3 lookup never clips one
+    // into a square.
+    let cell = 0.5;
     let base = floor(p / cell);
     for (var j = -1; j <= 1; j++) {
         for (var i = -1; i <= 1; i++) {
@@ -224,7 +226,12 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     let to_eye = view.world_position.xyz - in.world_position.xyz;
     let dist = length(to_eye);
     let v = to_eye / max(dist, 1e-4);
-    let ndv = clamp(abs(dot(n, v)), 0.0, 1.0);
+    let ndv_n = clamp(abs(dot(n, v)), 0.0, 1.0);
+    // Fresnel mostly from the flat surface: taken from the wave normal it swung the reflection (and the alpha) up and
+    // down with every crossing wave at shallow angles - a dark plaid sliding over the water. The waves still show
+    // in the light, the glints and the bent reflection.
+    let ndv_flat = clamp(abs(v.y), 0.0, 1.0);
+    let ndv = mix(ndv_flat, ndv_n, 0.2 * calm * fine + 0.05);
     let fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
     // How much water the eye looks through to the scene behind (metres along the view).
     var depth = 1000.0;
@@ -241,7 +248,7 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         var uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
         uv.x = 1.0 - uv.x;
         // Waves bend the reflection, less far away (where a pixel spans more water).
-        uv += vec2<f32>(-g.x, g.y) * water.m.w / (1.0 + dist * 0.05);
+        uv += vec2<f32>(-g.x, g.y) * water.m.w / (1.0 + dist * 0.08) * (0.4 + 0.6 * ndv_flat);
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
         refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.5;
     }

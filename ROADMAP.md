@@ -124,9 +124,10 @@ re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
 28. Elemental reactions (done: shocks run through water, fire spreads by touch, water puts fire out).
 29. Mantling and vaulting (done).
 30. Carried heavy objects as cover (done).
-31. **Optional third-person view** (done: over the shoulder, H to switch, J to swap shoulders, keeps out of walls,
-    closer while aiming, shots aimed at the crosshair; first person stays the default). Still to come: cover
-    leaning and crouching from third person.
+31. **Optional third-person view** (done: H to switch, J to swap sides, keeps out of walls, closer while aiming,
+    shots and use aimed at the crosshair; a free orbit camera with movement relative to it, JC turning to run the
+    way you push, strafing while aiming and idle fidgets, or the fixed shoulder view; first person stays the
+    default). Still to come: cover leaning and crouching from third person.
 32. Volumetric fog and light shafts (done: Atmospheric Fog, Light Halos, Light Shafts - the flashlight, spotlights
     and moonlight through windows as beams in the air - and Local Fog in sewers and bars).
 33. Better clouds and a 3D skyline (done: the original skyline photos cut into low-poly buildings at their own

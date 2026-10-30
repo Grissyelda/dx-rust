@@ -363,7 +363,7 @@ pub fn clouds_system(
     let params = CloudParams {
         slab: Vec4::new(base, thick, 1.0 / 2600.0, 0.36),
         // About 25 m/s up there.
-        wind: Vec4::new(0.0095, 0.002, 0.0038, 1.0),
+        wind: Vec4::new(0.0062, 0.0015, 0.0025, 1.0),
         glow,
         moon: moon.extend(0.12),
         fade: Vec4::new(centre.x, centre.z, size * 0.35, size * 0.95),

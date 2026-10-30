@@ -506,6 +506,23 @@ pub struct MirrorBody {
 #[derive(Resource, Default)]
 pub struct MirrorBodyRes(pub Option<MirrorBody>);
 
+/// Third person, left alone (thirdperson::idle_secs): after IDLE_AFTER seconds JC plays Human's idle fidget
+/// (Idle1 / Idle12H, the one ScriptedPawn.PlayIdle uses) once, breathes for a while, and again.
+const IDLE_AFTER: f32 = 5.0;
+const IDLE_GAP: f32 = 6.0;
+
+fn idle_fidget(mesh: &dx_level::actors::AnimMesh, two: bool) -> Option<(&'static str, bool, f32)> {
+    let idle = crate::thirdperson::idle_secs();
+    if idle < IDLE_AFTER {
+        return None;
+    }
+    let name: &'static str = if two { "Idle12H" } else { "Idle1" };
+    let s = mesh.seqs.iter().find(|s| s.name.eq_ignore_ascii_case(name))?;
+    let len = s.num_frames.max(1) as f32 / s.rate.max(1.0);
+    let phase = (idle - IDLE_AFTER) % (len + IDLE_GAP);
+    (phase < len).then_some((name, false, 1.0))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn mirror_body_system(
     mut commands: Commands,
@@ -665,6 +682,17 @@ pub fn mirror_body_system(
         ("Reload", true, 1.0)
     } else if firing && !ranged {
         ("Attack", true, 1.0)
+    } else if moving && shooting && ranged && {
+        // Aiming while moving sideways to where he faces (the free third-person camera lets him): Human's
+        // Strafe / Strafe2H.
+        let (c, s) = (ue_yaw.cos(), ue_yaw.sin());
+        let v = player.body.velocity;
+        let fwd = v.x * c + v.y * s;
+        let side = -v.x * s + v.y * c;
+        side.abs() > fwd.abs() * 1.2
+    } {
+        let pace = (speed as f32 / player.params.ground_speed as f32).clamp(0.35, 1.3);
+        (if two { "Strafe2H" } else { "Strafe" }, true, pace)
     } else if moving {
         // Legs keep pace with the ground (Run's cycle covers about the full run speed).
         let pace = (speed as f32 / player.params.ground_speed as f32).clamp(0.35, 1.3);
@@ -680,6 +708,8 @@ pub fn mirror_body_system(
     } else if ranged && shooting {
         // Firing: the shot (once per trigger pull, its own rate); aiming between shots: the aim pose (Shoot frame 0).
         (if two { "Shoot2H" } else { "Shoot" }, firing, 1.0)
+    } else if let Some(idle) = idle_fidget(&b.mesh, two) {
+        idle
     } else if two {
         ("BreatheLight2H", true, 1.0)
     } else {
