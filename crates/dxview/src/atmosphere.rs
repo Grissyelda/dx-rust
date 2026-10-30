@@ -229,8 +229,9 @@ pub fn halo_system(
             continue;
         }
         let c = [l.color[0] * k, l.color[1] * k, l.color[2] * k, 1.0];
-        // Pulled toward the eye so a wall the lamp is on doesn't cut the disc in half.
-        let at = lp + (eye - lp).normalize_or_zero() * size.min(d * 0.5);
+        // Pulled a little toward the eye so the fixture and the wall right behind it don't cut the disc (not far: a
+        // disc pulled out past someone standing in front of the lamp drew a veil over them).
+        let at = lp + (eye - lp).normalize_or_zero() * (size * 0.12).min(16.0).min(d * 0.5);
         let (r, u) = (right * size, up * size);
         let q = pos.len() as u32;
         pos.extend([b(at - r - u), b(at + r - u), b(at + r + u), b(at - r + u)]);

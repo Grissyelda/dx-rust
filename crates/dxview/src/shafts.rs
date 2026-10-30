@@ -43,6 +43,11 @@ const SPOTS: usize = 3;
 /// The haze the beams show in follows the eye: a box this big (metres) around it, soft at its edges.
 const HAZE: Vec3 = Vec3::new(70.0, 36.0, 70.0);
 
+/// The moon's shaft light: only while the eye is indoors (moonlight through windows); outdoors it would light the
+/// whole haze into a grey veil over everything.
+#[derive(Component)]
+pub struct MoonShaft;
+
 /// Marks the haze box (moved with the camera).
 #[derive(Component)]
 pub struct HazeBox;
@@ -120,6 +125,9 @@ pub struct ShaftState {
     built: (bool, bool),
     spots: Vec<SpotDef>,
     pick: f32,
+    indoor_check: f32,
+    moon_on: bool,
+    spots_lit: usize,
 }
 
 fn byte(p: &[unreal_pkg::props::Property], name: &str, d: u8) -> u8 {
@@ -178,8 +186,9 @@ pub fn shafts_system(
     level: Res<LevelRes>,
     cam: Single<(Entity, &Transform, Has<VolumetricFog>), (With<FlyCam>, Without<SkyCam>)>,
     parts: Query<Entity, With<ShaftPart>>,
-    mut haze: Query<&mut Transform, (With<HazeBox>, Without<FlyCam>, Without<ShaftSpot>, Without<ShaftBeam>, Without<crate::dynlight::FlashCone>)>,
+    mut haze: Query<(&mut Transform, &mut Visibility), (With<HazeBox>, Without<FlyCam>, Without<ShaftSpot>, Without<ShaftBeam>, Without<MoonShaft>, Without<crate::dynlight::FlashCone>)>,
     mut drift: Query<&mut FogVolume, With<DriftFog>>,
+    mut moon: Query<&mut Visibility, (With<MoonShaft>, Without<ShaftSpot>, Without<ShaftBeam>, Without<crate::dynlight::FlashCone>)>,
     mut images: ResMut<Assets<Image>>,
     mut spots: Query<(&ShaftSpot, &mut SpotLight, &mut Transform, &mut Visibility), (Without<FlyCam>, Without<ShaftBeam>, Without<crate::dynlight::FlashCone>)>,
     mut beam: Query<(&mut SpotLight, &mut Transform, &mut Visibility), (With<ShaftBeam>, Without<FlyCam>, Without<ShaftSpot>, Without<crate::dynlight::FlashCone>)>,
@@ -202,9 +211,9 @@ pub fn shafts_system(
             commands.entity(cam_e).insert(VolumetricFog {
                 ambient_color: Color::srgb(0.55, 0.6, 0.7),
                 // Local fog glows dimly all over (the bars' and sewers' light, baked into the walls, isn't in the air).
-                ambient_intensity: if want.1 { 0.02 } else { 0.0 },
+                ambient_intensity: 0.0,
                 jitter: 0.0,
-                step_count: 32,
+                step_count: 24,
             });
         } else if !any && has_fog {
             commands.entity(cam_e).remove::<VolumetricFog>();
@@ -245,6 +254,8 @@ pub fn shafts_system(
                     // its own cascade).
                     bevy::light::CascadeShadowConfigBuilder { num_cascades: 1, maximum_distance: 45.0, ..default() }.build(),
                     Transform::default().looking_to(-d, Vec3::Y),
+                    Visibility::Hidden,
+                    MoonShaft,
                     VolumetricLight,
                     ShaftPart,
                 ));
@@ -269,8 +280,19 @@ pub fn shafts_system(
                 ShaftPart,
             ));
         }
-        if want.1 {
-            spawn_local_fog(&mut commands, &mut images, lvl);
+        let n_fog = if want.1 { spawn_local_fog(&mut commands, &mut images, lvl) } else { 0 };
+        if !want.0 && n_fog == 0 {
+            // Nothing to march through on this map.
+            commands.entity(cam_e).remove::<VolumetricFog>();
+        }
+        if n_fog > 0 {
+            // Local fog glows dimly all over (the light baked into the walls isn't in the air).
+            commands.entity(cam_e).insert(VolumetricFog {
+                ambient_color: Color::srgb(0.55, 0.6, 0.7),
+                ambient_intensity: 0.02,
+                jitter: 0.0,
+                step_count: 24,
+            });
         }
         return;
     }
@@ -282,9 +304,23 @@ pub fn shafts_system(
     if !want.0 {
         return;
     }
-    for mut tf in &mut haze {
+    for (mut tf, _) in &mut haze {
         // In 2 m steps (no shimmer of the soft edge as the box slides).
         tf.translation = (cam_tf.translation / 2.0).round() * 2.0;
+    }
+    st.indoor_check -= time.delta_secs();
+    if st.indoor_check <= 0.0 {
+        st.indoor_check = 0.25;
+        let u = dx_level::bevy_to_ue(cam_tf.translation.to_array());
+        let z = lvl.collision.zone_at(DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64));
+        let indoors = z > 0 && !lvl.zone_sky.get(z as usize).copied().unwrap_or(true);
+        st.moon_on = indoors && !moon.is_empty();
+        let want_v = if indoors { Visibility::Inherited } else { Visibility::Hidden };
+        for mut v in &mut moon {
+            if *v != want_v {
+                *v = want_v;
+            }
+        }
     }
     // The nearest spotlights in front, re-picked twice a second.
     st.pick -= time.delta_secs();
@@ -299,6 +335,7 @@ pub fn shafts_system(
             .filter(|(d, i)| *d < 25.0 && (st.spots[*i].pos - eye).dot(*cam_tf.forward()) > -st.spots[*i].range)
             .collect();
         order.sort_by(|a, b| a.0.total_cmp(&b.0));
+        st.spots_lit = order.len().min(SPOTS);
         for (slot, mut sl, mut tf, mut vis) in &mut spots {
             match order.get(slot.0) {
                 Some(&(_, i)) => {
@@ -348,12 +385,20 @@ pub fn shafts_system(
             *vis = Visibility::Hidden;
         }
     }
+    // No beam anywhere near (no flashlight, spotlight or moon through a window): the haze isn't marched at all.
+    let lit = aug || cone_lit || st.spots_lit > 0 || st.moon_on;
+    let want_v = if lit { Visibility::Inherited } else { Visibility::Hidden };
+    for (_, mut v) in &mut haze {
+        if *v != want_v {
+            *v = want_v;
+        }
+    }
 }
 
 /// Mist over sheltered water and haze in bars. Water is grouped by 6 m cells (only water whose face centres are in
 /// zones without sky), each connected group gets its own box; every box has a soft-edged density texture (mist: dense
 /// at the water, thinning upward, with wisps that drift) so it never shows a hard line where it meets things.
-fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx_level::Level) {
+fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx_level::Level) -> usize {
     let sky_at = |p: Vec3| {
         let u = dx_level::bevy_to_ue(p.to_array());
         let z = lvl.collision.zone_at(DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64));
@@ -461,4 +506,5 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
     if std::env::var_os("DXVIEW_SHAFTLOG").is_some() {
         println!("SHAFTS local fog volumes {n}");
     }
+    n
 }

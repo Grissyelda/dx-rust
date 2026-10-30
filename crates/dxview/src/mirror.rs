@@ -310,6 +310,11 @@ pub fn mirror_system(
     let half = main_proj.fov * 0.5 * main_proj.aspect_ratio.max(1.0) + 0.35;
     let cone = half.min(3.0).cos();
     let visible = |p: &Plane| {
+        // Water goes on past its sheet (the open sea shares its material): reflect it whenever the eye is above it,
+        // or the reflection pops in and out with the view's pitch.
+        if p.water {
+            return eye.y > p.d;
+        }
         let (lo, hi) = (p.min - Vec3::splat(0.5), p.max + Vec3::splat(0.5));
         let inside = eye.cmpge(lo).all() && eye.cmple(hi).all();
         // Looking straight at a big surface (down at a mirror floor) can leave every corner of its bounds outside the
@@ -510,6 +515,7 @@ pub fn mirror_body_system(
     (mut images, mut meshes, mut materials): (ResMut<Assets<Image>>, ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>),
     mut vis: Query<&mut Visibility>,
     weapons: Res<crate::weapons::Weapons>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
     // Something else shows JC (conversation puppet, death), or no mirror reflecting: hide.
     // DXVIEW_MIRROR_BODY=1: show him under a flying camera too (screenshot tests).
@@ -610,45 +616,62 @@ pub fn mirror_body_system(
     let firing = state == Some(crate::weapons::WState::Firing);
     let reloading = state == Some(crate::weapons::WState::Reloading);
     let falling = player.body.physics == imsim_core::movement::Physics::Falling && !player.swimming;
-    // (sequence, loops: else held on its last frame / frame 0 for aim poses)
-    let (want, looped): (&str, bool) = if player.swimming {
-        (if firing { "TreadShoot" } else { "Tread" }, true)
+    // Holding the gun up to aim (the scope key in third person, or Modern Aiming's sights): the aimed poses even on the
+    // move. Otherwise Human.uc's choices: Walk / Run (RunShoot only while firing; two-handed guns run with
+    // RunShoot2H), CrouchWalk / CrouchShoot, BreatheLight between shots.
+    let aiming = ranged && !reloading && (keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || crate::aimmode::ads() > 0.3);
+    let shooting = firing || aiming;
+    // (sequence, loops: else held on its last frame / frame 0 for aim poses, rate x)
+    let (want, looped, rate_k): (&str, bool, f32) = if player.swimming {
+        (if firing { "TreadShoot" } else { "Tread" }, true, 1.0)
     } else if falling {
-        ("Jump", false)
+        ("Jump", false, 3.0)
     } else if player.crouched {
-        if firing && ranged {
-            ("CrouchShoot", true)
+        if shooting && ranged {
+            // PlayCrawling while firing loops CrouchShoot; still and aiming, its first frame.
+            ("CrouchShoot", moving || firing, 1.0)
         } else if moving {
-            ("CrouchWalk", true)
+            // PlayCrawling: LoopAnim('CrouchWalk'), its legs in step with the ground covered.
+            ("CrouchWalk", true, (speed as f32 / (player.params.ground_speed as f32 * 0.3).max(1.0)).clamp(0.6, 2.0))
         } else {
-            ("Crouch", false)
+            ("Crouch", false, 1.0)
         }
     } else if reloading && ranged && !moving {
-        ("Reload", true)
+        ("Reload", true, 1.0)
     } else if firing && !ranged {
-        ("Attack", true)
+        ("Attack", true, 1.0)
     } else if moving {
-        match (ranged, two, running) {
-            (true, true, true) => ("RunShoot2H", true),
-            (true, false, true) => ("RunShoot", true),
-            (true, true, false) => ("Walk2H", true),
-            (_, _, true) => ("Run", true),
-            _ => ("Walk", true),
+        // Legs keep pace with the ground (Run's cycle covers about the full run speed).
+        let pace = (speed as f32 / player.params.ground_speed as f32).clamp(0.35, 1.3);
+        match (shooting && ranged, two, running) {
+            // Aiming or firing on the move: the aimed run, slowed to a walk's pace when walking.
+            (true, true, _) => ("RunShoot2H", true, pace),
+            (true, false, _) => ("RunShoot", true, pace),
+            (false, true, true) => ("RunShoot2H", true, 1.0),
+            (false, true, false) => ("Walk2H", true, 1.0),
+            (false, false, true) => ("Run", true, 1.0),
+            (false, false, false) => ("Walk", true, 1.0),
         }
-    } else if ranged {
-        // Firing: the shot (once per trigger pull, its own rate); between shots the aim pose (Shoot frame 0).
-        if firing {
-            (if two { "Shoot2H" } else { "Shoot" }, true)
-        } else {
-            (if two { "Shoot2H" } else { "Shoot" }, false)
-        }
+    } else if ranged && shooting {
+        // Firing: the shot (once per trigger pull, its own rate); aiming between shots: the aim pose (Shoot frame 0).
+        (if two { "Shoot2H" } else { "Shoot" }, firing, 1.0)
     } else if two {
-        ("BreatheLight2H", true)
+        ("BreatheLight2H", true, 1.0)
     } else {
-        ("BreatheLight", true)
+        ("BreatheLight", true, 1.0)
     };
-    // Aim pose: frame 0 of Shoot held while not firing.
-    let aim_pose = ranged && !moving && !firing && !player.crouched && !falling && !player.swimming && !(reloading);
+    // Aim pose: frame 0 of Shoot / CrouchShoot held while aiming and not firing.
+    let aim_pose = aiming && !firing && !moving && !falling && !player.swimming;
+    if std::env::var_os("DXVIEW_BODYLOG").is_some() {
+        static T: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
+        if let Ok(mut t) = T.lock() {
+            *t += time.delta_secs();
+            if *t > 0.5 {
+                *t = 0.0;
+                println!("BODY {want} speed {speed:.0} crouched {} aiming {aiming} firing {firing} pose {aim_pose}", player.crouched);
+            }
+        }
+    }
     let key = format!("{want}{}", if aim_pose { "#aim" } else { "" });
     if b.seq != key {
         b.seq = key;
@@ -664,6 +687,7 @@ pub fn mirror_body_system(
         .or_else(|| b.mesh.seqs.iter().find(|s| s.name.eq_ignore_ascii_case("BreatheLight")))
         .map(|s| (s.start_frame.max(0) as usize, s.num_frames.max(1) as usize, s.rate))
         .unwrap_or((0, 1, 10.0));
+    let rate = rate * rate_k;
     let f = if aim_pose {
         0.0
     } else if looped {

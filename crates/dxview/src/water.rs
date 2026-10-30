@@ -262,7 +262,116 @@ pub fn tessellate(
         stack.push([a, m, c]);
         stack.push([m, b, c]);
     }
+    let out = fix_tjunctions(&mut p, &mut n, &mut u, &mut u1, &out);
     (p, n, u, u1, out)
+}
+
+/// Where a vertex of one triangle lies on the middle of another's edge (the map's water faces meet that way, and the
+/// splitting above makes many more), the moving surface would open a crack along that edge: such triangles become a
+/// fan round their centre through every vertex on their edges, so both sides move together.
+#[allow(clippy::type_complexity)]
+fn fix_tjunctions(p: &mut Vec<[f32; 3]>, n: &mut Vec<[f32; 3]>, u: &mut Vec<[f32; 2]>, u1: &mut Vec<[f32; 2]>, idx: &[u32]) -> Vec<u32> {
+    const CELL: f32 = 2.0;
+    let key = |v: [f32; 3]| ((v[0] / CELL).floor() as i32, (v[2] / CELL).floor() as i32);
+    // Distinct positions, bucketed (the first vertex at each position stands for it).
+    let mut grid: std::collections::HashMap<(i32, i32), Vec<u32>> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashSet<(i32, i32, i32)> = std::collections::HashSet::new();
+    for (i, v) in p.iter().enumerate() {
+        let q = ((v[0] * 1000.0).round() as i32, (v[1] * 1000.0).round() as i32, (v[2] * 1000.0).round() as i32);
+        if seen.insert(q) {
+            grid.entry(key(*v)).or_default().push(i as u32);
+        }
+    }
+    let mut out = Vec::with_capacity(idx.len());
+    for t in idx.chunks_exact(3) {
+        let c = [t[0], t[1], t[2]];
+        // Vertices on each edge's inside, ordered along it.
+        let mut ring: Vec<(u32, [f32; 2], [f32; 2])> = Vec::new();
+        let mut extra = false;
+        for e in 0..3 {
+            let (a, b) = (c[e], c[(e + 1) % 3]);
+            ring.push((a, u[a as usize], if u1.is_empty() { [0.0; 2] } else { u1[a as usize] }));
+            let (pa, pb) = (Vec3::from(p[a as usize]), Vec3::from(p[b as usize]));
+            let d = pb - pa;
+            let len2 = d.length_squared();
+            if len2 < 1e-8 {
+                continue;
+            }
+            let (lo, hi) = (pa.min(pb), pa.max(pb));
+            let (k0, k1) = (key(lo.to_array()), key(hi.to_array()));
+            let mut on: Vec<(f32, u32)> = Vec::new();
+            for gx in k0.0..=k1.0 {
+                for gz in k0.1..=k1.1 {
+                    let Some(list) = grid.get(&(gx, gz)) else { continue };
+                    for &w in list {
+                        let pw = Vec3::from(p[w as usize]);
+                        let s = (pw - pa).dot(d) / len2;
+                        if s <= 1e-4 || s >= 1.0 - 1e-4 {
+                            continue;
+                        }
+                        if (pa + d * s).distance_squared(pw) < 1e-6 && pw.distance_squared(pa) > 1e-6 && pw.distance_squared(pb) > 1e-6 {
+                            on.push((s, w));
+                        }
+                    }
+                }
+            }
+            on.sort_by(|x, y| x.0.total_cmp(&y.0));
+            for (s, w) in on {
+                extra = true;
+                let lerp2 = |x: [f32; 2], y: [f32; 2]| [x[0] + (y[0] - x[0]) * s, x[1] + (y[1] - x[1]) * s];
+                let uv = lerp2(u[a as usize], u[b as usize]);
+                let uv1 = if u1.is_empty() { [0.0; 2] } else { lerp2(u1[a as usize], u1[b as usize]) };
+                ring.push((w, uv, uv1));
+            }
+        }
+        if !extra {
+            out.extend_from_slice(&c);
+            continue;
+        }
+        // New corners (own copies: this face's texture coordinates there), the centre, and the fan.
+        let mut ids = Vec::with_capacity(ring.len());
+        for (k, (w, uv, uv1)) in ring.iter().enumerate() {
+            if k == 0 || c.contains(w) {
+                ids.push(*w);
+                continue;
+            }
+            p.push(p[*w as usize]);
+            n.push(n[c[0] as usize]);
+            u.push(*uv);
+            if !u1.is_empty() {
+                u1.push(*uv1);
+            }
+            ids.push((p.len() - 1) as u32);
+        }
+        let avg3 = |f: &dyn Fn(u32) -> [f32; 3]| {
+            let s = c.iter().fold([0.0f32; 3], |a, &i| {
+                let v = f(i);
+                [a[0] + v[0], a[1] + v[1], a[2] + v[2]]
+            });
+            [s[0] / 3.0, s[1] / 3.0, s[2] / 3.0]
+        };
+        let avg2 = |f: &dyn Fn(u32) -> [f32; 2]| {
+            let s = c.iter().fold([0.0f32; 2], |a, &i| {
+                let v = f(i);
+                [a[0] + v[0], a[1] + v[1]]
+            });
+            [s[0] / 3.0, s[1] / 3.0]
+        };
+        let cp = avg3(&|i| p[i as usize]);
+        let cu = avg2(&|i| u[i as usize]);
+        let cu1 = if u1.is_empty() { [0.0; 2] } else { avg2(&|i| u1[i as usize]) };
+        p.push(cp);
+        n.push(n[c[0] as usize]);
+        u.push(cu);
+        if !u1.is_empty() {
+            u1.push(cu1);
+        }
+        let ci = (p.len() - 1) as u32;
+        for k in 0..ids.len() {
+            out.extend_from_slice(&[ci, ids[k], ids[(k + 1) % ids.len()]]);
+        }
+    }
+    out
 }
 
 /// The open sea past the map's edge (Modern Water): a ring of water at the height of the map's largest water sheet,
@@ -406,11 +515,50 @@ pub fn ocean_ring(
 #[derive(Component)]
 pub struct EdgeWall;
 
+/// A flat, dark copy of a water sheet (or of the open sea) half a metre under it (Modern Water): where the moving
+/// surface's triangles part at a T-junction of the map's water faces, the gap shows dark water instead of the black
+/// sky behind. Hidden with the eye under the surface. `y` = the water's height (Bevy).
+#[derive(Component)]
+pub struct WaterBacking {
+    pub y: f32,
+}
+
+pub const BACKING_DROP: f32 = 0.5;
+
+/// The backing's mesh: `positions` lowered, with normals; the material is dark and unlit.
+pub fn backing_mesh(positions: &[[f32; 3]], indices: &[u32]) -> Mesh {
+    let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.iter().map(|p| [p[0], p[1] - BACKING_DROP, p[2]]).collect::<Vec<_>>());
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; positions.len()]);
+    m.insert_indices(bevy::mesh::Indices::U32(indices.to_vec()));
+    m
+}
+
+pub fn backing_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::linear_rgb(0.03, 0.045, 0.052),
+        unlit: true,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    }
+}
+
 /// The open sea shows only with Modern Water (and the edge walls go).
+#[allow(clippy::type_complexity)]
 pub fn ocean_system(
-    mut q: Query<&mut Visibility, (With<OceanRing>, Without<EdgeWall>)>,
-    mut walls: Query<&mut Visibility, (With<EdgeWall>, Without<OceanRing>)>,
+    mut q: Query<&mut Visibility, (With<OceanRing>, Without<EdgeWall>, Without<WaterBacking>)>,
+    mut walls: Query<&mut Visibility, (With<EdgeWall>, Without<OceanRing>, Without<WaterBacking>)>,
+    mut backs: Query<(&WaterBacking, &mut Visibility), (Without<OceanRing>, Without<EdgeWall>)>,
+    cam: Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
 ) {
+    let eye_y = cam.iter().next().map_or(f32::MAX, |t| t.translation.y);
+    for (b, mut v) in &mut backs {
+        let want = if modern() && eye_y > b.y { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
+        }
+    }
     let on = modern() && !q.is_empty();
     let want = if on { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut q {
