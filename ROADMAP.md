@@ -159,6 +159,22 @@ Shadows with contact hardening.
     quality-of-life options), any number at once from the launcher's Mods page.
 47. No loading screens.
 48. Co-op and deathmatch multiplayer.
+49. **Remastered lighting** (an Enhancement, off by default; the look of the cancelled 2026 remaster's trailer):
+    the baked lightmaps dropped and every level surface lit in real time by the map's own Light actors (the
+    nearest ones with shadows, the rest unshadowed), so lamps light the walls and floors with real falloff and the
+    existing real-time shadows, soft shadows, ambient occlusion and bloom all apply to the lit result. Needs a
+    per-zone ambient term and a global gain tuned by walking the maps, since the editor's light placements were
+    tuned for Unreal's baker, with per-map overrides where a room comes out wrong. The original lightmap renderer
+    stays the default.
+50. **Normal and parallax maps** for the level textures: nobody ships them for Deus Ex, so they are generated from
+    each texture's own colour (height from luminance, filtered into a normal map) with a per-texture allow list
+    (bricks, grates, planks and panels gain relief; textures with painted-in lighting stay flat), feeding the
+    real-time lights above. Hand-made normal maps from the HD mods used where they exist.
+51. **Material table**: roughness, metalness and reflectance per texture group and per weapon / item mesh (metal,
+    glass, wood, skin, cloth), so guns, chrome, wet stone and glass get real specular highlights and reflections
+    from an environment map per zone or screen-space reflections, instead of today's flat, matte materials.
+52. **Emissive surfaces**: every glowing texture group (lamp fixtures, ceiling panels, console screens, signs,
+    alarm lights) marked emissive so it blooms and, with remastered lighting, lights its surroundings itself.
 
 Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sit in the
 last tier.

@@ -145,6 +145,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("LightShafts", 0.0),
     ("FogVolumes", 0.0),
     ("Clouds", 0.0),
+    ("ModernCoronas", 0.0),
     ("HQAudio", 0.0),
     ("SoundOcclusion", 0.0),
     ("RoomReverb", 0.0),

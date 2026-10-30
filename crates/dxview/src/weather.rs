@@ -83,6 +83,9 @@ struct Drop {
     life: f32,
     len: f32,
     glow: f32,
+    /// The top of the column it fell from: streaks fade in over the first stretch under it, so the column has no
+    /// visible ceiling.
+    top: f64,
 }
 
 struct Splash {
@@ -345,6 +348,7 @@ pub fn weather_system(
             life,
             len: 8.0 + rnd(&mut seed) as f32 * 22.0,
             glow: 0.3 + rnd(&mut seed) as f32 * 0.6,
+            top: top.min(me.z + RAIN_TOP + 80.0),
         });
     }
     // Fall; land; splash.
@@ -418,7 +422,9 @@ pub fn weather_system(
         let k = pos.len() as u32;
         pos.extend([b(d.pos - side), b(d.pos + side), b(tail + side), b(tail - side)]);
         uv.extend([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
-        let g = d.glow * ambient / spread as f32;
+        // Fading in under the column's top (over 700 units) hides where the rain begins.
+        let under = ((d.top - d.pos.z) / 700.0).clamp(0.0, 1.0) as f32;
+        let g = d.glow * ambient / spread as f32 * under * under;
         col.extend([[g, g, g, 1.0]; 4]);
         idx.extend([k, k + 1, k + 2, k, k + 2, k + 3]);
     }
@@ -528,11 +534,11 @@ mod tests {
     }
 }
 
-const MAX_DROPS: usize = 9000;
+const MAX_DROPS: usize = 11000;
 /// Half the side of the square the drops fall in (Unreal units).
 const WIDE_RAD: f64 = 1500.0;
 /// How high over the player rain starts, sky permitting (Unreal units).
-const RAIN_TOP: f64 = 1800.0;
+const RAIN_TOP: f64 = 2600.0;
 const MAX_SPLASHES: usize = 1500;
 
 /// Fills the quad buffers up to `cap` quads with collapsed (zero-area, black) ones: the meshes keep one size, so the

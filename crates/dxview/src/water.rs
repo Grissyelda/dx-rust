@@ -83,7 +83,9 @@ const WAVES: [(f32, f32, f32, f32); 6] = [
 /// shader draws (rings left out).
 pub fn swell(x: f32, z: f32, t: f32) -> (f32, f32, f32) {
     let (mut h, mut gx, mut gz) = (0.0, 0.0, 0.0);
-    for (ang, len, speed, amp) in WAVES {
+    // Only waves the 2 m mesh can carry smoothly move the surface (and what floats on it): the shorter ones are
+    // shading only (they made facets at three vertices per wavelength).
+    for (ang, len, speed, amp) in WAVES.iter().copied().filter(|w| w.1 >= DISPLACE_MIN_LEN) {
         let (dx, dz) = (ang.cos(), ang.sin());
         let k = std::f32::consts::TAU / len;
         let ph = (dx * x + dz * z) * k - t * speed * k;
@@ -97,7 +99,9 @@ pub fn swell(x: f32, z: f32, t: f32) -> (f32, f32, f32) {
 /// How far a floating thing rises and falls on the swell, Unreal units (the original's gentle rocking; with Modern
 /// Water the surface itself moves by WAVE_M metres per unit of swell and floating things ride it).
 const BOB: f64 = 3.0;
-pub const WAVE_M: f32 = 0.2;
+pub const WAVE_M: f32 = 0.16;
+/// Waves shorter than this (m) don't displace vertices (see `swell` / water.wgsl swell_h).
+pub const DISPLACE_MIN_LEN: f32 = 12.0;
 
 fn bob_units() -> f64 {
     if modern() { WAVE_M as f64 / dx_level::METERS_PER_UNIT as f64 } else { BOB }
@@ -588,7 +592,7 @@ pub fn backing_mesh(positions: &[[f32; 3]], indices: &[u32]) -> Mesh {
 
 pub fn backing_material() -> StandardMaterial {
     StandardMaterial {
-        base_color: Color::linear_rgb(0.03, 0.045, 0.052),
+        base_color: Color::linear_rgb(0.004, 0.012, 0.018),
         unlit: true,
         double_sided: true,
         cull_mode: None,
@@ -615,9 +619,8 @@ pub fn ocean_system(
             commands.entity(e).remove::<bevy::core_pipeline::prepass::DepthPrepass>();
         }
     }
-    // The dark backings hid cracks in the moving surface; with the depth showing what's really under the water they'd
-    // only be a false bottom half a metre down (DXVIEW_WATER_BACKING=1 brings them back).
-    let backing = std::env::var_os("DXVIEW_WATER_BACKING").is_some();
+    // The dark backings catch cracks left where the moving surface's pieces part (DXVIEW_WATER_BACKING=0 hides them).
+    let backing = std::env::var("DXVIEW_WATER_BACKING").map_or(true, |v| v != "0");
     for (b, mut v) in &mut backs {
         let want = if backing && modern() && eye_y > b.y { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {

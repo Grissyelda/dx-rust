@@ -163,6 +163,8 @@ pub struct CloudState {
     /// Dry-weather values (set when the sheet is built).
     dry: Option<CloudParams>,
     rain: f32,
+    /// Where a bolt ends: the map's water (its largest water plane) or its lowest point (Bevy y).
+    ground: f32,
     // Lightning.
     next_strike: f32,
     strike: Option<Strike>,
@@ -175,6 +177,69 @@ struct Strike {
     t: f32,
     /// (start time, strength) of each flicker.
     pulses: Vec<(f32, f32)>,
+    /// A cloud-to-ground bolt (most strikes stay inside the cloud): its mesh entity and material.
+    bolt: Option<(Entity, Handle<StandardMaterial>)>,
+}
+
+/// A lightning bolt's mesh.
+#[derive(Component)]
+pub struct BoltMesh;
+
+/// A jagged bolt from `top` down to `ground` with a few branches: ribbons `width` m wide facing `eye`, as a mesh
+/// (the brightness is in the material; the vertex alpha thins the branches and the tips).
+fn bolt_mesh(seed: &mut u64, top: Vec3, ground: Vec3, eye: Vec3, width: f32) -> Mesh {
+    let mut pos: Vec<[f32; 3]> = Vec::new();
+    let mut col: Vec<[f32; 4]> = Vec::new();
+    let mut idx: Vec<u32> = Vec::new();
+    // One jagged path: `n` steps from a to b, wandering sideways by up to `wander` m (least at the ends).
+    fn path(seed: &mut u64, a: Vec3, b: Vec3, n: usize, wander: f32) -> Vec<Vec3> {
+        let d = b - a;
+        let side = Vec3::new(-d.z, 0.0, d.x).normalize_or(Vec3::X);
+        let mut pts = Vec::with_capacity(n + 1);
+        let (mut ox, mut oz) = (0.0f32, 0.0f32);
+        for i in 0..=n {
+            let f = i as f32 / n as f32;
+            let env = (f * (1.0 - f) * 4.0).sqrt();
+            ox += (rnd(seed) - 0.5) * wander * 0.5;
+            oz += (rnd(seed) - 0.5) * wander * 0.5;
+            ox *= 0.86;
+            oz *= 0.86;
+            pts.push(a + d * f + side * ox * env + Vec3::new(oz * env, 0.0, 0.0));
+        }
+        pts
+    }
+    let mut ribbon = |pts: &[Vec3], w: f32, bright: f32| {
+        for k in 0..pts.len().saturating_sub(1) {
+            let (p0, p1) = (pts[k], pts[k + 1]);
+            let seg = p1 - p0;
+            let to_eye = eye - (p0 + p1) * 0.5;
+            let across = seg.cross(to_eye).normalize_or(Vec3::X) * (w * 0.5);
+            let q = pos.len() as u32;
+            pos.extend([(p0 - across).to_array(), (p0 + across).to_array(), (p1 + across).to_array(), (p1 - across).to_array()]);
+            // Soft edges: full in the middle of the ribbon is drawn by the texture-less quad's alpha only at the
+            // corners, so thin bolts read as glowing lines.
+            let a = bright;
+            col.extend([[1.0, 1.0, 1.0, 0.0], [1.0, 1.0, 1.0, a], [1.0, 1.0, 1.0, a], [1.0, 1.0, 1.0, 0.0]]);
+            idx.extend([q, q + 1, q + 2, q, q + 2, q + 3, q, q + 2, q + 1, q, q + 3, q + 2]);
+        }
+    };
+    let main = path(seed, top, ground, 28, 55.0);
+    ribbon(&main, width, 1.0);
+    // Branches off the upper two thirds, shorter, thinner, ending in the air.
+    let nb = 2 + (rnd(seed) * 3.0) as usize;
+    for _ in 0..nb {
+        let k = 2 + (rnd(seed) * (main.len() as f32 * 0.6)) as usize;
+        let from = main[k.min(main.len() - 1)];
+        let dir = Vec3::new(rnd(seed) - 0.5, -(0.5 + rnd(seed) * 0.6), rnd(seed) - 0.5).normalize_or(Vec3::NEG_Y);
+        let len = (top.y - ground.y) * (0.12 + rnd(seed) * 0.25);
+        let br = path(seed, from, from + dir * len, 10, 30.0);
+        ribbon(&br, width * 0.5, 0.55);
+    }
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    m.insert_indices(Indices::U32(idx));
+    m
 }
 
 /// Flash level of a strike `t` seconds in: each flicker jumps up and dies away in about 0.12 s.
@@ -249,6 +314,8 @@ pub fn clouds_system(
     mut mats: ResMut<Assets<CloudMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut lights: Query<(Entity, &mut DirectionalLight, &mut Transform), With<LightningLight>>,
+    mut std_mats: ResMut<Assets<StandardMaterial>>,
+    bolts: Query<Entity, With<BoltMesh>>,
     time: Res<Time>,
     cam: Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<LightningLight>)>,
 ) {
@@ -256,7 +323,7 @@ pub fn clouds_system(
     let fresh = crate::loader::new_map(&mut map_gen);
     let want = on();
     if !fresh && want == st.last {
-        update(&mut st, &mut mats, &mut lights, &mut commands, &time, &cam);
+        update(&mut st, &mut mats, &mut lights, &mut commands, &time, &cam, &mut std_mats, &mut meshes);
         return;
     }
     st.last = want;
@@ -265,6 +332,9 @@ pub fn clouds_system(
     st.strike = None;
     st.thunder.clear();
     for e in &sheets {
+        commands.entity(e).despawn();
+    }
+    for e in &bolts {
         commands.entity(e).despawn();
     }
     for (e, _, _) in &mut lights {
@@ -291,13 +361,13 @@ pub fn clouds_system(
     let thick = 260.0;
     let size = (half * 30.0).clamp(4000.0, 14000.0);
     let params = CloudParams {
-        slab: Vec4::new(base, thick, 1.0 / 2600.0, 0.45),
+        slab: Vec4::new(base, thick, 1.0 / 2600.0, 0.36),
         // About 25 m/s up there.
         wind: Vec4::new(0.0095, 0.002, 0.0038, 1.0),
         glow,
         moon: moon.extend(0.12),
         fade: Vec4::new(centre.x, centre.z, size * 0.35, size * 0.95),
-        shape: Vec4::new(0.32, 1.0, 0.0, 0.0),
+        shape: Vec4::new(0.32, 0.4, 0.0, 0.0),
         flash: Vec4::ZERO,
     };
     let mat = mats.add(CloudMaterial { params, noise });
@@ -305,7 +375,14 @@ pub fn clouds_system(
     st.dry = Some(params);
     st.rain = -1.0;
     st.seed = 0x51A7_3E11 ^ (lvl.name.len() as u64 * 7919);
-    st.next_strike = 8.0;
+    st.ground = lvl
+        .batches
+        .iter()
+        .filter(|b| b.class == dx_level::SurfaceClass::Water && !b.sky)
+        .map(|b| b.positions.iter().map(|p| p[1]).fold(f32::MIN, f32::max))
+        .fold(f32::MIN, f32::max)
+        .max(bmin.y);
+    st.next_strike = if std::env::var_os("DXVIEW_BOLT").is_some() { 1.0 } else { 8.0 };
     commands.spawn((
         DirectionalLight { illuminance: 0.0, shadow_maps_enabled: false, color: Color::srgb(0.8, 0.86, 1.0), ..default() },
         Transform::default().looking_to(Vec3::new(0.2, -1.0, 0.1), Vec3::Z),
@@ -336,13 +413,16 @@ pub fn clouds_system(
 }
 
 /// Each frame: rain turns the clouds into a darker, flatter, faster overcast; lightning while it rains hard enough.
+#[allow(clippy::too_many_arguments)]
 fn update(
     st: &mut CloudState,
     mats: &mut Assets<CloudMaterial>,
     lights: &mut Query<(Entity, &mut DirectionalLight, &mut Transform), With<LightningLight>>,
-    _commands: &mut Commands,
+    commands: &mut Commands,
     time: &Time,
     cam: &Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<LightningLight>)>,
+    std_mats: &mut Assets<StandardMaterial>,
+    meshes: &mut Assets<Mesh>,
 ) {
     let (Some(h), Some(dry)) = (st.mat.clone(), st.dry) else { return };
     let dt = time.delta_secs().min(0.1);
@@ -350,16 +430,23 @@ fn update(
     // Ease into the weather over some seconds (dynamic rain drifts slowly anyway).
     st.rain = if st.rain < 0.0 { want_rain } else { st.rain + (want_rain - st.rain) * (dt * 0.3).min(1.0) };
     let r = st.rain;
-    let eye = cam.iter().next().map_or(Vec3::ZERO, |t| t.translation);
+    let (eye, fwd) = cam.iter().next().map_or((Vec3::ZERO, Vec3::NEG_Z), |t| (t.translation, t.forward().as_vec3()));
     // Lightning: a strike every 6..30 s in heavy rain, rarer in light rain, none when dry.
+    // DXVIEW_BOLT=1: a ground strike straight ahead every 3 s (screenshots).
+    let forced = std::env::var_os("DXVIEW_BOLT").is_some();
     let mut flash = Vec4::ZERO;
     let mut light = 0.0;
-    if r > 0.3 {
+    if r > 0.3 || forced {
         st.next_strike -= dt;
         if st.next_strike <= 0.0 && st.strike.is_none() {
             let a = rnd(&mut st.seed) * std::f32::consts::TAU;
             let d = 250.0 + rnd(&mut st.seed) * 1500.0;
-            let at = Vec3::new(eye.x + a.cos() * d, dry.slab.x + dry.slab.y * 0.35, eye.z + a.sin() * d);
+            let mut at = Vec3::new(eye.x + a.cos() * d, dry.slab.x + dry.slab.y * 0.35, eye.z + a.sin() * d);
+            if forced {
+                let f = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
+                at = eye + f * 500.0;
+                at.y = dry.slab.x + dry.slab.y * 0.35;
+            }
             let mut pulses = vec![(0.0, 1.0)];
             let n = 1 + (rnd(&mut st.seed) * 3.0) as usize;
             let mut t0 = 0.0;
@@ -367,8 +454,37 @@ fn update(
                 t0 += 0.08 + rnd(&mut st.seed) * 0.18;
                 pulses.push((t0, 0.35 + rnd(&mut st.seed) * 0.65));
             }
-            st.strike = Some(Strike { at, t: 0.0, pulses });
-            st.next_strike = (6.0 + rnd(&mut st.seed) * 24.0) / (0.5 + r);
+            // Two strikes in five reach the ground: a bolt down to the map's water / ground level.
+            let bolt = if rnd(&mut st.seed) < 0.4 || forced {
+                let ground = Vec3::new(at.x, st.ground, at.z);
+                let top = Vec3::new(at.x, dry.slab.x + 10.0, at.z);
+                let mesh = bolt_mesh(&mut st.seed, top, ground, eye, 1.6);
+                let mat = std_mats.add(StandardMaterial {
+                    base_color: Color::LinearRgba(LinearRgba::new(6.0, 6.5, 9.0, 1.0)),
+                    unlit: true,
+                    double_sided: true,
+                    cull_mode: None,
+                    alpha_mode: AlphaMode::Add,
+                    fog_enabled: false,
+                    ..default()
+                });
+                let e = commands
+                    .spawn((
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(mat.clone()),
+                        Transform::default(),
+                        BoltMesh,
+                        bevy::camera::visibility::NoFrustumCulling,
+                        bevy::light::NotShadowCaster,
+                        bevy::light::NotShadowReceiver,
+                    ))
+                    .id();
+                Some((e, mat))
+            } else {
+                None
+            };
+            st.strike = Some(Strike { at, t: 0.0, pulses, bolt });
+            st.next_strike = if forced { 3.0 } else { (6.0 + rnd(&mut st.seed) * 24.0) / (0.5 + r) };
             // Thunder after the light: 343 m/s.
             let dist = at.distance(eye);
             let near = dist < 700.0;
@@ -385,8 +501,18 @@ fn update(
         s.t += dt;
         let lv = strike_level(s);
         flash = Vec4::new(s.at.x, 650.0, s.at.z, lv * 6.0);
-        light = lv;
+        light = if s.bolt.is_some() { lv * 1.5 } else { lv };
+        if let Some((_, mat)) = s.bolt.as_ref() {
+            if let Some(mut m) = std_mats.get_mut(mat) {
+                // The bolt shows for its flickers only (a hair longer than the glow, as the channel cools).
+                let k = (lv * 1.3).min(1.0);
+                m.base_color = Color::LinearRgba(LinearRgba::new(6.0 * k, 6.5 * k, 9.0 * k, k));
+            }
+        }
         if s.t > 2.0 {
+            if let Some((e, _)) = s.bolt.take() {
+                commands.entity(e).despawn();
+            }
             st.strike = None;
         }
     }
@@ -412,8 +538,8 @@ fn update(
     let Some(mut m) = mats.get_mut(&h) else { return };
     let p = &mut m.params;
     // Overcast: more cover, thinner gaps, smoother (less fluffy) edges, much darker, faster.
-    p.slab.w = dry.slab.w + (0.88 - dry.slab.w) * r;
-    p.shape = Vec4::new(dry.shape.x * (1.0 - 0.7 * r), 1.0 - 0.6 * r, r, 0.0);
+    p.slab.w = dry.slab.w + (0.7 - dry.slab.w) * r;
+    p.shape = Vec4::new(dry.shape.x * (1.0 - 0.7 * r), dry.shape.y * (1.0 - 0.7 * r), r, 0.0);
     p.wind = Vec4::new(dry.wind.x * (1.0 + r), dry.wind.y * (1.0 + r), dry.wind.z * (1.0 + r), 1.0 + 0.4 * r);
     p.flash = flash;
 }
