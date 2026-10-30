@@ -569,7 +569,8 @@ fn build_photo_skyline(
     if cols.iter().all(|c| c.is_none()) {
         return false;
     }
-    // Pieces: runs of columns cut where the roofline jumps (a new building) or every 40 columns.
+    // Pieces: runs of columns cut where the roofline jumps a lot (a tower beside low blocks) or every 160 columns.
+    // Every cut is a seam seen from off the middle, so they're kept few and wide.
     let mut pieces: Vec<(usize, usize)> = Vec::new();
     let mut c = 0;
     while c < w {
@@ -579,15 +580,15 @@ fn build_photo_skyline(
         }
         let start = c;
         c += 1;
-        while c < w && c - start < 40 {
+        while c < w && c - start < 160 {
             match (cols[c - 1], cols[c]) {
-                (Some(a), Some(b)) if (a.0 as i32 - b.0 as i32).abs() <= 3 => c += 1,
+                (Some(a), Some(b)) if (a.0 as i32 - b.0 as i32).abs() <= 12 || c - start < 24 => c += 1,
                 _ => break,
             }
         }
-        // Keep thin slivers with their neighbour.
-        if c - start < 4 && c < w && cols[c].is_some() {
-            while c < w && c - start < 4 && cols[c].is_some() {
+        // Keep narrow pieces with their neighbour.
+        if c - start < 24 && c < w && cols[c].is_some() {
+            while c < w && c - start < 24 && cols[c].is_some() {
                 c += 1;
             }
         }
@@ -613,7 +614,7 @@ fn build_photo_skyline(
         images.add(im)
     };
     let front_mat = materials.add(StandardMaterial {
-        base_color_texture: Some(img),
+        base_color_texture: Some(img.clone()),
         unlit: true,
         double_sided: true,
         cull_mode: None,
@@ -622,11 +623,15 @@ fn build_photo_skyline(
         fog_enabled: false,
         ..default()
     });
+    // Side walls between pieces at different depths: the photo's edge column stretched along them, a little darker
+    // (the side of the nearer building), so a seam seen from off the middle reads as a wall, not a black line.
     let wall_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.03, 0.026, 0.03),
+        base_color_texture: Some(img.clone()),
+        base_color: Color::srgb(0.7, 0.7, 0.7),
         unlit: true,
         double_sided: true,
         cull_mode: None,
+        alpha_mode: AlphaMode::Mask(0.5),
         fog_enabled: false,
         ..default()
     });
@@ -643,11 +648,11 @@ fn build_photo_skyline(
         .map(|&(a, b)| {
             let top = (a..b).filter_map(|c| cols[c].map(|x| x.0)).min().unwrap_or(h);
             let tall = 1.0 - top as f32 / h as f32;
-            base * (0.82 + 0.3 * tall + 0.12 * rnd(seed))
+            base * (0.86 + 0.24 * tall + 0.04 * rnd(seed))
         })
         .collect();
     let (mut fp, mut fu, mut fi) = (Vec::new(), Vec::new(), Vec::<u32>::new());
-    let (mut wp, mut wi) = (Vec::new(), Vec::<u32>::new());
+    let (mut wp, mut wu, mut wi) = (Vec::new(), Vec::new(), Vec::<u32>::new());
     for (k, &(a, b)) in pieces.iter().enumerate() {
         let rad = depth[k];
         let top = (a..b).filter_map(|c| cols[c].map(|x| x.0)).min().unwrap_or(0) as f32;
@@ -677,6 +682,10 @@ fn build_photo_skyline(
                 let col = b as f32;
                 let q = wp.len() as u32;
                 wp.extend([at(col, seam_bot, r0), at(col, seam_bot, r1), at(col, seam_top, r1), at(col, seam_top, r0)]);
+                // The nearer piece's edge column.
+                let u = if r0 < r1 { (col - 0.5) / w as f32 } else { (col + 0.5) / w as f32 };
+                let (v0, v1) = (seam_top / h as f32, seam_bot / h as f32);
+                wu.extend([[u, v1], [u, v1], [u, v0], [u, v0]]);
                 wi.extend([q, q + 1, q + 2, q, q + 2, q + 3]);
             }
         }
@@ -689,6 +698,7 @@ fn build_photo_skyline(
     if !wp.is_empty() {
         let mut wm = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
         wm.insert_attribute(Mesh::ATTRIBUTE_POSITION, wp);
+        wm.insert_attribute(Mesh::ATTRIBUTE_UV_0, wu);
         wm.insert_indices(Indices::U32(wi));
         commands.spawn((Mesh3d(meshes.add(wm)), MeshMaterial3d(wall_mat), Transform::default(), SkylinePart, bevy::light::NotShadowCaster, bevy::light::NotShadowReceiver));
     }

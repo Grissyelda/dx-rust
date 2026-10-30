@@ -148,6 +148,10 @@ pub fn material(
     let h = mats.add(MirrorMaterial {
         base: StandardMaterial {
             alpha_mode: AlphaMode::Opaque,
+            // Mirrored faces can lie over opaque floor faces in the same plane (the intro's globe-room walkway):
+            // Unreal draws the mirror's view over what's there; here they z-fought in shifting stripes as the camera
+            // moved. A small bias puts the mirror in front.
+            depth_bias: 64.0,
             ..base
         },
         extension: MirrorExt {
@@ -516,6 +520,7 @@ pub fn mirror_body_system(
     mut vis: Query<&mut Visibility>,
     weapons: Res<crate::weapons::Weapons>,
     keys: Res<ButtonInput<KeyCode>>,
+    ph: Res<crate::ai::PlayerHealth>,
 ) {
     // Something else shows JC (conversation puppet, death), or no mirror reflecting: hide.
     // DXVIEW_MIRROR_BODY=1: show him under a flying camera too (screenshot tests).
@@ -523,7 +528,7 @@ pub fn mirror_body_system(
     // Augmentique's outfits screen shows him too (outfit_view.rs).
     let outfits = crate::outfit_view::open();
     // Third person (thirdperson.rs): the main camera draws him too.
-    let show = (outfits || crate::thirdperson::active() || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active();
+    let show = (outfits || crate::thirdperson::active() || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active() && !ph.dead;
     if let Some(b) = body.0.as_ref() {
         if b.gen != crate::augmentique::generation() {
             commands.entity(b.root).despawn();
@@ -559,7 +564,11 @@ pub fn mirror_body_system(
             Some((lm, parts, handles)) => {
                 body.0 = Some(MirrorBody {
                     root,
-                    mesh: std::sync::Arc::new(dx_level::actors::anim_mesh(&lm)),
+                    mesh: std::sync::Arc::new({
+                        let mut am = dx_level::actors::anim_mesh(&lm);
+                        dx_level::actors::synth_crouch_walk(&mut am);
+                        am
+                    }),
                     parts,
                     handles,
                     seq: String::new(),
@@ -587,7 +596,16 @@ pub fn mirror_body_system(
     }
     let yaw = cams.iter().next().map_or(0.0, |c| c.0.yaw);
     // FlyCam yaw 0 looks along Bevy -Z (Unreal -Y): JC's Unreal yaw is the view's.
-    let ue_yaw = -(yaw as f64) - std::f64::consts::FRAC_PI_2;
+    let mut ue_yaw = -(yaw as f64) - std::f64::consts::FRAC_PI_2;
+    // DXVIEW_BODY_AHEAD="units,degrees": (test shots) the body that far in front of the fly camera, turned by that.
+    let ahead = std::env::var("DXVIEW_BODY_AHEAD").ok().and_then(|v| {
+        let (a, b) = v.split_once(',')?;
+        Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
+    });
+    let look_yaw = ue_yaw;
+    if let Some((_, deg)) = ahead {
+        ue_yaw += deg.to_radians();
+    }
     let rot = [0, (ue_yaw / std::f64::consts::TAU * 65536.0) as i32, 0];
     let m = dx_level::actors::rotator_to_bevy_mat3(rot);
     let quat = Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2])));
@@ -598,6 +616,9 @@ pub fn mirror_body_system(
         if let Some((_, tf)) = cams.iter().next() {
             let e = dx_level::bevy_to_ue(tf.translation.to_array());
             loc = glam::DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64 - player.eye_height);
+            if let Some((d, _)) = ahead {
+                loc += glam::DVec3::new(look_yaw.cos(), look_yaw.sin(), 0.0) * d;
+            }
         }
     }
     commands
@@ -635,9 +656,8 @@ pub fn mirror_body_system(
             ("CrouchShoot", false, 1.0)
         } else if moving {
             // PlayCrawling: LoopAnim('CrouchWalk'), its legs in step with the ground covered. Meshes without it
-            // (the women's GFM_Trench: Lay D Denton) loop Crouch, as LDDP's own PlayWalking does.
-            let walk = if b.mesh.seqs.iter().any(|s| s.name.eq_ignore_ascii_case("CrouchWalk")) { "CrouchWalk" } else { "Crouch" };
-            (walk, true, (speed as f32 / (player.params.ground_speed as f32 * 0.3).max(1.0)).clamp(0.6, 2.0))
+            // (the women's GFM_Trench: Lay D Denton) get one made up (dx_level::actors::synth_crouch_walk).
+            ("CrouchWalk", true, (speed as f32 / (player.params.ground_speed as f32 * 0.3).max(1.0)).clamp(0.6, 2.0))
         } else {
             ("Crouch", false, 1.0)
         }
@@ -664,6 +684,12 @@ pub fn mirror_body_system(
         ("BreatheLight2H", true, 1.0)
     } else {
         ("BreatheLight", true, 1.0)
+    };
+    // DXVIEW_BODY_SEQ=<sequence>: loop that one (screenshots of the third-person body).
+    let forced = std::env::var("DXVIEW_BODY_SEQ").ok();
+    let (want, looped, rate_k) = match forced.as_deref() {
+        Some(f) => (f, true, 1.0),
+        None => (want, looped, rate_k),
     };
     // Aim pose: frame 0 of Shoot / CrouchShoot held while aiming and not firing.
     let aim_pose = aiming && !firing && (!moving || player.crouched) && !falling && !player.swimming;

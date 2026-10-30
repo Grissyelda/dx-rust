@@ -228,6 +228,13 @@ pub fn flashlight_cone() -> bool {
     crate::settings::get("FlashlightCone") > 0.5
 }
 
+/// The flashlight's light this frame (with the Flashlight Cone): where it shines from, its direction and how far
+/// it reaches before a wall (metres). Light Shafts' beam follows it so the two make one pool.
+static FLASH: Mutex<Option<(Vec3, Vec3, f32)>> = Mutex::new(None);
+pub fn flashlight() -> Option<(Vec3, Vec3, f32)> {
+    FLASH.lock().ok().and_then(|f| *f)
+}
+
 /// Lights for the vertex-lit meshes only (the flashlight beam while the cone lights the world).
 static CPU_ONLY: Mutex<Vec<LightInfo>> = Mutex::new(Vec::new());
 
@@ -595,6 +602,9 @@ pub fn aug_light_system(
     if let Ok(mut c) = CPU_ONLY.lock() {
         c.clear();
     }
+    if let Ok(mut f) = FLASH.lock() {
+        *f = None;
+    }
     if !on {
         return;
     }
@@ -626,9 +636,14 @@ pub fn aug_light_system(
         let intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * gain * d * d * 5.0 * std::env::var("DXVIEW_CONE_GAIN").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         let c = hsv_white(32, 140);
         let right = cam.right().as_vec3();
-        let pos = cam.translation + right * 10.0 * dx_level::METERS_PER_UNIT - Vec3::Y * 6.0 * dx_level::METERS_PER_UNIT;
+        // Just off the eye (a little right and down, so shadows show as thin edges): from the shoulder, the pool's
+        // parallax against where the view points was obvious up close.
+        let pos = cam.translation + right * 4.0 * dx_level::METERS_PER_UNIT - Vec3::Y * 3.0 * dx_level::METERS_PER_UNIT;
         let look = cam.translation + cam.forward().as_vec3() * (dist as f32 * dx_level::METERS_PER_UNIT).max(1.0);
         let tf = Transform::from_translation(pos).looking_at(look, Vec3::Y);
+        if let Ok(mut f) = FLASH.lock() {
+            *f = Some((pos, (look - pos).normalize_or(Vec3::NEG_Z), dist as f32 * dx_level::METERS_PER_UNIT));
+        }
         match cone.iter_mut().next() {
             Some((mut sl, mut t, mut vis)) => {
                 if std::env::var_os("DXVIEW_CONELOG").is_some() {
@@ -648,6 +663,10 @@ pub fn aug_light_system(
                         inner_angle: 0.16,
                         outer_angle: 0.48,
                         shadow_maps_enabled: std::env::var_os("DXVIEW_CONE_NOSHADOW").is_none(),
+                        // Grazing walls lit from almost the eye: the default biases left acne (black lines, a
+                        // dark wedge, speckles) on them.
+                        shadow_depth_bias: 0.12,
+                        shadow_normal_bias: 3.0,
                         ..default()
                     },
                     tf,
@@ -657,6 +676,9 @@ pub fn aug_light_system(
         }
     } else {
         hold(crate::sound::key_of("aug-light-beam"), beam_at, beam, 0.0);
+        if let Ok(mut f) = FLASH.lock() {
+            *f = Some((cam.translation, cam.forward().as_vec3(), dist as f32 * dx_level::METERS_PER_UNIT));
+        }
     }
     let flat = DVec3::new(fwd.x, fwd.y, 0.0).normalize_or_zero();
     let glow_at = player.body.location
