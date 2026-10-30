@@ -91,6 +91,9 @@ fn shadowed_lightmap(lm: vec3<f32>, world_position: vec4<f32>, n: vec3<f32>, fra
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // The face's own normal, not the normal prepass's (Bevy loads that when MSAA is off; a texel the prepass
+    // didn't cover would light the face from the wrong side).
+    pbr_input.N = normalize(pbr_input.world_normal);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 #ifdef LIGHTMAP
     if (bsp.p.x > 0.0) {

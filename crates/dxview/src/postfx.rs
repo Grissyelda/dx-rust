@@ -33,17 +33,18 @@ pub fn postfx_system(
     mut spots: Query<&mut SpotLight, With<crate::dynlight::FlashCone>>,
 ) {
     let ao = ao_on();
+    let ssao = ao && std::env::var_os("DXVIEW_AO_NOSSAO").is_none();
     for (e, has) in &world {
-        if ao && !has {
+        if ssao && !has {
             commands.entity(e).insert(ScreenSpaceAmbientOcclusion {
                 quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
                 constant_object_thickness: 0.3,
             });
-        } else if !ao && has {
+        } else if !ssao && has {
             commands.entity(e).remove::<ScreenSpaceAmbientOcclusion>();
         }
     }
-    let want_msaa = if ao { Msaa::Off } else { Msaa::Sample4 };
+    let want_msaa = if ao && std::env::var_os("DXVIEW_AO_MSAA").is_none() { Msaa::Off } else { Msaa::Sample4 };
     for (e, msaa, smaa, last) in &cams {
         if *msaa != want_msaa {
             commands.entity(e).insert(want_msaa);

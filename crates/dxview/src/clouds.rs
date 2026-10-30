@@ -499,7 +499,8 @@ fn update(
     }
     if let Some(s) = st.strike.as_mut() {
         s.t += dt;
-        let lv = strike_level(s);
+        // DXVIEW_FLASH_HOLD=1: (test shots) the flash held at full for the strike's 2 s.
+        let lv = if std::env::var_os("DXVIEW_FLASH_HOLD").is_some() { 1.0 } else { strike_level(s) };
         flash = Vec4::new(s.at.x, 650.0, s.at.z, lv * 6.0);
         light = if s.bolt.is_some() { lv * 1.5 } else { lv };
         if let Some((_, mat)) = s.bolt.as_ref() {
@@ -524,15 +525,18 @@ fn update(
     for (name, vol) in due {
         crate::sound::play_player(&name, vol * (0.4 + 0.6 * crate::weather::exposure().max(0.3)), 0.0);
     }
-    // The world flash, only as much as the player stands under the open sky.
+    // The world flash, only as much as the player stands under the open sky. It comes from the strike's side and
+    // only a little from above (a flash 250-1750 m away lights the walls facing it, not just the ground: mostly
+    // from above it lit floors and the feet of the buildings only).
+    FLASH_K.store((light * crate::weather::exposure().max(0.35)).to_bits(), std::sync::atomic::Ordering::Relaxed);
     for (_, mut dl, mut tf) in lights.iter_mut() {
         let want = light * 1.4 * crate::weather::exposure();
         if (dl.illuminance - want).abs() > 1e-3 {
             dl.illuminance = want;
         }
         if let Some(s) = st.strike.as_ref() {
-            let dir = (eye - s.at).normalize_or(Vec3::NEG_Y);
-            *tf = Transform::default().looking_to(Vec3::new(dir.x * 0.4, -1.0, dir.z * 0.4), Vec3::Z);
+            let h = Vec3::new(eye.x - s.at.x, 0.0, eye.z - s.at.z).normalize_or(Vec3::X);
+            *tf = Transform::default().looking_to(Vec3::new(h.x, -0.45, h.z), Vec3::Y);
         }
     }
     let Some(mut m) = mats.get_mut(&h) else { return };
@@ -542,4 +546,48 @@ fn update(
     p.shape = Vec4::new(dry.shape.x * (1.0 - 0.7 * r), dry.shape.y * (1.0 - 0.7 * r), r, 0.0);
     p.wind = Vec4::new(dry.wind.x * (1.0 + r), dry.wind.y * (1.0 + r), dry.wind.z * (1.0 + r), 1.0 + 0.4 * r);
     p.flash = flash;
+}
+
+
+/// The lightning flash now (0 = none, about 1-1.5 at a strike's peak), as much as it's seen from where the player is.
+static FLASH_K: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub fn flash_level() -> f32 {
+    f32::from_bits(FLASH_K.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The sky flashes with the lightning too: the sky room (its camera's exposure) and the photo skyline / skyline
+/// blocks (their unlit colour), which the world light never reached - so only the near ground and the feet of the
+/// buildings used to light up.
+pub fn lightning_sky_system(
+    mut sky: Query<&mut bevy::camera::Exposure, With<crate::SkyCam>>,
+    parts: Query<&MeshMaterial3d<StandardMaterial>, With<crate::skyline::SkylinePart>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut base: Local<std::collections::HashMap<AssetId<StandardMaterial>, Color>>,
+    mut was: Local<f32>,
+    mut gen: Local<u64>,
+) {
+    if crate::loader::new_map(&mut gen) {
+        base.clear();
+        *was = 0.0;
+        FLASH_K.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    let k = flash_level();
+    if k <= 0.0 && *was <= 0.0 {
+        return;
+    }
+    *was = k;
+    for mut e in &mut sky {
+        e.ev100 = -0.263 - (1.0 + 3.0 * k).log2();
+    }
+    for h in &parts {
+        let id = h.0.id();
+        let Some(m) = mats.get(id) else { continue };
+        let orig = *base.entry(id).or_insert(m.base_color);
+        let c = orig.to_linear();
+        let g = 1.0 + 2.5 * k;
+        let want = Color::LinearRgba(LinearRgba::new(c.red * g * 0.95, c.green * g * 0.98, c.blue * g * 1.1, c.alpha));
+        if let Some(mut m) = mats.get_mut(id) {
+            m.base_color = want;
+        }
+    }
 }
