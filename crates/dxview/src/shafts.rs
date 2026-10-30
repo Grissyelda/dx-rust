@@ -40,6 +40,11 @@ pub struct ShaftBeam;
 /// Spotlights shown as beams at once (each one renders the scene into its own shadow map).
 const SPOTS: usize = 3;
 
+/// The shaft lights are made this many times weaker and the fog this many times more responsive to them: they
+/// exist to light the air, and at full strength their specular highlights drew bright second pools on the floor
+/// (the flashlight's "double" pool, spotlights' hot spots) even with affects_lightmapped_mesh_diffuse off.
+const AIR_BOOST: f32 = 30.0;
+
 /// The haze the beams show in follows the eye: a box this big (metres) around it, soft at its edges.
 const HAZE: Vec3 = Vec3::new(70.0, 36.0, 70.0);
 
@@ -312,6 +317,7 @@ pub fn shafts_system(
                     absorption: 0.01,
                     scattering: 0.6,
                     scattering_asymmetry: 0.6,
+                    light_intensity: AIR_BOOST,
                     ..default()
                 },
                 Transform::from_translation(cam_tf.translation).with_scale(HAZE),
@@ -324,7 +330,7 @@ pub fn shafts_system(
                 commands.spawn((
                     DirectionalLight {
                         color: Color::srgb(0.75, 0.82, 1.0),
-                        illuminance: 0.35,
+                        illuminance: 0.35 / AIR_BOOST,
                         shadow_maps_enabled: true,
                         affects_lightmapped_mesh_diffuse: false,
                         ..default()
@@ -430,7 +436,7 @@ pub fn shafts_system(
             match order.get(slot.0) {
                 Some(&(_, i)) => {
                     let s = &st.spots[i];
-                    sl.intensity = s.intensity;
+                    sl.intensity = s.intensity / AIR_BOOST;
                     sl.color = s.color;
                     sl.range = s.range;
                     sl.outer_angle = s.angle;
@@ -456,14 +462,14 @@ pub fn shafts_system(
         if let (true, Some((from, f, reach))) = (aug, flash) {
             let pos = from + f * (reach * 0.5).min(0.6);
             *tf = Transform::from_translation(pos).looking_to(f, Vec3::Y);
-            sl.intensity = 60.0;
+            sl.intensity = 14.0 / AIR_BOOST;
             sl.color = {
                 let c = dx_level::lighting::hsv_white(32, 140);
                 Color::srgb(c[0], c[1], c[2])
             };
             sl.range = 1024.0 * METERS_PER_UNIT;
-            sl.outer_angle = 0.36;
-            sl.inner_angle = 0.12;
+            sl.outer_angle = 0.32;
+            sl.inner_angle = 0.0;
             *vis = Visibility::Inherited;
         } else if *vis != Visibility::Hidden {
             sl.intensity = 0.0;
@@ -552,7 +558,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
                 absorption: 0.03,
                 scattering: 0.5,
                 scattering_asymmetry: 0.35,
-                light_intensity: 1.0,
+                light_intensity: AIR_BOOST,
                 ..default()
             },
             Transform::from_translation(mid).with_scale(size),
@@ -574,7 +580,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
                 absorption: 0.02,
                 scattering: 0.6,
                 scattering_asymmetry: 0.5,
-                light_intensity: 1.0,
+                light_intensity: AIR_BOOST,
                 ..default()
             },
             Transform::from_translation(p + Vec3::Y * 1.0).with_scale(Vec3::new(r * 2.0, 5.0, r * 2.0)),

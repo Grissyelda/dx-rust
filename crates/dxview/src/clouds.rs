@@ -34,6 +34,10 @@ pub struct CloudParams {
     pub moon: Vec4,
     /// x, y: the sheet's centre (Bevy x, z), z: radius where it starts fading, w: where it's gone.
     pub fade: Vec4,
+    /// x: edge erosion (fluffiness), y: overall brightness, z: rain 0..1, w: unused.
+    pub shape: Vec4,
+    /// A lightning flash inside the clouds: x, z (Bevy), y: radius (m), w: strength (0 = none).
+    pub flash: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -155,6 +159,83 @@ pub fn noise_image() -> Image {
 pub struct CloudState {
     noise: Option<Handle<Image>>,
     last: bool,
+    mat: Option<Handle<CloudMaterial>>,
+    /// Dry-weather values (set when the sheet is built).
+    dry: Option<CloudParams>,
+    rain: f32,
+    // Lightning.
+    next_strike: f32,
+    strike: Option<Strike>,
+    thunder: Vec<(f32, String, f32)>,
+    seed: u64,
+}
+
+struct Strike {
+    at: Vec3,
+    t: f32,
+    /// (start time, strength) of each flicker.
+    pulses: Vec<(f32, f32)>,
+}
+
+/// Flash level of a strike `t` seconds in: each flicker jumps up and dies away in about 0.12 s.
+fn strike_level(s: &Strike) -> f32 {
+    s.pulses
+        .iter()
+        .map(|&(t0, k)| {
+            let x = s.t - t0;
+            if x < 0.0 { 0.0 } else { k * (-x / 0.07).exp() }
+        })
+        .fold(0.0, f32::max)
+}
+
+fn rnd(seed: &mut u64) -> f32 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    (*seed >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// The flash from above that lights the world (no shadows); only as much as the player is out under the sky.
+#[derive(Component)]
+pub struct LightningLight;
+
+/// Thunder, made here (no thunder in the game's sounds): brown noise shaped into a rumble of a few swells; a close
+/// one opens with a sharp crack.
+fn thunder_clip(seed: u64, near: bool) -> imsim_audio::Clip {
+    let rate = 22050u32;
+    let secs = if near { 7.0 } else { 9.0 };
+    let n = (rate as f32 * secs) as usize;
+    let mut s = seed | 1;
+    let mut data = Vec::with_capacity(n);
+    let (mut brown, mut lp, mut lp2) = (0.0f32, 0.0f32, 0.0f32);
+    // Swells of the rumble: (start s, strength, length s).
+    let mut swells = Vec::new();
+    let count = 3 + (rnd(&mut s) * 3.0) as usize;
+    for k in 0..count {
+        let t0 = if k == 0 { 0.0 } else { rnd(&mut s) * secs * 0.55 };
+        swells.push((t0 + if near { 0.0 } else { 0.4 }, 0.4 + rnd(&mut s) * 0.6, 0.8 + rnd(&mut s) * 2.2));
+    }
+    for i in 0..n {
+        let t = i as f32 / rate as f32;
+        let white = rnd(&mut s) * 2.0 - 1.0;
+        brown = (brown + white * 0.02) * 0.998;
+        lp += (brown - lp) * 0.08;
+        lp2 += (lp - lp2) * 0.05;
+        let env: f32 = swells
+            .iter()
+            .map(|&(t0, k, len)| {
+                let x = t - t0;
+                if x < 0.0 { 0.0 } else { k * (1.0 - (-x / 0.08).exp()) * (-x / len).exp() }
+            })
+            .sum();
+        let mut v = (lp * 0.6 + lp2 * 1.4) * env * 6.0;
+        if near && t < 0.35 {
+            // The crack: bright noise snapping off fast.
+            v += white * 0.5 * (-t / 0.06).exp();
+        }
+        data.push((v * (1.0 - (t / secs).powi(4))).clamp(-1.0, 1.0));
+    }
+    imsim_audio::Clip { data, channels: 1, rate, loop_range: None }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -167,15 +248,26 @@ pub fn clouds_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<CloudMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut lights: Query<(Entity, &mut DirectionalLight, &mut Transform), With<LightningLight>>,
+    time: Res<Time>,
+    cam: Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<LightningLight>)>,
 ) {
     let lvl = &level.0;
     let fresh = crate::loader::new_map(&mut map_gen);
     let want = on();
     if !fresh && want == st.last {
+        update(&mut st, &mut mats, &mut lights, &mut commands, &time, &cam);
         return;
     }
     st.last = want;
+    st.mat = None;
+    st.dry = None;
+    st.strike = None;
+    st.thunder.clear();
     for e in &sheets {
+        commands.entity(e).despawn();
+    }
+    for (e, _, _) in &mut lights {
         commands.entity(e).despawn();
     }
     if !want || !crate::skyline::cloudy(&lvl.name) || !lvl.zone_sky.iter().any(|s| *s) {
@@ -194,19 +286,31 @@ pub fn clouds_system(
         None => Vec4::new(0.12, 0.13, 0.16, 0.2),
     };
     let moon = crate::shafts::moon_dir(lvl).filter(|d| d.y > 0.05).unwrap_or(Vec3::new(0.3, 0.8, 0.5).normalize());
-    let base = bmax.y + (half * 1.2).clamp(150.0, 600.0);
-    let thick = 160.0;
-    let size = (half * 30.0).clamp(3000.0, 12000.0);
-    let mat = mats.add(CloudMaterial {
-        params: CloudParams {
-            slab: Vec4::new(base, thick, 1.0 / 1800.0, 0.45),
-            wind: Vec4::new(0.0035, 0.0012, 0.0014, 1.0),
-            glow,
-            moon: moon.extend(0.12),
-            fade: Vec4::new(centre.x, centre.z, size * 0.35, size * 0.95),
-        },
-        noise,
-    });
+    // High over the map (the sky box's own clouds are far up too) and a broad, flat-ish layer.
+    let base = bmax.y + (half * 2.0).clamp(450.0, 1100.0);
+    let thick = 260.0;
+    let size = (half * 30.0).clamp(4000.0, 14000.0);
+    let params = CloudParams {
+        slab: Vec4::new(base, thick, 1.0 / 2600.0, 0.45),
+        // About 25 m/s up there.
+        wind: Vec4::new(0.0095, 0.002, 0.0038, 1.0),
+        glow,
+        moon: moon.extend(0.12),
+        fade: Vec4::new(centre.x, centre.z, size * 0.35, size * 0.95),
+        shape: Vec4::new(0.32, 1.0, 0.0, 0.0),
+        flash: Vec4::ZERO,
+    };
+    let mat = mats.add(CloudMaterial { params, noise });
+    st.mat = Some(mat.clone());
+    st.dry = Some(params);
+    st.rain = -1.0;
+    st.seed = 0x51A7_3E11 ^ (lvl.name.len() as u64 * 7919);
+    st.next_strike = 8.0;
+    commands.spawn((
+        DirectionalLight { illuminance: 0.0, shadow_maps_enabled: false, color: Color::srgb(0.8, 0.86, 1.0), ..default() },
+        Transform::default().looking_to(Vec3::new(0.2, -1.0, 0.1), Vec3::Z),
+        LightningLight,
+    ));
     let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     m.insert_attribute(
         Mesh::ATTRIBUTE_POSITION,
@@ -229,4 +333,87 @@ pub fn clouds_system(
         bevy::light::NotShadowCaster,
         bevy::light::NotShadowReceiver,
     ));
+}
+
+/// Each frame: rain turns the clouds into a darker, flatter, faster overcast; lightning while it rains hard enough.
+fn update(
+    st: &mut CloudState,
+    mats: &mut Assets<CloudMaterial>,
+    lights: &mut Query<(Entity, &mut DirectionalLight, &mut Transform), With<LightningLight>>,
+    _commands: &mut Commands,
+    time: &Time,
+    cam: &Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<LightningLight>)>,
+) {
+    let (Some(h), Some(dry)) = (st.mat.clone(), st.dry) else { return };
+    let dt = time.delta_secs().min(0.1);
+    let want_rain = (crate::weather::density() / 9.0).clamp(0.0, 1.0);
+    // Ease into the weather over some seconds (dynamic rain drifts slowly anyway).
+    st.rain = if st.rain < 0.0 { want_rain } else { st.rain + (want_rain - st.rain) * (dt * 0.3).min(1.0) };
+    let r = st.rain;
+    let eye = cam.iter().next().map_or(Vec3::ZERO, |t| t.translation);
+    // Lightning: a strike every 6..30 s in heavy rain, rarer in light rain, none when dry.
+    let mut flash = Vec4::ZERO;
+    let mut light = 0.0;
+    if r > 0.3 {
+        st.next_strike -= dt;
+        if st.next_strike <= 0.0 && st.strike.is_none() {
+            let a = rnd(&mut st.seed) * std::f32::consts::TAU;
+            let d = 250.0 + rnd(&mut st.seed) * 1500.0;
+            let at = Vec3::new(eye.x + a.cos() * d, dry.slab.x + dry.slab.y * 0.35, eye.z + a.sin() * d);
+            let mut pulses = vec![(0.0, 1.0)];
+            let n = 1 + (rnd(&mut st.seed) * 3.0) as usize;
+            let mut t0 = 0.0;
+            for _ in 0..n {
+                t0 += 0.08 + rnd(&mut st.seed) * 0.18;
+                pulses.push((t0, 0.35 + rnd(&mut st.seed) * 0.65));
+            }
+            st.strike = Some(Strike { at, t: 0.0, pulses });
+            st.next_strike = (6.0 + rnd(&mut st.seed) * 24.0) / (0.5 + r);
+            // Thunder after the light: 343 m/s.
+            let dist = at.distance(eye);
+            let near = dist < 700.0;
+            let k = (rnd(&mut st.seed) * 3.0) as u64;
+            let name = format!("Synth.Thunder.{}{}", if near { "Near" } else { "Far" }, k);
+            if crate::sound::cached(&name).is_none() {
+                crate::sound::remember(&name, Some(std::sync::Arc::new(thunder_clip(0x7700 + k * 31 + near as u64, near))));
+            }
+            let vol = (1.2 - dist / 2200.0).clamp(0.25, 1.0);
+            st.thunder.push((dist / 343.0, name, vol));
+        }
+    }
+    if let Some(s) = st.strike.as_mut() {
+        s.t += dt;
+        let lv = strike_level(s);
+        flash = Vec4::new(s.at.x, 650.0, s.at.z, lv * 6.0);
+        light = lv;
+        if s.t > 2.0 {
+            st.strike = None;
+        }
+    }
+    for th in st.thunder.iter_mut() {
+        th.0 -= dt;
+    }
+    let due: Vec<(String, f32)> = st.thunder.iter().filter(|t| t.0 <= 0.0).map(|t| (t.1.clone(), t.2)).collect();
+    st.thunder.retain(|t| t.0 > 0.0);
+    for (name, vol) in due {
+        crate::sound::play_player(&name, vol * (0.4 + 0.6 * crate::weather::exposure().max(0.3)), 0.0);
+    }
+    // The world flash, only as much as the player stands under the open sky.
+    for (_, mut dl, mut tf) in lights.iter_mut() {
+        let want = light * 1.4 * crate::weather::exposure();
+        if (dl.illuminance - want).abs() > 1e-3 {
+            dl.illuminance = want;
+        }
+        if let Some(s) = st.strike.as_ref() {
+            let dir = (eye - s.at).normalize_or(Vec3::NEG_Y);
+            *tf = Transform::default().looking_to(Vec3::new(dir.x * 0.4, -1.0, dir.z * 0.4), Vec3::Z);
+        }
+    }
+    let Some(mut m) = mats.get_mut(&h) else { return };
+    let p = &mut m.params;
+    // Overcast: more cover, thinner gaps, smoother (less fluffy) edges, much darker, faster.
+    p.slab.w = dry.slab.w + (0.88 - dry.slab.w) * r;
+    p.shape = Vec4::new(dry.shape.x * (1.0 - 0.7 * r), 1.0 - 0.6 * r, r, 0.0);
+    p.wind = Vec4::new(dry.wind.x * (1.0 + r), dry.wind.y * (1.0 + r), dry.wind.z * (1.0 + r), 1.0 + 0.4 * r);
+    p.flash = flash;
 }

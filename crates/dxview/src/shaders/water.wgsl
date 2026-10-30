@@ -80,6 +80,18 @@ fn detail(p: vec2<f32>, t: f32) -> vec2<f32> {
     return g * 0.3;
 }
 
+// The fine waves faded out by pixel footprint (fp, metres) like the swell below.
+fn detail_lod(p: vec2<f32>, t: f32, fp: f32) -> vec2<f32> {
+    var g = vec2<f32>(0.0);
+    g += wave(p, t, 0.6, 0.42, 0.55, 0.020).yz / (1.0 + pow(fp * 4.0 / 0.42, 2.0));
+    g += wave(p, t, 2.2, 0.31, 0.47, 0.016).yz / (1.0 + pow(fp * 4.0 / 0.31, 2.0));
+    g += wave(p, t, 3.7, 0.23, 0.40, 0.012).yz / (1.0 + pow(fp * 4.0 / 0.23, 2.0));
+    g += wave(p, t, 5.1, 0.17, 0.34, 0.009).yz / (1.0 + pow(fp * 4.0 / 0.17, 2.0));
+    g += wave(p, t, 1.3, 0.11, 0.28, 0.006).yz / (1.0 + pow(fp * 4.0 / 0.11, 2.0));
+    g += wave(p, t, 4.4, 0.075, 0.22, 0.004).yz / (1.0 + pow(fp * 4.0 / 0.075, 2.0));
+    return g * 0.3;
+}
+
 // The swell's gradient with each wave faded out once a pixel spans a good part of its length (no grain far off).
 // fp = the width of the water a pixel covers, metres.
 fn swell_grad_lod(p: vec2<f32>, t: f32, fp: f32) -> vec2<f32> {
@@ -196,7 +208,10 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // A pixel's footprint on the water (grows at grazing angles too).
     let to_eye0 = normalize(view.world_position.xyz - in.world_position.xyz);
     let fp = d_eye * 0.0015 / max(abs(to_eye0.y), 0.08);
-    let g = swell_grad_lod(p, t, fp) * 0.18 + (detail(p, t) + rain_rings(p, t, water.m.z)) * fine;
+    // Far off, the swell's slopes only alias into dark bands (a "plaid" towards the horizon): the far water
+    // calms to a smooth mirror of the sky.
+    let calm = mix(0.12, 1.0, 1.0 / (1.0 + (d_eye / 40.0) * (d_eye / 40.0)));
+    let g = swell_grad_lod(p, t, fp) * 0.18 * calm + (detail_lod(p, t, fp) + rain_rings(p, t, water.m.z)) * fine;
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     let up = select(-1.0, 1.0, pbr_input.world_normal.y >= 0.0);
     let n = normalize(vec3<f32>(-g.x, up, -g.y));
@@ -228,10 +243,10 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         // Waves bend the reflection, less far away (where a pixel spans more water).
         uv += vec2<f32>(-g.x, g.y) * water.m.w / (1.0 + dist * 0.05);
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
-        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.8;
+        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.62;
     }
     // The water body: its own deep colour, lit a little by the light falling into it (lamp pools glow blue-green).
-    let body = water.tint.rgb + light * vec3<f32>(0.035, 0.075, 0.085);
+    let body = water.tint.rgb * 0.8 + light * vec3<f32>(0.014, 0.03, 0.036);
     // Physically 2% straight down; a little more than Schlick at middle angles reads better.
     let k_refl = clamp(fres + 0.12 * pow(1.0 - ndv, 2.0), 0.0, 1.0);
     var col = mix(body, refl, k_refl);
@@ -249,7 +264,7 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     let hv = normalize(l + v);
     let nh = max(dot(n, hv), 0.0);
     let moon_col = vec3<f32>(0.75, 0.82, 1.0);
-    col += moon_col * (pow(nh, 900.0) * 1.4 + pow(nh, 90.0) * 0.035) * water.moon.w * (0.3 + 0.7 * fine);
+    col += moon_col * (pow(nh, 900.0) * 0.6 + pow(nh, 90.0) * 0.02) * water.moon.w * (0.3 + 0.7 * fine);
     // See-through by how much water there is: clear in the shallows, its own colour once deep (and always by
     // the reflection at grazing angles).
     let absorb = 1.0 - exp(-depth * 0.55);

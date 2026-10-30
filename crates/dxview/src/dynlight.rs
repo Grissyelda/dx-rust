@@ -216,7 +216,50 @@ pub fn lights_at(level: &dx_level::Level, center: [f32; 3], half_h: f32) -> Vec<
     if !cur.is_empty() {
         v.extend(dx_level::actors::shadowed_lights(&level.collision, &cur, center, half_h));
     }
+    if let Some(l) = flash_spot_on(level, center) {
+        v.push(l);
+    }
     v
+}
+
+/// The Flashlight Cone's light on a vertex-lit mesh: the cone from the eye, as a light just in front of the mesh
+/// on the eye's side - only inside the cone and when the eye can see the mesh (the old beam light sat near where
+/// the view hit and lit whatever was round it, behind walls and poles too).
+#[derive(Clone, Copy)]
+struct FlashSpot {
+    eye: DVec3,
+    dir: DVec3,
+    reach: f64,
+    spec: Spec,
+}
+
+static FLASH_SPOT: Mutex<Option<FlashSpot>> = Mutex::new(None);
+
+fn flash_spot_on(level: &dx_level::Level, center: [f32; 3]) -> Option<LightInfo> {
+    let f = (*FLASH_SPOT.lock().ok()?)?;
+    let c = DVec3::new(center[0] as f64, center[1] as f64, center[2] as f64);
+    let to = c - f.eye;
+    let d = to.length();
+    if d < 1.0 || d > f.reach + 400.0 {
+        return None;
+    }
+    let cos = to.dot(f.dir) / d;
+    // The cone's soft edge (outer 0.48 rad, full inside 0.04 rad, as the GPU spot).
+    let (c_out, c_in) = (0.48f64.cos(), 0.04f64.cos());
+    let k = ((cos - c_out) / (c_in - c_out)).clamp(0.0, 1.0);
+    if k <= 0.0 {
+        return None;
+    }
+    let h = level.collision.trace(f.eye, c - to / d * 24.0, DVec3::ZERO);
+    if h.fraction < 0.999 {
+        return None;
+    }
+    // Strength falls off with distance like the cone's pool (full to 256 units, then dimming).
+    let fall = (1.0 - ((d - 256.0) / (f.reach + 400.0 - 256.0)).max(0.0)).clamp(0.0, 1.0);
+    let k = (k * k * (3.0 - 2.0 * k)) as f32 * fall as f32;
+    let mut l = f.spec.info(c - to / d * 64.0, k);
+    l.radius = 160.0;
+    Some(l)
 }
 
 /// The flashlight cone (enhancement): a spot light that follows the view.
@@ -591,7 +634,8 @@ pub fn aug_light_system(
     st: Option<Res<DynLights>>,
 ) {
     let _prof = crate::prof::scope("dynlight::aug_light_system");
-    let on = crate::abilities::aug_active("AugLight");
+    // Off while a conversation has the camera (the beam would sweep the scene from JC's eyes).
+    let on = crate::abilities::aug_active("AugLight") && !crate::consys::third_person();
     let cone_on = on && flashlight_cone();
     if !cone_on {
         for (mut sl, _, mut vis) in &mut cone {
@@ -603,6 +647,9 @@ pub fn aug_light_system(
         c.clear();
     }
     if let Ok(mut f) = FLASH.lock() {
+        *f = None;
+    }
+    if let Ok(mut f) = FLASH_SPOT.lock() {
         *f = None;
     }
     if !on {
@@ -625,8 +672,8 @@ pub fn aug_light_system(
         // Enhancement (Flashlight Cone): a real spot light from the shoulder with a soft edge and shadows lights the
         // world; the meshes are still vertex-lit by the original beam light (CPU only, so the BSP isn't lit twice).
         // Its strength follows the beam's: at the spot it looks at, about what the beam light gives 64 units off.
-        if let Ok(mut c) = CPU_ONLY.lock() {
-            c.push(beam.info(beam_at, 1.0));
+        if let Ok(mut c) = FLASH_SPOT.lock() {
+            *c = Some(FlashSpot { eye, dir: fwd, reach: dist, spec: Spec::new(32, 140, 192, 4.0) });
         }
         let r_m = beam.info(beam_at, 1.0).radius * dx_level::METERS_PER_UNIT;
         let k = (1.5f32 * 192.0 / 255.0).min(1.0).powf(2.2);
@@ -660,7 +707,7 @@ pub fn aug_light_system(
                         intensity,
                         color: Color::srgb(c[0], c[1], c[2]),
                         range: 2048.0 * dx_level::METERS_PER_UNIT,
-                        inner_angle: 0.16,
+                        inner_angle: 0.04,
                         outer_angle: 0.48,
                         shadow_maps_enabled: std::env::var_os("DXVIEW_CONE_NOSHADOW").is_none(),
                         // Grazing walls lit from almost the eye: the default biases left acne (black lines, a

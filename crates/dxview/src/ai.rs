@@ -5640,6 +5640,15 @@ pub fn npc_system(
                 let ignore_encroach = matches!(find(props, "MoverEncroachType"), Some(Value::Byte(3)));
                 if !door && breakable {
                     crate::movers::damage_mover(i, 200.0, "Shot");
+                } else if door && (rt.interpolating || rt.key_num > 0) {
+                    // Already moving or standing open: wait for it (OpeningDoor's StopWaiting) instead of frobbing
+                    // again - a second frob toggled the statue's doors shut in the next pawn's face, over and over.
+                    if rt.interpolating {
+                        npc.door = Some(DoorWait { mover: i, back_to: moved, t: 0.0, frobbed: true, encroaches: false });
+                        npc.stall = 0.0;
+                    }
+                } else if door && door_cooling(i) {
+                    // A pawn frobbed it moments ago: give it time.
                 } else if door && !(rt.interpolating && ignore_encroach) {
                     let back_to = backup_point(lvl, &mv, i, moved, normal, npc.params.radius, npc.params.height);
                     let mut dw = DoorWait { mover: i, back_to, t: 0.0, frobbed: false, encroaches: !ignore_encroach };
@@ -6574,11 +6583,26 @@ fn frob_door(lvl: &dx_level::Level, mv: &Movers, i: usize, me: usize) -> bool {
         return true;
     }
     let rt = &mv.rt[i];
-    if rt.frobbable.unwrap_or(info.frobbable) && rt.waiting_pawn.map_or(true, |w| w == me) {
+    if rt.frobbable.unwrap_or(info.frobbable) && rt.waiting_pawn.map_or(true, |w| w == me) && !door_cooling(i) {
+        if let Ok(mut m) = DOOR_FROBBED.lock() {
+            m.get_or_insert_with(std::collections::HashMap::new).insert(i, std::time::Instant::now());
+        }
         crate::movers::pawn_door(crate::movers::PawnDoor::Frob(i, me));
         return true;
     }
     false
+}
+
+/// When a pawn last frobbed each door (mover index): no pawn frobs the same door again within DOOR_COOLDOWN.
+static DOOR_FROBBED: std::sync::Mutex<Option<std::collections::HashMap<usize, std::time::Instant>>> = std::sync::Mutex::new(None);
+const DOOR_COOLDOWN: f32 = 3.0;
+
+fn door_cooling(i: usize) -> bool {
+    DOOR_FROBBED
+        .lock()
+        .ok()
+        .and_then(|m| m.as_ref().and_then(|m| m.get(&i).copied()))
+        .is_some_and(|t| t.elapsed().as_secs_f32() < DOOR_COOLDOWN)
 }
 
 /// OpeningDoor.FindBackupPoint: inside the door's movement area (grown by our radius + 30), back away along the
@@ -6616,6 +6640,9 @@ fn backup_point(lvl: &dx_level::Level, mv: &Movers, i: usize, at: DVec3, normal:
 }
 
 pub fn reset_level() {
+    if let Ok(mut v) = DOOR_FROBBED.lock() {
+        *v = None;
+    }
     if let Ok(mut v) = WORLD.lock() {
         v.clear();
     }
