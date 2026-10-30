@@ -52,9 +52,102 @@ pub struct MoonShaft;
 #[derive(Component)]
 pub struct HazeBox;
 
-/// Local fog boxes with a drifting density texture.
+/// A fog box whose density is recomputed a few times a second from wind-blown noise in world space (`roll`):
+/// what makes the mist roll and billow instead of sitting there as a fixed pattern. `kind` 0 = mist over water
+/// (`base` its surface height), 1 = smoke under a bar's ceiling, 2 = the light-shaft haze around the eye.
 #[derive(Component)]
-pub struct DriftFog;
+pub struct DriftFog {
+    kind: u8,
+    image: Handle<Image>,
+    n: UVec3,
+    base: f32,
+}
+
+/// Value noise (hash lattice), smooth, unbounded.
+fn wnoise(p: Vec3) -> f32 {
+    let h = |i: i32, j: i32, k: i32| {
+        let n = (i.wrapping_mul(73_856_093)) ^ (j.wrapping_mul(19_349_663)) ^ (k.wrapping_mul(83_492_791));
+        ((n as u32).wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32
+    };
+    let (i, j, k) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+    let s = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (fx, fy, fz) = (s(p.x - p.x.floor()), s(p.y - p.y.floor()), s(p.z - p.z.floor()));
+    let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    l(
+        l(l(h(i, j, k), h(i + 1, j, k), fx), l(h(i, j + 1, k), h(i + 1, j + 1, k), fx), fy),
+        l(l(h(i, j, k + 1), h(i + 1, j, k + 1), fx), l(h(i, j + 1, k + 1), h(i + 1, j + 1, k + 1), fx), fy),
+        fz,
+    )
+}
+
+fn fbm(p: Vec3) -> f32 {
+    wnoise(p) * 0.55 + wnoise(p * 2.03 + Vec3::splat(17.3)) * 0.3 + wnoise(p * 4.07 + Vec3::splat(41.9)) * 0.15
+}
+
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The fog's density at world point `w` (box coordinates `u` 0..1) at time `t`.
+fn roll(kind: u8, w: Vec3, u: Vec3, base: f32, t: f32) -> f32 {
+    match kind {
+        0 => {
+            // Mist over still water: banks that drift with the air, their tops rising and sinking.
+            let wind = Vec3::new(0.32, 0.0, 0.19) * t;
+            let n = fbm((w - wind) * 0.24 + Vec3::new(0.0, t * 0.04, 0.0));
+            let swell = fbm((w - wind * 0.6) * 0.06 + Vec3::new(5.0, t * 0.025, 9.0));
+            let top = 0.35 + 1.9 * swell;
+            let h = w.y - base;
+            let layer = (1.0 - smooth(top * 0.3, top, h)) * smooth(-0.25, 0.1, h);
+            edge(u.x) * edge(u.z) * layer * smooth(0.28, 0.72, n) * 1.8
+        }
+        1 => {
+            // Smoke under a ceiling, curling as it drifts.
+            let drift = Vec3::new(0.12, -0.05, 0.08) * t;
+            let n = fbm((w - drift) * 0.45 + Vec3::new(0.0, t * 0.06, 0.0));
+            edge(u.x) * edge(u.z) * edge(u.y) * (0.3 + 0.7 * u.y) * (0.2 + 1.6 * smooth(0.25, 0.8, n))
+        }
+        _ => {
+            // The haze the beams show in: uneven, slowly moving, so a beam has texture.
+            let wind = Vec3::new(0.25, 0.02, 0.15) * t;
+            let n = fbm((w - wind) * 0.09);
+            edge(u.x) * edge(u.y) * edge(u.z) * (0.35 + 1.3 * smooth(0.2, 0.8, n))
+        }
+    }
+}
+
+/// Recompute one fog box's density texture for time `t`.
+fn refill(img: &mut Image, f: &DriftFog, tf: &Transform, t: f32) {
+    let size = tf.scale;
+    let min = tf.translation - size * 0.5;
+    let n = f.n;
+    let mut data = Vec::with_capacity((n.x * n.y * n.z * 4) as usize);
+    for z in 0..n.z {
+        for y in 0..n.y {
+            for x in 0..n.x {
+                let u = Vec3::new((x as f32 + 0.5) / n.x as f32, (y as f32 + 0.5) / n.y as f32, (z as f32 + 0.5) / n.z as f32);
+                let w = min + u * size;
+                data.extend_from_slice(&roll(f.kind, w, u, f.base, t).max(0.0).to_le_bytes());
+            }
+        }
+    }
+    img.data = Some(data);
+}
+
+/// A blank density texture for a rolling fog box (filled by `refill`), clamped (the noise is in world space).
+fn fog_image(images: &mut Assets<Image>, n: UVec3) -> Handle<Image> {
+    let mut img = density_image((n.x, n.y, n.z), |_, _, _| 0.0);
+    img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::ClampToEdge,
+        address_mode_v: bevy::image::ImageAddressMode::ClampToEdge,
+        address_mode_w: bevy::image::ImageAddressMode::ClampToEdge,
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        ..default()
+    });
+    images.add(img)
+}
 
 /// A small 3D density texture: `f(x, y, z)` over the unit cube (0..1 each), as single-channel floats.
 fn density_image(n: (u32, u32, u32), f: impl Fn(f32, f32, f32) -> f32) -> Image {
@@ -92,24 +185,6 @@ fn edge(t: f32) -> f32 {
     a * a * (3.0 - 2.0 * a) * b * b * (3.0 - 2.0 * b)
 }
 
-/// Smooth value noise on a repeating 8-cell lattice (for wisps of mist).
-fn vnoise(x: f32, y: f32, z: f32) -> f32 {
-    let h = |i: i32, j: i32, k: i32| {
-        let (i, j, k) = (i.rem_euclid(8), j.rem_euclid(8), k.rem_euclid(8));
-        let n = (i * 73_856_093) ^ (j * 19_349_663) ^ (k * 83_492_791);
-        ((n as u32).wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32
-    };
-    let (x, y, z) = (x * 8.0, y * 8.0, z * 8.0);
-    let (i, j, k) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let s = |t: f32| t * t * (3.0 - 2.0 * t);
-    let (fx, fy, fz) = (s(x.fract()), s(y.fract()), s(z.fract()));
-    let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
-    l(
-        l(l(h(i, j, k), h(i + 1, j, k), fx), l(h(i, j + 1, k), h(i + 1, j + 1, k), fx), fy),
-        l(l(h(i, j, k + 1), h(i + 1, j, k + 1), fx), l(h(i, j + 1, k + 1), h(i + 1, j + 1, k + 1), fx), fy),
-        fz,
-    )
-}
 
 struct SpotDef {
     pos: Vec3,
@@ -128,6 +203,8 @@ pub struct ShaftState {
     indoor_check: f32,
     moon_on: bool,
     spots_lit: usize,
+    roll_next: usize,
+    roll_all: bool,
 }
 
 fn byte(p: &[unreal_pkg::props::Property], name: &str, d: u8) -> u8 {
@@ -170,7 +247,7 @@ fn spots_of(lvl: &dx_level::Level) -> Vec<SpotDef> {
 }
 
 /// The moon's direction from the sky room's viewpoint (Bevy space), when the sky shows one.
-fn moon_dir(lvl: &dx_level::Level) -> Option<Vec3> {
+pub fn moon_dir(lvl: &dx_level::Level) -> Option<Vec3> {
     let o = Vec3::from(lvl.sky_origin?);
     let b = lvl.batches.iter().find(|b| {
         b.sky && b.texture.is_some_and(|t| lvl.textures[t].name.to_ascii_lowercase().contains("moon"))
@@ -187,7 +264,7 @@ pub fn shafts_system(
     cam: Single<(Entity, &Transform, Has<VolumetricFog>), (With<FlyCam>, Without<SkyCam>)>,
     parts: Query<Entity, With<ShaftPart>>,
     mut haze: Query<(&mut Transform, &mut Visibility), (With<HazeBox>, Without<FlyCam>, Without<ShaftSpot>, Without<ShaftBeam>, Without<MoonShaft>, Without<crate::dynlight::FlashCone>)>,
-    mut drift: Query<&mut FogVolume, With<DriftFog>>,
+    drift: Query<(&DriftFog, &GlobalTransform)>,
     mut moon: Query<&mut Visibility, (With<MoonShaft>, Without<ShaftSpot>, Without<ShaftBeam>, Without<crate::dynlight::FlashCone>)>,
     mut images: ResMut<Assets<Image>>,
     mut spots: Query<(&ShaftSpot, &mut SpotLight, &mut Transform, &mut Visibility), (Without<FlyCam>, Without<ShaftBeam>, Without<crate::dynlight::FlashCone>)>,
@@ -201,6 +278,7 @@ pub fn shafts_system(
     let (cam_e, cam_tf, has_fog) = *cam;
     if fresh || want != st.built {
         st.built = want;
+        st.roll_all = true;
         for e in &parts {
             commands.entity(e).despawn();
         }
@@ -225,11 +303,12 @@ pub fn shafts_system(
         if want.0 && bmin.x < bmax.x {
             // The haze the beams show in: around the eye only (beams farther off are faint anyway), so the march
             // is short and the box's soft edges are never close.
-            let tex = images.add(density_image((16, 8, 16), |x, y, z| edge(x) * edge(y) * edge(z)));
+            let hn = UVec3::new(20, 10, 20);
+            let tex = fog_image(&mut images, hn);
             commands.spawn((
                 FogVolume {
                     density_factor: 0.006,
-                    density_texture: Some(tex),
+                    density_texture: Some(tex.clone()),
                     absorption: 0.01,
                     scattering: 0.6,
                     scattering_asymmetry: 0.6,
@@ -237,6 +316,7 @@ pub fn shafts_system(
                 },
                 Transform::from_translation(cam_tf.translation).with_scale(HAZE),
                 HazeBox,
+                DriftFog { kind: 2, image: tex, n: hn, base: 0.0 },
                 ShaftPart,
             ));
             // The moon, in the air only.
@@ -288,17 +368,28 @@ pub fn shafts_system(
             // Local fog glows dimly all over (the light baked into the walls isn't in the air).
             commands.entity(cam_e).insert(VolumetricFog {
                 ambient_color: Color::srgb(0.55, 0.6, 0.7),
-                ambient_intensity: 0.02,
+                // (0.02 laid a grey veil over everything near, people included.)
+                ambient_intensity: 0.012,
                 jitter: 0.0,
                 step_count: 24,
             });
         }
         return;
     }
-    // Mist drifts.
+    // The fog rolls: one box's density is recomputed each frame, in turn (each about 10-15 times a second).
     let t = time.elapsed_secs();
-    for mut f in &mut drift {
-        f.density_texture_offset = Vec3::new(t * 0.004, 0.0, t * 0.0025);
+    let boxes: Vec<(&DriftFog, Transform)> = drift.iter().map(|(f, g)| (f, g.compute_transform())).collect();
+    if !boxes.is_empty() {
+        st.roll_next = (st.roll_next + 1) % boxes.len();
+        // Every box once straight away after a build (they start empty).
+        let all = std::mem::take(&mut st.roll_all);
+        for (k, (f, tf)) in boxes.iter().enumerate() {
+            if all || k == st.roll_next {
+                if let Some(mut img) = images.get_mut(&f.image) {
+                    refill(&mut img, f, tf, t);
+                }
+            }
+        }
     }
     if !want.0 {
         return;
@@ -442,49 +533,44 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
         groups.push((lo, hi, start.2 as f32 / 100.0));
     }
     let mut n = 0;
-    if !groups.is_empty() {
-        let mist = images.add(density_image((32, 12, 32), |x, y, z| {
-            let wisp = 0.55 + 0.9 * vnoise(x, y * 0.5, z);
-            // Dense at the water, gone a metre and a half up.
-            let fall = (1.0 - y).powf(2.5);
-            edge(x) * edge(z) * (y / 0.12).clamp(0.0, 1.0) * fall * wisp
-        }));
-        for (lo, hi, y) in groups {
-            let min = Vec2::new(lo.x as f32 * CELL, lo.y as f32 * CELL);
-            let max = Vec2::new((hi.x + 1) as f32 * CELL, (hi.y + 1) as f32 * CELL);
-            let size = Vec3::new(max.x - min.x + 2.0, 2.2, max.y - min.y + 2.0);
-            let mid = Vec3::new((min.x + max.x) * 0.5, y - 0.3 + size.y * 0.5, (min.y + max.y) * 0.5);
-            commands.spawn((
-                FogVolume {
-                    fog_color: Color::srgb(0.62, 0.68, 0.64),
-                    density_factor: 0.07,
-                    density_texture: Some(mist.clone()),
-                    absorption: 0.04,
-                    scattering: 0.5,
-                    scattering_asymmetry: 0.3,
-                    light_intensity: 1.0,
-                    ..default()
-                },
-                Transform::from_translation(mid).with_scale(size),
-                DriftFog,
-                ShaftPart,
-            ));
-            n += 1;
+    for (lo, hi, y) in groups {
+        let min = Vec2::new(lo.x as f32 * CELL, lo.y as f32 * CELL);
+        let max = Vec2::new((hi.x + 1) as f32 * CELL, (hi.y + 1) as f32 * CELL);
+        let size = Vec3::new(max.x - min.x + 2.0, 3.0, max.y - min.y + 2.0);
+        let mid = Vec3::new((min.x + max.x) * 0.5, y - 0.3 + size.y * 0.5, (min.y + max.y) * 0.5);
+        // About a texel every 1.2 m across (at most 40), 12 up.
+        let res = UVec3::new(((size.x / 1.2) as u32).clamp(6, 40), 12, ((size.z / 1.2) as u32).clamp(6, 40));
+        let tex = fog_image(images, res);
+        if std::env::var_os("DXVIEW_SHAFTLOG").is_some() {
+            println!("SHAFTS mist at {mid:?} size {size:?}");
         }
+        commands.spawn((
+            FogVolume {
+                fog_color: Color::srgb(0.7, 0.76, 0.74),
+                density_factor: 0.11,
+                density_texture: Some(tex.clone()),
+                absorption: 0.03,
+                scattering: 0.5,
+                scattering_asymmetry: 0.35,
+                light_intensity: 1.0,
+                ..default()
+            },
+            Transform::from_translation(mid).with_scale(size),
+            DriftFog { kind: 0, image: tex, n: res, base: y },
+            ShaftPart,
+        ));
+        n += 1;
     }
-    let smoke = images.add(density_image((24, 12, 24), |x, y, z| {
-        let wisp = 0.6 + 0.8 * vnoise(x, y, z);
-        // Gathers under the ceiling, thin near the floor.
-        edge(x) * edge(z) * edge(y) * (0.35 + 0.65 * y) * wisp
-    }));
     for s in lvl.ambient_sounds.iter().filter(|s| s.sound.to_ascii_lowercase().ends_with(".bar")) {
         let p = Vec3::from(dx_level::ue_to_bevy([s.pos[0] as f32, s.pos[1] as f32, s.pos[2] as f32]));
         let r = (s.radius as f32 * 25.0 * METERS_PER_UNIT).clamp(8.0, 20.0);
+        let res = UVec3::new(20, 10, 20);
+        let tex = fog_image(images, res);
         commands.spawn((
             FogVolume {
                 fog_color: Color::srgb(0.8, 0.76, 0.7),
                 density_factor: 0.035,
-                density_texture: Some(smoke.clone()),
+                density_texture: Some(tex.clone()),
                 absorption: 0.02,
                 scattering: 0.6,
                 scattering_asymmetry: 0.5,
@@ -492,7 +578,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
                 ..default()
             },
             Transform::from_translation(p + Vec3::Y * 1.0).with_scale(Vec3::new(r * 2.0, 5.0, r * 2.0)),
-            DriftFog,
+            DriftFog { kind: 1, image: tex, n: res, base: 0.0 },
             ShaftPart,
         ));
         n += 1;

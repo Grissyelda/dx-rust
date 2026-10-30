@@ -33,6 +33,8 @@ pub struct WaterParams {
     pub m: Vec4,
     /// Modern water's deep colour (rgb) and how see-through it is straight down (a).
     pub tint: Vec4,
+    /// Direction to the moon (xyz, Bevy) and the glint's strength (w).
+    pub moon: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -137,8 +139,18 @@ pub fn modern() -> bool {
 }
 
 /// Each frame: time and the live rings into every water material.
-pub fn water_system(time: Res<Time>, mut wm: ResMut<WaterMats>, mut mats: ResMut<Assets<WaterMaterial>>) {
+pub fn water_system(
+    time: Res<Time>,
+    mut wm: ResMut<WaterMats>,
+    mut mats: ResMut<Assets<WaterMaterial>>,
+    level: Res<crate::LevelRes>,
+    mut moon: Local<(u64, Vec3)>,
+) {
     let t = time.elapsed_secs();
+    if crate::loader::new_map(&mut moon.0) {
+        moon.1 = crate::shafts::moon_dir(&level.0).filter(|d| d.y > 0.05).unwrap_or(Vec3::new(0.3, 0.8, 0.5).normalize());
+    }
+    let moon_dir = moon.1;
     let new: Vec<(DVec3, f32)> = RINGS_Q.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     for (at, s) in new {
         let p = dx_level::ue_to_bevy([at.x as f32, at.y as f32, at.z as f32]);
@@ -162,6 +174,7 @@ pub fn water_system(time: Res<Time>, mut wm: ResMut<WaterMats>, mut mats: ResMut
             m.extension.params.rings = rings;
             m.extension.params.m.x = if modern { 1.0 } else { 0.0 };
             m.extension.params.m.z = rain;
+            m.extension.params.moon = moon_dir.extend(1.0);
             m.extension.params.far.w = if modern { WAVE_M } else { 0.0 };
             if switched {
                 let opaque = wm.opaque.get(i).copied().unwrap_or(false);
@@ -202,7 +215,8 @@ pub fn material(base: StandardMaterial, opaque: bool, placeholder: Handle<Image>
                 rings: [Vec4::ZERO; RINGS],
                 m: Vec4::new(0.0, 0.0, 0.0, std::env::var("DXVIEW_WATER_BEND").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03)),
                 // Night harbour water: dark blue-green, a fair way see-through looking straight down.
-                tint: Vec4::new(0.010, 0.030, 0.034, 0.45),
+                tint: Vec4::new(0.006, 0.026, 0.040, 0.45),
+                moon: Vec4::new(0.3, 0.8, 0.5, 1.0),
             },
             reflection: placeholder,
         },
@@ -585,14 +599,27 @@ pub fn backing_material() -> StandardMaterial {
 /// The open sea shows only with Modern Water (and the edge walls go).
 #[allow(clippy::type_complexity)]
 pub fn ocean_system(
+    mut commands: Commands,
     mut q: Query<&mut Visibility, (With<OceanRing>, Without<EdgeWall>, Without<WaterBacking>)>,
     mut walls: Query<&mut Visibility, (With<EdgeWall>, Without<OceanRing>, Without<WaterBacking>)>,
     mut backs: Query<(&WaterBacking, &mut Visibility), (Without<OceanRing>, Without<EdgeWall>)>,
-    cam: Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
+    cam: Query<(Entity, &Transform, Has<bevy::core_pipeline::prepass::DepthPrepass>), (With<crate::FlyCam>, Without<crate::SkyCam>)>,
 ) {
-    let eye_y = cam.iter().next().map_or(f32::MAX, |t| t.translation.y);
+    let eye_y = cam.iter().next().map_or(f32::MAX, |t| t.1.translation.y);
+    // Modern Water sees how deep the water is from the scene's depth (a depth prepass on the world camera): shallow
+    // water shows what's under it, deep water turns to its own colour.
+    for (e, _, has) in &cam {
+        if modern() && !has {
+            commands.entity(e).insert(bevy::core_pipeline::prepass::DepthPrepass);
+        } else if !modern() && has && !crate::postfx::ao_on() {
+            commands.entity(e).remove::<bevy::core_pipeline::prepass::DepthPrepass>();
+        }
+    }
+    // The dark backings hid cracks in the moving surface; with the depth showing what's really under the water they'd
+    // only be a false bottom half a metre down (DXVIEW_WATER_BACKING=1 brings them back).
+    let backing = std::env::var_os("DXVIEW_WATER_BACKING").is_some();
     for (b, mut v) in &mut backs {
-        let want = if modern() && eye_y > b.y { Visibility::Inherited } else { Visibility::Hidden };
+        let want = if backing && modern() && eye_y > b.y { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
         }

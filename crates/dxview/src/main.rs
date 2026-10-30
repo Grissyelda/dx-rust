@@ -27,6 +27,7 @@ mod mantle;
 mod thirdperson;
 mod atmosphere;
 mod skyline;
+mod clouds;
 mod audiofx;
 mod anim_tex;
 mod actors;
@@ -867,7 +868,7 @@ fn main() {
         .add_systems(Update, fx::fx_system.after(fly))
         .add_systems(Update, thirdperson::toggle_system)
         .add_systems(Update, audiofx::soundscape_system)
-        .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system))
+        .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system, clouds::clouds_system))
         .add_systems(First, thirdperson::restore_system)
         .add_systems(PostUpdate, thirdperson::place_system.before(bevy::transform::TransformSystems::Propagate))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
@@ -914,10 +915,11 @@ fn main() {
         .add_plugins(bevy::pbr::MaterialPlugin::<gpuanim::AnimMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<mirror::MirrorMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<water::WaterMaterial>::default())
+        .add_plugins(bevy::pbr::MaterialPlugin::<clouds::CloudMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<shadowlight::BspMaterial>::default())
         .init_resource::<water::WaterMats>()
         .init_resource::<gpuanim::GpuAnim>()
-        .add_systems(Startup, (gpuanim::setup_anim_shader, mirror::setup_mirror_shader, water::setup_water_shader, shadowlight::setup_bsp_shader, install_crash_log))
+        .add_systems(Startup, (gpuanim::setup_anim_shader, mirror::setup_mirror_shader, water::setup_water_shader, clouds::setup_cloud_shader, shadowlight::setup_bsp_shader, install_crash_log))
         .add_systems(
             Update,
             (

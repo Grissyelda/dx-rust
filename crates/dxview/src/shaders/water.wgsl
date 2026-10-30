@@ -7,8 +7,11 @@
     forward_io::{VertexOutput, FragmentOutput},
     mesh_view_bindings::view,
     mesh_functions,
-    view_transformations::position_world_to_clip,
+    view_transformations::{position_world_to_clip, depth_ndc_to_view_z},
 }
+#ifdef DEPTH_PREPASS
+#import bevy_pbr::prepass_utils
+#endif
 
 struct WaterParams {
     t: vec4<f32>,
@@ -16,6 +19,7 @@ struct WaterParams {
     rings: array<vec4<f32>, 8>,
     m: vec4<f32>,
     tint: vec4<f32>,
+    moon: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterParams;
@@ -178,8 +182,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     return out;
 }
 
-// Modern Water: a shader-pack surface - the planar reflection (or the night sky) by Fresnel, distorted by the waves,
-// over a dark water body you can see a little way into, with glints from the lights.
+// Modern Water: a shader-pack surface. Clear water whose colour comes from how much of it you look through (the
+// scene's depth behind it): shallow water shows what's under it, deep water turns a dark blue-green; the planar
+// reflection by Fresnel, bent by the waves; sharp glints of the moon and the lamps. The WetTexture's picture isn't
+// drawn (its dirty streaks tiled into a dark plaid); only the light falling on the water (lightmap, lamps) colours
+// the water body.
 fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     let p = in.world_position.xz;
     let f = field(p, t);
@@ -190,21 +197,29 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     let to_eye0 = normalize(view.world_position.xyz - in.world_position.xyz);
     let fp = d_eye * 0.0015 / max(abs(to_eye0.y), 0.08);
     let g = swell_grad_lod(p, t, fp) * 0.18 + (detail(p, t) + rain_rings(p, t, water.m.z)) * fine;
-    var displaced = in;
-    displaced.uv = in.uv + g * 0.4;
-    var pbr_input = pbr_input_from_standard_material(displaced, is_front);
+    var pbr_input = pbr_input_from_standard_material(in, is_front);
     let up = select(-1.0, 1.0, pbr_input.world_normal.y >= 0.0);
     let n = normalize(vec3<f32>(-g.x, up, -g.y));
     pbr_input.N = n;
+    // The light reaching the surface, without the texture's picture.
+    pbr_input.material.base_color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
     // Low roughness: the dynamic lights (lamps, muzzle flashes, the flashlight) leave sharp glints.
-    pbr_input.material.perceptual_roughness = 0.07;
-    var lit = apply_pbr_lighting(pbr_input);
-    lit = main_pass_post_lighting_processing(pbr_input, lit);
+    pbr_input.material.perceptual_roughness = 0.06;
+    var light = apply_pbr_lighting(pbr_input).rgb;
     let to_eye = view.world_position.xyz - in.world_position.xyz;
     let dist = length(to_eye);
     let v = to_eye / max(dist, 1e-4);
     let ndv = clamp(abs(dot(n, v)), 0.0, 1.0);
     let fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+    // How much water the eye looks through to the scene behind (metres along the view).
+    var depth = 1000.0;
+#ifdef DEPTH_PREPASS
+    let scene = prepass_utils::prepass_depth(in.position, 0u);
+    if (scene > 0.0) {
+        let dz = depth_ndc_to_view_z(in.position.z) - depth_ndc_to_view_z(scene);
+        depth = max(dz, 0.0) / max(ndv, 0.15);
+    }
+#endif
     // The reflection: this plane's mirror image when it has a slot, else a dim night sky.
     var refl = vec3<f32>(0.006, 0.009, 0.016) + vec3<f32>(0.02, 0.025, 0.035) * pow(1.0 - ndv, 2.0);
     if (water.m.y > 0.5 && up > 0.0) {
@@ -213,35 +228,40 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         // Waves bend the reflection, less far away (where a pixel spans more water).
         uv += vec2<f32>(-g.x, g.y) * water.m.w / (1.0 + dist * 0.05);
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
-        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.7;
+        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.8;
     }
-    // The body: the lit WetTexture tinted dark, so lamp pools and the lightmap's shadows still show in it.
-    let body = water.tint.rgb + lit.rgb * 0.2;
-    // Physically water reflects 2% straight down; a little more than Schlick at middle angles reads better.
-    let k_refl = clamp(fres + 0.18 * pow(1.0 - ndv, 2.0) + 0.03, 0.0, 1.0);
+    // The water body: its own deep colour, lit a little by the light falling into it (lamp pools glow blue-green).
+    let body = water.tint.rgb + light * vec3<f32>(0.035, 0.075, 0.085);
+    // Physically 2% straight down; a little more than Schlick at middle angles reads better.
+    let k_refl = clamp(fres + 0.12 * pow(1.0 - ndv, 2.0), 0.0, 1.0);
     var col = mix(body, refl, k_refl);
-    // Foam on the crests: where the swell (and its steepest chop) peaks, broken up by drifting noise; dim like
-    // everything else at night (the light on the water lifts it), thinning out with distance.
+    // Foam on the crests: where the swell peaks, broken up by drifting noise, thinning out with distance.
     let crest = f.x / 1.99;
     let n1 = vnoise(p * 1.7 + vec2<f32>(t * 0.21, t * 0.13));
     let n2 = vnoise(p * 5.3 - vec2<f32>(t * 0.37, t * 0.29));
     let streaks = n1 * 0.65 + n2 * 0.35;
-    var foam = smoothstep(0.45, 0.85, crest + (streaks - 0.5) * 0.55) * smoothstep(0.35, 0.75, streaks);
+    var foam = smoothstep(0.5, 0.9, crest + (streaks - 0.5) * 0.55) * smoothstep(0.4, 0.8, streaks);
     foam *= 1.0 / (1.0 + d_eye * d_eye * 0.0006);
-    let foam_col = max(lit.rgb * 0.9, vec3<f32>(0.035, 0.04, 0.045)) + vec3<f32>(0.02, 0.022, 0.024);
-    col = mix(col, foam_col, clamp(foam, 0.0, 1.0) * 0.55);
-    // A faint moon glint, nearby only.
-    let l = normalize(vec3<f32>(0.35, 1.0, 0.2));
+    let foam_col = max(light * 0.12, vec3<f32>(0.03, 0.035, 0.04)) + vec3<f32>(0.015);
+    col = mix(col, foam_col, clamp(foam, 0.0, 1.0) * 0.4);
+    // The moon on the water: a tight sparkle on the facets that catch it, over a soft path towards it.
+    let l = normalize(water.moon.xyz);
     let hv = normalize(l + v);
-    col += vec3<f32>(pow(max(dot(n, hv), 0.0), 400.0) * 0.06 * fine);
-    // See-through looking straight down, opaque at grazing angles.
-    let alpha = clamp(mix(water.tint.a, 1.0, fres * 1.5 + 0.15), 0.0, 1.0);
-    // No fade: the sea runs on past the map's edge (water.rs ocean ring) to the horizon.
+    let nh = max(dot(n, hv), 0.0);
+    let moon_col = vec3<f32>(0.75, 0.82, 1.0);
+    col += moon_col * (pow(nh, 900.0) * 1.4 + pow(nh, 90.0) * 0.035) * water.moon.w * (0.3 + 0.7 * fine);
+    // See-through by how much water there is: clear in the shallows, its own colour once deep (and always by
+    // the reflection at grazing angles).
+    let absorb = 1.0 - exp(-depth * 0.55);
+    let alpha = clamp(max(absorb, k_refl + foam * 0.4), 0.0, 1.0);
     var out: FragmentOutput;
     out.color = vec4<f32>(col, alpha);
-    // DXVIEW_WATER_DEBUG=2: the reflection alone (red where this plane has none).
+    // DXVIEW_WATER_DEBUG=2: the reflection alone (red where this plane has none); 3: the depth through the water.
     if (water.far.z > 1.5) {
         out.color = select(vec4<f32>(1.0, 0.0, 0.0, 1.0), vec4<f32>(refl * 3.0, 1.0), water.m.y > 0.5);
+    }
+    if (water.far.z > 2.5) {
+        out.color = vec4<f32>(vec3<f32>(1.0 - exp(-depth * 0.2)), 1.0);
     }
     return out;
 }
