@@ -161,11 +161,13 @@ pub fn restore_decals(d: &[DecalSave]) {
     }
 }
 
-/// The decal material: modulated over the surface (holes exposure-compensated so mid-grey leaves the wall alone).
+/// The decal material: modulated over the surface (mid-grey leaves the wall alone).
 pub fn decal_material(img: Handle<Image>, hole: bool) -> StandardMaterial {
     StandardMaterial {
         base_color_texture: Some(img),
-        base_color: if hole { Color::LinearRgba(LinearRgba::rgb(4.59, 4.59, 4.59)) } else { Color::WHITE },
+        // modulated_image_for already doubles the picture (mid-grey -> white); scaling holes up again was invisible
+        // only while the screen clamped colours at 1 - with HDR (Bloom) every hole drew a bright square.
+        base_color: Color::WHITE,
         unlit: true,
         double_sided: true,
         cull_mode: None,

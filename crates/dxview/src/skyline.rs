@@ -329,10 +329,33 @@ fn build_skyline(
 
 /// One opaque texel's colour from a level texture (mip 0, wrapping), or None where it's see-through.
 fn texel(t: &dx_level::TextureImage, rgba: &[u8], u: f32, v: f32) -> [u8; 4] {
-    let x = ((u.rem_euclid(1.0)) * t.width as f32) as usize % t.width as usize;
-    let y = ((v.rem_euclid(1.0)) * t.height as f32) as usize % t.height as usize;
-    let o = (y * t.width as usize + x) * 4;
-    [rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]]
+    // Bilinear (alpha-weighted, so masked holes don't bleed dark): the panorama samples the panels finer than their
+    // texels.
+    let (w, h) = (t.width as usize, t.height as usize);
+    let fx = u.rem_euclid(1.0) * w as f32 - 0.5;
+    let fy = v.rem_euclid(1.0) * h as f32 - 0.5;
+    let (x0, y0) = (fx.floor(), fy.floor());
+    let (tx, ty) = (fx - x0, fy - y0);
+    let at = |x: f32, y: f32| {
+        let xi = (x as i64).rem_euclid(w as i64) as usize;
+        let yi = (y as i64).rem_euclid(h as i64) as usize;
+        let o = (yi * w + xi) * 4;
+        [rgba[o] as f32, rgba[o + 1] as f32, rgba[o + 2] as f32, rgba[o + 3] as f32]
+    };
+    let mut c = [0.0f32; 3];
+    let mut a = 0.0f32;
+    for (x, y, k) in [(x0, y0, (1.0 - tx) * (1.0 - ty)), (x0 + 1.0, y0, tx * (1.0 - ty)), (x0, y0 + 1.0, (1.0 - tx) * ty), (x0 + 1.0, y0 + 1.0, tx * ty)] {
+        let p = at(x, y);
+        let wa = k * p[3] / 255.0;
+        for i in 0..3 {
+            c[i] += p[i] * wa;
+        }
+        a += wa;
+    }
+    if a <= 1e-4 {
+        return [0, 0, 0, 0];
+    }
+    [(c[0] / a) as u8, (c[1] / a) as u8, (c[2] / a) as u8, (a * 255.0) as u8]
 }
 
 fn mip0_rgba(t: &dx_level::TextureImage) -> Option<Vec<u8>> {
@@ -386,49 +409,61 @@ pub fn panorama(lvl: &dx_level::Level) -> Option<Panorama> {
     if tris.is_empty() || e_hi <= e_lo {
         return None;
     }
-    let (w, h) = (2048usize, 192usize);
+    // Twice the old 2048 x 192: the skyline is the backdrop of every outdoor view (and the clouds made its
+    // blockiness plain). Rows are traced on all cores.
+    let (w, h) = (4096usize, 384usize);
     let mut rgba = vec![0u8; w * h * 4];
-    for c in 0..w {
-        let a = (c as f32 + 0.5) / w as f32 * std::f32::consts::TAU;
-        for r in 0..h {
-            let e = e_hi - (r as f32 + 0.5) / h as f32 * (e_hi - e_lo);
-            let d = Vec3::new(e.cos() * a.cos(), e.sin(), e.cos() * a.sin());
-            // Nearest opaque hit (a see-through texel lets a farther panel show).
-            let mut best: Option<(f32, [u8; 4])> = None;
-            for t in &tris {
-                let (e1, e2) = (t.p[1] - t.p[0], t.p[2] - t.p[0]);
-                let pv = d.cross(e2);
-                let det = e1.dot(pv);
-                if det.abs() < 1e-8 {
-                    continue;
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    let rows_per = h.div_ceil(threads);
+    std::thread::scope(|sc| {
+        for (chunk_i, chunk) in rgba.chunks_mut(rows_per * w * 4).enumerate() {
+            let (tris, decoded, lvl) = (&tris, &decoded, &lvl);
+            sc.spawn(move || {
+                let r0 = chunk_i * rows_per;
+                for (ri, row) in chunk.chunks_mut(w * 4).enumerate() {
+                    let r = r0 + ri;
+                    let e = e_hi - (r as f32 + 0.5) / h as f32 * (e_hi - e_lo);
+                    for c in 0..w {
+                        let a = (c as f32 + 0.5) / w as f32 * std::f32::consts::TAU;
+                        let d = Vec3::new(e.cos() * a.cos(), e.sin(), e.cos() * a.sin());
+                        // Nearest opaque hit (a see-through texel lets a farther panel show).
+                        let mut best: Option<(f32, [u8; 4])> = None;
+                        for t in tris.iter() {
+                            let (e1, e2) = (t.p[1] - t.p[0], t.p[2] - t.p[0]);
+                            let pv = d.cross(e2);
+                            let det = e1.dot(pv);
+                            if det.abs() < 1e-8 {
+                                continue;
+                            }
+                            let inv = 1.0 / det;
+                            let tv = -t.p[0];
+                            let u = tv.dot(pv) * inv;
+                            if !(0.0..=1.0).contains(&u) {
+                                continue;
+                            }
+                            let qv = tv.cross(e1);
+                            let v = d.dot(qv) * inv;
+                            if v < 0.0 || u + v > 1.0 {
+                                continue;
+                            }
+                            let dist = e2.dot(qv) * inv;
+                            if dist <= 0.0 || best.is_some_and(|b| b.0 <= dist) {
+                                continue;
+                            }
+                            let uv = t.uv[0] * (1.0 - u - v) + t.uv[1] * u + t.uv[2] * v;
+                            let px = texel(&lvl.textures[t.tex], &decoded[&t.tex], uv.x, uv.y);
+                            if px[3] > 127 {
+                                best = Some((dist, px));
+                            }
+                        }
+                        if let Some((_, px)) = best {
+                            row[c * 4..c * 4 + 4].copy_from_slice(&[px[0], px[1], px[2], 255]);
+                        }
+                    }
                 }
-                let inv = 1.0 / det;
-                let tv = -t.p[0];
-                let u = tv.dot(pv) * inv;
-                if !(0.0..=1.0).contains(&u) {
-                    continue;
-                }
-                let qv = tv.cross(e1);
-                let v = d.dot(qv) * inv;
-                if v < 0.0 || u + v > 1.0 {
-                    continue;
-                }
-                let dist = e2.dot(qv) * inv;
-                if dist <= 0.0 || best.is_some_and(|b| b.0 <= dist) {
-                    continue;
-                }
-                let uv = t.uv[0] * (1.0 - u - v) + t.uv[1] * u + t.uv[2] * v;
-                let px = texel(&lvl.textures[t.tex], &decoded[&t.tex], uv.x, uv.y);
-                if px[3] > 127 {
-                    best = Some((dist, px));
-                }
-            }
-            if let Some((_, px)) = best {
-                let o = (r * w + c) * 4;
-                rgba[o..o + 4].copy_from_slice(&[px[0], px[1], px[2], 255]);
-            }
+            });
         }
-    }
+    });
     Some(Panorama { w, h, rgba, e_lo, e_hi })
 }
 
@@ -469,15 +504,15 @@ fn build_photo_skyline(
         }
         let start = c;
         c += 1;
-        while c < w && c - start < 160 {
+        while c < w && c - start < 320 {
             match (cols[c - 1], cols[c]) {
-                (Some(a), Some(b)) if (a.0 as i32 - b.0 as i32).abs() <= 12 || c - start < 24 => c += 1,
+                (Some(a), Some(b)) if (a.0 as i32 - b.0 as i32).abs() <= 24 || c - start < 48 => c += 1,
                 _ => break,
             }
         }
         // Keep narrow pieces with their neighbour.
-        if c - start < 24 && c < w && cols[c].is_some() {
-            while c < w && c - start < 24 && cols[c].is_some() {
+        if c - start < 48 && c < w && cols[c].is_some() {
+            while c < w && c - start < 48 && cols[c].is_some() {
                 c += 1;
             }
         }
@@ -547,10 +582,10 @@ fn build_photo_skyline(
         let top = (a..b).filter_map(|c| cols[c].map(|x| x.0)).min().unwrap_or(0) as f32;
         let bot = (a..b).filter_map(|c| cols[c].map(|x| x.1)).max().unwrap_or(h - 1) as f32 + 1.0;
         // The front: one quad per few columns (keeps the chord close to the circle), photo-textured and masked.
-        let n = (b - a).div_ceil(8);
+        let n = (b - a).div_ceil(16);
         for s in 0..n {
-            let c0 = a as f32 + (s * 8) as f32;
-            let c1 = (a as f32 + ((s + 1) * 8) as f32).min(b as f32);
+            let c0 = a as f32 + (s * 16) as f32;
+            let c1 = (a as f32 + ((s + 1) * 16) as f32).min(b as f32);
             let q = fp.len() as u32;
             fp.extend([at(c0, bot, rad), at(c1, bot, rad), at(c1, top, rad), at(c0, top, rad)]);
             let (u0, u1) = (c0 / w as f32, c1 / w as f32);

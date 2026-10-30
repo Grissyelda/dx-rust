@@ -126,6 +126,15 @@ pub struct RainMesh;
 /// Raining here and now, and how hard (PrecipDensity 0..14).
 static DENSITY: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
 static EXPOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EXPOSURE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// How open to the sky the player is while it rains (0 under a roof .. 1 out in it), eased; 0 when dry.
+pub fn exposure() -> f32 {
+    if density() <= 0.0 {
+        return 0.0;
+    }
+    f32::from_bits(EXPOSURE.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 pub fn density() -> f32 {
     DENSITY.lock().map(|d| *d).unwrap_or(0.0)
@@ -481,6 +490,7 @@ pub fn weather_system(
         EXPOSED.store(here > 0.5, std::sync::atomic::Ordering::Relaxed);
         let want = (0.6 * here + 0.4 * st.sky_near).max(here * 0.8);
         st.exposure += (want - st.exposure) * 0.5;
+        EXPOSURE.store(st.exposure.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
     // FollowingSound x NoiseMult (2) at NoiseVolume = 255 / 20 x density; RainInside under shelter near the open.
     let loud = (st.density / 20.0).clamp(0.0, 1.0);
