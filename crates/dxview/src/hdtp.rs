@@ -448,7 +448,34 @@ fn models_on() -> bool {
 }
 
 fn characters_on() -> bool {
-    crate::settings::get("HDCharacters") > 0.5
+    // Helios's character textures replace HDTP's people (setting DdsCharacters).
+    crate::settings::get("HDCharacters") > 0.5 && !dds_characters()
+}
+
+/// A DDS pack (Helios) is in use for the people.
+pub fn dds_characters() -> bool {
+    unreal_pkg::mods::active("helios").is_some() && crate::settings::get("DdsCharacters") > 0.5
+}
+
+/// Which packages the DDS packs replace, from the settings: people (DeusExCharacters), items and decorations
+/// (DeusExItems, DeusExDeco, also used on the vanilla models HDTP doesn't replace), the rest of the world.
+pub fn apply_dds_filter() {
+    let on = |k: &str| crate::settings::get(k) > 0.5;
+    let chars = ["deusexcharacters"];
+    let items = ["deusexitems", "deusexdeco"];
+    let mut deny: Vec<String> = Vec::new();
+    if !on("DdsCharacters") {
+        deny.extend(chars.iter().map(|s| s.to_string()));
+    }
+    if !on("DdsItems") {
+        deny.extend(items.iter().map(|s| s.to_string()));
+    }
+    let allow = if on("DdsWorld") {
+        None
+    } else {
+        Some(chars.iter().chain(items.iter()).map(|s| s.to_string()).collect())
+    };
+    unreal_pkg::paths::set_dds_filter(allow, deny);
 }
 
 const VISUAL: &[&str] =

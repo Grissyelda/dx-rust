@@ -218,7 +218,7 @@ pub fn charged_system(
     // Tech goggles: the light-amplification box covers the middle half of the screen.
     // AugVision (Vision Enhancement) draws the same light-amplification box (DrawVisionAugmentation, level 0).
     let goggles =
-        (active.has("TechGoggles") || crate::abilities::aug_active("AugVision")) && !ph.dead;
+        (active.has("TechGoggles") || crate::abilities::aug_active("AugVision")) && !ph.dead && !crate::vision::active();
     **frame = if goggles {
         Visibility::Inherited
     } else {

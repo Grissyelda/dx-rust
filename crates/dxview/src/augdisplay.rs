@@ -676,6 +676,7 @@ pub fn vision_system(
             ec.insert(bevy::camera::visibility::RenderLayers::from_layers(&[0, HEAT_LAYER]));
         }
     }
+    crate::vision::set_heat(&want);
     *tagged = want;
     // The dark red outside the middle box (four bands).
     if tint.is_empty() {
@@ -697,8 +698,9 @@ pub fn vision_system(
         (0.0, h / 4.0, w / 4.0, h / 2.0),
         (w * 0.75, h / 4.0, w / 4.0, h / 2.0),
     ];
+    let modern = crate::vision::active();
     for (i, (mut node, mut vis)) in tint.iter_mut().enumerate() {
-        *vis = if on { Visibility::Inherited } else { Visibility::Hidden };
+        *vis = if on && !modern { Visibility::Inherited } else { Visibility::Hidden };
         if let Some(r) = rects.get(i) {
             node.left = Val::Px(r.0);
             node.top = Val::Px(r.1);

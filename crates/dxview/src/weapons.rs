@@ -732,6 +732,7 @@ pub fn image_for(
             ..default()
         });
         let h = images.add(img);
+        crate::glow::register(&h, path);
         assets.fire.push((f, h.clone()));
         assets.images.insert(path.to_string(), Some(h.clone()));
         return Some(h);
@@ -767,6 +768,7 @@ pub fn image_for(
         });
     if let Some(h) = &h {
         crate::anim_tex::register(&mut assets.lib, path, h, false, false);
+        crate::glow::register(h, path);
     }
     assets.images.insert(path.to_string(), h.clone());
     h
@@ -1259,7 +1261,17 @@ pub fn select_system(
         (KeyCode::Digit9, 9),
         (KeyCode::Digit0, 0),
     ];
-    let injected = scripted.select.take();
+    let mut injected = scripted.select.take();
+    // DXVIEW_SELECT=<belt slot>: that belt item in hand once the map is up (screenshots).
+    {
+        static DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if let Some(slot) = std::env::var("DXVIEW_SELECT").ok().and_then(|v| v.parse::<usize>().ok()) {
+            let n = DONE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n == 30 {
+                injected = Some(slot);
+            }
+        }
+    }
     if carrying.held.is_some() {
         return; // hands are full
     }
@@ -1700,25 +1712,40 @@ pub fn weapon_system(
         off[2] += (off[2] * 0.5 + 1.5 - off[2]) * e;
     }
     root.translation = Vec3::from(view_to_cam(off));
-    // GMDX (Sarge) CalcDrawOffset "Viewmodel Inertia" (setting WeaponInertia): the world-space draw offset eases
-    // toward where it should be at deltaTime x inertiaSpeed, so the weapon trails the view when turning. Not while
-    // zoomed or reloading; snaps back when it falls more than 40 units behind or the weapon changes.
+    root.rotation = Quat::IDENTITY;
+    // GMDX (Sarge) CalcDrawOffset "Viewmodel Inertia" (setting WeaponInertia): the weapon trails the view when you
+    // turn. Ours lags the view's rotation (eased by time, so it's smooth at any frame rate) and turns the weapon
+    // about the eye by the difference, at most 6 degrees; not while zoomed or reloading, and a new weapon starts
+    // straight.
     {
-        static CACHED: std::sync::Mutex<Option<(String, Vec3)>> = std::sync::Mutex::new(None);
-        let world = cam.rotation * root.translation;
-        if let Ok(mut c) = CACHED.lock() {
+        static LAG: std::sync::Mutex<Option<(String, Quat)>> = std::sync::Mutex::new(None);
+        if let Ok(mut c) = LAG.lock() {
             let on = crate::settings::get("WeaponInertia") > 0.5 && zoom.0.is_none() && h.state != WState::Reloading;
-            let mut now = world;
+            let mut lag = cam.rotation;
             if on {
-                if let Some((cls, v)) = c.as_ref() {
-                    if *cls == h.stats.class && v.distance(world) <= 40.0 * METERS_PER_UNIT {
-                        now = v.lerp(world, (dt * INERTIA_SPEED).min(1.0));
+                if let Some((cls, q)) = c.as_ref() {
+                    if *cls == h.stats.class {
+                        lag = q.slerp(cam.rotation, 1.0 - (-dt * INERTIA_SPEED * 0.5).exp());
+                        // At most 6 degrees behind.
+                        let ang = lag.angle_between(cam.rotation);
+                        let max = 6f32.to_radians();
+                        if ang > max {
+                            lag = cam.rotation.slerp(lag, max / ang);
+                        }
                     }
                 }
-                root.translation = cam.rotation.inverse() * now;
+                let rel = cam.rotation.inverse() * lag;
+                root.translation = rel * root.translation;
+                root.rotation = rel * root.rotation;
             }
-            *c = Some((h.stats.class.clone(), now));
+            *c = Some((h.stats.class.clone(), lag));
         }
+    }
+    // Modern Aiming: the weapon points where the shot will go.
+    if crate::aimmode::on() {
+        let r = crate::aimmode::view_rotation();
+        root.translation = r * root.translation;
+        root.rotation = r * root.rotation;
     }
 
     h.clip.t += dt;

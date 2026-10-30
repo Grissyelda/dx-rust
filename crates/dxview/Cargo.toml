@@ -8,7 +8,7 @@ version.workspace = true
 winresource = "0.1"
 
 [dependencies]
-bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui"] }
+bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "experimental_pbr_pcss"] }
 dx-level = { path = "../dx-level" }
 imsim-core = { path = "../imsim-core" }
 unreal-pkg = { path = "../unreal-pkg" }

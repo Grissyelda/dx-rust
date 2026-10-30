@@ -685,6 +685,12 @@ pub struct Brightness {
     pub fog_r: f32,
     pub fog_g: f32,
     pub fog_b: f32,
+    /// Modern Vision Augmentation (vision.rs): light amplification strength (0 = off), time (grain), infrared level
+    /// (0 none, 1 heat shows), and the light-amp box (0 = the whole screen, 1 = the original's middle half).
+    pub nv: f32,
+    pub nv_t: f32,
+    pub nv_ir: f32,
+    pub nv_box: f32,
 }
 
 pub const GAMMA_SHADER: Handle<Shader> =

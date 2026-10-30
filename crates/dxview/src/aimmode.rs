@@ -71,7 +71,7 @@ pub fn shot_dir(forward: DVec3, right: DVec3, up: DVec3, accuracy: f64, range: f
     }
     let s = sway();
     let base = (forward * range.max(1024.0) + right * (s.x as f64 * 1000.0) + up * (s.y as f64 * 1000.0)).normalize();
-    crate::weapons::spread_dir(base, right, up, accuracy * 0.15, range, seed)
+    crate::weapons::spread_dir(base, right, up, accuracy * 0.04, range, seed)
 }
 
 /// A projectile's direction (mini-crossbow, rockets) the same way.
@@ -81,17 +81,43 @@ pub fn projectile_dir(forward: DVec3, right: DVec3, up: DVec3, accuracy: f64, se
     }
     let s = sway();
     let base = (forward * 1024.0 + right * (s.x as f64 * 1000.0) + up * (s.y as f64 * 1000.0)).normalize();
-    crate::projectiles::projectile_dir(base, accuracy * 0.15, seed)
+    crate::projectiles::projectile_dir(base, accuracy * 0.04, seed)
 }
 
-/// Each frame: the sway point drifts (two incommensurate wobbles per axis, a slow breath on top) within the
-/// current accuracy; the scope key held with an unscoped ranged weapon brings the sights up.
+/// A weapon you can aim down the sights of: a gun or launcher (not melee, thrown, a tool or anything consumed).
+pub fn sightable(h: &crate::weapons::Held) -> bool {
+    let st = &h.stats;
+    !st.hand_to_hand
+        && !st.item
+        && !st.has_scope
+        && st.class.starts_with("Weapon")
+        && st.ammo_class.as_deref().is_some_and(|a| !a.to_ascii_lowercase().contains("ammonone"))
+}
+
+/// How much the aim sways for a weapon skill level (Untrained .. Master): a master holds a rifle still.
+fn skill_sway(level: usize) -> f32 {
+    [1.0, 0.55, 0.25, 0.06][level.min(3)]
+}
+
+/// The view model's turn so the barrel points where the shot will go (Bevy camera space).
+pub fn view_rotation() -> Quat {
+    let s = sway();
+    let k = 1000.0 / 1024.0;
+    Quat::from_rotation_y(-(s.x * k).atan()) * Quat::from_rotation_x((s.y * k).atan())
+}
+
+/// Each frame: the point of aim drifts - a slow breath and a little hand tremor - by how well you know the
+/// weapon (its skill level), more on the move, less crouched, standing still a while or down the sights; the
+/// scope key held with a gun brings the sights up.
+#[allow(clippy::too_many_arguments)]
 pub fn aim_mode_system(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     aim: Res<crate::hud::Aim>,
     weapons: Res<crate::weapons::Weapons>,
     zoom: Res<crate::weapons::Zoom>,
+    player: Res<crate::Player>,
+    ph: Res<crate::ai::PlayerHealth>,
 ) {
     let dt = time.delta_secs().min(0.1);
     let Ok(mut st) = STATE.lock() else { return };
@@ -101,26 +127,39 @@ pub fn aim_mode_system(
     }
     st.t += dt;
     let t = st.t;
-    let ranged = weapons
-        .held
-        .as_ref()
-        .is_some_and(|h| !h.stats.hand_to_hand && !h.stats.item && !h.stats.has_scope && h.stats.class != "POVCorpse");
-    let want = ranged
+    let held = weapons.held.as_ref().filter(|h| sightable(h));
+    let want = held.is_some()
         && zoom.0.is_none()
         && (keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || std::env::var_os("DXVIEW_FORCE_ADS").is_some())
         && !crate::inventory_screen::screen_open()
         && !crate::consys::third_person();
+    if held.is_none() {
+        // Melee, tools and things you use never come up to the eye.
+        st.ads = 0.0;
+        st.sway = Vec2::ZERO;
+        return;
+    }
+    let h = held.unwrap();
     let target = if want { 1.0 } else { 0.0 };
     // About a sixth of a second up or down.
     st.ads += (target - st.ads).clamp(-dt * 6.0, dt * 6.0);
-    // The cone the shot could go anywhere in is +-0.5 x accuracy; the drift keeps to most of it.
-    let reach = aim.accuracy * 0.45;
+    let level = h.stats.governing_skill.as_deref().map_or(0, crate::abilities::skill_level);
+    let speed = player.body.velocity.truncate().length() as f32;
+    let mut reach = 0.03 * skill_sway(level);
+    reach *= 1.0 + (speed / 300.0).min(1.0);
+    if player.crouched {
+        reach *= 0.75;
+    }
+    reach *= 1.0 - (aim.standing / 4.0).clamp(0.0, 0.35);
+    reach *= 1.0 - 0.5 * st.ads;
+    // Wounded arms shake.
+    reach += 0.02 * ph.accuracy_penalty_with(false).max(0.0);
+    // A slow breath (rising and falling) with a lazy figure-eight, and a faint tremor on top.
     let wob = Vec2::new(
-        (t * 0.83).sin() * 0.6 + (t * 1.97 + 1.3).sin() * 0.3 + (t * 0.31 + 0.4).sin() * 0.1,
-        (t * 0.71 + 2.1).sin() * 0.55 + (t * 2.33 + 0.7).sin() * 0.25 + (t * 0.27).sin() * 0.2,
+        (t * 0.47).sin() * 0.7 + (t * 1.13 + 1.3).sin() * 0.2 + (t * 3.1).sin() * 0.06,
+        (t * 0.94 + 0.5).sin() * 0.35 + (t * 0.31).sin() * 0.5 + (t * 2.7 + 0.7).sin() * 0.06,
     );
     let goal = wob * reach;
-    // Eased, so a steadier aim settles rather than snapping in.
-    let k = (dt * 4.0).min(1.0);
+    let k = 1.0 - (-dt * 6.0).exp();
     st.sway = st.sway + (goal - st.sway) * k;
 }

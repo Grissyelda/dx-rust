@@ -16,6 +16,9 @@ pub enum ModKind {
     Overlay,
     Addon,
     HdTextures,
+    /// DDS override files laid out `<Package>/<Group>/<Name>.dds` (kentie's Direct3D 10 renderer packs: Helios):
+    /// the folder is the one holding the package folders (usually the game's own Textures folder).
+    DdsTextures,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,6 +61,13 @@ pub const MODS: &[ModDef] = &[
         kind: ModKind::HdTextures,
         marker: "Textures/CoreTexMetal.utx",
         help: "High-resolution world textures (New Vision): choose its folder; switch them in Settings",
+    },
+    ModDef {
+        id: "helios",
+        name: "Helios (DDS)",
+        kind: ModKind::DdsTextures,
+        marker: "DeusExCharacters/Skins",
+        help: "Helios Texture Overhaul and other DDS texture packs for the Direct3D 10 renderer: choose the Textures folder holding them",
     },
     ModDef {
         id: "augmentique",
@@ -107,6 +117,17 @@ pub fn find_rel(dir: &Path, rel: &str) -> Option<PathBuf> {
 /// The mod's folder: `dir` itself or a folder just inside it (an unpacked zip often adds one) holding the marker.
 /// New Vision's marker is also in the game's own folder, so a folder with System/DeusEx.u isn't New Vision.
 pub fn locate(m: &ModDef, dir: &Path) -> Option<PathBuf> {
+    if m.kind == ModKind::DdsTextures {
+        // The folder holding the package folders: this one, its Textures folder, or one just inside.
+        let has = |d: &Path| find_rel(d, m.marker).is_some_and(|p| dir_has_dds(&p));
+        if has(dir) {
+            return Some(dir.to_path_buf());
+        }
+        if let Some(t) = find_rel(dir, "Textures").filter(|t| has(t)) {
+            return Some(t);
+        }
+        return std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_dir() && has(p));
+    }
     let ok = |d: &Path| -> bool {
         find_rel(d, m.marker).is_some()
             && !(m.kind == ModKind::HdTextures && find_rel(d, "System/DeusEx.u").is_some())
@@ -115,6 +136,12 @@ pub fn locate(m: &ModDef, dir: &Path) -> Option<PathBuf> {
         return Some(dir.to_path_buf());
     }
     std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_dir() && ok(p))
+}
+
+fn dir_has_dds(d: &Path) -> bool {
+    std::fs::read_dir(d).ok().is_some_and(|rd| {
+        rd.flatten().any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("dds")))
+    })
 }
 
 /// One mod as launcher.txt has it.
@@ -185,6 +212,11 @@ pub fn activate(list: &[(&'static ModDef, PathBuf)]) {
     let addons = list.iter().filter(|(m, _)| m.kind == ModKind::Addon).map(|(_, p)| p.clone()).collect();
     let hd = list.iter().filter(|(m, _)| m.kind == ModKind::HdTextures).map(|(_, p)| p.clone()).collect();
     crate::paths::set_addons(addons, hd);
+    let dds: Vec<PathBuf> = list.iter().filter(|(m, _)| m.kind == ModKind::DdsTextures).map(|(_, p)| p.clone()).collect();
+    if !dds.is_empty() {
+        let n = crate::paths::set_dds(&dds);
+        println!("mods: {n} DDS texture overrides");
+    }
 }
 
 /// The folder of an enabled mod.

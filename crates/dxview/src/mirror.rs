@@ -586,15 +586,60 @@ pub fn mirror_body_system(
         .entity(b.root)
         .insert(Transform::from_translation(Vec3::from(dx_level::ue_to_bevy(loc.as_vec3().to_array()))).with_rotation(quat));
     let speed = player.body.velocity.truncate().length();
-    let want = match (player.crouched, speed > 10.0, speed > player.params.ground_speed * 0.6) {
-        (true, true, _) => "CrouchWalk",
-        (true, false, _) => "Crouch",
-        (false, true, true) => "Run",
-        (false, true, false) => "Walk",
-        (false, false, _) => "BreatheLight",
+    let moving = speed > 10.0;
+    let running = speed > player.params.ground_speed * 0.6;
+    // The weapon in hand decides the pose (the way ScriptedPawn picks its *2H / Shoot sets): a two-handed one
+    // (Mass >= 30) uses the 2H set; a ranged one is held up aimed; firing plays Shoot (melee: Attack); reloading
+    // plays the reload; in the air Jump.
+    let held = weapons.held.as_ref().filter(|h| !h.stats.item && h.stats.class != "POVCorpse");
+    let two = held.is_some_and(|h| h.stats.mass >= 30.0);
+    let ranged = held.is_some_and(|h| !h.stats.hand_to_hand);
+    let state = held.map(|h| h.state);
+    let firing = state == Some(crate::weapons::WState::Firing);
+    let reloading = state == Some(crate::weapons::WState::Reloading);
+    let falling = player.body.physics == imsim_core::movement::Physics::Falling && !player.swimming;
+    // (sequence, loops: else held on its last frame / frame 0 for aim poses)
+    let (want, looped): (&str, bool) = if player.swimming {
+        (if firing { "TreadShoot" } else { "Tread" }, true)
+    } else if falling {
+        ("Jump", false)
+    } else if player.crouched {
+        if firing && ranged {
+            ("CrouchShoot", true)
+        } else if moving {
+            ("CrouchWalk", true)
+        } else {
+            ("Crouch", false)
+        }
+    } else if reloading && ranged && !moving {
+        ("Reload", true)
+    } else if firing && !ranged {
+        ("Attack", true)
+    } else if moving {
+        match (ranged, two, running) {
+            (true, true, true) => ("RunShoot2H", true),
+            (true, false, true) => ("RunShoot", true),
+            (true, true, false) => ("Walk2H", true),
+            (_, _, true) => ("Run", true),
+            _ => ("Walk", true),
+        }
+    } else if ranged {
+        // Firing: the shot (once per trigger pull, its own rate); between shots the aim pose (Shoot frame 0).
+        if firing {
+            (if two { "Shoot2H" } else { "Shoot" }, true)
+        } else {
+            (if two { "Shoot2H" } else { "Shoot" }, false)
+        }
+    } else if two {
+        ("BreatheLight2H", true)
+    } else {
+        ("BreatheLight", true)
     };
-    if b.seq != want {
-        b.seq = want.to_string();
+    // Aim pose: frame 0 of Shoot held while not firing.
+    let aim_pose = ranged && !moving && !firing && !player.crouched && !falling && !player.swimming && !(reloading);
+    let key = format!("{want}{}", if aim_pose { "#aim" } else { "" });
+    if b.seq != key {
+        b.seq = key;
         b.t = 0.0;
     }
     let dt = time.delta_secs();
@@ -607,7 +652,13 @@ pub fn mirror_body_system(
         .or_else(|| b.mesh.seqs.iter().find(|s| s.name.eq_ignore_ascii_case("BreatheLight")))
         .map(|s| (s.start_frame.max(0) as usize, s.num_frames.max(1) as usize, s.rate))
         .unwrap_or((0, 1, 10.0));
-    let f = (b.t * rate.max(1.0)) % frames.max(1) as f32;
+    let f = if aim_pose {
+        0.0
+    } else if looped {
+        (b.t * rate.max(1.0)) % frames.max(1) as f32
+    } else {
+        (b.t * rate.max(1.0)).min(frames.saturating_sub(1) as f32)
+    };
     let relight = time.elapsed_secs() - b.lit_at > 0.5;
     if relight {
         b.lit_at = time.elapsed_secs();

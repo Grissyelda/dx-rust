@@ -356,6 +356,14 @@ pub fn jc_base_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unrea
         d.push(Property { name: "CarcassType".into(), index: 0, value: Value::Path("FemJC.JCDentonFemaleCarcass".into()) });
         return d;
     }
+    // HDTP's JC (its own mesh, with his textures laid out its own way): his skins stay as HDTP sets them. The
+    // original's face in slot 0 put his face on the back of HDTP's head.
+    let mesh = jc_base_mesh();
+    if !mesh.eq_ignore_ascii_case("DeusExCharacters.GM_Trench") {
+        d.retain(|p| !p.name.eq_ignore_ascii_case("Mesh"));
+        d.push(Property { name: "Mesh".into(), index: 0, value: Value::Path(mesh) });
+        return d;
+    }
     d.retain(|p| !(p.name.eq_ignore_ascii_case("MultiSkins") && p.index == 0));
     d.push(Property { name: "MultiSkins".into(), index: 0, value: Value::Path(skin_tex("JCDenton")) });
     d

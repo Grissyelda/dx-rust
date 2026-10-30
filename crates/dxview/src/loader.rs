@@ -254,7 +254,7 @@ pub fn loader_system(world: &mut World) {
         // map and the cached mesh images / materials, built with the old ones.
         {
             static LAST: Mutex<String> = Mutex::new(String::new());
-            let key = ["HDTextures", "HDModels", "HDCharacters"].map(|k| crate::settings::get(k).to_string()).join(",");
+            let key = ["HDTextures", "HDModels", "HDCharacters", "DdsCharacters", "DdsItems", "DdsWorld"].map(|k| crate::settings::get(k).to_string()).join(",");
             let mut last = LAST.lock().unwrap();
             if !last.is_empty() && *last != key {
                 if let Ok(mut p) = PREFETCH.lock() {
@@ -268,6 +268,7 @@ pub fn loader_system(world: &mut World) {
             *last = key;
         }
         unreal_pkg::paths::set_hd_textures_on(crate::settings::get("HDTextures") > 0.5);
+        crate::hdtp::apply_dds_filter();
         crate::hdtp::build_layer();
         crate::visattach::apply();
         crate::augmentique::build_layer();

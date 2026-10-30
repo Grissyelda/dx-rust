@@ -693,7 +693,13 @@ impl Enhance {
             ("ThirdPerson", "Gameplay", "Third Person View", "H switches between first person and a view over JC's shoulder (J swaps the shoulder). The camera keeps out of walls and comes in closer while you aim with the scope key; first person is where you start."),
             ("AtmosphericFog", "Visuals", "Atmospheric Fog", "A thin night haze over distance, thicker in the rain, so far-off buildings and the skyline melt into the dark."),
             ("LightHalos", "Visuals", "Light Halos", "The air around lamps glows softly with their colour, fading as you get close; brighter in the rain."),
-            ("Skyline", "Visuals", "3D Skyline", "Procedural city blocks beyond the edges of the city maps - New York's towers, Hong Kong's denser ones, Paris's low roofs - dark with scattered lit windows and blinking roof lights, seen wherever the sky is open."),
+            ("Skyline", "Visuals", "3D Skyline", "The city beyond the map in 3D: where the sky has the original skyline photos (New York) they are cut into low-poly buildings at their own distances, so the picture is the same but shifts as you move; elsewhere procedural blocks - Hong Kong's dense towers, Paris's low roofs - with lit windows and roof lights."),
+            ("Bloom", "Visuals", "Glow And Bloom", "Glowing things - camera lenses and alarm lights, laser tripwires, nano canisters, JC's sunglasses - are brighter than white and bleed a soft glow into the dark around them."),
+            ("ModernVision", "Visuals", "Modern Vision Augmentation", "The Vision Enhancement aug and night-vision goggles amplify light like real night vision: green grain, bright lights flare and blow out, and at the aug's higher levels warm bodies glow through the dark."),
+            ("AmbientOcclusion", "Visuals", "Ambient Occlusion", "Corners, crevices, grates and the ground under crates and furniture darken a little (screen-space ambient occlusion), so things sit in the world instead of floating on it. Turns off MSAA (SMAA smooths the edges instead)."),
+            ("SoftShadows", "Visuals", "Soft Shadows", "Real-time shadows are sharp where an object meets the ground and soften as they stretch away from it (contact hardening), the way shadows from a lamp do. Needs Real-Time Shadows."),
+            ("LightShafts", "Visuals", "Light Shafts", "Beams of light in the air: the flashlight's cone, spotlights and the moonlight through windows and grates show in the haze."),
+            ("FogVolumes", "Visuals", "Local Fog", "Low mist lying over the water in sewers and other indoor waterways, and a smoky haze in the bars and clubs that catches the light."),
             ("Clouds", "Visuals", "Night Clouds", "A slow-moving cloud layer over the open-air maps, faintly lit from below by the city."),
             ("ModernWater", "Visuals", "Modern Water", "Water with real reflections of what's around it, a dark see-through body, fine wind waves, rain rings and glints from the lights - like a modern shader pack. Costs an extra render near water."),
             ("NoStrobeLights", "Visuals", "No Flickering Lights", "Flickering and blinking lights burn steady (GMDX's Lighting Accessibility, for photosensitive players)."),
@@ -711,7 +717,10 @@ impl Enhance {
             ("OutfitBoxes", "augmentique", "Outfit Boxes In The Original Maps", "Without GMDX's maps, Augmentique's outfits are hidden in boxes across the campaign - a few in a map, by a clothes rack, a couch or a chair - instead of all being open. Takes effect on the next start."),
             ("HDTextures", "newvision", "HD Textures (New Vision)", "New Vision's high-resolution textures on the world and on models. Changes take effect when the next map loads."),
             ("HDModels", "hdtp", "HD Items And Objects (HDTP)", "HDTP's detailed weapons, pickups and decorations. Changes take effect when the next map loads."),
-            ("HDCharacters", "hdtp", "HD Characters (HDTP)", "HDTP's detailed people and their faces. Changes take effect when the next map loads."),
+            ("HDCharacters", "hdtp", "HD Characters (HDTP)", "HDTP's detailed people and their faces (not used while Helios dresses the people). Changes take effect when the next map loads."),
+            ("DdsCharacters", "helios", "Helios Characters", "Helios's high-resolution textures on the original people, robots and animals, in place of HDTP's characters. Changes take effect when the next map loads."),
+            ("DdsItems", "helios", "Helios Items And Decorations", "Helios's textures on items and decorations that keep their original models (HDTP's models keep their own). Changes take effect when the next map loads."),
+            ("DdsWorld", "helios", "DDS World Textures", "Other DDS texture packs found beside Helios for walls, floors and the rest of the world (used in place of New Vision's where both have one). Changes take effect when the next map loads."),
         ] {
             if unreal_pkg::mods::active(id).is_none() {
                 continue;
