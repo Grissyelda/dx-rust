@@ -729,6 +729,7 @@ impl Enhance {
             ("DdsCharacters", "helios", "Helios Characters", "Helios's high-resolution textures on the original people, robots and animals, in place of HDTP's characters. Changes take effect when the next map loads."),
             ("DdsItems", "helios", "Helios Items And Decorations", "Helios's textures on items and decorations that keep their original models (HDTP's models keep their own). Changes take effect when the next map loads."),
             ("DdsWorld", "helios", "DDS World Textures", "Other DDS texture packs found beside Helios for walls, floors and the rest of the world (used in place of New Vision's where both have one). Changes take effect when the next map loads."),
+            ("VisAttach", "visibleattachments", "Weapon Mods Shown (Visible Attachments)", "Scopes, silencers and lasers you fit show on the weapon. Changes take effect when the next map loads."),
         ] {
             if unreal_pkg::mods::active(id).is_none() {
                 continue;

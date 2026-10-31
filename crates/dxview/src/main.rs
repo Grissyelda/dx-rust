@@ -119,6 +119,7 @@ mod trash;
 mod triggers;
 mod uicanvas;
 mod weapons;
+mod wisp;
 
 use actors::{Blockers, Deco, World};
 use dx_level::{bevy_to_ue, ue_to_bevy, Level, SurfaceClass};
@@ -869,7 +870,7 @@ fn main() {
         .add_systems(Update, fx::fx_system.after(fly))
         .add_systems(Update, thirdperson::toggle_system)
         .add_systems(Update, audiofx::soundscape_system)
-        .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system, clouds::clouds_system, clouds::lightning_sky_system.after(clouds::clouds_system)))
+        .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system, clouds::clouds_system, clouds::lightning_sky_system.after(clouds::clouds_system), wisp::wisp_system.after(fly)))
         .add_systems(First, thirdperson::restore_system)
         .add_systems(PostUpdate, thirdperson::place_system.before(bevy::transform::TransformSystems::Propagate))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))

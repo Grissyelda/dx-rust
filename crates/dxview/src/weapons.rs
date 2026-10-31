@@ -2399,6 +2399,7 @@ pub fn weapon_system(
                     let e = bevy_to_ue(cam.translation.to_array());
                     let e = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
                     crate::fx::muzzle(e + fwd * 40.0 + rt * 8.0 - DVec3::Z * 8.0, fwd);
+                    crate::wisp::player_shot(e + fwd * 40.0 + rt * 8.0 - DVec3::Z * 8.0, fwd);
                 }
                 crate::dynlight::flash(
                     player.body.location + fwd * player.params.radius * 2.0,

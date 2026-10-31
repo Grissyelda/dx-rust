@@ -79,7 +79,8 @@ pub fn glow_system(
     // Every camera drawing into the window shares one HDR picture; the last (the view model camera, which also
     // does the brightness pass) blooms all of it.
     for (e, hdr, bloom, last) in &cams {
-        if want && !hdr {
+        // HDR always (it's in every material's pipeline: switching it recompiled them all); Bloom comes and goes.
+        if !hdr {
             commands.entity(e).insert(Hdr);
         }
         if want && last && !bloom {
@@ -95,9 +96,6 @@ pub fn glow_system(
         }
         if !want && bloom {
             commands.entity(e).remove::<Bloom>();
-        }
-        if !want && hdr {
-            commands.entity(e).remove::<Hdr>();
         }
     }
     if !want {

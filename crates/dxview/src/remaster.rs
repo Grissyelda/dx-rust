@@ -6,8 +6,10 @@
 //!
 //! Going Classic remembers each enhancement's value ("Modern.<key>"), so going back to Modern restores the player's
 //! own mix rather than switching on everything; with nothing remembered yet, Modern is the full set (`PRESET`).
-//! Fixes, controller and DualSense options, the HUD layout, accessibility (strobe lights), mod content (HD
-//! textures, outfits) and Discord are left alone: they aren't a look.
+//! The visual mods switch too (HDTP, New Vision, Helios, Visible Attachments - not Lay D Denton, GMDX's fixes or
+//! Augmentique's outfits): they're chosen when a map loads, so in play a change of them reloads the map in place
+//! (a save and a load) under the frozen frame. Fixes, controller and DualSense options, the HUD layout,
+//! accessibility (strobe lights) and Discord are left alone: they aren't a look.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -79,10 +81,32 @@ pub const PRESET: &[(&str, f32)] = &[
     ("ShowMaxStacks", 1.0),
     ("StreamlinedRepairBot", 1.0),
     ("ToolCounts", 1.0),
+    // Visual mods (only with the mod installed; applied at map load).
+    ("HDTextures", 1.0),
+    ("HDModels", 1.0),
+    ("HDCharacters", 1.0),
+    ("DdsCharacters", 1.0),
+    ("DdsItems", 1.0),
+    ("DdsWorld", 0.0),
+    ("VisAttach", 1.0),
+];
+
+/// The visual mods' settings and the mod each needs.
+const MOD_KEYS: &[(&str, &str)] = &[
+    ("HDTextures", "newvision"),
+    ("HDModels", "hdtp"),
+    ("HDCharacters", "hdtp"),
+    ("DdsCharacters", "helios"),
+    ("DdsItems", "helios"),
+    ("DdsWorld", "helios"),
+    ("VisAttach", "visibleattachments"),
 ];
 
 /// Keys that only exist with a mod installed (left alone without it).
 fn applies(key: &str) -> bool {
+    if let Some((_, id)) = MOD_KEYS.iter().find(|m| m.0 == key) {
+        return unreal_pkg::mods::active(id).is_some();
+    }
     key != "Weather" || crate::weather::available()
 }
 
@@ -103,30 +127,43 @@ pub fn switch_values(to_modern: bool, current: impl Fn(&str) -> f32) -> (Vec<(St
     let mut vals = Vec::new();
     let mut memory = Vec::new();
     let remembered = crate::settings::get("Modern.Saved") > 0.5;
+    // Going Classic with nothing on (already classic by hand): keep the remembered mix rather than remember "all
+    // off" as the player's Modern.
+    let all_off = PRESET.iter().filter(|p| applies(p.0)).all(|p| current(p.0) <= 0.0);
     for &(k, modern) in PRESET.iter().filter(|p| applies(p.0)) {
         if to_modern {
             let mk = format!("Modern.{k}");
             let v = if remembered && crate::settings::has(&mk) { crate::settings::get(&mk) } else { modern };
             vals.push((k.to_string(), v));
         } else {
-            memory.push((format!("Modern.{k}"), current(k)));
+            if !all_off {
+                memory.push((format!("Modern.{k}"), current(k)));
+            }
             vals.push((k.to_string(), 0.0));
         }
     }
-    if !to_modern {
+    if !to_modern && !all_off {
         memory.push(("Modern.Saved".to_string(), 1.0));
     }
     (vals, memory)
 }
 
-/// Switch now (the in-game key): settings set and saved.
-pub fn switch(to_modern: bool) {
+/// Switch now (the in-game key): settings set and saved. True when a visual mod changed (the map must reload
+/// for it to show).
+pub fn switch(to_modern: bool) -> bool {
     let (vals, memory) = switch_values(to_modern, crate::settings::get);
+    let mods_changed = vals.iter().any(|(k, v)| MOD_KEYS.iter().any(|m| m.0 == k) && crate::settings::get(k) != *v);
     for (k, v) in memory.iter().chain(vals.iter()) {
         crate::settings::set(k, *v);
     }
     crate::settings::set("ModernMode", if to_modern { 1.0 } else { 0.0 });
     crate::settings::save();
+    mods_changed
+}
+
+/// The save the in-place reload goes through.
+fn swap_path() -> std::path::PathBuf {
+    crate::save::dir().join("ClassicModernSwap.ron")
 }
 
 // ------------------------------------------------------------------------------------------------ the wipe
@@ -162,6 +199,17 @@ pub fn setup_wipe_shader(mut shaders: ResMut<Assets<Shader>>) {
 #[derive(Component)]
 pub struct WipeNode;
 
+/// The in-place reload behind a visual-mod change.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum Swap {
+    #[default]
+    None,
+    /// The save was asked for at this many seconds in.
+    Saving(f32),
+    /// The map is reloading; settled for this long since it finished.
+    Loading(f32),
+}
+
 /// A 1-pixel node drawn with the wipe's material all the time (fully wiped: nothing shows), so its pipeline is
 /// compiled before the first switch - else the overlay missed its first frames and the switch showed through.
 #[derive(Component)]
@@ -174,8 +222,8 @@ pub enum Phase {
     /// The screenshot is on its way (to Modern?).
     Capturing(bool, f32),
     /// The frozen frame covers the screen; t seconds in, `frames` drawn, switched yet, the wipe started at `start`
-    /// (once nothing is compiling).
-    Wiping { t: f32, to_modern: bool, start: Option<f32>, calm: u32, frames: u32, switched: bool },
+    /// (once nothing is compiling), and the in-place reload for the visual mods (`Swap`).
+    Wiping { t: f32, to_modern: bool, start: Option<f32>, calm: u32, frames: u32, switched: bool, swap: Swap },
 }
 
 /// The captured frame, handed over by the screenshot observer.
@@ -223,6 +271,7 @@ pub fn wipe_system(
     mut mats: ResMut<Assets<WipeMaterial>>,
     nodes: Query<(Entity, &MaterialNode<WipeMaterial>), With<WipeNode>>,
     warm: Query<(), With<WipeWarm>>,
+    ph: Option<Res<crate::ai::PlayerHealth>>,
 ) {
     let dt = time.delta_secs().min(0.1);
     if warm.is_empty() {
@@ -243,17 +292,25 @@ pub fn wipe_system(
     match &mut *phase {
         Phase::Idle => {
             // DXVIEW_REMASTER_AT=secs: (test shots) switch once at that time.
-            let auto = std::env::var("DXVIEW_REMASTER_AT").ok().and_then(|v| v.parse::<f32>().ok()).is_some_and(|at| {
-                static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-                game_time.elapsed_secs() >= at && !DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
+            // DXVIEW_REMASTER_AT="secs,secs,...": (tests) switch at those game times.
+            let auto = std::env::var("DXVIEW_REMASTER_AT").ok().is_some_and(|v| {
+                static DONE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let times: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                let i = DONE.load(std::sync::atomic::Ordering::Relaxed);
+                let due = times.get(i).is_some_and(|&at| game_time.elapsed_secs() >= at);
+                if due {
+                    DONE.store(i + 1, std::sync::atomic::Ordering::Relaxed);
+                }
+                due
             });
-            let free = !crate::menus::open()
+            let free = !crate::loader::busy()
+                && !crate::menus::open()
                 && !crate::inventory_screen::screen_open()
                 && !crate::computers::open()
                 && !crate::credits::open();
             if auto && std::env::var_os("DXVIEW_REMASTER_NOWIPE").is_some() {
                 eprintln!("REMASTER switch (no wipe)");
-                switch(!is_modern());
+                let _ = switch(!is_modern());
                 return;
             }
             if (keys.just_pressed(KeyCode::Tab) && free) || auto {
@@ -276,14 +333,14 @@ pub fn wipe_system(
             let Some(img) = img else {
                 // No frame came back: switch without the wipe.
                 if *waited > 1.0 {
-                    switch(to_modern);
+                    let _ = switch(to_modern);
                     *phase = Phase::Idle;
                 }
                 return;
             };
             // The swapchain's format (BGRA, maybe HDR alpha): to plain sRGB RGBA, opaque.
             let Ok(dynimg) = img.try_into_dynamic() else {
-                switch(to_modern);
+                let _ = switch(to_modern);
                 *phase = Phase::Idle;
                 return;
             };
@@ -307,15 +364,16 @@ pub fn wipe_system(
                 MaterialNode(mat),
                 GlobalZIndex(5000),
                 WipeNode,
+                crate::loader::Persist,
             ));
             crate::sound::play_player(
                 if to_modern { "DeusExSounds.Augmentation.CloakUp" } else { "DeusExSounds.Augmentation.CloakDown" },
                 1.0,
                 0.0,
             );
-            *phase = Phase::Wiping { t: 0.0, to_modern, start: None, calm: 0, frames: 0, switched: false };
+            *phase = Phase::Wiping { t: 0.0, to_modern, start: None, calm: 0, frames: 0, switched: false, swap: Swap::None };
         }
-        Phase::Wiping { t, to_modern, start, calm, frames, switched } => {
+        Phase::Wiping { t, to_modern, start, calm, frames, switched, swap } => {
             *t += dt;
             *frames += 1;
             // The switch waits for the frozen frame to be on screen (its texture uploaded, drawn a frame).
@@ -323,9 +381,44 @@ pub fn wipe_system(
                 if *frames >= 3 {
                     *switched = true;
                     *t = 0.0;
-                    switch(*to_modern);
+                    let dead = ph.as_ref().is_some_and(|p| p.dead);
+                    if switch(*to_modern) && crate::save::can_save(dead) && !crate::loader::busy() {
+                        // The visual mods take effect at map load: save and load in place, under the frozen frame.
+                        let _ = std::fs::remove_file(swap_path());
+                        crate::save::request(swap_path(), "Classic / Modern");
+                        *swap = Swap::Saving(*t);
+                        eprintln!("REMASTER reloading the map for the visual mods");
+                    }
                 }
-            } else if start.is_none() {
+                return;
+            }
+            match *swap {
+                Swap::None => {}
+                Swap::Saving(t0) => {
+                    if swap_path().exists() {
+                        crate::save::load(std::path::Path::new(""), &swap_path());
+                        *swap = Swap::Loading(0.0);
+                    } else if *t - t0 > 3.0 {
+                        // Couldn't save here: the mods show from the next map.
+                        *swap = Swap::None;
+                    }
+                    return;
+                }
+                Swap::Loading(settled) => {
+                    if crate::loader::busy() {
+                        *swap = Swap::Loading(0.0);
+                    } else if settled < 0.6 {
+                        *swap = Swap::Loading(settled + dt);
+                    } else {
+                        let _ = std::fs::remove_file(swap_path());
+                        *swap = Swap::None;
+                        *calm = 0;
+                        *t = 0.0;
+                    }
+                    return;
+                }
+            }
+            if start.is_none() {
                 // Wait for the switch's pipelines (a few quiet frames in a row), at least HOLD, at most MAX_HOLD.
                 *calm = if WAITING.load(std::sync::atomic::Ordering::Relaxed) == 0 { *calm + 1 } else { 0 };
                 if (*t >= HOLD && *calm >= 3) || *t >= MAX_HOLD {

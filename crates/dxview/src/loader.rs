@@ -327,11 +327,16 @@ pub fn loader_system(world: &mut World) {
     }
 }
 
+/// Ours that must survive a map change (the Classic / Modern wipe's frozen frame, held over the reload).
+#[derive(Component)]
+pub struct Persist;
+
 /// Entities Bevy owns that must survive a map change.
 fn protected(world: &World, e: Entity) -> bool {
     let Ok(r) = world.get_entity(e) else { return true };
     // (Resources are entities too in Bevy 0.19: they're replaced, not despawned.)
-    r.contains::<bevy::ecs::resource::IsResource>()
+    r.contains::<Persist>()
+        || r.contains::<bevy::ecs::resource::IsResource>()
         || r.contains::<Window>()
         || r.contains::<bevy::window::Monitor>()
         || r.contains::<bevy::picking::pointer::PointerId>()

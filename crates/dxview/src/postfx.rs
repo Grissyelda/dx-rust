@@ -31,9 +31,25 @@ pub fn postfx_system(
     cams: Query<(Entity, &Msaa, Has<Smaa>, Has<crate::weapons::ViewModelCam>), Or<(With<crate::FlyCam>, With<crate::SkyCam>, With<crate::weapons::ViewModelCam>, With<crate::augdisplay::HeatCam>)>>,
     mut points: Query<(&mut PointLight, &crate::shadowlight::ShadowLight)>,
     mut spots: Query<&mut SpotLight, With<crate::dynlight::FlashCone>>,
+    mut bsp: ResMut<Assets<crate::shadowlight::BspMaterial>>,
+    mut ao_gen: Local<Option<bool>>,
 ) {
+    // The cameras' make-up never changes in play: the SSAO pass, the depth / normal prepasses, MSAA off with SMAA.
+    // Each of those is part of every material's pipeline, so adding or removing one recompiled them all (a long
+    // stall on the Classic / Modern switch) and, removed in the wrong order, crashed Bevy's SSAO (a camera with
+    // SSAO but no depth prepass for a frame). The Ambient Occlusion setting is now just how strongly the world's
+    // shader uses it.
     let ao = ao_on();
-    let ssao = ao && std::env::var_os("DXVIEW_AO_NOSSAO").is_none();
+    if *ao_gen != Some(ao) {
+        *ao_gen = Some(ao);
+        let ids: Vec<_> = bsp.ids().collect();
+        for id in ids {
+            if let Some(mut m) = bsp.get_mut(id) {
+                m.extension.params.q.x = if ao { 0.85 } else { 0.0 };
+            }
+        }
+    }
+    let ssao = std::env::var_os("DXVIEW_AO_NOSSAO").is_none();
     for (e, has) in &world {
         if ssao && !has {
             commands.entity(e).insert(ScreenSpaceAmbientOcclusion {
@@ -44,15 +60,13 @@ pub fn postfx_system(
             commands.entity(e).remove::<ScreenSpaceAmbientOcclusion>();
         }
     }
-    let want_msaa = if ao && std::env::var_os("DXVIEW_AO_MSAA").is_none() { Msaa::Off } else { Msaa::Sample4 };
+    let want_msaa = if ssao { Msaa::Off } else { Msaa::Sample4 };
     for (e, msaa, smaa, last) in &cams {
         if *msaa != want_msaa {
             commands.entity(e).insert(want_msaa);
         }
-        if last && ao && !smaa {
+        if last && ssao && !smaa {
             commands.entity(e).insert(Smaa::default());
-        } else if smaa && !ao {
-            commands.entity(e).remove::<Smaa>();
         }
     }
     let soft = soft_on() && crate::shadowlight::level() > 0;

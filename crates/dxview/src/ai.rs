@@ -6224,6 +6224,7 @@ pub fn npc_weapon_models(
                 let c = DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64);
                 let fwd = DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0);
                 crate::fx::muzzle(c + fwd * (npc.params.radius + 24.0) + DVec3::Z * npc.params.height * 0.4, fwd);
+                crate::wisp::world_shot(c + fwd * (npc.params.radius + 20.0) + DVec3::Z * npc.params.height * 0.4, fwd);
                 crate::dynlight::flash(
                     c + DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0) * npc.params.radius * 2.0,
                     crate::dynlight::MUZZLE_FLASH,

@@ -53,7 +53,12 @@ fn table(name: &str) -> Option<Roles> {
     })
 }
 
+/// Visible Attachments in use: the mod installed and its setting on (Classic turns it off; read at map load).
 pub fn active() -> bool {
+    installed() && crate::settings::get("VisAttach") > 0.5
+}
+
+pub fn installed() -> bool {
     unreal_pkg::mods::active("visibleattachments").is_some()
 }
 
@@ -121,7 +126,7 @@ pub fn apply_skins(props: &mut Vec<unreal_pkg::props::Property>, skins: &[(u32, 
 /// pistol's built-in silencer stays the gun's own).
 pub fn build_layer(classes: &mut unreal_pkg::classes::ClassDb) {
     let mut list = Vec::new();
-    if active() {
+    if installed() {
         let weapons = [
             "WeaponAssaultShotgun",
             "WeaponAssaultGun",
@@ -166,9 +171,10 @@ static LAYER: std::sync::RwLock<Vec<(String, String, u32, Value)>> = std::sync::
 /// those classes keep them.
 pub fn apply() {
     let hd = crate::hdtp::weapon_classes();
+    let on = active();
     let list: Vec<_> = LAYER
         .read()
-        .map(|l| l.iter().filter(|(c, ..)| !hd.iter().any(|h| h.eq_ignore_ascii_case(c))).cloned().collect())
+        .map(|l| l.iter().filter(|(c, ..)| on && !hd.iter().any(|h| h.eq_ignore_ascii_case(c))).cloned().collect())
         .unwrap_or_default();
     unreal_pkg::classes::set_override_layer("visibleattachments", list);
 }

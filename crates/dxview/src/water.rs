@@ -613,10 +613,10 @@ pub fn ocean_system(
     // Modern Water sees how deep the water is from the scene's depth (a depth prepass on the world camera): shallow
     // water shows what's under it, deep water turns to its own colour.
     for (e, _, has) in &cam {
-        if modern() && !has {
+        // Always there (see postfx.rs): taking it off while SSAO was still on crashed Bevy, and adding it
+        // recompiled every material.
+        if !has {
             commands.entity(e).insert(bevy::core_pipeline::prepass::DepthPrepass);
-        } else if !modern() && has && !crate::postfx::ao_on() {
-            commands.entity(e).remove::<bevy::core_pipeline::prepass::DepthPrepass>();
         }
     }
     // The dark backings catch cracks left where the moving surface's pieces part (DXVIEW_WATER_BACKING=0 hides them).

@@ -37,6 +37,9 @@ pub type BspMaterial = ExtendedMaterial<StandardMaterial, BspShadow>;
 pub struct BspShadowParams {
     /// x: strength (0 = no shadows), y: 1 / ENCODE, z: dx-level's LIGHT_GAIN.
     pub p: Vec4,
+    /// x: Ambient Occlusion's strength on the lightmap (0 = off; the SSAO pass itself always runs, so switching it
+    /// never recompiles every material).
+    pub q: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -64,6 +67,7 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
         extension: BspShadow {
             params: BspShadowParams {
                 p: Vec4::new(STRENGTH, 1.0 / ENCODE, dx_level::lighting::LIGHT_GAIN, std::env::var("DXVIEW_SHADOW_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)),
+                q: Vec4::new(if crate::postfx::ao_on() { 0.85 } else { 0.0 }, 0.0, 0.0, 0.0),
             },
         },
     }

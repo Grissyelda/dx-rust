@@ -17,6 +17,7 @@
 
 struct BspShadowParams {
     p: vec4<f32>,
+    q: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> bsp: BspShadowParams;
@@ -110,7 +111,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #ifdef LIGHTMAP
     // Ambient Occlusion (postfx.rs): the world's light is its lightmap, so that's what corners darken.
     let ao = textureLoad(view_bindings::screen_space_ambient_occlusion_texture, vec2<i32>(in.position.xy), 0i).r;
-    pbr_input.lightmap_light *= mix(1.0, ao, 0.85);
+    pbr_input.lightmap_light *= mix(1.0, ao, bsp.q.x);
 #endif
 #endif
     var out: FragmentOutput;
