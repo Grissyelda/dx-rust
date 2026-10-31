@@ -140,6 +140,9 @@ pub struct Batch {
     /// Water drawn solid (a zone-portal water sheet without PF_Translucent, like Battery Park's harbour): you
     /// can't see below it from above.
     pub water_opaque: bool,
+    /// A translucent / modulated face without PF_TwoSided: seen only from its front, like the original's (from
+    /// inside the intro's clone tank its far side isn't drawn).
+    pub one_sided: bool,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
@@ -876,7 +879,7 @@ pub fn build_level(
     // The game's texel size of each level texture (UVs use it; an HD texture has more pixels).
     let mut logical: HashMap<usize, (f32, f32)> = HashMap::new();
     lib.hd_scope = true;
-    let mut batch_index: HashMap<(Option<usize>, SurfaceClass, bool, [i32; 2], Option<[i32; 4]>, bool), usize> = HashMap::new();
+    let mut batch_index: HashMap<(Option<usize>, SurfaceClass, bool, [i32; 2], Option<[i32; 4]>, bool, bool), usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
     let mut bmin = [f32::MAX; 3];
     let mut bmax = [f32::MIN; 3];
@@ -1055,7 +1058,14 @@ pub fn build_level(
             .map(|i| logical.get(&i).copied().unwrap_or((textures[i].width as f32, textures[i].height as f32)))
             .unwrap_or((256.0, 256.0));
 
-        let is_water = tex_idx.map(|i| textures[i].name.to_ascii_lowercase().contains("water")).unwrap_or(false);
+        // Water sheets lie flat: a water-textured wall (the intro's clone tank is a cylinder of translucent
+        // bluewater_a) is an ordinary translucent face, not a water surface to swell and reflect.
+        let flat = {
+            let n = [node.plane[0] as f64, node.plane[1] as f64, node.plane[2] as f64];
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
+            (n[2] / l).abs() > 0.7
+        };
+        let is_water = flat && tex_idx.map(|i| textures[i].name.to_ascii_lowercase().contains("water")).unwrap_or(false);
         let water_opaque = is_water && surf.poly_flags & pf::PORTAL != 0 && surf.poly_flags & pf::TRANSLUCENT == 0;
         let class = if is_water && (surf.poly_flags & pf::TRANSLUCENT != 0 || water_opaque) {
             SurfaceClass::Water
@@ -1080,7 +1090,8 @@ pub fn build_level(
             [v[0] / l, v[1] / l, v[2] / l, node.plane[3] / l * METERS_PER_UNIT]
         });
         let mirror_key = mirror.map(|m| [(m[0] * 1000.0) as i32, (m[1] * 1000.0) as i32, (m[2] * 1000.0) as i32, (m[3] * 100.0) as i32]);
-        let bi = *batch_index.entry((tex_idx, class, is_sky, scroll_key, mirror_key, water_opaque)).or_insert_with(|| {
+        let one_sided = matches!(class, SurfaceClass::Translucent | SurfaceClass::Modulated) && surf.poly_flags & 0x100 == 0;
+        let bi = *batch_index.entry((tex_idx, class, is_sky, scroll_key, mirror_key, water_opaque, one_sided)).or_insert_with(|| {
             batches.push(Batch {
                 texture: tex_idx,
                 class,
@@ -1088,6 +1099,7 @@ pub fn build_level(
                 uv_scroll,
                 mirror,
                 water_opaque,
+                one_sided,
                 positions: Vec::new(),
                 normals: Vec::new(),
                 uvs: Vec::new(),

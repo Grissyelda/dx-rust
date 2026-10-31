@@ -96,6 +96,8 @@ pub fn letterbox() -> bool {
 static STATE: Mutex<Option<Cine>> = Mutex::new(None);
 /// Fire or Escape during the cut scene (DeusExPlayer.Paralyzed.Fire -> ShowMainMenu -> PostIntro).
 static SKIP: AtomicBool = AtomicBool::new(false);
+/// The intro has played: waiting on its last frame for the player to go on.
+static INTRO_WAIT: AtomicBool = AtomicBool::new(false);
 
 /// A cut scene holds the screen (player paralyzed in the letterbox, or riding a map exit's path): HUD hidden,
 /// input off, AI blind to him.
@@ -117,6 +119,7 @@ pub fn reset_level() {
     ACTIVE.store(false, Ordering::Relaxed);
     TRANSIT_ON.store(false, Ordering::Relaxed);
     SKIP.store(false, Ordering::Relaxed);
+    INTRO_WAIT.store(false, Ordering::Relaxed);
     for q in [&EXIT_EVENTS] {
         if let Ok(mut q) = q.lock() {
             q.clear();
@@ -295,6 +298,9 @@ impl Cine {
         self.running.retain(|r| r.i != i);
         let pt = self.points[i].clone();
         let start = (self.loc, self.rot, self.fov);
+        if std::env::var("DXVIEW_CAMLOG").is_ok() {
+            println!("CAMLOG wake seq {} cmd {:?} value {} smooth {} loc {:.0?} rot {:.0?} fov {:.1}", pt.seq, pt.cmd, pt.value, pt.smooth, self.loc, self.rot, self.fov);
+        }
         let mut end = start;
         let mut phase = Phase::Run;
         match pt.cmd {
@@ -340,8 +346,14 @@ impl Cine {
             continue_at,
         });
         if pt.parallel {
-            // Begin: bParallel -> nextPoint.prevPoint = Self; Next().
+            // Begin: bParallel -> nextPoint.prevPoint = Self; Next(). With no post delay the Next label wakes the
+            // next point at once, in the same frame, before this point's Tick has moved the view: the next point
+            // starts from the same view and carries this one's change (waking it a frame later, after an instant
+            // change had been applied, counted the change twice - the intro ran at FOV 149 from the hooker scene on).
             self.next(i);
+            if pt.wait_post <= 0.0 {
+                self.finish_post(i, ev);
+            }
         }
     }
 
@@ -454,9 +466,12 @@ pub fn cinematic_input_system(mut keys: ResMut<ButtonInput<KeyCode>>, mut mouse:
     if !active() {
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) || mouse.just_pressed(MouseButton::Left) {
+    let go_on = INTRO_WAIT.load(Ordering::Relaxed) && (keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) || keys.just_pressed(KeyCode::NumpadEnter));
+    if go_on || keys.just_pressed(KeyCode::Escape) || mouse.just_pressed(MouseButton::Left) {
         SKIP.store(true, Ordering::Relaxed);
-        keys.clear_just_pressed(KeyCode::Escape);
+        for k in [KeyCode::Escape, KeyCode::Enter, KeyCode::Space, KeyCode::NumpadEnter] {
+            keys.clear_just_pressed(k);
+        }
         mouse.clear_just_pressed(MouseButton::Left);
     }
 }
@@ -707,16 +722,21 @@ pub fn cinematic_system(
         if c.timer >= 1.0 {
             c.timer = 0.0;
             if flags.0.get_bool("Intro_Played") {
+                // Ours: the intro holds on its last (black) frame with "Press Enter to continue" until the player
+                // goes on (the original went straight to the new game's load).
                 flags.0.set_bool("Intro_Played", false);
-                drop(g);
-                post_intro();
-                return;
+                INTRO_WAIT.store(true, Ordering::Relaxed);
+                let line = if crate::gamepad::pad_in_use() { "Press A to continue" } else { "Press Enter to continue" };
+                crate::classic_hud::quote_text(&[line.to_string()], 1.0e6);
             }
         }
     }
     let Some(c) = g.as_mut() else { return };
     if SKIP.swap(false, Ordering::Relaxed) && active() {
         if c.intro && !crate::loader::busy() {
+            if INTRO_WAIT.swap(false, Ordering::Relaxed) {
+                crate::classic_hud::quote_text(&[], 0.0);
+            }
             drop(g);
             crate::sound::stop(crate::sound::PLAYER, crate::sound::slot::TALK);
             post_intro();

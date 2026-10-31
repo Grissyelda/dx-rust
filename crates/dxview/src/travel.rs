@@ -330,6 +330,7 @@ pub fn skin_overrides(map: &str) -> Vec<(String, String, u32, unreal_pkg::props:
         v.push((c.into(), "Mesh".into(), 0, Value::Path("DeusExCharacters.GFM_TShirtPants".into())));
         v.push((c.into(), "AnimSequence".into(), 0, Value::Name("Land".into())));
         v.push((c.into(), "AnimRate".into(), 0, Value::Float(0.0)));
+        v.push((c.into(), "LDDPQuarterTurn".into(), 0, Value::Bool(true)));
     }
     v
 }

@@ -132,6 +132,14 @@ pub fn play(sound: &str, pos: DVec3, volume: f32, radius: f32, pitch: f32) {
     });
 }
 
+/// The music's gain for the Music Volume setting: a loudness curve (squared) rather than a straight line, so the
+/// low steps really are quiet (setting 1 of 10 was still loud), with the default (6) a little under the old level.
+fn music_gain() -> f32 {
+    let base = std::env::var("DXVIEW_MUSIC_VOL").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.8);
+    let v = crate::settings::music_volume().clamp(0.0, 1.0);
+    base * 0.7 * (v / 0.6).powi(2)
+}
+
 /// PlaySound by an owner in a slot.
 pub fn play_owned(
     owner: u64,
@@ -145,7 +153,9 @@ pub fn play_owned(
     // Speech follows the Speech Volume setting instead of Sound Effects Volume (the mixer's effects gain carries
     // the sound volume, so take it back out).
     let volume = if slot == slot::TALK {
-        volume * crate::settings::speech_volume() / (crate::settings::sound_volume() / 0.8).max(0.05)
+        // The effects gain is half the setting (SurrealEngine's mixer); speech isn't halved but kept at 0.8 x its
+        // own setting, so a line stands clear of the music and the room.
+        volume * 1.6 * crate::settings::speech_volume() / (crate::settings::sound_volume() / 0.8).max(0.05)
     } else {
         volume
     };
@@ -513,6 +523,11 @@ enum MusicMode {
 #[derive(Resource)]
 pub struct SoundState {
     volume_gen: u64,
+    /// Effects / music gains from the settings (before the music's ducking under speech).
+    sfx_gain: f32,
+    music_gain: f32,
+    /// Music gain under speech (eased; 1 = none).
+    music_duck: f32,
     audio: Audio,
     bank: SoundBank,
     playing: Vec<Playing>,
@@ -601,10 +616,7 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
             .unwrap_or(d)
     };
     // DeusEx.ini SoundVolume/MusicVolume; SurrealEngine halves sound effects.
-    audio.set_volumes(
-        env("DXVIEW_SFX_VOL", 1.0) * 0.5,
-        env("DXVIEW_MUSIC_VOL", 0.8),
-    );
+    audio.set_volumes(env("DXVIEW_SFX_VOL", 1.0) * 0.5 * crate::settings::sound_volume() / 0.8, music_gain());
     let map_name = level.name.trim_end_matches(".dx").to_string();
     let mut bank = SoundBank::new(root.clone(), map_name.clone());
     // Decode the game's sound effects in the background now, instead of the first time each one plays.
@@ -633,6 +645,9 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
     }
     SoundState {
         volume_gen: 0,
+        sfx_gain: 0.5,
+        music_gain: music_gain(),
+        music_duck: 1.0,
         audio,
         bank,
         playing: Vec::new(),
@@ -675,12 +690,19 @@ pub fn sound_system(
     if gen != st.volume_gen {
         st.volume_gen = gen;
         let env = |n: &str, d: f32| std::env::var(n).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
-        st.audio.set_volumes(
-            env("DXVIEW_SFX_VOL", 1.0) * 0.5 * crate::settings::sound_volume() / 0.8,
-            env("DXVIEW_MUSIC_VOL", 0.8) * crate::settings::music_volume() / 0.6,
-        );
+        st.sfx_gain = env("DXVIEW_SFX_VOL", 1.0) * 0.5 * crate::settings::sound_volume() / 0.8;
+        st.music_gain = music_gain();
     }
     let dt = time.delta_secs();
+    // The music steps back under speech (conversations, infolinks, cut scenes): down in a third of a second,
+    // back up over two once the line is done.
+    {
+        let talking = st.slots.iter().any(|((_, sl), (id, _))| *sl == slot::TALK && st.audio.is_playing(*id));
+        let want = if talking { 0.4 } else { 1.0 };
+        let d = st.music_duck;
+        st.music_duck = d + (want - d).clamp(-dt * 2.0, dt * 0.35);
+        st.audio.set_volumes(st.sfx_gain, st.music_gain * st.music_duck);
+    }
     st.time += dt;
     let now = st.time;
     let ear = ue(cam.translation) / dx_level::METERS_PER_UNIT as f64;

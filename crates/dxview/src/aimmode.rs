@@ -107,9 +107,14 @@ pub fn sightable(h: &crate::weapons::Held) -> bool {
         && st.ammo_class.as_deref().is_some_and(|a| !a.to_ascii_lowercase().contains("ammonone"))
 }
 
-/// How much the aim sways for a weapon skill level (Untrained .. Master): a master holds a rifle still.
-fn skill_sway(level: usize) -> f32 {
-    [1.0, 0.55, 0.25, 0.06][level.min(3)]
+/// The sway's reach (TraceFire spread units) for the current accuracy (lower is better): DeusExWeapon's own
+/// accuracy - the weapon's BaseAccuracy, the weapon skill, wounds, and the standing-still bonus that builds while
+/// you hold still - so an untrained hand wanders over a wide circle, a master's barely moves, and standing still
+/// draws the point of aim in to the middle as the brackets close. The brackets are drawn at the same accuracy
+/// (about 0.2 x accuracy in these units), so the drifting point stays inside them.
+fn reach_for(accuracy: f32) -> f32 {
+    // Rising faster than the accuracy itself: a master (0.2) is several times steadier than a novice (0.7).
+    0.004 + 0.15 * accuracy.max(0.0).powf(1.5)
 }
 
 /// The view model's turn so the barrel points where the shot will go (Bevy camera space).
@@ -152,21 +157,18 @@ pub fn aim_mode_system(
         st.sway = Vec2::ZERO;
         return;
     }
-    let h = held.unwrap();
+    let _h = held.unwrap();
     let target = if want { 1.0 } else { 0.0 };
     // About a sixth of a second up or down.
     st.ads += (target - st.ads).clamp(-dt * 6.0, dt * 6.0);
-    let level = h.stats.governing_skill.as_deref().map_or(0, crate::abilities::skill_level);
+    let _ = &ph;
     let speed = player.body.velocity.truncate().length() as f32;
-    let mut reach = 0.03 * skill_sway(level);
-    reach *= 1.0 + (speed / 300.0).min(1.0);
+    let mut reach = reach_for(aim.sway);
+    reach *= 1.0 + 0.5 * (speed / 300.0).min(1.0);
     if player.crouched {
         reach *= 0.75;
     }
-    reach *= 1.0 - (aim.standing / 4.0).clamp(0.0, 0.35);
     reach *= 1.0 - 0.5 * st.ads;
-    // Wounded arms shake.
-    reach += 0.02 * ph.accuracy_penalty_with(false).max(0.0);
     // A slow breath (rising and falling) with a lazy figure-eight, and a faint tremor on top.
     let wob = Vec2::new(
         (t * 0.47).sin() * 0.7 + (t * 1.13 + 1.3).sin() * 0.2 + (t * 3.1).sin() * 0.06,

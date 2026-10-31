@@ -104,6 +104,8 @@ pub enum PB {
     /// Logs <-> Achievements.
     Achievements,
     BackLogs,
+    /// A crowded nav bar's scroll arrow (0 left, 1 right).
+    NavArrow(usize),
 }
 
 /// What the screen asks the frame to do.
@@ -227,6 +229,9 @@ pub struct Input {
     pub dt: f32,
     pub up_key: bool,
     pub down_key: bool,
+    /// Left / Right: the previous / next screen in the nav bar (not while typing a note).
+    pub left_key: bool,
+    pub right_key: bool,
     pub enter: bool,
     /// F3..F12 pressed this frame (augmentation screen hotkeys).
     pub fkey: Option<usize>,
@@ -419,8 +424,18 @@ fn draw_base(
     } else {
         let nav = ctx.lay.nav.clone();
         let labels = nav_labels();
+        let arrow_hover = match hover {
+            Some(PB::NavArrow(k)) => Some(k),
+            _ => None,
+        };
+        let arrow_press = match pressed {
+            Some(PB::NavArrow(k)) => Some(k),
+            _ => None,
+        };
+        crate::inventory_screen::draw_nav_arrows(c, ctx.hud, ctx.assets, ctx.fonts, ctx.lay, arrow_hover, arrow_press);
         for (i, (x, w)) in nav.iter().enumerate() {
-            let s = if i == screen { 3 } else { state(PB::Nav(i)) };
+            let sc = ctx.lay.nav_scr[i];
+            let s = if sc == screen { 3 } else { state(PB::Nav(sc)) };
             draw_button(
                 c,
                 ctx.hud,
@@ -466,8 +481,15 @@ fn nav_hits(lay: &Layout) -> Vec<(PB, (i32, i32, i32, i32), bool)> {
         .nav
         .iter()
         .enumerate()
-        .map(|(i, (x, w))| (PB::Nav(i), (*x, 8, *w, 16), true))
+        .map(|(i, (x, w))| (PB::Nav(lay.nav_scr[i]), (*x, 8, *w, 16), true))
         .collect();
+    if let Some(arrows) = lay.nav_arrows {
+        for (k, (x, w, en)) in arrows.iter().enumerate() {
+            if *en {
+                v.push((PB::NavArrow(k), (*x, 8, *w, 16), true));
+            }
+        }
+    }
     v.push((PB::Exit, (lay.exit.0, 8, lay.exit.1, 16), true));
     v
 }
@@ -714,7 +736,15 @@ pub fn page(
         match b {
             PB::Exit => act = Some(Act::Exit),
             PB::Nav(i) if i != screen => act = Some(Act::Nav(i)),
+            PB::NavArrow(k) => crate::inventory_screen::nav_scroll(if k == 0 { -1 } else { 1 }),
             _ => act = screen_action(screen, ui, ctx, b),
+        }
+    }
+    // Left / Right: the previous / next persona screen (nav bar order; a crowded bar scrolls to follow).
+    if act.is_none() && !med(ctx) && ui.edit.is_none() && !ui.asking_delete && (inp.left_key || inp.right_key) {
+        if let Some(n) = crate::inventory_screen::nav_step(screen, if inp.left_key { -1 } else { 1 }) {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            act = Some(Act::Nav(n));
         }
     }
     if inp.wheel != 0.0 {
@@ -3941,6 +3971,8 @@ mod tests {
                 dt: 0.0,
                 up_key: false,
                 down_key: false,
+                left_key: false,
+                right_key: false,
                 enter: false,
                 fkey: None,
                 typed,

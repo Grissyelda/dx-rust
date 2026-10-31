@@ -515,13 +515,29 @@ pub fn loading_screen_system(
     }
     let Some(assets) = assets.as_mut() else { return };
     let Some(win) = windows.iter().next() else { return };
+    if let Some(e) = spawn_loading_words(&mut commands, assets, &mut images, &mut layers, win, &mut *font, 1000) {
+        commands.entity(e).insert(LoadingScreen);
+    }
+}
+
+/// The loading screen's blue "LOADING" (Engine.LargeFont, translucent), centred, at `z`. Also shown over the
+/// Classic / Modern switch's frozen frame while it hitches (remaster.rs).
+pub fn spawn_loading_words(
+    commands: &mut Commands,
+    assets: &mut crate::weapons::RuntimeAssets,
+    images: &mut Assets<Image>,
+    layers: &mut Assets<crate::classic_hud::HudLayer>,
+    win: &Window,
+    font: &mut Option<Option<std::sync::Arc<crate::uicanvas::UiFont>>>,
+    z: i32,
+) -> Option<Entity> {
     if font.is_none() {
         let f = crate::classic_hud::load_font(assets, "Engine.LargeFont")
             .or_else(|| crate::classic_hud::load_font(assets, "FontMenuTitle"))
             .map(std::sync::Arc::new);
         *font = Some(f);
     }
-    let Some(Some(f)) = font.as_ref() else { return };
+    let Some(Some(f)) = font.as_ref() else { return None };
     let msg = "LOADING";
     let s = crate::hud::ui_scale(win).max(1.0) as i32;
     let (tw, th) = (f.width(msg) + 2, f.height + 2);
@@ -535,19 +551,22 @@ pub fn loading_screen_system(
         bevy::asset::RenderAssetUsages::RENDER_WORLD | bevy::asset::RenderAssetUsages::MAIN_WORLD,
     ));
     let (lw, lh) = ((tw * s) as f32 / win.scale_factor(), (th * s) as f32 / win.scale_factor());
-    commands.spawn((
-        LoadingScreen,
-        MaterialNode(layers.add(crate::classic_hud::HudLayer::new(img))),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(((win.width() - lw) / 2.0).round()),
-            top: Val::Px(((win.height() - lh) / 2.0).round()),
-            width: Val::Px(lw),
-            height: Val::Px(lh),
-            ..default()
-        },
-        GlobalZIndex(1000),
-    ));
+    Some(
+        commands
+            .spawn((
+                MaterialNode(layers.add(crate::classic_hud::HudLayer::new(img))),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(((win.width() - lw) / 2.0).round()),
+                    top: Val::Px(((win.height() - lh) / 2.0).round()),
+                    width: Val::Px(lw),
+                    height: Val::Px(lh),
+                    ..default()
+                },
+                GlobalZIndex(z),
+            ))
+            .id(),
+    )
 }
 
 /// Developer aid: `DXVIEW_GOTO="secs;map;goal|secs;map;goal..."` changes map after that many seconds of real time
