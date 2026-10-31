@@ -121,6 +121,80 @@ pub struct WeatherState {
     /// How high rain can start over each 128-unit cell (the sky zone's ceiling above, or RAIN_TOP), by the player's
     /// height band.
     ceiling: std::collections::HashMap<(i32, i32, i32), f64>,
+    /// The drawn level's roofs (built once per map).
+    roofs: Option<Roofs>,
+}
+
+/// Every drawn BSP face that isn't a wall, by 128-unit cell, in Unreal units: rain lands on what's drawn, not only on
+/// what collides - the dock's roof is a non-solid brush (the collision hull has nothing there), so the drops went
+/// through it and fell under it.
+#[derive(Default)]
+struct Roofs {
+    cells: std::collections::HashMap<(i32, i32), Vec<u32>>,
+    tris: Vec<[DVec3; 3]>,
+}
+
+const ROOF_CELL: f64 = 128.0;
+
+impl Roofs {
+    fn build(lvl: &dx_level::Level) -> Roofs {
+        let mut r = Roofs::default();
+        for b in lvl.batches.iter().filter(|b| {
+            !b.sky && matches!(b.class, dx_level::SurfaceClass::Opaque | dx_level::SurfaceClass::Masked)
+        }) {
+            for t in b.indices.chunks_exact(3) {
+                let p = [0, 1, 2].map(|k| {
+                    let u = dx_level::bevy_to_ue(b.positions[t[k] as usize]);
+                    DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64)
+                });
+                let n = (p[1] - p[0]).cross(p[2] - p[0]);
+                let len = n.length();
+                if len < 1e-6 || (n.z / len).abs() < 0.2 {
+                    continue; // walls (and slivers) cover nothing
+                }
+                let i = r.tris.len() as u32;
+                r.tris.push(p);
+                let lo = p[0].min(p[1]).min(p[2]);
+                let hi = p[0].max(p[1]).max(p[2]);
+                for cx in (lo.x / ROOF_CELL).floor() as i32..=(hi.x / ROOF_CELL).floor() as i32 {
+                    for cy in (lo.y / ROOF_CELL).floor() as i32..=(hi.y / ROOF_CELL).floor() as i32 {
+                        r.cells.entry((cx, cy)).or_default().push(i);
+                    }
+                }
+            }
+        }
+        r
+    }
+
+    /// The highest drawn surface straight below `p` (within `depth` units), as its height.
+    fn below(&self, p: DVec3, depth: f64) -> Option<f64> {
+        let key = ((p.x / ROOF_CELL).floor() as i32, (p.y / ROOF_CELL).floor() as i32);
+        let mut best: Option<f64> = None;
+        for &i in self.cells.get(&key)? {
+            let [a, b, c] = self.tris[i as usize];
+            // Barycentric in xy.
+            let d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+            if d.abs() < 1e-9 {
+                continue;
+            }
+            let w0 = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / d;
+            let w1 = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / d;
+            let w2 = 1.0 - w0 - w1;
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                continue;
+            }
+            let z = w0 * a.z + w1 * b.z + w2 * c.z;
+            if z <= p.z && z >= p.z - depth && best.is_none_or(|bz| z > bz) {
+                best = Some(z);
+            }
+        }
+        best
+    }
+
+    /// A drawn surface over `p` within `height` units (a roof overhead).
+    fn covered(&self, p: DVec3, height: f64) -> bool {
+        self.below(p + DVec3::new(0.0, 0.0, height), height - 8.0).is_some()
+    }
 }
 
 #[derive(Component)]
@@ -189,6 +263,9 @@ pub fn weather_system(
         *st = WeatherState::default();
         st.seed = seed ^ 0x5EED_F00D_1234;
         st.profile = profile(&lvl.name);
+    }
+    if st.roofs.is_none() && mode() > 0 && st.profile.is_some() {
+        st.roofs = Some(Roofs::build(lvl));
     }
     let dt = time.delta_secs().min(0.1);
     let on = mode() > 0 && st.profile.is_some() && available() && !crate::credits::open();
@@ -320,10 +397,36 @@ pub fn weather_system(
             );
         let key = ((pos.x / 128.0).floor() as i32, (pos.y / 128.0).floor() as i32, (me.z / 256.0).floor() as i32);
         let top = *st.ceiling.entry(key).or_insert_with(|| {
-            let base = DVec3::new((key.0 as f64 + 0.5) * 128.0, (key.1 as f64 + 0.5) * 128.0, me.z + 64.0);
-            let up = base + DVec3::new(0.0, 0.0, RAIN_TOP + 200.0);
-            let h = lvl.collision.trace(base, up, DVec3::ZERO);
-            base.z + (RAIN_TOP + 200.0) * h.fraction - 24.0
+            // Up to the sky: a hit with open air above it (a roof - the dock's, a porch's) isn't the sky, so the
+            // search goes on above it and the rain starts over the roof and lands on it (it used to start just
+            // under the roof and fall inside). The map's sky ceiling has solid (no zone) above it.
+            let mut base = DVec3::new((key.0 as f64 + 0.5) * 128.0, (key.1 as f64 + 0.5) * 128.0, me.z + 64.0);
+            let up_z = base.z + RAIN_TOP + 200.0;
+            let mut top = up_z - 24.0;
+            for _ in 0..6 {
+                if base.z >= up_z {
+                    break;
+                }
+                let up = DVec3::new(base.x, base.y, up_z);
+                let h = lvl.collision.trace(base, up, DVec3::ZERO);
+                if h.fraction >= 1.0 {
+                    break;
+                }
+                let hit = base + (up - base) * h.fraction;
+                let above = hit + DVec3::new(0.0, 0.0, 24.0);
+                if lvl.collision.zone_at(above) > 0 && lvl.collision.trace(hit + DVec3::new(0.0, 0.0, 1.0), above, DVec3::ZERO).fraction < 1.0 {
+                    // Still solid 24 units up: look further for the roof's top.
+                    base = hit + DVec3::new(0.0, 0.0, 48.0);
+                    continue;
+                }
+                if lvl.collision.zone_at(above) > 0 {
+                    base = above;
+                    continue;
+                }
+                top = hit.z - 24.0;
+                break;
+            }
+            top
         });
         let want = me.z + st.height as f64 + (rnd(&mut seed) - 0.5) * 150.0;
         pos.z = want.min(top - rnd(&mut seed) * 60.0);
@@ -334,13 +437,27 @@ pub fn weather_system(
         if z <= 0 || !lvl.zone_sky.get(z as usize).copied().unwrap_or(false) {
             continue;
         }
+        // Starting under a drawn roof (while the column is still growing, or a non-solid roof): it never fell
+        // from the sky.
+        if st.roofs.as_ref().is_some_and(|r| r.covered(pos, RAIN_TOP + 400.0)) {
+            continue;
+        }
         // Raindrop.Randomize.
         let vel = DVec3::new(0.0, 0.0, -900.0 - rnd(&mut seed) * 800.0) + prof.wind;
         // Long enough to reach the ground from the top (it ends where it lands).
         let life = ((pos.z - me.z + 600.0) / -vel.z).clamp(1.0, 4.0) as f32;
         let end = pos + vel * life as f64;
         let h = lvl.collision.trace(pos, end, DVec3::ZERO);
-        let hit = (h.fraction < 1.0).then(|| (pos + (end - pos) * h.fraction, h.normal));
+        let mut hit = (h.fraction < 1.0).then(|| (pos + (end - pos) * h.fraction, h.normal));
+        // A drawn roof above where it would land (no collision there): it lands on the roof. (Wind slant is small
+        // against the fall, so straight down will do.)
+        let floor_z = hit.map_or(end.z, |(at, _)| at.z);
+        if let Some(rz) = st.roofs.as_ref().and_then(|r| r.below(pos, pos.z - floor_z)) {
+            if rz > floor_z + 1.0 {
+                let t = ((pos.z - rz) / (pos.z - end.z)).clamp(0.0, 1.0);
+                hit = Some((pos + (end - pos) * t, DVec3::Z));
+            }
+        }
         st.drops.push(Drop {
             pos,
             vel,
@@ -477,7 +594,9 @@ pub fn weather_system(
             let z = lvl.collision.zone_at(p);
             z > 0 && lvl.zone_sky.get(z as usize).copied().unwrap_or(false)
         };
-        let here = sky(eye) as u8 as f32;
+        // Under a drawn roof (the dock's) counts as indoors too.
+        let roofed = st.roofs.as_ref().is_some_and(|r| r.covered(eye, 1200.0));
+        let here = (sky(eye) && !roofed) as u8 as f32;
         let mut seen = 0;
         let mut total = 0;
         for k in 0..12 {
