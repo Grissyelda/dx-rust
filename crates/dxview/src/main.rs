@@ -117,6 +117,10 @@ mod remaster;
 mod swim;
 mod trash;
 mod triggers;
+mod smartai;
+mod achievements;
+mod diegetic;
+mod alertui;
 mod uicanvas;
 mod weapons;
 mod wisp;
@@ -871,8 +875,11 @@ fn main() {
         .add_systems(Update, thirdperson::toggle_system)
         .add_systems(Update, audiofx::soundscape_system)
         .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system, clouds::clouds_system, clouds::lightning_sky_system.after(clouds::clouds_system), wisp::wisp_system.after(fly)))
-        .add_systems(First, thirdperson::restore_system)
-        .add_systems(PostUpdate, thirdperson::place_system.before(bevy::transform::TransformSystems::Propagate))
+        .add_systems(Update, alertui::alert_ui_system.after(ai::npc_system))
+        .add_systems(Update, achievements::achievements_system.after(ai::npc_system))
+        .add_systems(First, (diegetic::restore_system, thirdperson::restore_system).chain())
+        .add_systems(PostUpdate, (thirdperson::place_system, diegetic::place_system).chain().before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
+        .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
         .add_systems(Update, aimmode::aim_mode_system.after(hud::aim_system).before(weapons::weapon_system).before(hud::crosshair_system))
         .add_systems(Update, (eggs::matrix_system, eggs::warren_system))

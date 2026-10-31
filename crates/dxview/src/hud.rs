@@ -54,8 +54,11 @@ pub fn screen_scales(win: &Window, w: i32, h: i32) -> (i32, f32) {
     match crate::settings::hud_scale_step() {
         s if s > 0 => (fitf.ceil() as i32, fitf),
         s => {
+            // Whole-number scales: drawn at 1x and enlarged by the GPU (nearest), the same picture as drawing every
+            // pixel k x k on the CPU - which cost k^2 times the drawing, conversion, comparison and upload every
+            // frame (the inventory screen's dropped frames at 1080p and up).
             let k = (fit + s).clamp(1, fit);
-            (k, k as f32)
+            (1, k as f32)
         }
     }
 }
@@ -63,7 +66,9 @@ pub fn screen_scales(win: &Window, w: i32, h: i32) -> (i32, f32) {
 /// Linear filtering for a screen canvas shown at a fractional scale (nearest when whole).
 pub fn set_filter(images: &mut Assets<Image>, img: &Handle<Image>, render: i32, display: f32) {
     use bevy::image::ImageSampler;
-    let linear = (display - render as f32).abs() > 1e-3;
+    // Nearest when the picture is shown at a whole multiple of the size it was drawn at.
+    let ratio = display / render.max(1) as f32;
+    let linear = (ratio - ratio.round()).abs() > 1e-3;
     static LAST: std::sync::Mutex<Vec<(bevy::asset::AssetId<Image>, bool)>> = std::sync::Mutex::new(Vec::new());
     let Ok(mut last) = LAST.lock() else { return };
     let id = img.id();

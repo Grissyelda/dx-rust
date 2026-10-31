@@ -287,6 +287,9 @@ pub fn device_system(
     events.0.extend(crate::movers::EVENTS_OUT.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default());
     for (name, on) in events.0.drain(..) {
         println!("EVENT {name} {}", if on { "trigger" } else { "untrigger" });
+        if on {
+            crate::achievements::event(&lvl.name, &name);
+        }
         crate::triggers::dispatch(&name, on);
         crate::logic::event(&name, on);
         crate::particles::event(&name, on);

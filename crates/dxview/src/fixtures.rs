@@ -244,6 +244,10 @@ pub fn fixture_system(
                     1.0,
                 );
                 crate::dynlight::toggle_actor_light(c.actor);
+                if !lit {
+                    // Smarter AI (ours): guards that see a lamp go out go and look.
+                    crate::smartai::disturb(pos, crate::smartai::Disturb::LightOut);
+                }
                 deco.scale_glow = if lit { 2.0 } else { 1.0 };
                 deco.last_lit = DVec3::splat(1e9);
             }

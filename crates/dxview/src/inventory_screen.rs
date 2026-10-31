@@ -1184,7 +1184,9 @@ pub fn inventory_screen_system(
                 bot: bot.clone(),
             };
             crate::snap::set_page_map(Some(crate::snap::Map { s: d, ox, oy, sf }));
+            let _pp = crate::prof::scope("inv::persona_page");
             let r = crate::persona::page(screen, &mut st.persona, &mut ctx, &input, s);
+            drop(_pp);
             crate::snap::set_page_map(None);
             r
         };
@@ -1572,6 +1574,7 @@ pub fn inventory_screen_system(
         .iter()
         .find(|i| view.in_hand(&i.def.class))
         .map(|i| i.def.class.clone());
+    let _pb = crate::prof::scope("inv::draw");
     let mut c = Canvas::new(SCREEN_W, SCREEN_H, s);
     let frame = FrameInfo {
         credits: view.inv.credits,
@@ -1624,6 +1627,8 @@ pub fn inventory_screen_system(
             &st.status,
         );
     }
+    drop(_pb);
+    let _pc = crate::prof::scope("inv::upload");
     if upload(&mut images, &canvas_img, &mut st.last, &c) {
         if let Ok((_, _, m)) = nodes.get(canvas_e) {
             if let Some(m) = layers.get_mut(&m.0) {
@@ -2209,55 +2214,59 @@ fn draw_frame(
     fi: &FrameInfo,
 ) {
     let enabled = |b: Btn| fi.enabled.iter().find(|e| e.0 == b).map_or(true, |e| e.1);
-    // Client border (640 x 450 at y 33) and client background (585 x 361), 3 x 2 textures of 256.
-    for i in 0..6 {
-        let (tx, ty) = ((i % 3) as i32 * 256, (i / 3) as i32 * 256);
-        if let Some(t) = hud.ui(assets, &format!("InventoryBorder_{}", i + 1)) {
-            c.texture(
-                tx,
-                33 + ty,
-                t.w as i32,
-                t.h as i32,
-                0,
-                0,
-                &t,
-                Style::Translucent,
-                crate::menuui::h_col(1),
-            );
+    // The screen's art under the buttons (borders, backgrounds, nav bar) is the same every frame for a theme and
+    // scale: drawn once and copied in (it was most of this screen's frame time).
+    c.cached(("inventory", crate::menuui::h_col(0), crate::menuui::h_col(1)), |c| {
+        // Client border (640 x 450 at y 33) and client background (585 x 361), 3 x 2 textures of 256.
+        for i in 0..6 {
+            let (tx, ty) = ((i % 3) as i32 * 256, (i / 3) as i32 * 256);
+            if let Some(t) = hud.ui(assets, &format!("InventoryBorder_{}", i + 1)) {
+                c.texture(
+                    tx,
+                    33 + ty,
+                    t.w as i32,
+                    t.h as i32,
+                    0,
+                    0,
+                    &t,
+                    Style::Translucent,
+                    crate::menuui::h_col(1),
+                );
+            }
         }
-    }
-    c.set_clip(Some((CX, CY, 585, 361)));
-    for i in 0..6 {
-        let (tx, ty) = ((i % 3) as i32 * 256, (i / 3) as i32 * 256);
-        if let Some(t) = hud.ui(assets, &format!("InventoryBackground_{}", i + 1)) {
-            c.texture(
-                CX + tx,
-                CY + ty,
-                t.w as i32,
-                t.h as i32,
-                0,
-                0,
-                &t,
-                Style::Translucent,
-                crate::menuui::h_col(0),
-            );
+        c.set_clip(Some((CX, CY, 585, 361)));
+        for i in 0..6 {
+            let (tx, ty) = ((i % 3) as i32 * 256, (i / 3) as i32 * 256);
+            if let Some(t) = hud.ui(assets, &format!("InventoryBackground_{}", i + 1)) {
+                c.texture(
+                    CX + tx,
+                    CY + ty,
+                    t.w as i32,
+                    t.h as i32,
+                    0,
+                    0,
+                    &t,
+                    Style::Translucent,
+                    crate::menuui::h_col(0),
+                );
+            }
         }
-    }
-    c.set_clip(None);
-    // Nav bar: background strips at (17, 6), borders over the 640 x 64 bar.
-    for (i, (x, w)) in [(17, 256), (17 + 256, 256), (17 + 512, 97)]
-        .iter()
-        .enumerate()
-    {
-        if let Some(t) = hud.ui(assets, &format!("PersonaNavBarBackground_{}", i + 1)) {
-            c.texture(*x, 6, *w, 21, 0, 0, &t, Style::Translucent, crate::menuui::h_col(0));
+        c.set_clip(None);
+        // Nav bar: background strips at (17, 6), borders over the 640 x 64 bar.
+        for (i, (x, w)) in [(17, 256), (17 + 256, 256), (17 + 512, 97)]
+            .iter()
+            .enumerate()
+        {
+            if let Some(t) = hud.ui(assets, &format!("PersonaNavBarBackground_{}", i + 1)) {
+                c.texture(*x, 6, *w, 21, 0, 0, &t, Style::Translucent, crate::menuui::h_col(0));
+            }
         }
-    }
-    for (i, (x, w)) in [(0, 256), (256, 256), (512, 175)].iter().enumerate() {
-        if let Some(t) = hud.ui(assets, &format!("PersonaNavBarBorder_{}", i + 1)) {
-            c.texture(*x, 0, *w, 64, 0, 0, &t, Style::Translucent, crate::menuui::h_col(1));
+        for (i, (x, w)) in [(0, 256), (256, 256), (512, 175)].iter().enumerate() {
+            if let Some(t) = hud.ui(assets, &format!("PersonaNavBarBorder_{}", i + 1)) {
+                c.texture(*x, 0, *w, 64, 0, 0, &t, Style::Translucent, crate::menuui::h_col(1));
+            }
         }
-    }
+    });
     let state = |b: Btn, en: bool| -> usize {
         if !en {
             3

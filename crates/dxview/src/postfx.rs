@@ -49,7 +49,14 @@ pub fn postfx_system(
             }
         }
     }
-    let ssao = std::env::var_os("DXVIEW_AO_NOSSAO").is_none();
+    // The SSAO pass costs GPU time, so it's only there when Ambient Occlusion is on in either look (now, or in
+    // the Modern mix Classic / Modern remembers); once attached it stays for the session.
+    static ATTACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let wanted = ao || crate::settings::get("Modern.AmbientOcclusion") > 0.5;
+    if wanted {
+        ATTACHED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let ssao = ATTACHED.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os("DXVIEW_AO_NOSSAO").is_none();
     for (e, has) in &world {
         if ssao && !has {
             commands.entity(e).insert(ScreenSpaceAmbientOcclusion {
@@ -67,6 +74,8 @@ pub fn postfx_system(
         }
         if last && ssao && !smaa {
             commands.entity(e).insert(Smaa::default());
+        } else if smaa && !ssao {
+            commands.entity(e).remove::<Smaa>();
         }
     }
     let soft = soft_on() && crate::shadowlight::level() > 0;

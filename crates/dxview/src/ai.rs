@@ -889,6 +889,8 @@ pub struct Npc {
     pub idle_bark: f32,
     /// ScriptedPawn.ShadowScale (blob shadow size).
     pub shadow_scale: f32,
+    /// Smarter AI (enhancement #38) state.
+    pub smart: crate::smartai::SmartState,
 }
 
 fn fv(p: &[Property], n: &str, d: f32) -> f32 {
@@ -1223,6 +1225,7 @@ impl Npc {
             play_idle: flag(p, "bPlayIdle"),
             shadow_scale: fv(p, "ShadowScale", 1.0),
             idle_bark: 8.0 + crate::sound::frand() * 14.0,
+            smart: Default::default(),
         }
     }
 
@@ -1350,6 +1353,9 @@ impl Npc {
 
     /// Leave Seeking and go back to orders (DoneSeek -> FollowOrders).
     fn finish_seek(&mut self) {
+        if self.state == NpcState::Seeking {
+            crate::smartai::search_failed(self);
+        }
         self.state = NpcState::Idle;
         self.seek = None;
         self.seek_level = 0;
@@ -2808,7 +2814,9 @@ pub fn npc_system(
         .map(|d| d.clone())
         .unwrap_or_default();
     // Everything heard since last frame (footsteps, shots, landings, cries); pawns add their own for next frame.
-    let heard: Vec<Noise> = noises.0.drain(..).collect();
+    let mut heard: Vec<Noise> = noises.0.drain(..).collect();
+    heard.extend(crate::smartai::take_noises());
+    let disturbances = crate::smartai::take_disturbances();
     let stim = crate::reactions::take();
     let mut new_noises: Vec<Noise> = Vec::new();
     let mut hits_by: std::collections::HashMap<usize, Vec<crate::damage::PawnHit>> =
@@ -3406,6 +3414,7 @@ pub fn npc_system(
                                 by_player: h.attacker.is_none(),
                                 damage_type: h.damage_type,
                             });
+                            crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
                             if npc.important && !npc.bind_name.is_empty() {
                                 flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
                             }
@@ -3469,6 +3478,7 @@ pub fn npc_system(
                             by_player: h.attacker.is_none(),
                             damage_type: h.damage_type,
                         });
+                        crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
                         blockers.list[npc.blocker].radius = 0.0;
                         blockers.list[npc.blocker].height = 0.0;
                         deco.body.physics = imsim_core::body::BodyPhysics::None;
@@ -3779,6 +3789,20 @@ pub fn npc_system(
             }
         }
 
+        // Smarter AI: GMDX's perception by difficulty and our alert level; a fresh attack on the player starts the
+        // fire react time and calls the others over.
+        let npc_class = lvl.actors[npc.actor].class.clone();
+        crate::smartai::tune(npc, &npc_class, dt);
+        {
+            let atk = matches!(npc.state, NpcState::Attacking | NpcState::Surprised(_)) && npc.target == Some(Target::Player);
+            if atk && !npc.smart.was_attacking {
+                crate::smartai::attack_started(npc, &npc_class);
+                if let Some(n) = crate::smartai::call_out(me.center, npc.blocker) {
+                    new_noises.push(n);
+                }
+            }
+            npc.smart.was_attacking = atk;
+        }
         // Senses. ReactionLevel climbs while anything is up (UpdateReactionLevel) and the surprise pause on
         // attacking is what it hasn't covered yet; it ebbs over 7 seconds otherwise.
         let stunned_now = matches!(
@@ -3838,6 +3862,16 @@ pub fn npc_system(
                     .as_ref()
                     .is_some_and(|(a, _)| a == "Player")
                     && !ph.dead;
+                // Achievements (Section 9 Methods / Automotonophobia): the cloak or radar transparency hiding the
+                // player from a pawn looking right at him.
+                if check_player
+                    && valid_enemy(npc, Target::Player)
+                    && crate::abilities::invisible_to(npc.hp_body.robot, ph.camo)
+                    && (crate::abilities::aug_active("AugCloak") || crate::abilities::aug_active("AugRadarTrans"))
+                    && sees(player_center, player.params.height, true, None).is_some()
+                {
+                    crate::achievements::hidden_in_view(npc.hp_body.robot);
+                }
                 if check_player
                     && (valid_enemy(npc, Target::Player) || potential_player)
                     && !crate::abilities::invisible_to(npc.hp_body.robot, ph.camo)
@@ -3848,7 +3882,13 @@ pub fn npc_system(
                             npc.potential_enemy = None;
                         }
                         let vis = crate::stealth::sight_visibility(
-                            crate::stealth::player_visibility(&plight, player.body.velocity),
+                            crate::smartai::player_vis(
+                                crate::stealth::player_visibility(&plight, player.body.velocity),
+                                plight.brightness,
+                                d,
+                                player.crouched,
+                                player.body.velocity.truncate().length(),
+                            ),
                             d,
                             npc.sight_radius,
                             npc.vis_threshold,
@@ -3904,8 +3944,15 @@ pub fn npc_system(
                     Some((t, pos, _, cum)) => {
                         npc.sustain = 3.0;
                         let c = (cum * 2.0).clamp(0.5 / 4.5, 1.0);
-                        npc.readiness += c * period / 0.5;
+                        npc.readiness += c * period / 0.5 * crate::smartai::rise_mult(npc);
                         if npc.readiness >= 1.0 {
+                            npc.begin_attack(t, pos, now);
+                        } else if npc.readiness >= npc.sight_pct
+                            && t == Target::Player
+                            && npc.state != NpcState::Seeking
+                            && crate::smartai::quick_reflex(npc, &npc_class, (pos - me.center).length(), false)
+                        {
+                            // Smarter AI (GMDX HandleSighting): high alert - straight to the attack.
                             npc.begin_attack(t, pos, now);
                         } else if npc.readiness >= npc.sight_pct {
                             // HandleSighting.
@@ -3964,6 +4011,25 @@ pub fn npc_system(
                 }
             }};
         }
+        // Smarter AI (ours): a guard that sees a light go out or a door move goes to look.
+        if !stunned_now
+            && !disturbances.is_empty()
+            && matches!(npc.state, NpcState::Idle | NpcState::Seeking)
+            && npc.weapon.is_some()
+            && npc.hates("Player")
+        {
+            for (at, kind) in &disturbances {
+                if (*at - my_eye).length() <= crate::smartai::disturb_range(*kind) && sees(*at, 40.0, true, None).is_some() {
+                    if npc.state == NpcState::Idle {
+                        npc.set_seek_location(*at, SeekKind::Sound, false);
+                        npc.enter_seeking();
+                    } else if now - npc.last_seen > 2.0 {
+                        npc.reseek(*at, SeekKind::Sound);
+                    }
+                    break;
+                }
+            }
+        }
         if !stunned_now {
             for n in &heard {
                 if n.maker == Some(Target::Pawn(npc.blocker))
@@ -4016,7 +4082,14 @@ pub fn npc_system(
                         }
                         if let Some(t) = n.instigator {
                             if valid_enemy(npc, t) && npc.weapon.is_some() {
-                                if npc.state == NpcState::Idle {
+                                if t == Target::Player
+                                    && matches!(npc.state, NpcState::Idle | NpcState::Seeking)
+                                    && n.maker == Some(Target::Player)
+                                    && crate::smartai::quick_reflex(npc, &npc_class, (player_center - me.center).length(), true)
+                                {
+                                    // Smarter AI (GMDX HandleLoudNoise): heard close by - attack at once.
+                                    npc.begin_attack(t, player_center, now - 1.0);
+                                } else if npc.state == NpcState::Idle {
                                     npc.set_seek_location(n.pos, SeekKind::Sound, false);
                                     npc.enter_seeking();
                                 } else if now - npc.last_seen > 2.0 {
@@ -4865,6 +4938,17 @@ pub fn npc_system(
                         None => npc.last_pos,
                     };
                     let seen_recently = now - npc.last_seen < 0.6;
+                    // Smarter AI: the fire react time (must see the enemy for a moment before shooting) and
+                    // suppressive fire (keep shooting where it was last seen for a while after losing it).
+                    let react_ok = crate::smartai::combat_tick(
+                        npc,
+                        &npc_class,
+                        now - npc.last_seen < 0.25,
+                        npc.target == Some(Target::Player),
+                        dt,
+                    );
+                    let suppress = !seen_recently && npc.smart.sfire > 0.0;
+                    let target_pos = if suppress { npc.last_pos } else { target_pos };
                     let chase_to = if seen_recently {
                         target_pos
                     } else {
@@ -4927,7 +5011,10 @@ pub fn npc_system(
                     } else if npc.crouching && (!seen_recently || dist > accurate) {
                         npc.crouching = false;
                     }
-                    if !npc.crouching && (!seen_recently || dist > accurate) {
+                    if suppress {
+                        // Suppressive fire: hold position and shoot.
+                        npc.route = None;
+                    } else if !npc.crouching && (!seen_recently || dist > accurate) {
                         // Close in, over the path network if there's no straight way.
                         let replan = npc
                             .route
@@ -5060,7 +5147,8 @@ pub fn npc_system(
                             }
                         }
                         if strike_now
-                            || (seen_recently
+                            || ((seen_recently || (suppress && !melee))
+                                && (react_ok || suppress)
                                 && fire_ok
                                 && in_reach
                                 && has_ammo
@@ -5157,7 +5245,16 @@ pub fn npc_system(
                                 let fwd = (aim_at - my_eye).normalize_or_zero();
                                 let right = fwd.cross(DVec3::Z).normalize_or_zero();
                                 let up = right.cross(fwd).normalize_or_zero();
-                                let acc = (w.base_accuracy + npc.base_accuracy) as f64;
+                                let acc = (w.base_accuracy + npc.base_accuracy) as f64
+                                    + match npc.target {
+                                        Some(Target::Player) => crate::smartai::accuracy_mod(
+                                            player.body.velocity,
+                                            player.body.physics == Physics::Falling,
+                                            &w.class,
+                                        ),
+                                        _ => 0.0,
+                                    };
+                                let acc = acc.max(0.0);
                                 let mut continue_fire = true;
                                 if let Some(class) = w.projectile_for(npc.ammo.as_deref()) {
                                     for _ in 0..w.shots_per_fire() {

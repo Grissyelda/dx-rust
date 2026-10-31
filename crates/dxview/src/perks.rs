@@ -332,6 +332,11 @@ pub fn set_in_hand(w: Option<(&str, bool)>) {
     }
 }
 
+/// A melee weapon is in the player's hand (achievements: Slugger).
+pub fn in_hand_melee() -> bool {
+    in_hand().is_some_and(|(_, m)| m)
+}
+
 fn in_hand() -> Option<(String, bool)> {
     IN_HAND.lock().ok().and_then(|h| h.clone())
 }

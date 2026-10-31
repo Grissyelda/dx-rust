@@ -147,6 +147,14 @@ pub fn apply_mods(w: &mut WeaponStats, m: &ModState) {
 
 /// WeaponMod.CanUpgradeWeapon + ApplyMod bookkeeping. Returns false if this mod doesn't fit or is maxed out (0.5).
 pub fn fit_mod(mod_class: &str, w: &WeaponStats, m: &mut ModState) -> bool {
+    let ok = fit_mod_inner(mod_class, w, m);
+    if ok {
+        crate::achievements::mods_fitted(w, m);
+    }
+    ok
+}
+
+fn fit_mod_inner(mod_class: &str, w: &WeaponStats, m: &mut ModState) -> bool {
     let c = &w.can_mod;
     let step = |v: &mut f32, ok: bool, d: f32| {
         if ok && (v.abs() + 1e-4) < 0.5 {
@@ -3006,28 +3014,123 @@ pub fn fire_test(
 }
 
 /// Advance procedural textures at a steady rate and upload the new frames.
+/// Which fire textures each material shows (cached per material; None = none).
+#[derive(Default)]
+pub struct FireUse {
+    std: std::collections::HashMap<AssetId<StandardMaterial>, Option<usize>>,
+    bsp: std::collections::HashMap<AssetId<crate::shadowlight::BspMaterial>, Option<usize>>,
+    anim: std::collections::HashMap<AssetId<crate::gpuanim::AnimMaterial>, Option<usize>>,
+    /// Seconds since each fire texture was last on screen.
+    unseen: Vec<f32>,
+    /// The fire textures' images, to match materials against (rebuilt when the list changes).
+    index: std::collections::HashMap<AssetId<Image>, usize>,
+}
+
+fn fire_of(index: &std::collections::HashMap<AssetId<Image>, usize>, m: &StandardMaterial) -> Option<usize> {
+    [&m.base_color_texture, &m.emissive_texture].into_iter().flatten().find_map(|h| index.get(&h.id()).copied())
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn fire_texture_system(
     time: Res<Time>,
     mut acc: Local<f32>,
     mut assets: ResMut<RuntimeAssets>,
     mut images: ResMut<Assets<Image>>,
-    mut buf: Local<Vec<u8>>,
+    mut bufs: Local<Vec<Vec<u8>>>,
+    mut used: Local<FireUse>,
+    (std_mats, bsp_mats, anim_mats): (
+        Res<Assets<StandardMaterial>>,
+        Res<Assets<crate::shadowlight::BspMaterial>>,
+        Res<Assets<crate::gpuanim::AnimMaterial>>,
+    ),
+    std_q: Query<(&ViewVisibility, &MeshMaterial3d<StandardMaterial>)>,
+    bsp_q: Query<(&ViewVisibility, &MeshMaterial3d<crate::shadowlight::BspMaterial>)>,
+    anim_q: Query<(&ViewVisibility, &MeshMaterial3d<crate::gpuanim::AnimMaterial>)>,
 ) {
     let _prof = crate::prof::scope("weapons::fire_texture_system");
     const RATE: f32 = 1.0 / 40.0;
-    *acc += time.delta_secs().min(0.25);
+    let dt = time.delta_secs().min(0.25);
+    // Only the fire textures something on screen shows (or showed in the last half second) are simulated: one
+    // that's out of view keeps its state and goes on from there when seen again.
+    let n = assets.fire.len();
+    let u = &mut *used;
+    if u.index.len() != n {
+        u.index = assets.fire.iter().enumerate().map(|(i, (_, h))| (h.id(), i)).collect();
+        u.std.clear();
+        u.bsp.clear();
+        u.anim.clear();
+        u.unseen = vec![0.0; n];
+    }
+    let mut seen = vec![false; n];
+    if n > 0 {
+        for (v, m) in &std_q {
+            if v.get() {
+                let k = *u.std.entry(m.0.id()).or_insert_with(|| std_mats.get(&m.0).and_then(|m| fire_of(&u.index, m)));
+                if let Some(k) = k {
+                    seen[k] = true;
+                }
+            }
+        }
+        for (v, m) in &bsp_q {
+            if v.get() {
+                let k = *u.bsp.entry(m.0.id()).or_insert_with(|| bsp_mats.get(&m.0).and_then(|m| fire_of(&u.index, &m.base)));
+                if let Some(k) = k {
+                    seen[k] = true;
+                }
+            }
+        }
+        for (v, m) in &anim_q {
+            if v.get() {
+                let k = *u.anim.entry(m.0.id()).or_insert_with(|| anim_mats.get(&m.0).and_then(|m| fire_of(&u.index, &m.base)));
+                if let Some(k) = k {
+                    seen[k] = true;
+                }
+            }
+        }
+    }
+    for (t, s) in u.unseen.iter_mut().zip(&seen) {
+        *t = if *s { 0.0 } else { *t + dt };
+    }
+    // (Materials made later - a weapon picked up, a copy for a screen effect - are looked up again now and then.)
+    if (time.elapsed_secs() * 0.5).fract() < dt * 0.5 {
+        u.std.retain(|_, v| v.is_some());
+    }
+    *acc += dt;
     if *acc < RATE {
         return;
     }
     let steps = ((*acc / RATE) as u32).min(4);
     *acc -= steps as f32 * RATE;
-    for (f, h) in assets.fire.iter_mut() {
-        for _ in 0..steps {
-            f.step();
+    let active: Vec<bool> = u.unseen.iter().map(|t| *t < 0.5).collect();
+    // The textures simulate independently, so they step on all cores; each frame's pixels go into a buffer that
+    // is then swapped with the image's own (no allocation or copy per texture per step).
+    bufs.resize_with(n, Vec::new);
+    let pool = bevy::tasks::ComputeTaskPool::get();
+    let chunk = n.div_ceil(pool.thread_num().max(1)).max(1);
+    pool.scope(|sc| {
+        for ((fires, outs), act) in assets.fire.chunks_mut(chunk).zip(bufs.chunks_mut(chunk)).zip(active.chunks(chunk)) {
+            sc.spawn(async move {
+                for (((f, _), out), &on) in fires.iter_mut().zip(outs.iter_mut()).zip(act) {
+                    if !on {
+                        continue;
+                    }
+                    for _ in 0..steps {
+                        f.step();
+                    }
+                    f.rgba(out);
+                }
+            });
+        }
+    });
+    for (((_, h), out), &on) in assets.fire.iter().zip(bufs.iter_mut()).zip(&active) {
+        if !on {
+            continue;
         }
         if let Some(mut img) = images.get_mut(h) {
-            f.rgba(&mut buf);
-            img.data = Some(buf.clone());
+            match img.data.as_mut() {
+                Some(d) if d.len() == out.len() => std::mem::swap(d, out),
+                _ => img.data = Some(out.clone()),
+            }
         }
     }
 }

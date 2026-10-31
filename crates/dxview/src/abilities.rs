@@ -640,6 +640,9 @@ pub fn aug_defense_system(
             // bAggressiveExploded: Explode where it is.
             p.life = 0.0;
             crate::sound::play_player("DeusExSounds.Weapons.ProdFire", 1.0, 0.0);
+            if let Some(b) = p.from {
+                crate::achievements::ads_detonated(b);
+            }
         }
         // SetDefenseAugStatus: the aug display marks it ("* ADS Tracking *" / "* ADS Detonating *").
         set_defense_target(Some((p.pos, blown)));

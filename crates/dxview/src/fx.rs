@@ -500,11 +500,12 @@ pub fn fx_system(
         let mut col = Vec::new();
         let mut idx = Vec::new();
         // Blended ones far to near, so nearer smoke covers farther.
-        let mut list: Vec<&P> = st.ps.iter().filter(|p| p.glow == glow).collect();
+        // (Each particle's distance is taken once, not twice per comparison.)
+        let mut list: Vec<(f64, &P)> = st.ps.iter().filter(|p| p.glow == glow).map(|p| (if glow { 0.0 } else { p.pos.distance_squared(eye) }, p)).collect();
         if !glow {
-            list.sort_by(|a, b| b.pos.distance_squared(eye).total_cmp(&a.pos.distance_squared(eye)));
+            list.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         }
-        for p in list {
+        for (_, p) in list {
             let t = p.life / p.max;
             let size = (p.size.0 + (p.size.1 - p.size.0) * t) as f64;
             let mut c = [0.0f32; 4];

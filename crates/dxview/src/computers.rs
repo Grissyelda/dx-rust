@@ -67,12 +67,20 @@ const CAM_WINDOWS: [(i32, i32); 3] = [(1, 175), (208, 175), (415, 175)];
 // ------------------------------------------------------------------------------------------------ globals
 
 static OPEN: AtomicBool = AtomicBool::new(false);
+/// The open terminal's level actor (usize::MAX: none).
+static OPEN_ACTOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
 static IGNORED: AtomicBool = AtomicBool::new(false);
 static FROB: Mutex<Option<usize>> = Mutex::new(None);
 
 /// A terminal window is up (the HUD hides, the game gets no input).
 pub fn open() -> bool {
     OPEN.load(Ordering::Relaxed)
+}
+
+/// The level actor of the terminal that's open.
+pub fn open_actor() -> Option<usize> {
+    let a = OPEN_ACTOR.load(Ordering::Relaxed);
+    (a != usize::MAX).then_some(a)
 }
 
 /// The player is logged in to a computer (Computers.ChangePlayerVisibility / MakePlayerIgnored): pawns and
@@ -1962,6 +1970,8 @@ pub struct Computers {
     seed: u64,
     /// Saved state for terminals not opened yet since the load (applied when their data is first built).
     pending: HashMap<usize, CompSave>,
+    /// The UI camera the nodes render through while diegetic (diegetic.rs).
+    ui_target: Option<Entity>,
 }
 
 /// What a save keeps of a terminal that has been used (save.rs).
@@ -2311,6 +2321,31 @@ pub fn computer_system(
         .cursor_position()
         .map(|c| ((c.x * sf / d).floor() as i32, (c.y * sf / d).floor() as i32))
         .unwrap_or((-100, -100));
+    // Enhancement (diegetic.rs): the terminal on its own monitor - the whole UI laid out on a desktop the shape of
+    // the screen, drawn by a UI camera into the image on it, and the mouse from where the view's ray meets it.
+    let dg = crate::diegetic::computer_view().filter(|_| st.term.is_some());
+    let (s, d, sw, sh, sf, mouse) = match dg {
+        Some(v) => (v.s, v.s as f32, v.sw, v.sh, 1.0, v.mouse.unwrap_or((-100, -100))),
+        None => (s, d, sw, sh, sf, mouse),
+    };
+    {
+        let nodes = st.nodes.as_ref().unwrap();
+        let all = [nodes.backdrop, nodes.comp.e, nodes.overlay.e, nodes.hack.e, nodes.accounts.e, nodes.cursor.e, nodes.feed_nodes[0], nodes.feed_nodes[1], nodes.feed_nodes[2]];
+        let want = dg.map(|v| v.cam);
+        if st.ui_target != want {
+            st.ui_target = want;
+            for e in all {
+                match want {
+                    Some(c) => {
+                        commands.entity(e).insert(bevy::ui::UiTargetCamera(c));
+                    }
+                    None => {
+                        commands.entity(e).remove::<bevy::ui::UiTargetCamera>();
+                    }
+                }
+            }
+        }
+    }
     let mut close = false;
     if let Some(t) = st.term.as_mut() {
         let mut wx = Wx {
@@ -2330,6 +2365,10 @@ pub fn computer_system(
         t.clock += dt;
         // The player died (NetworkTerminal.Tick).
         if wx.ph.dead {
+            t.close_screen("EXIT", &mut wx);
+        }
+        // Diegetic: the mouse left the monitor for a second - walk away from it.
+        if crate::diegetic::take_leave() {
             t.close_screen("EXIT", &mut wx);
         }
         // Walked away is impossible (no input reaches the game); the computer blown up closes it.
@@ -2656,6 +2695,7 @@ pub fn computer_system(
 
     let is_open = st.term.is_some();
     OPEN.store(is_open, Ordering::Relaxed);
+    OPEN_ACTOR.store(st.term.as_ref().map_or(usize::MAX, |t| t.actor), Ordering::Relaxed);
     if is_open {
         binds.capture = true;
     }
@@ -2761,7 +2801,7 @@ pub fn computer_system(
                                 }
                             }
                         }
-                        let f = st.feeds[j].get_or_insert_with(|| spawn_feed(&mut commands, &mut images, j, s));
+                        let f = st.feeds[j].get_or_insert_with(|| spawn_feed(&mut commands, &mut images, j, d.ceil().max(1.0) as i32));
                         let to_rad = |u: f64| (u / 65536.0 * std::f64::consts::TAU) as f32;
                         let rot = Quat::from_rotation_y(-to_rad(yaw) - std::f32::consts::FRAC_PI_2) * Quat::from_rotation_x(to_rad(pitch));
                         let eye = Vec3::from(dx_level::ue_to_bevy([cp.x as f32, cp.y as f32, cp.z as f32]));
@@ -2844,6 +2884,14 @@ pub fn computer_system(
         }
     }
     t.hits = hits;
+    // Diegetic: the system pointer shows while the mouse is off the monitor (where it is, to come back or leave).
+    if dg.is_some() {
+        let want = dg.is_some_and(|v| v.mouse.is_none());
+        if cursor_opts.visible != want {
+            cursor_opts.visible = want;
+        }
+    }
+    if dg.is_none() {
     crate::snap::offer(
         crate::snap::LAYER_COMPUTER,
         crate::snap::Map { s: d, ox: 0, oy: 0, sf: window.scale_factor() },
@@ -2852,6 +2900,7 @@ pub fn computer_system(
             .filter(|h| h.2 && !matches!(h.0, Wid::CompWin | Wid::Title | Wid::HackWin | Wid::AcctWin | Wid::ScrollTrack(_)))
             .map(|h| h.1),
     );
+    }
     // The mouse cursor (ComputerUIWindow.StyleChanged: DeusExCursor1, hot spot 32, 32).
     let mut cc = Canvas::new(64, 64, s);
     if let Some(tx) = hud.ui(&mut assets, "DeusExCursor2") {
@@ -2860,7 +2909,7 @@ pub fn computer_system(
     }
     let cp = (mouse.0 - 32, mouse.1 - 32);
     place(&mut nodes.cursor, &cc, cp, d, sf, &mut images, &mut layers, &mut layer_nodes);
-    if window.cursor_position().is_none() {
+    if (dg.is_none() && window.cursor_position().is_none()) || dg.is_some_and(|v| v.mouse.is_none()) {
         if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.cursor.e) {
             *v = Visibility::Hidden;
         }

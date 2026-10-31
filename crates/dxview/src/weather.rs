@@ -86,6 +86,16 @@ struct Drop {
     /// The top of the column it fell from: streaks fade in over the first stretch under it, so the column has no
     /// visible ceiling.
     top: f64,
+    /// The height where it falls into water, found once when it's spawned (testing the zone under every drop
+    /// every frame was most of the rain's CPU time).
+    water_z: Option<f64>,
+}
+
+#[derive(Clone, Copy)]
+struct Land {
+    z: f64,
+    n: DVec3,
+    water: Option<f64>,
 }
 
 struct Splash {
@@ -121,6 +131,10 @@ pub struct WeatherState {
     /// How high rain can start over each 128-unit cell (the sky zone's ceiling above, or RAIN_TOP), by the player's
     /// height band.
     ceiling: std::collections::HashMap<(i32, i32, i32), f64>,
+    /// Where rain lands in each 16-unit cell (by the player's 256-unit height band): the surface under the cell's
+    /// ceiling (collision or a drawn roof), its normal, and the water surface if it lands in water. One straight
+    /// trace down per cell instead of one per drop.
+    landing: std::collections::HashMap<(i32, i32, i32), Land>,
     /// The drawn level's roofs (built once per map).
     roofs: Option<Roofs>,
 }
@@ -313,9 +327,16 @@ pub fn weather_system(
     // The streak mesh (and the splash mesh), once a map.
     if !st.spawned {
         st.spawned = true;
+        // Fixed quads: the UVs and indices never change; each frame only writes positions and colours in place
+        // (unused quads collapse to a point far below the map).
         let empty = |cap: usize| {
-            let (mut p, mut u, mut c, mut i) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            pad(&mut p, &mut u, &mut c, &mut i, cap);
+            let p = vec![HIDDEN; cap * 4];
+            let u: Vec<[f32; 2]> = (0..cap).flat_map(|_| [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]).collect();
+            let c = vec![[0.0f32; 4]; cap * 4];
+            let i: Vec<u32> = (0..cap as u32).flat_map(|q| {
+                let k = q * 4;
+                [k, k + 1, k + 2, k, k + 2, k + 3]
+            }).collect();
             let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
             m.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
             m.insert_attribute(Mesh::ATTRIBUTE_UV_0, u);
@@ -379,6 +400,7 @@ pub fn weather_system(
         DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero()
     };
     let yaw_fwd = DVec3::new(fwd.x, fwd.y, 0.0).normalize_or_zero();
+    let _p1 = crate::prof::scope("weather::spawn");
     // PrecipDensity drops every PrecipFreq (0.01 s).
     st.acc += dt * st.density / 0.01 * area_k;
     let mut n = st.acc.floor() as usize;
@@ -437,27 +459,54 @@ pub fn weather_system(
         if z <= 0 || !lvl.zone_sky.get(z as usize).copied().unwrap_or(false) {
             continue;
         }
-        // Starting under a drawn roof (while the column is still growing, or a non-solid roof): it never fell
-        // from the sky.
-        if st.roofs.as_ref().is_some_and(|r| r.covered(pos, RAIN_TOP + 400.0)) {
-            continue;
-        }
         // Raindrop.Randomize.
         let vel = DVec3::new(0.0, 0.0, -900.0 - rnd(&mut seed) * 800.0) + prof.wind;
         // Long enough to reach the ground from the top (it ends where it lands).
         let life = ((pos.z - me.z + 600.0) / -vel.z).clamp(1.0, 4.0) as f32;
         let end = pos + vel * life as f64;
-        let h = lvl.collision.trace(pos, end, DVec3::ZERO);
-        let mut hit = (h.fraction < 1.0).then(|| (pos + (end - pos) * h.fraction, h.normal));
-        // A drawn roof above where it would land (no collision there): it lands on the roof. (Wind slant is small
-        // against the fall, so straight down will do.)
-        let floor_z = hit.map_or(end.z, |(at, _)| at.z);
-        if let Some(rz) = st.roofs.as_ref().and_then(|r| r.below(pos, pos.z - floor_z)) {
-            if rz > floor_z + 1.0 {
-                let t = ((pos.z - rz) / (pos.z - end.z)).clamp(0.0, 1.0);
-                hit = Some((pos + (end - pos) * t, DVec3::Z));
+        let lkey = ((pos.x / 16.0).floor() as i32, (pos.y / 16.0).floor() as i32, key.2);
+        let ws = &mut *st;
+        let land = *ws.landing.entry(lkey).or_insert_with(|| {
+            // Straight down from the cell's ceiling (wind slant is small against the fall).
+            let c = DVec3::new((lkey.0 as f64 + 0.5) * 16.0, (lkey.1 as f64 + 0.5) * 16.0, top);
+            let low = DVec3::new(c.x, c.y, me.z - 2500.0);
+            let h = lvl.collision.trace(c, low, DVec3::ZERO);
+            let (mut z, mut n) = if h.fraction < 1.0 { (c.z + (low.z - c.z) * h.fraction, h.normal) } else { (f64::NEG_INFINITY, DVec3::Z) };
+            // A drawn roof above where it would land (no collision there): it lands on the roof.
+            if let Some(rz) = roofs_below(&ws.roofs, c, c.z - z.max(low.z)) {
+                if rz > z + 1.0 {
+                    z = rz;
+                    n = DVec3::Z;
+                }
             }
+            // Water on the way down: if where it ends is in water, the surface is somewhere between (bisect).
+            let at = DVec3::new(c.x, c.y, z.max(low.z) + 0.5);
+            let water = crate::actors::water_at(lvl, at).map(|_| {
+                let (mut a, mut b) = (c, at);
+                if crate::actors::water_at(lvl, a).is_some() {
+                    return a.z + 1.0;
+                }
+                for _ in 0..12 {
+                    let m = (a + b) * 0.5;
+                    if crate::actors::water_at(lvl, m).is_some() {
+                        b = m;
+                    } else {
+                        a = m;
+                    }
+                }
+                b.z
+            });
+            Land { z, n, water }
+        });
+        // Starting below where this cell's rain lands (inside, under the roof): it never fell from the sky.
+        if land.z > pos.z - 1.0 {
+            continue;
         }
+        let hit = (land.z > end.z).then(|| {
+            let t = ((pos.z - land.z) / (pos.z - end.z)).clamp(0.0, 1.0);
+            (pos + (end - pos) * t, land.n)
+        });
+        let water_z = land.water;
         st.drops.push(Drop {
             pos,
             vel,
@@ -466,8 +515,11 @@ pub fn weather_system(
             len: 8.0 + rnd(&mut seed) as f32 * 22.0,
             glow: 0.3 + rnd(&mut seed) as f32 * 0.6,
             top: top.min(me.z + RAIN_TOP + 80.0),
+            water_z,
         });
     }
+    drop(_p1);
+    let _p2 = crate::prof::scope("weather::fall");
     // Fall; land; splash.
     let mut splashes = Vec::new();
     let mut rings = Vec::new();
@@ -484,7 +536,7 @@ pub fn weather_system(
             }
         }
         // Into water: a RaindropRing.
-        if crate::actors::water_at(lvl, next).is_some() {
+        if d.water_z.is_some_and(|wz| next.z <= wz) {
             if next.distance(eye) < 1500.0 {
                 rings.push(next);
             }
@@ -521,71 +573,52 @@ pub fn weather_system(
         s.life > 0.0
     });
     st.seed = seed;
+    drop(_p2);
+    let _p3 = crate::prof::scope("weather::build");
     // Build the streaks: quads along the fall (slanted against the player's run, Raindrop.Tick), facing the camera.
+    // Written in place into the fixed-size mesh, the drops split over all cores.
     let ambient = 0.55f32;
-    let mut pos = Vec::with_capacity(st.drops.len() * 4);
-    let mut uv = Vec::with_capacity(st.drops.len() * 4);
-    let mut col = Vec::with_capacity(st.drops.len() * 4);
-    let mut idx = Vec::with_capacity(st.drops.len() * 6);
-    for d in &st.drops {
-        let dir = (d.vel - pvel * DVec3::new(0.2, 0.2, 0.0)).normalize_or_zero();
-        let to_eye = eye - d.pos;
-        // Far streaks get wider and dimmer by the same amount (the same light on screen) instead of thinning to
-        // flickering sub-pixel lines.
-        let spread = (to_eye.length() / 400.0).max(1.0);
-        let side = dir.cross(to_eye.normalize_or_zero()).normalize_or_zero() * 0.35 * spread;
-        let tail = d.pos - dir * d.len as f64;
-        let b = |p: DVec3| Vec3::from(ue_to_bevy(p.as_vec3().to_array())).to_array();
-        let k = pos.len() as u32;
-        pos.extend([b(d.pos - side), b(d.pos + side), b(tail + side), b(tail - side)]);
-        uv.extend([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
-        // Fading in under the column's top (over 700 units) hides where the rain begins.
-        let under = ((d.top - d.pos.z) / 700.0).clamp(0.0, 1.0) as f32;
-        let g = d.glow * ambient / spread as f32 * under * under;
-        col.extend([[g, g, g, 1.0]; 4]);
-        idx.extend([k, k + 1, k + 2, k, k + 2, k + 3]);
-    }
-    pad(&mut pos, &mut uv, &mut col, &mut idx, MAX_DROPS);
-    if let Some(m) = st.mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
-        let mut m = m;
-        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
-        m.insert_indices(Indices::U32(idx));
-    }
-    // Splashlets: short streaks along each droplet's motion, facing the camera.
     let right = {
         let r = cam.right().as_vec3();
         DVec3::new(r.x as f64, r.z as f64, r.y as f64)
     };
-    let mut pos = Vec::with_capacity(st.splashes.len() * 4);
-    let mut uv = Vec::with_capacity(st.splashes.len() * 4);
-    let mut col = Vec::with_capacity(st.splashes.len() * 4);
-    let mut idx = Vec::with_capacity(st.splashes.len() * 6);
-    for s in &st.splashes {
-        // A short streak along the droplet's motion, facing the camera.
-        let k = pos.len() as u32;
-        let b = |p: DVec3| Vec3::from(ue_to_bevy(p.as_vec3().to_array())).to_array();
-        let speed = s.vel.length().max(1.0);
-        let dir = s.vel / speed;
-        let to_eye = (eye - s.pos).normalize_or_zero();
-        let side = dir.cross(to_eye).normalize_or(right) * 0.35;
-        let len = (speed * 0.025).clamp(1.0, 4.0);
-        let tail = s.pos - dir * len;
-        pos.extend([b(s.pos - side), b(s.pos + side), b(tail + side), b(tail - side)]);
-        uv.extend([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
-        let g = (s.life / s.max.max(0.01)).clamp(0.0, 1.0) * 0.5;
-        col.extend([[g, g, g, 1.0]; 4]);
-        idx.extend([k, k + 1, k + 2, k, k + 2, k + 3]);
+    let drops = &st.drops;
+    if let Some(m) = st.mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
+        let mut m = m;
+        write_quads(&mut m, drops.len(), MAX_DROPS, |i, p, c| {
+            let d = &drops[i];
+            let dir = (d.vel - pvel * DVec3::new(0.2, 0.2, 0.0)).normalize_or_zero();
+            let to_eye = eye - d.pos;
+            // Far streaks get wider and dimmer by the same amount (the same light on screen) instead of thinning to
+            // flickering sub-pixel lines.
+            let spread = (to_eye.length() / 400.0).max(1.0);
+            let side = dir.cross(to_eye.normalize_or_zero()).normalize_or_zero() * 0.35 * spread;
+            let tail = d.pos - dir * d.len as f64;
+            p.copy_from_slice(&[bv(d.pos - side), bv(d.pos + side), bv(tail + side), bv(tail - side)]);
+            // Fading in under the column's top (over 700 units) hides where the rain begins.
+            let under = ((d.top - d.pos.z) / 700.0).clamp(0.0, 1.0) as f32;
+            let g = d.glow * ambient / spread as f32 * under * under;
+            c.copy_from_slice(&[[g, g, g, 1.0]; 4]);
+        });
     }
-    pad(&mut pos, &mut uv, &mut col, &mut idx, MAX_SPLASHES);
+    // Splashlets: short streaks along each droplet's motion, facing the camera.
+    let splashes = &st.splashes;
     if let Some(m) = st.splash_mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
         let mut m = m;
-        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
-        m.insert_indices(Indices::U32(idx));
+        write_quads(&mut m, splashes.len(), MAX_SPLASHES, |i, p, c| {
+            let s = &splashes[i];
+            let speed = s.vel.length().max(1.0);
+            let dir = s.vel / speed;
+            let to_eye = (eye - s.pos).normalize_or_zero();
+            let side = dir.cross(to_eye).normalize_or(right) * 0.35;
+            let len = (speed * 0.025).clamp(1.0, 4.0);
+            let tail = s.pos - dir * len;
+            p.copy_from_slice(&[bv(s.pos - side), bv(s.pos + side), bv(tail + side), bv(tail - side)]);
+            let g = (s.life / s.max.max(0.01)).clamp(0.0, 1.0) * 0.5;
+            c.copy_from_slice(&[[g, g, g, 1.0]; 4]);
+        });
     }
+    drop(_p3);
     // Shelter: how much open sky is about the player (its own zone, and points around it in sight), eased.
     st.exposure_check -= dt;
     if st.exposure_check <= 0.0 {
@@ -662,16 +695,46 @@ const MAX_SPLASHES: usize = 1500;
 
 /// Fills the quad buffers up to `cap` quads with collapsed (zero-area, black) ones: the meshes keep one size, so the
 /// render world never reallocates them (a mesh changing size every frame, or going empty, upset the slab allocator).
-fn pad(pos: &mut Vec<[f32; 3]>, uv: &mut Vec<[f32; 2]>, col: &mut Vec<[f32; 4]>, idx: &mut Vec<u32>, cap: usize) {
-    pos.truncate(cap * 4);
-    uv.truncate(cap * 4);
-    col.truncate(cap * 4);
-    idx.truncate(cap * 6);
-    while pos.len() < cap * 4 {
-        let k = pos.len() as u32;
-        pos.extend([[0.0, -1.0e5, 0.0]; 4]);
-        uv.extend([[0.0, 0.0]; 4]);
-        col.extend([[0.0, 0.0, 0.0, 0.0]; 4]);
-        idx.extend([k, k, k, k, k, k]);
-    }
+/// Where an unused quad's corners go: one point far below the map (zero area, never drawn).
+const HIDDEN: [f32; 3] = [0.0, -1.0e5, 0.0];
+
+fn roofs_below(roofs: &Option<Roofs>, p: DVec3, depth: f64) -> Option<f64> {
+    roofs.as_ref().and_then(|r| r.below(p, depth))
+}
+
+fn bv(p: DVec3) -> [f32; 3] {
+    ue_to_bevy(p.as_vec3().to_array())
+}
+
+/// Fills the first `n` quads of a fixed-size quad mesh (positions and colours, 4 corners each) with `f`, in
+/// parallel, and hides the rest.
+fn write_quads(m: &mut Mesh, n: usize, cap: usize, f: impl Fn(usize, &mut [[f32; 3]], &mut [[f32; 4]]) + Sync) {
+    use bevy::mesh::VertexAttributeValues as V;
+    let n = n.min(cap);
+    let mut pos = match m.remove_attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(V::Float32x3(v)) => v,
+        _ => vec![HIDDEN; cap * 4],
+    };
+    let mut col = match m.remove_attribute(Mesh::ATTRIBUTE_COLOR) {
+        Some(V::Float32x4(v)) => v,
+        _ => vec![[0.0; 4]; cap * 4],
+    };
+    pos.resize(cap * 4, HIDDEN);
+    col.resize(cap * 4, [0.0; 4]);
+    const CHUNK: usize = 1024;
+    let pool = bevy::tasks::ComputeTaskPool::get();
+    let f = &f;
+    pool.scope(|sc| {
+        for (ci, (pc, cc)) in pos[..n * 4].chunks_mut(CHUNK * 4).zip(col[..n * 4].chunks_mut(CHUNK * 4)).enumerate() {
+            sc.spawn(async move {
+                for (q, (p, c)) in pc.chunks_exact_mut(4).zip(cc.chunks_exact_mut(4)).enumerate() {
+                    f(ci * CHUNK + q, p, c);
+                }
+            });
+        }
+    });
+    pos[n * 4..].fill(HIDDEN);
+    col[n * 4..].fill([0.0; 4]);
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
 }
