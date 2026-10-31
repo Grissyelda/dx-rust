@@ -213,6 +213,12 @@ pub fn class_begin_play(classes: &mut ClassDb, class: &str, props: &mut Vec<Prop
         props.push(Property { name: name.into(), index, value: v });
     };
     crate::skincolor::apply(classes, class, props);
+    // LDDP's DentonClone.SetSkin turns her a quarter (Rotation - Rot(0, 16384, 0)) as it swaps the mesh.
+    if matches!(find(props, "LDDPQuarterTurn"), Some(Value::Bool(true))) {
+        if let Some(Value::Rotator(r)) = find(props, "Rotation").cloned() {
+            set(props, "Rotation", 0, Value::Rotator([r[0], r[1] - 16384, r[2]]));
+        }
+    }
     if class.eq_ignore_ascii_case("AlarmLight") && !matches!(find(props, "bIsOn"), Some(Value::Bool(true))) {
         // AlarmLight.BeginPlay, off: the lens is masked black and it doesn't turn (the light goes out at run time,
         // projgen.rs, which also keeps the lit lens to put back: AlarmOnSkin).
@@ -388,6 +394,9 @@ pub fn build(
         let anim_seq = if is_pawn { m.seq("BreatheLight").or(seq) } else { seq };
         // Decorations with more than one sequence (faucets, switches, toilets...) get one too, to play On/Off/Flush.
         let posable = m.anim_seqs.len() > 1;
+        // A decoration told to hold its pose (AnimRate 0 set explicitly: LDDP's female clone in the intro holds
+        // Land) doesn't loop it.
+        let held = !is_pawn && auto_loop.is_none() && matches!(find(p, "AnimRate"), Some(Value::Float(r)) if *r == 0.0);
         let anim = anim_seq.filter(|s| is_pawn || posable || (s.num_frames > 1 && s.rate > 0.0)).map(|s| {
             let am = anim_cache
                 .entry(mesh_path.clone())
@@ -398,9 +407,14 @@ pub fn build(
                 draw_scale,
                 seq_start: s.start_frame.max(0) as usize,
                 seq_frames: s.num_frames as usize,
-                rate: s.rate,
-                // Desynchronise identical idles a little, like actors that started at different times.
-                start_frame: (ai as f32 * 0.37) % (s.num_frames.max(1) as f32),
+                rate: if held { 0.0 } else { s.rate },
+                // Desynchronise identical idles a little, like actors that started at different times (a held
+                // pose stays on its saved frame).
+                start_frame: if held {
+                    f(p, "AnimFrame", 0.0).clamp(0.0, 0.999) * s.num_frames.max(1) as f32
+                } else {
+                    (ai as f32 * 0.37) % (s.num_frames.max(1) as f32)
+                },
             }
         });
         out.push(MeshActor {
@@ -597,8 +611,11 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
                 if d >= l.radius {
                     continue;
                 }
-                let ndl = ((to[0] * n[0] + to[1] * n[1] + to[2] * n[2]) / d.max(1e-3)).abs();
-                let att = (1.0 - d / l.radius) * (0.25 + 0.75 * ndl);
+                // Facing: one-sided (a light behind the surface, or inside the head, leaves it dark - the intro's
+                // clone with the lamp in his head lit only on the shoulders), both sides on PF_TwoSided sections.
+                let d_n = (to[0] * n[0] + to[1] * n[1] + to[2] * n[2]) / d.max(1e-3);
+                let ndl = if part.two_sided { d_n.abs() } else { d_n.max(0.0) };
+                let att = (1.0 - d / l.radius) * ndl;
                 for ch in 0..3 {
                     c[ch] += l.color[ch] * att;
                 }

@@ -81,13 +81,59 @@ const DETAIL_H: i32 = 55;
 /// The object belt copy (PersonaInventoryObjectBelt 631 x 69 at the bottom right, its belt at +90).
 const BELT: (i32, i32) = (SCREEN_W - 631 + 90, SCREEN_H - 69);
 
-/// The nav bar's labels: Augmentique adds Outfits (PersonaNavBarWindow.CreateOutfitsButton, GMDX).
-pub(crate) fn nav_labels() -> Vec<&'static str> {
-    let mut v = NAV_LABELS.to_vec();
+/// The nav bar's entries (label, screen): the original eight, Augmentique's Outfits
+/// (PersonaNavBarWindow.CreateOutfitsButton, GMDX) and our Achievements. When they don't all fit the bar shows a run
+/// of them between two scroll arrows (Left / Right switch screens, the arrows scroll).
+pub(crate) fn nav_entries() -> Vec<(&'static str, usize)> {
+    let mut v: Vec<(&'static str, usize)> = NAV_LABELS.iter().enumerate().map(|(i, l)| (*l, i)).collect();
     if crate::augmentique::active() {
-        v.push("|&Outfits");
+        v.push(("|&Outfits", crate::persona::SCREEN_OUTFITS));
     }
+    v.push(("Achie|&vements", crate::persona::SCREEN_ACHIEVEMENTS));
     v
+}
+
+/// The labels of the nav buttons shown now (same order as Layout::nav).
+pub(crate) fn nav_labels() -> Vec<&'static str> {
+    let e = nav_entries();
+    let first = NAV_FIRST.load(Ordering::Relaxed);
+    let n = NAV_SHOWN.load(Ordering::Relaxed);
+    e.iter().skip(first).take(n.max(1)).map(|(l, _)| *l).collect()
+}
+
+/// First nav entry shown, how many are shown, and the screen on show (kept in view).
+static NAV_FIRST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static NAV_SHOWN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+static NAV_CUR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Width of each scroll arrow at the ends of a crowded nav bar.
+const NAV_ARROW: i32 = 14;
+
+/// The screen now on show (the nav bar keeps it in view).
+pub(crate) fn nav_current(screen: usize) {
+    if NAV_CUR.swap(screen, Ordering::Relaxed) != screen {
+        NAV_PINNED.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Scrolls the crowded nav bar by one entry (the arrows).
+pub(crate) fn nav_scroll(d: i32) {
+    let f = NAV_FIRST.load(Ordering::Relaxed) as i32 + d;
+    NAV_FIRST.store(f.max(0) as usize, Ordering::Relaxed);
+    NAV_PINNED.store(true, Ordering::Relaxed);
+}
+/// The arrows moved the bar: don't snap it back to the current screen until the screen changes.
+static NAV_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The screen before / after `screen` in the nav order (Left / Right arrow keys).
+pub(crate) fn nav_step(screen: usize, d: i32) -> Option<usize> {
+    let e = nav_entries();
+    let i = e.iter().position(|(_, s)| *s == screen).unwrap_or(if screen == crate::persona::SCREEN_ACHIEVEMENTS {
+        e.len() - 1
+    } else {
+        0
+    }) as i32;
+    let j = i + d;
+    (j >= 0 && (j as usize) < e.len()).then(|| e[j as usize].1)
 }
 
 pub(crate) const NAV_LABELS: [&str; 8] = [
@@ -131,6 +177,8 @@ enum Btn {
     Sort,
     Exit,
     Nav(usize),
+    /// A crowded nav bar's scroll arrow (0 left, 1 right).
+    NavArrow(usize),
 }
 
 fn sort_on() -> bool {
@@ -760,13 +808,91 @@ enum Hit {
 
 pub(crate) struct Layout {
     pub(crate) nav: Vec<(i32, i32)>,
+    /// The screen each nav button opens.
+    pub(crate) nav_scr: Vec<usize>,
+    /// Scroll arrows of a crowded bar: (x, w, enabled) left and right.
+    pub(crate) nav_arrows: Option<[(i32, i32, bool); 2]>,
     pub(crate) exit: (i32, i32),
     actions: Vec<(Btn, i32, i32)>,
 }
 
+/// The nav bar: every entry when they fit in 534, else the run from NAV_FIRST that fits between two arrows, moved
+/// to keep the current screen in view.
+fn nav_layout(font: &UiFont) -> (Vec<(i32, i32)>, Vec<usize>, Option<[(i32, i32, bool); 2]>) {
+    let e = nav_entries();
+    let pref: Vec<i32> = e.iter().map(|(l, _)| (4 + font.width(&label(l)) + 8).max(20)).collect();
+    if pref.iter().sum::<i32>() <= 534 {
+        NAV_FIRST.store(0, Ordering::Relaxed);
+        NAV_SHOWN.store(e.len(), Ordering::Relaxed);
+        let labels: Vec<&str> = e.iter().map(|(l, _)| *l).collect();
+        return (bar_layout(font, &labels, 23, 534, true), e.iter().map(|(_, s)| *s).collect(), None);
+    }
+    let avail = 534 - 2 * NAV_ARROW;
+    let fits = |first: usize| {
+        let mut w = 0;
+        let mut n = 0;
+        for p in &pref[first..] {
+            if w + p > avail {
+                break;
+            }
+            w += p;
+            n += 1;
+        }
+        n.max(1)
+    };
+    let len = e.len();
+    let mut first = NAV_FIRST.load(Ordering::Relaxed).min(len - 1);
+    // Never leave room unused at the end.
+    while first > 0 && fits(first - 1) >= len - (first - 1) {
+        first -= 1;
+    }
+    let cur = NAV_CUR.load(Ordering::Relaxed);
+    if !NAV_PINNED.load(Ordering::Relaxed) {
+        if let Some(ci) = e.iter().position(|(_, s)| *s == cur) {
+            if ci < first {
+                first = ci;
+            }
+            while ci >= first + fits(first) {
+                first += 1;
+            }
+        }
+    }
+    let n = fits(first).min(len - first);
+    NAV_FIRST.store(first, Ordering::Relaxed);
+    NAV_SHOWN.store(n, Ordering::Relaxed);
+    let labels: Vec<&str> = e[first..first + n].iter().map(|(l, _)| *l).collect();
+    let nav = bar_layout(font, &labels, 23 + NAV_ARROW, avail, true);
+    let scr = e[first..first + n].iter().map(|(_, s)| *s).collect();
+    (nav, scr, Some([(23, NAV_ARROW, first > 0), (23 + 534 - NAV_ARROW, NAV_ARROW, first + n < len)]))
+}
+
+/// Draws the scroll arrows of a crowded nav bar (button art with a small triangle).
+pub(crate) fn draw_nav_arrows(c: &mut Canvas, hud: &mut ClassicHud, assets: &mut RuntimeAssets, f: &Fonts, lay: &Layout, hover: Option<usize>, pressed: Option<usize>) {
+    let Some(arrows) = lay.nav_arrows else { return };
+    for (k, (x, w, en)) in arrows.iter().enumerate() {
+        let st = if !en {
+            3
+        } else if pressed == Some(k) && hover == Some(k) {
+            2
+        } else if hover == Some(k) {
+            1
+        } else {
+            0
+        };
+        draw_button(c, hud, assets, &f.headers, *x, 8, *w, "", st, true);
+        let col = if *en { crate::menuui::h_col(7) } else { crate::menuui::h_col(6) };
+        // A 4-pixel triangle, pointing out.
+        let (cx, cy) = (*x + *w / 2, 8 + 8);
+        for r in 0..4 {
+            let h = 2 * (3 - r) + 1;
+            let xx = if k == 0 { cx + 1 - r } else { cx - 2 + r };
+            c.fill(xx, cy - h / 2, 1, h, crate::uicanvas::Style::Normal, col);
+        }
+    }
+}
+
 pub(crate) fn layout(f: &Fonts) -> Layout {
-    let labels = nav_labels();
-    let nav = bar_layout(&f.headers, &labels, 23, 534, true);
+    let (nav, nav_scr, nav_arrows) = nav_layout(&f.headers);
     let exit = bar_layout(&f.headers, &["E|&xit"], 573, 48, true)[0];
     let mut acts = vec![Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo];
     let mut labels = vec!["|&Equip", "|&Use", "|&Drop", "Change Amm|&o"];
@@ -777,6 +903,8 @@ pub(crate) fn layout(f: &Fonts) -> Layout {
     let bars = bar_layout(&f.headers, &labels, BUTTONS.0, BUTTONS.2, false);
     Layout {
         nav,
+        nav_scr,
+        nav_arrows,
         exit,
         actions: acts
             .iter()
@@ -789,6 +917,7 @@ pub(crate) fn layout(f: &Fonts) -> Layout {
 /// The inventory screen's widgets for the controller's snap-to (nav, exit, actions, items, belt, key ring, ammo).
 fn snap_rects(view: &View, lay: &Layout) -> Vec<(i32, i32, i32, i32)> {
     let mut v: Vec<(i32, i32, i32, i32)> = lay.nav.iter().map(|(x, w)| (*x, 8, *w, 16)).collect();
+    v.extend(lay.nav_arrows.iter().flatten().filter(|a| a.2).map(|(x, w, _)| (*x, 8, *w, 16)));
     v.push((lay.exit.0, 8, lay.exit.1, 16));
     v.extend(lay.actions.iter().map(|(_, x, w)| (*x, BUTTONS.1, *w, 16)));
     v.extend(view.inv.items.iter().filter_map(item_rect));
@@ -807,7 +936,14 @@ fn hit_test(
 ) -> Hit {
     for (i, (x, w)) in lay.nav.iter().enumerate() {
         if inside(p, (*x, 8, *w, 16)) {
-            return Hit::Button(Btn::Nav(i));
+            return Hit::Button(Btn::Nav(lay.nav_scr[i]));
+        }
+    }
+    if let Some(arrows) = lay.nav_arrows {
+        for (k, (x, w, en)) in arrows.iter().enumerate() {
+            if *en && inside(p, (*x, 8, *w, 16)) {
+                return Hit::Button(Btn::NavArrow(k));
+            }
         }
     }
     if inside(p, (lay.exit.0, 8, lay.exit.1, 16)) {
@@ -1124,6 +1260,7 @@ pub fn inventory_screen_system(
             tiny,
         }
     };
+    nav_current(st.screen);
     let lay = layout(&fonts);
 
     // The other persona screens.
@@ -1149,6 +1286,8 @@ pub fn inventory_screen_system(
             dt,
             up_key: binds.keys.just_pressed(KeyCode::ArrowUp),
             down_key: binds.keys.just_pressed(KeyCode::ArrowDown),
+            left_key: binds.keys.just_pressed(KeyCode::ArrowLeft),
+            right_key: binds.keys.just_pressed(KeyCode::ArrowRight),
             enter: binds.keys.just_pressed(KeyCode::Enter),
             fkey,
             typed: binds.typed.clone(),
@@ -1339,6 +1478,13 @@ pub fn inventory_screen_system(
     let left_down = binds.buttons.just_pressed(MouseButton::Left);
     let left_up = binds.buttons.just_released(MouseButton::Left);
     let mut action: Option<Btn> = None;
+    // Right / Left: the next / previous persona screen (nav bar order).
+    if binds.keys.just_pressed(KeyCode::ArrowRight) || binds.keys.just_pressed(KeyCode::ArrowLeft) {
+        let d = if binds.keys.just_pressed(KeyCode::ArrowRight) { 1 } else { -1 };
+        if let Some(n) = nav_step(0, d) {
+            action = Some(Btn::Nav(n));
+        }
+    }
     if left_down {
         match &hit {
             Hit::Button(b) => st.pressed = Some(*b),
@@ -1463,7 +1609,7 @@ pub fn inventory_screen_system(
             return true;
         }
         let Some(Sel::Item(c)) = &st.sel else {
-            return matches!(b, Btn::Exit | Btn::Nav(_));
+            return matches!(b, Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_));
         };
         let d = assets.classes.defaults(class_of(c));
         let weapon = inv
@@ -1471,7 +1617,7 @@ pub fn inventory_screen_system(
             .iter()
             .any(|i| &i.key() == c && i.def.kind == ItemKind::Weapon);
         match b {
-            Btn::Exit | Btn::Nav(_) | Btn::Sort => true,
+            Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_) | Btn::Sort => true,
             Btn::Drop => true,
             Btn::Equip => {
                 !c.starts_with("WeaponMod")
@@ -1508,6 +1654,7 @@ pub fn inventory_screen_system(
                     st.screen = i;
                     st.persona = Default::default();
                 }
+                Btn::NavArrow(k) => nav_scroll(if k == 0 { -1 } else { 1 }),
                 Btn::Equip => {
                     if let Some(c) = sel_class.clone() {
                         equip(st, class_of(&c), &mut weapons);
@@ -2279,9 +2426,19 @@ fn draw_frame(
         }
     };
     let labels = nav_labels();
+    let arrow_hover = match hit {
+        Hit::Button(Btn::NavArrow(k)) => Some(*k),
+        _ => None,
+    };
+    let arrow_press = match st.pressed {
+        Some(Btn::NavArrow(k)) => Some(k),
+        _ => None,
+    };
+    draw_nav_arrows(c, hud, assets, f, lay, arrow_hover, arrow_press);
     for (i, (x, w)) in lay.nav.iter().enumerate() {
         // The current screen's button is insensitive (btnInventory.SetSensitivity(False)).
-        let s = if i == 0 { 3 } else { state(Btn::Nav(i), true) };
+        let sc = lay.nav_scr[i];
+        let s = if sc == 0 { 3 } else { state(Btn::Nav(sc), true) };
         draw_button(
             c,
             hud,

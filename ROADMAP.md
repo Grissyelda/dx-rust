@@ -191,6 +191,22 @@ Shadows with contact hardening.
 Also done: **achievements** - the fifty of Deus Ex Remastered with our own icons, an Achievements screen off the
 Logs screen, an unlock notice in the HUD, kept for the player across saves.
 
+53. **Skeletal characters** (an Enhancement, from a community rig of the Deus Ex people, used only with its
+    author's permission and read from the player's own copy, like the mods): rebuilt male and female bodies
+    (trench coat, suit, dress shirt, jumpsuit, hoodie, dress, skirt suit, children) on two rigs with 126 deforming
+    bones each - 72 of them in the coat tails - and 172 animations: every sequence the game plays, at the original
+    frame counts, plus 8-way strafes, cover moves, head look-at, masculine / feminine walks and idles and about 30
+    conversation gestures. Faces are 14 blend shapes driven from the rig (the game's own lip-sync mouths, blinks,
+    brows, smile, snarl, eyes). Checked: a headless Blender bake gives glTF with a 126-joint skin, the 14 morph
+    targets and the actions on the deforming bones, which Bevy loads natively. What it opens up:
+    - lip sync that blends mouth shapes and brows / expressions with the dialogue (item 53a);
+    - third-person and NPC animation that blends, layers aim over running and turns heads to speakers (53b);
+    - JC's own body in first person, his shadow and reflection (item 40);
+    - ragdolls on the deforming bones with a physics crate, and spring coat tails (items 42, 43).
+    Steps: a bake script per body (Blender, run once on the player's machine or ours), a skinned-mesh path beside
+    gpuanim.rs keyed by mesh name, animation notifies (footsteps, melee hits) mapped by frame position, and the
+    original vertex meshes kept as the default. Not covered by the rig: commandos, robots and animals.
+
 Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sit in the
 last tier.
 

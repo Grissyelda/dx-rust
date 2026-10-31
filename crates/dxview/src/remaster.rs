@@ -260,7 +260,7 @@ const MAX_HOLD: f32 = 8.0;
 
 /// Hold the frozen frame this long first (the switch rebuilds things - the skyline, clouds, shaders - and any
 /// hitch hides under it), then sweep it away over WIPE.
-const HOLD: f32 = 0.25;
+const HOLD: f32 = 0.12;
 const WIPE: f32 = 1.1;
 
 #[allow(clippy::too_many_arguments)]
@@ -275,8 +275,36 @@ pub fn wipe_system(
     nodes: Query<(Entity, &MaterialNode<WipeMaterial>), With<WipeNode>>,
     warm: Query<(), With<WipeWarm>>,
     ph: Option<Res<crate::ai::PlayerHealth>>,
+    (mut assets, mut layers, windows, mut words, mut font, mut vis): (
+        Option<ResMut<crate::weapons::RuntimeAssets>>,
+        ResMut<Assets<crate::classic_hud::HudLayer>>,
+        Query<&Window>,
+        Local<Option<Entity>>,
+        Local<Option<Option<std::sync::Arc<crate::uicanvas::UiFont>>>>,
+        Query<&mut Visibility>,
+    ),
 ) {
     let dt = time.delta_secs().min(0.1);
+    // The blue LOADING over the frozen frame while the switch hitches (compiling, reloading), gone just before
+    // the wipe starts.
+    let hitching = matches!(&*phase, Phase::Wiping { start: None, switched: true, .. });
+    if hitching {
+        if words.is_none() {
+            if let (Some(a), Some(win)) = (assets.as_mut(), windows.iter().next()) {
+                *words = crate::loader::spawn_loading_words(&mut commands, a, &mut images, &mut layers, win, &mut *font, 5001);
+                if let Some(e) = *words {
+                    commands.entity(e).insert(crate::loader::Persist);
+                }
+            }
+        } else if let (Some(e), Phase::Wiping { t, .. }) = (*words, &*phase) {
+            // A slow blink (on 0.7 s, off 0.25 s) while it waits.
+            if let Ok(mut v) = vis.get_mut(e) {
+                *v = if (*t % 0.95) < 0.7 { Visibility::Inherited } else { Visibility::Hidden };
+            }
+        }
+    } else if let Some(e) = words.take() {
+        commands.entity(e).despawn();
+    }
     if warm.is_empty() {
         let img = images.add(Image::new(
             Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -410,7 +438,7 @@ pub fn wipe_system(
                 Swap::Loading(settled) => {
                     if crate::loader::busy() {
                         *swap = Swap::Loading(0.0);
-                    } else if settled < 0.6 {
+                    } else if settled < 0.2 {
                         *swap = Swap::Loading(settled + dt);
                     } else {
                         let _ = std::fs::remove_file(swap_path());
@@ -424,7 +452,7 @@ pub fn wipe_system(
             if start.is_none() {
                 // Wait for the switch's pipelines (a few quiet frames in a row), at least HOLD, at most MAX_HOLD.
                 *calm = if WAITING.load(std::sync::atomic::Ordering::Relaxed) == 0 { *calm + 1 } else { 0 };
-                if (*t >= HOLD && *calm >= 3) || *t >= MAX_HOLD {
+                if (*t >= HOLD && *calm >= 2) || *t >= MAX_HOLD {
                     *start = Some(*t);
                 }
             }

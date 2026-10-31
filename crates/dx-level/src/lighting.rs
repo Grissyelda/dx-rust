@@ -241,6 +241,12 @@ pub fn collect_lights(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Ve
     let mut out = Vec::new();
     for &r in &model.lights {
         if r > 0 && seen.insert(r) {
+            // bSpecialLit lights only light PF_SpecialLit surfaces, never actors (whose bSpecialLit is off): the two
+            // lights in front of the intro's clone tank lit his face, which the original leaves in shadow.
+            let special = pkg.exports.get(r as usize - 1).and_then(|e| classes.actor_properties(pkg, e)).is_some_and(|ps| matches!(props::find(&ps, "bSpecialLit"), Some(Value::Bool(true))));
+            if special {
+                continue;
+            }
             if let Some(l) = load_light(pkg, r, classes) {
                 out.push(l);
             }

@@ -870,7 +870,9 @@ pub fn classic_hud_system(
                 sh / 2 - start_h / 2 - if START_CENTRED.load(std::sync::atomic::Ordering::Relaxed) { 0 } else { 75 },
                 start_w.max(1),
                 start_h.max(1),
-                start.is_some() && !snap.dead && !menu,
+                // A centred message (the endgame quote, the intro's "Press Enter to continue") shows over a cut
+                // scene too.
+                start.is_some() && !snap.dead && (!menu || START_CENTRED.load(std::sync::atomic::Ordering::Relaxed)),
             ),
             Win::ConCursor => {
                 let pos = window.cursor_position().map(|c| {

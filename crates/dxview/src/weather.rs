@@ -103,6 +103,10 @@ struct Splash {
     vel: DVec3,
     life: f32,
     max: f32,
+    /// The surface it was thrown off (point, normal): a droplet falling back through it is gone (the dock roof is a
+    /// thin sheet, and droplets falling back under it showed through from below).
+    base: DVec3,
+    n: DVec3,
 }
 
 /// The rain's own render layer: the world view draws it, mirror / water reflection cameras don't (a reflected drop
@@ -556,7 +560,7 @@ pub fn weather_system(
             let out = (t1 * a.cos() + t2 * a.sin()) * (25.0 + rnd(&mut seed) as f64 * 45.0);
             let up = n * (45.0 + rnd(&mut seed) as f64 * 55.0);
             let life = (0.18 + rnd(&mut seed) * 0.17) as f32;
-            st.splashes.push(Splash { pos: at + n * 0.5, vel: out + up, life, max: life });
+            st.splashes.push(Splash { pos: at + n * 0.5, vel: out + up, life, max: life, base: at, n });
         }
     }
     for at in rings.into_iter().take(12) {
@@ -570,7 +574,8 @@ pub fn weather_system(
         s.life -= dt;
         s.vel.z -= 950.0 * dt as f64;
         s.pos += s.vel * dt as f64;
-        s.life > 0.0
+        // Back down to the surface: gone.
+        s.life > 0.0 && (s.pos - s.base).dot(s.n) > 0.4
     });
     st.seed = seed;
     drop(_p2);
@@ -611,7 +616,12 @@ pub fn weather_system(
             let dir = s.vel / speed;
             let to_eye = (eye - s.pos).normalize_or_zero();
             let side = dir.cross(to_eye).normalize_or(right) * 0.35;
-            let len = (speed * 0.025).clamp(1.0, 4.0);
+            let mut len = (speed * 0.025).clamp(1.0, 4.0);
+            // The tail never reaches under the surface it was thrown off.
+            let fall = -dir.dot(s.n);
+            if fall < 0.0 {
+                len = len.min(((s.pos - s.base).dot(s.n) - 0.3).max(0.0) / -fall);
+            }
             let tail = s.pos - dir * len;
             p.copy_from_slice(&[bv(s.pos - side), bv(s.pos + side), bv(tail + side), bv(tail - side)]);
             let g = (s.life / s.max.max(0.01)).clamp(0.0, 1.0) * 0.5;

@@ -93,7 +93,13 @@ fn load(s: &mut Store) {
     }
     s.loaded = true;
     let Ok(text) = std::fs::read_to_string(path()) else { return };
+    // Files from before format 2 may hold mission achievements the intro / endgame maps (missions 98 / 99) handed
+    // out on arrival: those are dropped (arriving in a mission unlocks the ones behind it again).
+    let old = !text.lines().any(|l| l.trim() == "format=2");
     for line in text.lines() {
+        if line.trim() == "format=2" {
+            continue;
+        }
         let Some((k, v)) = line.split_once('=') else { continue };
         let v: u64 = v.trim().parse().unwrap_or(0);
         if let Some(id) = k.strip_prefix("progress.") {
@@ -102,10 +108,16 @@ fn load(s: &mut Store) {
             s.unlocked.insert(k.trim().to_string(), v);
         }
     }
+    if old {
+        for id in ["lady", "town", "lebedev", "choices", "breakout", "hongkong", "tanker1", "tanker2", "paree", "templars", "vandenberg", "sea", "tonjc", "hero", "majestic"] {
+            s.unlocked.remove(id);
+        }
+        save(s);
+    }
 }
 
 fn save(s: &Store) {
-    let mut out = String::new();
+    let mut out = String::from("format=2\n");
     let mut ids: Vec<_> = s.unlocked.iter().collect();
     ids.sort();
     for (k, v) in ids {
@@ -494,6 +506,10 @@ pub fn achievements_system(
 
 /// Mission arrivals: the mission before this one is done; and the story checks made on the way in.
 fn on_arrival(mission: i32, map: &str, f: &imsim_core::flags::FlagBase) {
+    // Only the story's missions: the intro and the endgame cut scenes are missions 98 / 99, the title -2.
+    if !(1..=15).contains(&mission) {
+        return;
+    }
     let done = [(2, "lady"), (3, "town"), (4, "lebedev"), (5, "choices"), (6, "breakout"), (8, "hongkong"), (9, "tanker1"), (10, "tanker2"), (11, "paree"), (12, "templars"), (14, "vandenberg"), (15, "sea")];
     for (m, id) in done {
         if mission >= m {

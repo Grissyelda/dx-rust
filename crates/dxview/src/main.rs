@@ -787,11 +787,6 @@ fn main() {
                     .after(ai::npc_system)
                     .before(projectiles::launch_system),
                 actors::env_map_system.after(fly),
-                mirror::mirror_system
-                    .after(fly)
-                    .after(weapons::fov_system)
-                    .after(cinematic::cinematic_system)
-                    .after(consys::con_view_system),
                 mirror::mirror_body_system.after(fly).after(outfit_view::outfit_view_system),
                 water::water_system,
                 death::death_system.after(fly).after(ai::player_health_ui),
@@ -879,6 +874,9 @@ fn main() {
         .add_systems(Update, achievements::achievements_system.after(ai::npc_system))
         .add_systems(First, (diegetic::restore_system, thirdperson::restore_system).chain())
         .add_systems(PostUpdate, (thirdperson::place_system, diegetic::place_system).chain().before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
+        // Reflections from the camera as it is drawn: after the third-person / terminal camera moves (in Update
+        // the reflection was made from the eyes while the view was from the orbit: it dragged across the water).
+        .add_systems(PostUpdate, mirror::mirror_system.after(diegetic::place_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
         .add_systems(Update, aimmode::aim_mode_system.after(hud::aim_system).before(weapons::weapon_system).before(hud::crosshair_system))
@@ -1233,7 +1231,7 @@ fn setup(
         .map(|t| images.add(make_image(t)))
         .collect();
     let mut cache: std::collections::HashMap<
-        (Option<usize>, SurfaceClass, bool, [i32; 2]),
+        (Option<usize>, SurfaceClass, bool, [i32; 2], bool),
         Handle<StandardMaterial>,
     > = Default::default();
     let mut scrollers = UvScroll::default();
@@ -1245,6 +1243,7 @@ fn setup(
                 b.class,
                 b.sky,
                 [(b.uv_scroll[0] * 1e4) as i32, (b.uv_scroll[1] * 1e4) as i32],
+                b.one_sided,
             ))
             .or_insert_with(|| {
                 let h = materials.add(StandardMaterial {
@@ -1255,8 +1254,8 @@ fn setup(
                         _ => Color::WHITE,
                     },
                     lightmap_exposure: 1.0,
-                    double_sided: true,
-                    cull_mode: None,
+                    double_sided: !b.one_sided,
+                    cull_mode: if b.one_sided { Some(bevy::render::render_resource::Face::Back) } else { None },
                     perceptual_roughness: 1.0,
                     reflectance: 0.05,
                     metallic: 0.0,

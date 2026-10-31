@@ -43,7 +43,32 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
     Settings;
   - **Visible Attachments** (scopes, lasers and silencers drawn on the weapons);
   - **Augmentique** (outfits for JC and the people of the world, and weapon skins);
-  - **GMDX: Augmented Edition** (perks bought with skill points on the Skills screen).
+  - **GMDX: Augmented Edition** (perks bought with skill points on the Skills screen, and its fixes and
+    quality-of-life options);
+  - **Helios** texture packs (repainted characters, items and world);
+  - **Precipitation** (rain sounds and weather for the rain enhancement).
+- **Classic / Modern in one key.** Press **Tab** in play and the screen wipes between the original look and a
+  modern one, like the graphics switch in some remasters. Modern turns on every enhancement below at once and puts
+  back your own mix the next time; Classic is the game as it shipped.
+- **A modern look (all optional):**
+  - real-time shadows from the map's own lights, ambient occlusion, soft shadows and bloom;
+  - rain with splashes, ripples and lightning storms (with the Precipitation mod's sounds), volumetric night
+    clouds and rolling fog, light shafts and haze;
+  - modern water with waves, reflections and an open sea, mirrors that reflect JC;
+  - a photographic city skyline, light halos and modern coronas, a modern night-vision view;
+  - Helios repaints and HD textures, and enhanced particle effects, barrel smoke and bullet impacts.
+- **Modern play (all optional):**
+  - Modern Aiming: the aim sways within the accuracy cone (wide when untrained, steady when you master the
+    weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns;
+  - a third-person camera (free orbit or over the shoulder), mantling, carried objects as cover, ladder grabbing;
+  - Smarter AI (GMDX's tougher guards, sharper senses, suppressive fire, guards who call out and check on
+    disturbances) with optional alert markers over their heads;
+  - elements (shocks in water, spreading fire), bullet penetration, melee arcs, thrown-object noise and body
+    alarms;
+  - terminals and keypads used in the world: the camera moves in to the screen and you click on it;
+  - better audio: smoother mixing, sound through walls, room reverb and a distant soundscape.
+- **Achievements.** Fifty achievements in the style of the *Remastered* list, with their own page in the
+  persona screens and an unlock notice in play.
 - **Smooth lip sync.** Mouths blend between sounds and close gently, and people blink visibly. The timings follow
   Joe Wintergreen's lipsync mod, and there's a switch in Enhancements to turn it off.
 - **Optional extras:**
@@ -83,11 +108,12 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
    [HDTP](https://www.moddb.com/mods/project-hdtp),
    [New Vision](https://www.moddb.com/mods/deus-ex-new-vision),
    [Augmentique](https://www.moddb.com/mods/augmentique),
-   [GMDX](https://www.moddb.com/mods/gmdx) (Augmented Edition), and Visible Attachments.
+   [GMDX](https://www.moddb.com/mods/gmdx) (Augmented Edition), Visible Attachments, Helios and Precipitation.
 2. On the launcher's **Mods** page, click a mod's button and choose its folder. Right-click it to turn it off again.
 3. For Lay D Denton, start a new game and use the portrait arrows: every other face is the female JC. Tick
    *Original Morpheus?* or *Original Interactions?* if you want the original versions of those.
-4. HDTP's models and New Vision's textures can be switched on and off in *Settings > Enhancements > Mods*.
+4. HDTP's models, New Vision's textures and Helios's repaints can be switched on and off in
+   *Settings > Enhancements > Mods* (and follow the Classic / Modern switch).
 
 The mods' files stay in their own folders: nothing in your Deus Ex install is changed, and DX RUST includes none
 of them. GMDX's own copy of the game code isn't run: its perks are rewritten in Rust and read their names, numbers
@@ -120,8 +146,9 @@ The whole game is implemented. Before 1.0:
 - Steam Deck tuning;
 - save round-trip tests on every map.
 
-After 1.0, the v2.0 list: HUD customisation, smarter stealth, perks, new effects, real-time shadows, HD asset
-support and multiplayer, among others. Every item stays optional.
+Much of the v2.0 list is already in (the Classic / Modern switch, real-time shadows, weather, modern water,
+third person, Smarter AI, achievements). Still to come: remastered lighting with normal maps, skeletal characters
+with better faces and ragdolls, and multiplayer, among others. Every item stays optional.
 
 The full list is in [ROADMAP.md](ROADMAP.md). Bug reports from playthroughs are very welcome: say which map you
 were on and what you did.
@@ -132,12 +159,12 @@ were on and what you did.
 - *Deus Ex* is a trademark of its owners. All game content (maps, art, audio, text) belongs to them and is read
   from your own copy at run time.
 - The Lay D Denton Project belongs to its authors and is used with their permission. HDTP, New Vision, Visible
-  Attachments, Augmentique and GMDX belong to their authors. No mod's files are redistributed here.
+  Attachments, Augmentique, Helios, Precipitation and GMDX belong to their authors. No mod's files are redistributed here.
 - DX RUST's own source code is licensed under the **GNU GPL v3.0 or later** (see [LICENSE](LICENSE)).
 
 ## Credits
 - Ion Storm Austin, for Deus Ex.
 - The Lay D Denton Project team, for the mod and permission to support it.
-- The HDTP team, the New Vision team, the authors of Visible Attachments, Augmentique and GMDX (CyberP, and Sarge and
-  the Augmented Edition team), for their mods.
+- The HDTP team, the New Vision team, the authors of Visible Attachments, Augmentique, Helios, Precipitation and
+  GMDX (CyberP, and Sarge and the Augmented Edition team), for their mods.
 - The Bevy, egui, gilrs and hidapi projects, and the Rust community.

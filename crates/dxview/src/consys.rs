@@ -2835,7 +2835,9 @@ pub fn consys_system(
                 }
                 Wait::Closing => {
                     p.win_pos -= dt / 0.6;
-                    if p.win_pos <= 0.0 {
+                    // Forced play (the intro): ConWindowActive's movePeriod is 0, it closes at once (it was held
+                    // open forever - win_pos is pinned to 1 below - so the intro never ended).
+                    if p.win_pos <= 0.0 || p.forced {
                         st.finish_play(fl, false);
                     }
                 }
