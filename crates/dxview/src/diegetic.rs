@@ -436,11 +436,10 @@ pub fn diegetic_system(
                     if std::env::var_os("DXVIEW_DGLOG").is_some() {
                         println!("DG leave {:?}", s.kind);
                     }
-                    match s.kind {
-                        Kind::Computer => LEAVE.store(true, std::sync::atomic::Ordering::Relaxed),
-                        Kind::Keypad => {
-                            crate::menus::request_close_all();
-                        }
+                    // Only computers close when the mouse wanders off; a keypad stays up until Escape (pad B /
+                    // Circle) or the code is entered.
+                    if s.kind == Kind::Computer {
+                        LEAVE.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }

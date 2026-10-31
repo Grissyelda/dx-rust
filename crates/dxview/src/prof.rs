@@ -299,6 +299,53 @@ pub struct SceneStats {
     last: Option<Instant>,
 }
 
+/// With DXVIEW_PROF set: every five seconds, every active camera (order, target, its components) - each one is a
+/// whole render of its layers.
+pub fn camera_report_system(world: &mut bevy::prelude::World) {
+    if !on() {
+        return;
+    }
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    {
+        let mut g = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if g.is_some_and(|t| t.elapsed().as_secs_f32() < 5.0) {
+            return;
+        }
+        *g = Some(Instant::now());
+    }
+    let mut q = world.query::<(bevy::prelude::Entity, &bevy::prelude::Camera)>();
+    let cams: Vec<(bevy::prelude::Entity, bool, isize)> = q.iter(world).map(|(e, c)| (e, c.is_active, c.order)).collect();
+    let active = cams.iter().filter(|c| c.1).count();
+    println!("PROF cameras: {} ({} active)", cams.len(), active);
+    for (e, act, order) in cams {
+        if !act {
+            continue;
+        }
+        let r = world.entity(e);
+        let mut names: Vec<String> = Vec::new();
+        macro_rules! tag {
+            ($t:ty, $n:expr) => {
+                if r.contains::<$t>() {
+                    names.push($n.to_string());
+                }
+            };
+        }
+        tag!(crate::FlyCam, "FlyCam");
+        tag!(crate::SkyCam, "SkyCam");
+        tag!(crate::weapons::ViewModelCam, "ViewModel");
+        tag!(crate::computers::FeedCam, "Feed");
+        tag!(crate::augdisplay::AugViewCam, "AugView");
+        tag!(crate::augdisplay::HeatCam, "Heat");
+        tag!(crate::diegetic::DgCam, "Diegetic");
+        tag!(crate::outfit_view::OutfitCam, "Outfit");
+        if let Some(m) = r.get::<crate::mirror::MirrorCam>() {
+            names.push(format!("Mirror{}{}", m.0, if m.1 { "sky" } else { "world" }));
+        }
+        tag!(bevy::prelude::Camera2d, "2d");
+        println!("PROF   cam {e} order {order}: {}", names.join(" "));
+    }
+}
+
 /// With DXVIEW_PROF set: every five seconds, the entity / draw / material counts and the per-frame asset
 /// re-uploads (modified meshes, images and materials), which is what the render world's time scales with.
 pub fn scene_stats_system(
@@ -425,6 +472,77 @@ pub fn prof_ab_system(
     println!("PROF AB phase {p}: vsync {vsync}, posing {pose}");
 }
 
+// ---- Feature costs: DXVIEW_PROF_FEATURES=1 switches each Modern look feature off in turn and times the frames -----
+
+/// The look features measured, with the value each is restored to.
+const FEATURES: [&str; 16] = [
+    "RealtimeShadows", "AmbientOcclusion", "ModernWater", "LightShafts", "Clouds", "Weather", "Bloom", "FogVolumes",
+    "AtmosphericFog", "SoftShadows", "Skyline", "LightHalos", "EnhancedFX", "ModernCoronas", "FlashlightCone", "HQAudio",
+];
+
+/// 20 s as set up, then per feature: 3 s to settle (pipelines), 5 s timed with that one feature off; a baseline (all
+/// as set up) before the first and after the last. Prints "PROF FEATURE <name> off: avg X ms (base Y ms)" and exits.
+pub fn prof_features_system(
+    time: bevy::prelude::Res<bevy::prelude::Time<bevy::prelude::Real>>,
+    mut st: bevy::prelude::Local<(i32, f32, f32, u32, Vec<(String, f32)>, f32)>,
+    mut exit: bevy::prelude::MessageWriter<bevy::prelude::AppExit>,
+) {
+    if std::env::var("DXVIEW_PROF_FEATURES").is_err() {
+        return;
+    }
+    let (phase, t_in, sum, n, saved, base) = &mut *st;
+    let dt = time.delta_secs();
+    let t = time.elapsed_secs();
+    if *phase == 0 {
+        if t < 20.0 {
+            return;
+        }
+        *saved = FEATURES.iter().map(|k| (k.to_string(), crate::settings::get(k))).collect();
+        *phase = 1;
+        *t_in = 0.0;
+        println!("PROF FEATURES start: {:?}", saved);
+    }
+    *t_in += dt;
+    if *t_in > 3.0 {
+        *sum += dt * 1000.0;
+        *n += 1;
+    }
+    if *t_in < 8.0 {
+        return;
+    }
+    // Phase 1 = baseline, 2.. = feature (phase - 2) off, last = baseline again.
+    let avg = if *n > 0 { *sum / *n as f32 } else { 0.0 };
+    let nf = FEATURES.len() as i32;
+    if *phase == 1 {
+        *base = avg;
+        println!("PROF FEATURE baseline: avg {avg:.2} ms ({:.0} fps)", 1000.0 / avg.max(0.01));
+    } else if *phase <= nf + 1 {
+        let k = FEATURES[(*phase - 2) as usize];
+        let was = saved.iter().find(|s| s.0 == k).map_or(0.0, |s| s.1);
+        if was > 0.0 {
+            println!("PROF FEATURE {k} off: avg {avg:.2} ms ({:.0} fps), saves {:.2} ms", 1000.0 / avg.max(0.01), *base - avg);
+        }
+        crate::settings::set(k, was);
+    } else {
+        println!("PROF FEATURE baseline again: avg {avg:.2} ms ({:.0} fps)", 1000.0 / avg.max(0.01));
+        exit.write(bevy::prelude::AppExit::Success);
+        return;
+    }
+    *phase += 1;
+    *t_in = 0.0;
+    *sum = 0.0;
+    *n = 0;
+    // Skip features that are already off.
+    while *phase >= 2 && *phase <= nf + 1 {
+        let k = FEATURES[(*phase - 2) as usize];
+        if saved.iter().find(|s| s.0 == k).map_or(0.0, |s| s.1) > 0.0 {
+            crate::settings::set(k, 0.0);
+            break;
+        }
+        *phase += 1;
+    }
+}
+
 // ---- Span totals: with the `spans` feature, every Bevy span (systems, render nodes, submit, present) ------------
 
 use bevy::log::tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
@@ -441,11 +559,23 @@ impl bevy::log::tracing::field::Visit for NameVisitor<'_> {
         if f.name() == "name" {
             self.0.push(' ');
             self.0.push_str(v);
+        } else if f.name() == "camera" {
+            // "Camera 3 (12v0)" -> "Camera 3"; "Auxiliary View 40v0" (a shadow map face) -> "Auxiliary View".
+            let t = v.split(" (").next().unwrap_or(v);
+            self.0.push(' ');
+            self.0.push_str(if t.starts_with("Auxiliary") { "Auxiliary View" } else { t });
         }
     }
     fn record_debug(&mut self, f: &bevy::log::tracing::field::Field, v: &dyn std::fmt::Debug) {
         if f.name() == "name" {
             self.0.push_str(&format!(" {v:?}"));
+        } else if f.name() == "camera" {
+            // "Camera 3 (12v0)" -> "Camera 3"; "Auxiliary View 40v0" (a shadow map face) -> "Auxiliary View".
+            let t = format!("{v:?}");
+            let t = t.split(" (").next().unwrap_or(&t);
+            let t = if t.starts_with("Auxiliary") { "Auxiliary View" } else { t };
+            self.0.push(' ');
+            self.0.push_str(t);
         }
     }
 }
@@ -560,5 +690,61 @@ pub fn mesh_owner_system(
         acc.0.clear();
         acc.1 = 0;
         acc.2 = Some(now);
+    }
+}
+
+/// With DXVIEW_PROF: every five seconds, what Bevy's calculate_bounds works on - meshes still without an Aabb
+/// (retried every frame) and the vertices of re-uploaded meshes whose Aabb it recomputes.
+pub fn bounds_report_system(
+    mut ev: bevy::prelude::MessageReader<bevy::asset::AssetEvent<bevy::prelude::Mesh>>,
+    meshes: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Mesh>>,
+    no_aabb: bevy::prelude::Query<
+        &bevy::prelude::Mesh3d,
+        (
+            bevy::prelude::Without<bevy::camera::primitives::Aabb>,
+            bevy::prelude::Without<bevy::camera::visibility::NoFrustumCulling>,
+            bevy::prelude::Without<bevy::camera::visibility::NoAutoAabb>,
+        ),
+    >,
+    bounded: bevy::prelude::Query<
+        &bevy::prelude::Mesh3d,
+        (
+            bevy::prelude::With<bevy::camera::primitives::Aabb>,
+            bevy::prelude::Without<bevy::camera::visibility::NoFrustumCulling>,
+            bevy::prelude::Without<bevy::camera::visibility::NoAutoAabb>,
+        ),
+    >,
+    mut acc: bevy::prelude::Local<(u64, u64, u32, Option<Instant>)>,
+) {
+    if !on() {
+        ev.clear();
+        return;
+    }
+    let ids: std::collections::HashSet<bevy::asset::AssetId<bevy::prelude::Mesh>> = ev
+        .read()
+        .filter_map(|e| match e {
+            bevy::asset::AssetEvent::Modified { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    acc.2 += 1;
+    if !ids.is_empty() {
+        for m in &bounded {
+            if ids.contains(&m.0.id()) {
+                acc.0 += 1;
+                acc.1 += meshes.get(&m.0).map_or(0, |m| m.count_vertices() as u64);
+            }
+        }
+    }
+    let now = Instant::now();
+    if acc.3.is_none_or(|t| now.duration_since(t).as_secs_f32() >= 5.0) {
+        let f = acc.2.max(1) as f64;
+        println!(
+            "PROF bounds: {} meshes without an Aabb (retried each frame); {:.1} re-bounded meshes / {:.0} verts per frame",
+            no_aabb.iter().count(),
+            acc.0 as f64 / f,
+            acc.1 as f64 / f
+        );
+        *acc = (0, 0, 0, Some(now));
     }
 }

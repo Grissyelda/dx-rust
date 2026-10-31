@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Faster
+- About 30 to 47 fps on an RTX 3050 in Modern: real-time shadows render one view per light instead of six (and
+  only for lights with someone in them), rain is built on the GPU, water reflections re-render every other frame.
+
+### Bodies (enhancements, on in Modern)
+- Skeletal Characters: the Machine God team's rebuilt human bodies on a real skeleton, in the original skins, with
+  blended moves and a face that lip-syncs, blinks and glances. JC's mirror and third-person body too.
+- Ragdolls (Avian physics): the killed and knocked out go limp at once, pushed by the hit and carried by their run.
+- Fluid Blood: droplets that fly and splatter, blood running down walls, pools spreading under the dead, bloodier gibs.
+- Wounds on bodies, hurt poses (hanging arms, limps), coat cloth, wet bodies in the rain.
+- First-person body, diegetic healing (treat the limb you look at with a medkit; elsewhere it treats the head),
+  aug glows on JC's body and a healing glow.
+
 ## v0.10.0
 
 Everything new since v0.9.0. Every change to the original game is still an option in *Settings > Enhancements*,

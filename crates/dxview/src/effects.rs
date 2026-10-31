@@ -85,6 +85,7 @@ pub fn blood_system(
     };
     for (at, dir) in fx.0.drain(..) {
         crate::fx::blood(at, dir);
+        crate::gore::spray(at, dir, 10.0);
         // BloodSpurt: DrawScale 1 - FRand()*0.5, PlayAnim('Spurt'), LifeSpan 0.5.
         let sd = assets.classes.defaults("BloodSpurt");
         let scale = 1.0 - rnd() as f32 * 0.5;
@@ -356,6 +357,10 @@ pub fn gib_system(
         let d = assets.classes.defaults(class);
         let n = if robot {
             (size / 6.0).max(3.0) as usize
+        } else if crate::gore::enabled() {
+            // Fluid Blood: twice the pieces and a burst of blood over everything near.
+            crate::gore::burst(c, r, h);
+            (size / 2.0) as usize
         } else {
             (size / 4.0) as usize
         };

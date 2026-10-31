@@ -46,10 +46,15 @@ fn shadowed_lightmap(lm: vec3<f32>, world_position: vec4<f32>, n: vec3<f32>, fra
     let s = to_srgb(lm);
     var removed = vec3<f32>(0.0);
     var dbg_own = vec3<f32>(0.0);
-    for (var i: u32 = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i = i + 1u) {
+    // shadowlight.rs's lights are spot lights aimed at the things that cast (one shadow view each instead of a
+    // point light's six), told apart from other spots by their depth bias (SHADOW_MARK).
+    for (var i: u32 = ranges.first_spot_light_index_offset; i < ranges.first_reflection_probe_index_offset; i = i + 1u) {
         let light_id = clustering::get_clusterable_object_id(i);
         let light = &view_bindings::clustered_lights.data[light_id];
         if (((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) == 0u) {
+            continue;
+        }
+        if (abs((*light).shadow_depth_bias - 0.0201) > 1e-6) {
             continue;
         }
         let to = (*light).position_radius.xyz - world_position.xyz;
@@ -58,7 +63,7 @@ fn shadowed_lightmap(lm: vec3<f32>, world_position: vec4<f32>, n: vec3<f32>, fra
         if (d >= r || d < 1e-3) {
             continue;
         }
-        let shadow = shadows::fetch_point_shadow(light_id, world_position, n, frag_coord.xy);
+        let shadow = shadows::fetch_spot_shadow(light_id, world_position, n, (*light).shadow_map_near_z, frag_coord.xy);
         if (shadow >= 0.999 && bsp.p.w < 1.5) {
             continue;
         }

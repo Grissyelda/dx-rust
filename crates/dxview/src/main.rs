@@ -120,6 +120,10 @@ mod triggers;
 mod smartai;
 mod achievements;
 mod diegetic;
+mod skeletal;
+mod ragdoll;
+mod gore;
+mod bodyfx;
 mod alertui;
 mod uicanvas;
 mod weapons;
@@ -788,6 +792,7 @@ fn main() {
                     .before(projectiles::launch_system),
                 actors::env_map_system.after(fly),
                 mirror::mirror_body_system.after(fly).after(outfit_view::outfit_view_system),
+                skeletal::mirror_skel_system.after(mirror::mirror_body_system),
                 water::water_system,
                 death::death_system.after(fly).after(ai::player_health_ui),
                 carry::corpse_drop_system
@@ -844,7 +849,7 @@ fn main() {
             (gamepad::poll_system, keybinds::remap_system).chain().after(bevy::input::InputSystems),
         )
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system, prof::mesh_owner_system))
+        .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system))
         .init_resource::<consys::ConSetup>()
         .init_resource::<triggers::Triggers>()
         .init_resource::<logic::LogicActors>()
@@ -919,19 +924,34 @@ fn main() {
         )
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<classic_hud::HudLayer>::default())
         .add_plugins(remaster::RemasterPlugin)
+        .add_plugins(ragdoll::RagdollPlugin)
+        .add_systems(
+            Update,
+            (
+                bodyfx::fp_body_system.after(skeletal::mirror_skel_system),
+                bodyfx::glow_system.after(bodyfx::fp_body_system),
+                bodyfx::heal_label_system,
+                bodyfx::wounds_system.after(ai::npc_system),
+            ),
+        )
         // Vertex animation posed on the GPU (gpuanim.rs).
         .add_plugins(bevy::pbr::MaterialPlugin::<gpuanim::AnimMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<mirror::MirrorMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<water::WaterMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<clouds::CloudMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<shadowlight::BspMaterial>::default())
+        .add_plugins(bevy::pbr::MaterialPlugin::<skeletal::ActorMaterial>::default())
+        .add_plugins(bevy::pbr::MaterialPlugin::<weather::RainMaterial>::default())
         .init_resource::<water::WaterMats>()
         .init_resource::<gpuanim::GpuAnim>()
-        .add_systems(Startup, (gpuanim::setup_anim_shader, mirror::setup_mirror_shader, water::setup_water_shader, clouds::setup_cloud_shader, shadowlight::setup_bsp_shader, install_crash_log))
+        .add_systems(Startup, (gpuanim::setup_anim_shader, mirror::setup_mirror_shader, water::setup_water_shader, clouds::setup_cloud_shader, shadowlight::setup_bsp_shader, skeletal::setup_shader, weather::setup_rain_shader, install_crash_log))
         .add_systems(
             Update,
             (
                 gpuanim::gpuanim_setup.before(actors::animate),
+                skeletal::spawn_system.after(gpuanim::gpuanim_setup).before(actors::animate),
+                skeletal::pose_system.after(actors::animate).before(ai::npc_weapon_models),
+                gore::gore_system.after(ai::npc_system),
             ),
         )
         .add_systems(Startup, classic_hud::setup_hud_shader)

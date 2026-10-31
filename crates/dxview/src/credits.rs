@@ -255,7 +255,26 @@ fn items(assets: &mut crate::weapons::RuntimeAssets, mode: Mode) -> Vec<Item> {
     }
     v.push(Item::Blank);
     match mode {
-        Mode::Credits => v.push(Item::Picture(pic(assets, &["TeamFront_1", "TeamFront_2", "TeamFront_3"]), 3, 600, 236)),
+        Mode::Credits => {
+            v.push(Item::Picture(pic(assets, &["TeamFront_1", "TeamFront_2", "TeamFront_3"]), 3, 600, 236));
+            // This port's own thanks, after the original team.
+            v.push(Item::Blank);
+            v.push(Item::Text("DX RUST".into(), true));
+            v.push(Item::Blank);
+            v.push(Item::Text("Rebuilt human bodies, rig and animations".into(), true));
+            v.push(Item::Text("The Machine God team".into(), false));
+            v.push(Item::Blank);
+            v.push(Item::Text("Smooth lip sync timings".into(), true));
+            v.push(Item::Text("Joe Wintergreen".into(), false));
+            v.push(Item::Blank);
+            v.push(Item::Text("Supported mods".into(), true));
+            v.push(Item::Text("The Lay D Denton Project team".into(), false));
+            v.push(Item::Text("The HDTP team, the New Vision team".into(), false));
+            v.push(Item::Text("Visible Attachments, Augmentique, Helios, Precipitation".into(), false));
+            v.push(Item::Text("GMDX: CyberP, Sarge and the Augmented Edition team".into(), false));
+            v.push(Item::Blank);
+            v.push(Item::Text("Built with Bevy and Rust".into(), false));
+        }
         Mode::Quotes => v.push(Item::Picture(pic(assets, &["TeamBack_1", "TeamBack_2", "TeamBack_3"]), 3, 600, 214)),
     }
     v
