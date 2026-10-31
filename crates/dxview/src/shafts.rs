@@ -43,7 +43,7 @@ const SPOTS: usize = 3;
 /// The shaft lights are made this many times weaker and the fog this many times more responsive to them: they
 /// exist to light the air, and at full strength their specular highlights drew bright second pools on the floor
 /// (the flashlight's "double" pool, spotlights' hot spots) even with affects_lightmapped_mesh_diffuse off.
-const AIR_BOOST: f32 = 30.0;
+const AIR_BOOST: f32 = 1000.0;
 
 /// The haze the beams show in follows the eye: a box this big (metres) around it, soft at its edges.
 const HAZE: Vec3 = Vec3::new(70.0, 36.0, 70.0);
