@@ -29,8 +29,8 @@ pub fn postfx_system(
     mut commands: Commands,
     world: Query<(Entity, Has<ScreenSpaceAmbientOcclusion>), (With<crate::FlyCam>, Without<crate::SkyCam>)>,
     cams: Query<(Entity, &Msaa, Has<Smaa>, Has<crate::weapons::ViewModelCam>), Or<(With<crate::FlyCam>, With<crate::SkyCam>, With<crate::weapons::ViewModelCam>, With<crate::augdisplay::HeatCam>)>>,
-    mut points: Query<(&mut PointLight, &crate::shadowlight::ShadowLight)>,
-    mut spots: Query<&mut SpotLight, With<crate::dynlight::FlashCone>>,
+    mut points: Query<(&mut SpotLight, &crate::shadowlight::ShadowLight), Without<crate::dynlight::FlashCone>>,
+    mut spots: Query<&mut SpotLight, (With<crate::dynlight::FlashCone>, Without<crate::shadowlight::ShadowLight>)>,
     mut bsp: ResMut<Assets<crate::shadowlight::BspMaterial>>,
     mut ao_gen: Local<Option<bool>>,
 ) {

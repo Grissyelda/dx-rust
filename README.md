@@ -56,7 +56,12 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
     clouds and rolling fog, light shafts and haze;
   - modern water with waves, reflections and an open sea, mirrors that reflect JC;
   - a photographic city skyline, light halos and modern coronas, a modern night-vision view;
-  - Helios repaints and HD textures, and enhanced particle effects, barrel smoke and bullet impacts.
+  - Helios repaints and HD textures, and enhanced particle effects, barrel smoke and bullet impacts;
+  - **skeletal characters**: the Machine God team's rebuilt human bodies on a real skeleton, in the original skins,
+    with blended moves and faces that lip-sync, blink and glance around; JC's own body in mirrors, third person and
+    under the view in first person;
+  - **ragdolls** (Avian physics) for the killed and knocked out, fluid blood (droplets, runs down walls, pools
+    under the dead, bloodier gibs), wound marks, hurt poses and limps, coat cloth and wet bodies in the rain.
 - **Modern play (all optional):**
   - Modern Aiming: the aim sways within the accuracy cone (wide when untrained, steady when you master the
     weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns;
@@ -66,6 +71,7 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   - elements (shocks in water, spreading fire), bullet penetration, melee arcs, thrown-object noise and body
     alarms;
   - terminals and keypads used in the world: the camera moves in to the screen and you click on it;
+  - diegetic healing: hold a medkit, look at the limb to treat and use it there; aug glows on JC's body;
   - better audio: smoother mixing, sound through walls, room reverb and a distant soundscape.
 - **Achievements.** Fifty achievements in the style of the *Remastered* list, with their own page in the
   persona screens and an unlock notice in play.
@@ -147,8 +153,9 @@ The whole game is implemented. Before 1.0:
 - save round-trip tests on every map.
 
 Much of the v2.0 list is already in (the Classic / Modern switch, real-time shadows, weather, modern water,
-third person, Smarter AI, achievements). Still to come: remastered lighting with normal maps, skeletal characters
-with better faces and ragdolls, and multiplayer, among others. Every item stays optional.
+third person, Smarter AI, achievements, skeletal characters, ragdolls and fluid blood). Still to come: remastered
+lighting with normal maps, aim and head-turning layered on the skeletal bodies, and multiplayer, among others.
+Every item stays optional. The latest performance pass took Modern from about 32 to 47 fps on an RTX 3050.
 
 The full list is in [ROADMAP.md](ROADMAP.md). Bug reports from playthroughs are very welcome: say which map you
 were on and what you did.
@@ -160,6 +167,8 @@ were on and what you did.
   from your own copy at run time.
 - The Lay D Denton Project belongs to its authors and is used with their permission. HDTP, New Vision, Visible
   Attachments, Augmentique, Helios, Precipitation and GMDX belong to their authors. No mod's files are redistributed here.
+- The rebuilt human bodies, rig and animations in `assets/rig` are the Machine God team's, included with their
+  permission (credit them if you reuse them). They contain no Deus Ex data.
 - DX RUST's own source code is licensed under the **GNU GPL v3.0 or later** (see [LICENSE](LICENSE)).
 
 ## Credits
@@ -167,4 +176,5 @@ were on and what you did.
 - The Lay D Denton Project team, for the mod and permission to support it.
 - The HDTP team, the New Vision team, the authors of Visible Attachments, Augmentique, Helios, Precipitation and
   GMDX (CyberP, and Sarge and the Augmented Edition team), for their mods.
+- The Machine God team, for the rebuilt human bodies, rig and animations behind Skeletal Characters.
 - The Bevy, egui, gilrs and hidapi projects, and the Rust community.

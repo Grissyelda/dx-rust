@@ -20,6 +20,7 @@ use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 use dx_level::ue_to_bevy;
 use glam::DVec3;
+use std::collections::HashMap;
 
 pub const SHADOW_LAYER: usize = 8;
 const SLOTS: usize = 4;
@@ -124,8 +125,13 @@ struct Slot {
 pub struct ShadowLights {
     slots: [Slot; SLOTS],
     chosen: Vec<usize>,
+    /// Per chosen light: where its spot points (Bevy axes) and the cone's half angle.
+    aim: HashMap<usize, (Vec3, f32)>,
     repick: f32,
 }
+
+/// The depth bias that marks shadowlight's spots for bsp_shadow.wgsl (other spot lights use their own).
+pub const SHADOW_MARK: f32 = 0.0201;
 
 pub fn setup_shadow_lights(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
     commands.insert_resource(ShadowLights::default());
@@ -141,13 +147,18 @@ pub fn setup_shadow_lights(mut commands: Commands, mut meshes: ResMut<Assets<Mes
             ));
         }
     }
+    // Spot lights aimed at what casts: one shadow view each, where a point light renders six cube faces (each a
+    // whole extra pass on the render thread - 24 of them were most of a 30 ms frame).
     for slot in 0..SLOTS {
         commands.spawn((
-            PointLight {
+            SpotLight {
                 intensity: 0.0,
                 range: 1.0,
                 shadow_maps_enabled: true,
                 affects_lightmapped_mesh_diffuse: false,
+                shadow_depth_bias: SHADOW_MARK,
+                outer_angle: 1.0,
+                inner_angle: 0.9,
                 ..default()
             },
             Transform::default(),
@@ -181,7 +192,7 @@ pub fn shadow_light_system(
     blockers: Res<Blockers>,
     mut st: ResMut<ShadowLights>,
     cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>, Without<ShadowLight>)>,
-    mut lights: Query<(&ShadowLight, &mut PointLight, &mut Transform, &mut Visibility)>,
+    mut lights: Query<(&ShadowLight, &mut SpotLight, &mut Transform, &mut Visibility)>,
     mut map_gen: Local<u64>,
 ) {
     let _prof = crate::prof::scope("shadowlight::shadow_light_system");
@@ -215,6 +226,8 @@ pub fn shadow_light_system(
                 .collect();
             near.sort_by(|a, b| a.0.total_cmp(&b.0));
             points.extend(near.into_iter().take(10).map(|(_, c)| c));
+            let third = crate::thirdperson::active();
+            let mut aims: Vec<(usize, Vec3, f32)> = Vec::new();
             let held: Vec<usize> = st.slots.iter().filter(|s| s.weight > 0.0).filter_map(|s| s.light).collect();
             let mut scored: Vec<(f32, usize)> = lvl
                 .lights
@@ -227,10 +240,31 @@ pub fn shadow_light_system(
                 })
                 .filter_map(|(i, l)| {
                     let mut best = 0.0f32;
+                    // A shadow map is six extra views of the scene: only worth it when something that casts
+                    // (a pawn or decoration in front, or JC's body in third person) is in the light.
+                    let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);
+                    let mut casters: Vec<DVec3> = Vec::new();
                     for (k, p) in points.iter().enumerate() {
                         let w = if k == 1 { 1.0 } else { 1.0 / (1.0 + p.distance(eye) as f32 / 1200.0) };
-                        best = best.max(reach(lvl, l, *p) * w);
+                        let r = reach(lvl, l, *p);
+                        if r > 0.0 && (k >= 2 || (k == 0 && third)) {
+                            casters.push(*p);
+                        }
+                        best = best.max(r * w);
                     }
+                    if casters.is_empty() {
+                        return None;
+                    }
+                    // The spot: toward the casters' middle, wide enough for each (plus its size: ~60 units round).
+                    let dirs: Vec<DVec3> = casters.iter().map(|c| (*c - lp).normalize_or_zero()).collect();
+                    let mid = dirs.iter().fold(DVec3::ZERO, |a, d| a + *d).normalize_or(DVec3::NEG_Z);
+                    let half = casters
+                        .iter()
+                        .zip(&dirs)
+                        .map(|(c, d)| d.dot(mid).clamp(-1.0, 1.0).acos() + (60.0 / c.distance(lp).max(30.0)).atan())
+                        .fold(0.0f64, f64::max)
+                        .clamp(0.35, 1.35) as f32;
+                    aims.push((i, Vec3::new(mid.x as f32, mid.z as f32, mid.y as f32), half));
                     // Hold on to the lights already shown (no flicking between two alike).
                     if held.contains(&i) {
                         best *= 1.3;
@@ -246,6 +280,11 @@ pub fn shadow_light_system(
                 );
             }
             st.chosen = scored.into_iter().take(n).map(|(_, i)| i).collect();
+            for (i, d, h) in aims {
+                if st.chosen.contains(&i) {
+                    st.aim.insert(i, (d, h));
+                }
+            }
         }
     }
     // Slots: a chosen light keeps its slot; new ones take a free slot; the rest fade out.
@@ -272,6 +311,7 @@ pub fn shadow_light_system(
     let gain = std::env::var("DXVIEW_SHADOW_GAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0f32);
     for (sl, mut pl, mut tf, mut vis) in &mut lights {
         let s = st.slots[sl.slot];
+        let aim = s.light.and_then(|i| st.aim.get(&i).copied());
         let Some(info) = s.light.and_then(|i| lvl.lights.get(i)).filter(|_| s.weight > 0.0 && n > 0) else {
             pl.intensity = 0.0;
             *vis = Visibility::Hidden;
@@ -283,6 +323,17 @@ pub fn shadow_light_system(
         pl.intensity = 4.0 * std::f32::consts::PI * b * ENCODE * gain * s.weight;
         pl.range = info.radius * dx_level::METERS_PER_UNIT;
         tf.translation = Vec3::from(ue_to_bevy(info.pos));
+        if let Some((d, half)) = aim {
+            // Ease toward the new aim (casters move between repicks).
+            let want = d.normalize_or(Vec3::NEG_Y);
+            let cur = tf.forward().as_vec3();
+            let k = (dt * 4.0).min(1.0);
+            let dir = cur.lerp(want, k).normalize_or(want);
+            let up = if dir.y.abs() > 0.95 { Vec3::X } else { Vec3::Y };
+            tf.look_to(dir, up);
+            pl.outer_angle += (half - pl.outer_angle) * k;
+            pl.inner_angle = pl.outer_angle * 0.9;
+        }
         *vis = Visibility::Inherited;
     }
 }

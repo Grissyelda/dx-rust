@@ -181,6 +181,8 @@ pub fn camera_layers() -> RenderLayers {
     }
     if active() {
         l.push(crate::mirror::BODY_LAYER);
+    } else if crate::bodyfx::fp_on() {
+        l.push(crate::bodyfx::FP_LAYER);
     }
     RenderLayers::from_layers(&l)
 }

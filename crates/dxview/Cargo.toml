@@ -21,12 +21,14 @@ half = "2.7"
 gilrs = "0.11"
 cpal = "0.15"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
+# Ragdolls (skeletal.rs ragdoll): rigid bodies and joints.
+avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "parallel", "xpbd_joints"] }
 
 [features]
 # Chrome trace of every system, main and render world: cargo build --features trace (writes trace-*.json).
 trace = ["bevy/trace_chrome"]
 # Bevy's spans (every system, render graph node, submit, present) summed per frame into prof.log with DXVIEW_PROF=1.
-spans = ["bevy/trace"]
+spans = ["bevy/trace", "bevy/debug"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }

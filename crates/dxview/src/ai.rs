@@ -353,6 +353,15 @@ impl PlayerHealth {
         }
     }
 
+    /// Diegetic Healing: the treated part first (up to 100), what's left as HealPlayer spreads it.
+    pub fn heal_part(&mut self, part: usize, n: f32) -> f32 {
+        let i = part.min(5);
+        let take = (100.0 - self.parts[i]).max(0.0).min(n.max(0.0));
+        self.parts[i] += take;
+        self.total();
+        take + self.heal(n - take)
+    }
+
     /// HealPlayer: points go to the head first, then torso, right leg, left leg, right arm, left arm, each up to 100.
     pub fn heal(&mut self, n: f32) -> f32 {
         if n < 0.0 {
@@ -3228,6 +3237,10 @@ pub fn npc_system(
                     }
                     h.damage *= scale;
                 }
+                // A wound mark on a rebuilt body where the shot went in (bodyfx.rs).
+                if !npc.hp_body.robot && matches!(h.damage_type, "Shot" | "Sabot" | "Exploded" | "Burned" | "Flamed") {
+                    crate::bodyfx::wound(npc.blocker, h.hit_loc, h.hit_loc - h.attacker_pos, h.damage_type);
+                }
                 let stunned = matches!(npc.state, NpcState::Stunned(_) | NpcState::RubbingEyes(_));
                 // EMP: robots lose EMPHitPoints and shut down (Robot state Disabled) at zero; people don't care.
                 if h.damage_type == "EMP" {
@@ -3448,6 +3461,14 @@ pub fn npc_system(
                         }
                         npc.state = NpcState::Dead;
                         npc.knocked_out = knocked_out;
+                        // A rebuilt body goes limp at once (ragdoll.rs), pushed by the blow and carried by its run.
+                        crate::ragdoll::request(crate::ragdoll::Death {
+                            blocker: npc.blocker,
+                            hit: h.hit_loc,
+                            from: h.attacker_pos,
+                            damage: h.damage,
+                            vel: deco.body.velocity,
+                        });
                         npc.weapon_drawn = false;
                         // DeusExCarcass.InitFor: the body alerts others only if dead (not unconscious), not a robot.
                         npc.killer_alliance = match h.attacker {
@@ -6228,6 +6249,7 @@ pub fn npc_weapon_models(
         Local<u64>,
         Res<Blockers>,
     ),
+    skels: Query<&crate::skeletal::SkelBody>,
 ) {
     let _prof = crate::prof::scope("ai::npc_weapon_models");
     for (e, npc) in &new {
@@ -6363,6 +6385,9 @@ pub fn npc_weapon_models(
         let (start, frames, f) = crate::actors::current_frame(an, anim);
         let coords = if npc.state == NpcState::Dead || !npc.weapon_drawn {
             None
+        } else if let Some(w) = crate::skeletal::weapon_coords(&skels, e) {
+            // A rebuilt body (skeletal.rs): its own weapon triangle, skinned.
+            w
         } else {
             anim.mesh.weapon_coords(start, frames, f)
         };

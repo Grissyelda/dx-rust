@@ -43,6 +43,14 @@ supported, it was rewritten in Rust from the mod's source:
 The only exception is Augmentique's outfit lists, which exist only as script code in the mod's own package. A small
 interpreter reads them from the player's copy when the game starts, as data.
 
+## Machine God team: rebuilt human bodies and rig
+The *Skeletal Characters* enhancement uses the Machine God team's rebuilt human bodies, their Rigify rig and its
+animations (`assets/rig`, baked from their Blender file by `tools/rig`). The team allows anyone to use the rig and
+bodies as they please, with credit. Credit to the Machine God team.
+
+These files contain no Deus Ex data. The original meshes and their vertex animations stay in the player's install;
+the skins are read from the player's own game files at run time.
+
 ## Joe Wintergreen's lipsync mod
 The *Smooth Lip Sync* enhancement uses the timings from Joe Wintergreen's lipsync mod for Deus Ex:
 - mouth shapes blend over 0.36 s;

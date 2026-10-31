@@ -113,6 +113,8 @@ pub struct Mirrors {
 #[derive(Component)]
 pub struct MirrorCam(pub usize, pub bool);
 
+static WATER_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// The render target the reflection is drawn into (the window's size).
 pub fn make_image(images: &mut Assets<Image>, size: UVec2) -> Handle<Image> {
     let mut image = Image::new_uninit(
@@ -264,6 +266,9 @@ pub fn spawn_camera(commands: &mut Commands, mirrors: &Mirrors) {
                 Tonemapping::None,
                 bevy::camera::Exposure { ev100: -0.263 },
                 MirrorCam(i, sky),
+                // No MSAA on reflections (Camera3d's default is 4x: four samples per pixel of a whole extra view, and
+                // a second set of every material's pipelines).
+                bevy::render::view::Msaa::Off,
             ));
             if sky {
                 e.insert((RenderLayers::layer(1), bevy::light::cluster::ClusterConfig::Single));
@@ -394,9 +399,15 @@ pub fn mirror_system(
         let nearest = want.first().copied();
         for k in 0..SLOTS {
             // The nearest reflection at full resolution, the others at half (they're farther and smaller on screen).
-            // Water's ripples hide resolution: always half.
+            // Water's waves hide resolution: a third.
             let water = mirrors.slots[k].plane.is_some_and(|p| mirrors.planes[p].water);
-            let size = if mirrors.slots[k].plane.is_some() && mirrors.slots[k].plane == nearest && !water { full } else { (full / 2).max(UVec2::ONE) };
+            let size = if water {
+                (full / 3).max(UVec2::ONE)
+            } else if mirrors.slots[k].plane.is_some() && mirrors.slots[k].plane == nearest {
+                full
+            } else {
+                (full / 2).max(UVec2::ONE)
+            };
             if mirrors.slots[k].plane.is_some() && mirrors.slots[k].size != size {
                 let img = make_image(&mut images, size);
                 if let Some(old) = mirrors.slots[k].image.replace(img) {
@@ -438,13 +449,17 @@ pub fn mirror_system(
             }
         }
     }
+    WATER_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     for (mc, mut cam, mut tf, mut proj, mut target) in &mut cams {
         let slot = &mirrors.slots[mc.0.min(SLOTS - 1)];
         let (Some(pi), Some(img)) = (slot.plane, slot.image.clone()) else {
             cam.is_active = false;
             continue;
         };
-        cam.is_active = true;
+        // Water re-renders its reflection every other frame (two extra views of the whole scene were ~3 ms of the
+        // render thread; the waves hide a frame's lag). Mirrors every frame.
+        let half_rate = mirrors.planes[pi].water && std::env::var_os("DXVIEW_WATER_FULLRATE").is_none();
+        cam.is_active = !half_rate || WATER_FRAME.load(std::sync::atomic::Ordering::Relaxed) % 2 == 0;
         if !matches!(&*target, RenderTarget::Image(t) if t.handle == img) {
             *target = img.into();
         }
@@ -490,10 +505,12 @@ pub fn reset_level() {}
 /// view yaw, playing BreatheLight / Walk / Run / Crouch / CrouchWalk by what the player is doing. Only the
 /// reflection camera draws it (BODY_LAYER), and only while a mirror is live.
 pub struct MirrorBody {
-    root: Entity,
-    mesh: std::sync::Arc<dx_level::actors::AnimMesh>,
-    parts: Vec<dx_level::actors::MeshPart>,
-    handles: Vec<Handle<Mesh>>,
+    pub root: Entity,
+    pub mesh: std::sync::Arc<dx_level::actors::AnimMesh>,
+    pub parts: Vec<dx_level::actors::MeshPart>,
+    pub handles: Vec<Handle<Mesh>>,
+    /// What he plays now (sequence, its first frame, frames, frame, loops) for skeletal.rs's rebuilt body.
+    pub cur: Option<(String, usize, usize, f32, bool)>,
     seq: String,
     t: f32,
     lit_at: f32,
@@ -545,7 +562,7 @@ pub fn mirror_body_system(
     // Augmentique's outfits screen shows him too (outfit_view.rs).
     let outfits = crate::outfit_view::open();
     // Third person (thirdperson.rs): the main camera draws him too.
-    let show = (outfits || crate::thirdperson::active() || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active() && !ph.dead;
+    let show = (outfits || crate::thirdperson::active() || crate::bodyfx::fp_on() || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active() && !ph.dead;
     if let Some(b) = body.0.as_ref() {
         if b.gen != crate::augmentique::generation() {
             commands.entity(b.root).despawn();
@@ -589,6 +606,7 @@ pub fn mirror_body_system(
                     parts,
                     handles,
                     seq: String::new(),
+                    cur: None,
                     t: 0.0,
                     lit_at: -1.0,
                     held: None,
@@ -756,6 +774,9 @@ pub fn mirror_body_system(
     } else {
         (b.t * rate.max(1.0)).min(frames.saturating_sub(1) as f32)
     };
+    b.cur = Some((want.to_string(), start, frames, f, looped && !aim_pose));
+    // The rebuilt body (skeletal.rs) poses itself from `cur` and hands back its weapon frame.
+    let skel = crate::skeletal::mirror_skel_on();
     let relight = time.elapsed_secs() - b.lit_at > 0.5;
     if relight {
         b.lit_at = time.elapsed_secs();
@@ -792,7 +813,8 @@ pub fn mirror_body_system(
         }
     }
     if let Some((_, root, scale, parts, handles)) = b.held.as_ref() {
-        if let Some([o, x, y, z]) = b.mesh.weapon_coords(start, frames, f) {
+        let wc = if skel { crate::skeletal::mirror_weapon() } else { b.mesh.weapon_coords(start, frames, f) };
+        if let Some([o, x, y, z]) = wc {
             // Body-local Unreal: p' = O + [X Y Z] x ThirdPersonScale x p, then into Bevy axes.
             let sw = Mat3::from_cols(Vec3::X, Vec3::Z, Vec3::Y);
             let lin = sw * (Mat3::from_cols(Vec3::from(x), Vec3::from(y), Vec3::from(z)) * *scale) * sw;
@@ -813,6 +835,9 @@ pub fn mirror_body_system(
         }
     }
     let at = loc.as_vec3().to_array();
+    if skel {
+        return;
+    }
     for (pi, h) in b.handles.iter().enumerate() {
         if let Some(mut mm) = meshes.get_mut(h) {
             let pos: Vec<[f32; 3]> = b.parts[pi]

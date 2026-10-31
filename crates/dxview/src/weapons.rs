@@ -3336,7 +3336,14 @@ pub fn activate_pickup(
         "MedKit" => {
             // HealPlayer(healAmount, bUseMedicineSkill): x the Medicine skill's value.
             let n = (d.unwrap_or(30.0) * crate::abilities::skill("SkillMedicine")).floor();
-            heal(ph, n);
+            // Diegetic Healing (bodyfx.rs): on the part looked at (or the head, looking anywhere else).
+            let part = if crate::bodyfx::diegetic_heal() { crate::bodyfx::aimed_part().unwrap_or(crate::ai::P_HEAD) } else { crate::ai::P_TORSO };
+            if crate::bodyfx::diegetic_heal() {
+                ph.heal_part(part, n);
+            } else {
+                heal(ph, n);
+            }
+            crate::bodyfx::healed(part);
             // HealPlayer with the Medicine skill: MedicalHiss.
             crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
             msg = format!("Healed {} points", n as i32);

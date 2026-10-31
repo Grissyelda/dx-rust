@@ -63,6 +63,12 @@ GPU, paged GPU vertex animation, weapons prepared at map load so drawing one nev
 re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand). Since then: the inventory, persona and
 menu screens draw at 1x and copy their unchanging art (about a third of the frame time they used), fire textures
 only animate while seen and step on all cores, and rain drops find their landing spots per cell instead of per drop.
+Latest pass (measured on an RTX 3050 with every Modern option and all the mods): the frame was held up by the
+render thread, which drew 29 views a frame - five cameras and 24 shadow-map faces. Real-time shadows now use one
+aimed spot view per light, and only for lights with someone in them, which took the frame from about 30 ms to 21 ms
+(32 to 47 fps). Rain is built on the GPU from a small data texture (it re-uploaded about 2.5 MB of mesh a frame),
+and water reflections redraw every other frame. Next: Bevy's per-material bookkeeping (about 7 ms of the render
+thread) and the weapon view's own pass.
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.
@@ -158,10 +164,17 @@ Shadows with contact hardening.
     over their heads. Still to come from GMDX: smarter strafing, melee bashes, NPC grenades, wider alarms.
 39. HD textures and models (done with the HDTP, New Vision and Helios mods - Helios dresses the people, HDTP the
     items - switchable in Settings), PBR and smoother animation.
-40. JC's body visible in first person.
-41. Diegetic damage, healing and augs shown on the body.
-42. Ragdolls and posable models.
-43. Cloth and wetness.
+40. JC's body visible in first person (done in code, needs Skeletal Characters): look down to see his chest, coat
+    and legs; his head is hidden and his arms show only while a medkit is in hand.
+41. Diegetic damage, healing and augs shown on the body (done in code): wound marks that ride the bone they hit,
+    hurt poses (a hanging arm, a stiff-legged limp), aug glows where the augs sit, a healing glow and screen pulse,
+    and diegetic healing - hold a medkit, look at the limb to treat and use it there (anywhere else treats the head).
+42. Ragdolls (done in code, with the Avian physics crate): the killed and knocked out go limp at once, pushed by the
+    hit and carried by their run, on 11 jointed capsules against the level's real geometry; frozen once still.
+    Explosions still gib, now with Fluid Blood: droplets that fly and splatter, blood that runs down walls and
+    pools spreading under the dead. Still to come: posable models.
+43. Cloth and wetness (done in code): coat tails swing and fall around the legs (spring bones pushed out of the
+    legs), and people soak through in the rain - darker, with a sheen - and dry off under cover.
 44. Computers shown in the world while it keeps running (done: Terminals In The World - the view moves in to the
     monitor, the security terminal unfolds, the original interface shows on the screen and the mouse works on it;
     keypads are pressed button by button with a small display above; move the mouse away to step back).
@@ -191,8 +204,8 @@ Shadows with contact hardening.
 Also done: **achievements** - the fifty of Deus Ex Remastered with our own icons, an Achievements screen off the
 Logs screen, an unlock notice in the HUD, kept for the player across saves.
 
-53. **Skeletal characters** (an Enhancement, from a community rig of the Deus Ex people, used only with its
-    author's permission and read from the player's own copy, like the mods): rebuilt male and female bodies
+53. **Skeletal characters** (done in code, an Enhancement in the Modern preset; the Machine God team's rig and
+    rebuilt bodies, shipped with the game with their blessing and credited in the credits): rebuilt male and female bodies
     (trench coat, suit, dress shirt, jumpsuit, hoodie, dress, skirt suit, children) on two rigs with 126 deforming
     bones each - 72 of them in the coat tails - and 172 animations: every sequence the game plays, at the original
     frame counts, plus 8-way strafes, cover moves, head look-at, masculine / feminine walks and idles and about 30
@@ -203,12 +216,14 @@ Logs screen, an unlock notice in the HUD, kept for the player across saves.
     - third-person and NPC animation that blends, layers aim over running and turns heads to speakers (53b);
     - JC's own body in first person, his shadow and reflection (item 40);
     - ragdolls on the deforming bones with a physics crate, and spring coat tails (items 42, 43).
-    Steps: a bake script per body (Blender, run once on the player's machine or ours), a skinned-mesh path beside
-    gpuanim.rs keyed by mesh name, animation notifies (footsteps, melee hits) mapped by frame position, and the
-    original vertex meshes kept as the default. Not covered by the rig: commandos, robots and animals.
+    Done: twelve bodies baked and packed small enough to ship inside the exe (about 3 MB), every person on those
+    meshes drawn with them in their original skins, moves cross-faded, lip sync / blinks / glances / brows on the
+    face's blend shapes, the weapon in the rebuilt hand, lit by the same lights as before, and JC's mirror and
+    third-person body. Still to come: aim layered over running, heads turning to speakers, animation notifies
+    from the rig. Not covered by the rig: commandos, robots, animals and the HD mods' replacement meshes.
 
-Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sit in the
-last tier.
+Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sat in the
+last tier until the skeletal bodies above arrived.
 
 ## Engine principles
 - **Original gameplay:** keep its quirks, but not its engine flaws.
