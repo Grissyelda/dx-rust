@@ -121,6 +121,7 @@ pub const PAD_ACTIONS: &[(&str, PadAction, Option<PadBtn>)] = &[
     ("Goals / notes screen", PadAction::Game("Goals / notes screen"), Some(PadBtn::Touch)),
     ("Quick Save", PadAction::Game("Quick Save"), None),
     ("Quick Load", PadAction::Game("Quick Load"), None),
+    ("Classic / Modern", PadAction::Game("Classic / Modern"), None),
 ];
 
 /// Analog state and what the pad wants this frame.

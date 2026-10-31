@@ -113,6 +113,7 @@ mod sound;
 mod spawn;
 mod spawnmenu;
 mod stealth;
+mod remaster;
 mod swim;
 mod trash;
 mod triggers;
@@ -911,6 +912,7 @@ fn main() {
             ),
         )
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<classic_hud::HudLayer>::default())
+        .add_plugins(remaster::RemasterPlugin)
         // Vertex animation posed on the GPU (gpuanim.rs).
         .add_plugins(bevy::pbr::MaterialPlugin::<gpuanim::AnimMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<mirror::MirrorMaterial>::default())
