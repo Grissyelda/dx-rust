@@ -159,6 +159,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("DdsCharacters", 1.0),
     ("DdsItems", 1.0),
     ("DdsWorld", 0.0),
+    ("VisAttach", 1.0),
     // Augmentique: NPC outfits (iEquipNPCs: 0 none, 1 all but unique characters, 2 everyone); every outfit open
     // from the start even when GMDX Augmented's maps can be searched for them.
     ("AugNPCs", 1.0),
