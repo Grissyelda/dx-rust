@@ -614,11 +614,18 @@ struct Enhance {
     scroll: i32,
     /// Groups ("Controller", "DualSense"...) opened out; the rest show as one collapsed row each.
     open: std::collections::HashSet<String>,
+    /// The Classic / Modern row at the top (remaster.rs): its state, whether it was flipped here, and the Modern
+    /// values remembered when it went Classic (written on OK).
+    modern: bool,
+    mode_changed: bool,
+    memory: Vec<(String, f32)>,
 }
 
 /// A row of the Enhancements list: a group's header (click / Enter opens or closes it) or one setting.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Row {
+    /// Classic / Modern: every enhancement at once.
+    Master,
     Group(usize),
     Item(usize),
 }
@@ -815,7 +822,16 @@ impl Enhance {
         lip.saved = lip.value;
         items.push(tag(lip, "Visuals"));
         items.push(tag(debug_mode_choice(), "Developer"));
-        Enhance { items, search: Edit::new(40), sel: Some(Row::Group(0)), scroll: 0, open: Default::default() }
+        Enhance {
+            items,
+            search: Edit::new(40),
+            sel: Some(Row::Master),
+            scroll: 0,
+            open: Default::default(),
+            modern: crate::remaster::is_modern(),
+            mode_changed: false,
+            memory: Vec::new(),
+        }
     }
     /// The items the search keeps (every word in the label or help), in order.
     /// The groups in list order.
@@ -844,7 +860,7 @@ impl Enhance {
                 .map(Row::Item)
                 .collect();
         }
-        let mut rows = Vec::new();
+        let mut rows = vec![Row::Master];
         for (gi, g) in self.groups().iter().enumerate() {
             rows.push(Row::Group(gi));
             if self.open.contains(g) {
@@ -859,6 +875,7 @@ impl Enhance {
     /// The text of a row: (label, value).
     fn row_text(&self, r: Row) -> (String, String) {
         match r {
+            Row::Master => ("CLASSIC / MODERN (Tab in game)".into(), if self.modern { "Modern".into() } else { "Classic".into() }),
             Row::Group(g) => {
                 let name = self.groups().get(g).cloned().unwrap_or_default();
                 let n = self.items.iter().filter(|c| split_group(&c.label).0 == name).count();
@@ -883,6 +900,10 @@ impl Enhance {
     fn step(&mut self, dir: i32, acts: &mut Vec<Act>) {
         let Some(row) = self.sel else { return };
         let i = match row {
+            Row::Master => {
+                self.flip_mode();
+                return;
+            }
             Row::Group(g) => {
                 // Enter / click / Right opens a group, Left closes it.
                 if let Some(name) = self.groups().get(g).cloned() {
@@ -910,6 +931,39 @@ impl Enhance {
                 }
             }
         }
+    }
+    /// The Classic / Modern row: every covered row switches (applied with the rest on OK).
+    fn flip_mode(&mut self) {
+        let to_modern = !self.modern;
+        let items = &self.items;
+        let current = |k: &str| items.iter().find(|c| c.key == k).map_or_else(|| crate::settings::get(k), |c| c.value);
+        let (mut vals, memory) = crate::remaster::switch_values(to_modern, current);
+        if to_modern && !self.memory.is_empty() {
+            // Back to Modern before OK: the values just put away.
+            for (k, v) in vals.iter_mut() {
+                if let Some(m) = self.memory.iter().find(|m| m.0 == format!("Modern.{k}")) {
+                    *v = m.1;
+                }
+            }
+        }
+        if !to_modern {
+            self.memory = memory;
+        }
+        for (k, v) in vals {
+            if let Some(c) = self.items.iter_mut().find(|c| c.key == k) {
+                c.value = v;
+            } else {
+                // Not in the list (a mod's setting that isn't shown): still switched.
+                self.memory.push((k, v));
+            }
+        }
+        self.modern = to_modern;
+        self.mode_changed = true;
+        crate::sound::play_player(
+            if to_modern { "DeusExSounds.Augmentation.CloakUp" } else { "DeusExSounds.Augmentation.CloakDown" },
+            0.7,
+            0.0,
+        );
     }
     /// Move the selection among the shown items, keeping it on screen.
     fn move_sel(&mut self, d: i32) {
@@ -2102,6 +2156,12 @@ fn save_choices(win: &Win) {
         crate::settings::save();
     }
     if let Body::Enhance(en) = &win.body {
+        if en.mode_changed {
+            for (k, v) in &en.memory {
+                crate::settings::set(k, *v);
+            }
+            crate::settings::set("ModernMode", if en.modern { 1.0 } else { 0.0 });
+        }
         for c in &en.items {
             if !matches!(c.kind, ChoiceKind::Action { .. }) {
                 crate::settings::set(&c.key, c.value);
@@ -3095,6 +3155,7 @@ pub fn menu_system(
             }
             (Body::Enhance(en), _) => match en.sel {
                 Some(Row::Item(i)) => en.items[i].help.clone(),
+                Some(Row::Master) => "Every enhancement at once: Classic is the original game, Modern your own mix (all of them the first time). In play, Tab switches with a wipe.".into(),
                 Some(Row::Group(g)) => format!("Show or hide the {} settings (Enter / click; Left closes). Type to search every setting.", en.groups().get(g).cloned().unwrap_or_default()),
                 None => "Type to search the options.".into(),
             },

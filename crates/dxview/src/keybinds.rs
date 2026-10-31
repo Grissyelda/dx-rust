@@ -72,6 +72,7 @@ pub const ACTIONS: &[(&str, Input)] = &[
     ("Debug overlay", K(KeyCode::PageDown)),
     ("Third person view", K(KeyCode::KeyH)),
     ("Swap shoulder (third person)", K(KeyCode::KeyJ)),
+    ("Classic / Modern", K(KeyCode::Tab)),
 ];
 
 /// Opens and closes the editor; not rebindable so it can't be lost (F10 is an augmentation key, as in the original).

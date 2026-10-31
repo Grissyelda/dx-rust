@@ -215,6 +215,12 @@ pub fn get(key: &str) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// Whether settings.txt (or a menu since) has a value for this key.
+pub fn has(key: &str) -> bool {
+    ensure();
+    VALUES.read().ok().is_some_and(|v| v.as_ref().is_some_and(|m| m.contains_key(key)))
+}
+
 pub fn default_of(key: &str) -> f32 {
     DEFAULTS.iter().find(|d| d.0 == key).map(|d| d.1).unwrap_or(0.0)
 }

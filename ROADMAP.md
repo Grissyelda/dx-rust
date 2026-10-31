@@ -96,6 +96,8 @@ re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
     turrets that ignore animals, blasts that break strong doors, gibbed bodies dropping weapons, Muscle aug jumps
     while carrying, tool counts, item counts, duplicate keys, searched bodies, ammo totals, stack limits, faster
     infolinks, dropping whole stacks, binoculars on the scope key, restricted combat music, no flickering lights).
+12b. Classic / Modern: one switch for every enhancement at the top of Enhancements, and in play on Tab with a
+    cinematic wipe across the screen, after Halo 2: Anniversary (done; Modern brings back your own mix).
 
 ### Medium (systems whose pieces exist)
 13. HUD customisation: toggle, scale and fade each part (done).
