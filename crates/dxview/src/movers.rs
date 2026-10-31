@@ -310,6 +310,8 @@ pub fn frob(
         msg = None;
     }
     if open_it {
+        // Smarter AI (ours): guards that see a door move go and look.
+        crate::smartai::disturb(movers.rt[idx].location + DVec3::Z * 32.0, crate::smartai::Disturb::Door);
         let tag = info.tag.clone();
         trigger(info, &mut movers.rt[idx]);
         // Double doors: every mover with the same (non-default) tag.

@@ -124,35 +124,20 @@ impl Canvas {
         };
     }
 
-    fn put(&mut self, x: i32, y: i32, rgb: [f32; 3], style: Style) {
-        let (x0, y0, x1, y1) = self.clip;
-        if x < x0 || y < y0 || x >= x1 || y >= y1 {
-            return;
-        }
-        let s = self.s;
-        let row = self.w * s;
+    #[inline(always)]
+    fn put_unclipped(&mut self, x: i32, y: i32, rgb: [f32; 3], style: Style) {
+        let s = self.s as usize;
+        let row = self.w as usize * s;
         for sy in 0..s {
-            for sx in 0..s {
-                let i = ((y * s + sy) * row + x * s + sx) as usize;
-                let p = &mut self.px[i];
-                match style {
-                    Style::Translucent => {
-                        p[0] = (p[0] + rgb[0]).min(1.0);
-                        p[1] = (p[1] + rgb[1]).min(1.0);
-                        p[2] = (p[2] + rgb[2]).min(1.0);
-                    }
-                    Style::Modulated => {
-                        p[0] = (p[0] * rgb[0] * 2.0).min(1.0);
-                        p[1] = (p[1] * rgb[1] * 2.0).min(1.0);
-                        p[2] = (p[2] * rgb[2] * 2.0).min(1.0);
-                    }
-                    Style::Normal | Style::Masked => *p = [rgb[0], rgb[1], rgb[2], 1.0],
-                }
+            let base = (y as usize * s + sy) * row + x as usize * s;
+            for p in &mut self.px[base..base + s] {
+                blend(p, rgb, style);
             }
         }
     }
 
     /// GC.DrawTexture: the texture region starting at (u, v), unscaled (wrapping), into the destination box.
+    /// (Clipped once per call and walked row by row: this is most of every UI screen's drawing time.)
     #[allow(clippy::too_many_arguments)]
     pub fn texture(
         &mut self,
@@ -166,23 +151,34 @@ impl Canvas {
         style: Style,
         col: Rgb,
     ) {
-        let c = [
-            col[0] as f32 / 255.0,
-            col[1] as f32 / 255.0,
-            col[2] as f32 / 255.0,
-        ];
-        for dy in 0..h {
-            for dx in 0..w {
-                let t = tex.at(u + dx, v + dy);
-                if style == Style::Masked && t[3] == 0 {
+        let (tw, th) = (tex.w as i32, tex.h as i32);
+        if tw <= 0 || th <= 0 {
+            return;
+        }
+        let (x0, y0, x1, y1) = self.clip;
+        let (dx_lo, dx_hi) = ((x0 - x).max(0), (x1 - x).min(w));
+        let (dy_lo, dy_hi) = ((y0 - y).max(0), (y1 - y).min(h));
+        if dx_lo >= dx_hi || dy_lo >= dy_hi {
+            return;
+        }
+        let k = [col[0] as f32 / 255.0 / 255.0, col[1] as f32 / 255.0 / 255.0, col[2] as f32 / 255.0 / 255.0];
+        let masked = style == Style::Masked;
+        let tw_u = tw as usize;
+        for dy in dy_lo..dy_hi {
+            let ty = (v + dy).rem_euclid(th) as usize;
+            let src = &tex.px[ty * tw_u..(ty + 1) * tw_u];
+            let mut tx = (u + dx_lo).rem_euclid(tw) as usize;
+            for dx in dx_lo..dx_hi {
+                let t = src[tx];
+                tx += 1;
+                if tx == tw_u {
+                    tx = 0;
+                }
+                if masked && t[3] == 0 {
                     continue;
                 }
-                let rgb = [
-                    t[0] as f32 / 255.0 * c[0],
-                    t[1] as f32 / 255.0 * c[1],
-                    t[2] as f32 / 255.0 * c[2],
-                ];
-                self.put(x + dx, y + dy, rgb, style);
+                let rgb = [t[0] as f32 * k[0], t[1] as f32 * k[1], t[2] as f32 * k[2]];
+                self.put_unclipped(x + dx, y + dy, rgb, style);
             }
         }
     }
@@ -247,6 +243,31 @@ impl Canvas {
         }
     }
 
+    /// Draws a layer that's the same every frame for a key (a screen's background art for one theme and scale)
+    /// once and copies it in afterwards. Only for the first thing drawn on a blank canvas.
+    pub fn cached(&mut self, key: impl std::hash::Hash, draw: impl FnOnce(&mut Canvas)) {
+        use std::hash::{Hash, Hasher};
+        static LAYERS: std::sync::Mutex<Vec<(u64, Vec<[f32; 4]>)>> = std::sync::Mutex::new(Vec::new());
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut h);
+        (self.w, self.h, self.s).hash(&mut h);
+        let k = h.finish();
+        if let Ok(g) = LAYERS.lock() {
+            if let Some((_, px)) = g.iter().find(|(kk, px)| *kk == k && px.len() == self.px.len()) {
+                self.px.copy_from_slice(px);
+                return;
+            }
+        }
+        draw(self);
+        if let Ok(mut g) = LAYERS.lock() {
+            g.retain(|(kk, _)| *kk != k);
+            if g.len() >= 12 {
+                g.remove(0);
+            }
+            g.push((k, self.px.clone()));
+        }
+    }
+
     /// GC.DrawPattern with Texture'Solid': a flat box.
     pub fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, style: Style, col: Rgb) {
         let rgb = [
@@ -254,9 +275,10 @@ impl Canvas {
             col[1] as f32 / 255.0,
             col[2] as f32 / 255.0,
         ];
-        for dy in 0..h {
-            for dx in 0..w {
-                self.put(x + dx, y + dy, rgb, style);
+        let (x0, y0, x1, y1) = self.clip;
+        for py in (y.max(y0))..((y + h).min(y1)) {
+            for px in (x.max(x0))..((x + w).min(x1)) {
+                self.put_unclipped(px, py, rgb, style);
             }
         }
     }
@@ -357,13 +379,31 @@ impl Canvas {
 
     /// The pixels as RGBA8 bytes (premultiplied).
     pub fn to_rgba8(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.px.len() * 4);
-        for p in &self.px {
-            for v in p {
-                out.push((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        let mut out = vec![0u8; self.px.len() * 4];
+        for (o, p) in out.chunks_exact_mut(4).zip(&self.px) {
+            for c in 0..4 {
+                // (`as u8` saturates: below 0 is 0, above 255 is 255.)
+                o[c] = (p[c] * 255.0 + 0.5) as u8;
             }
         }
         out
+    }
+}
+
+#[inline(always)]
+fn blend(p: &mut [f32; 4], rgb: [f32; 3], style: Style) {
+    match style {
+        Style::Translucent => {
+            p[0] = (p[0] + rgb[0]).min(1.0);
+            p[1] = (p[1] + rgb[1]).min(1.0);
+            p[2] = (p[2] + rgb[2]).min(1.0);
+        }
+        Style::Modulated => {
+            p[0] = (p[0] * rgb[0] * 2.0).min(1.0);
+            p[1] = (p[1] * rgb[1] * 2.0).min(1.0);
+            p[2] = (p[2] * rgb[2] * 2.0).min(1.0);
+        }
+        Style::Normal | Style::Masked => *p = [rgb[0], rgb[1], rgb[2], 1.0],
     }
 }
 

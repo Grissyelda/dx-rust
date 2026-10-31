@@ -24,6 +24,8 @@ pub const SCREEN_IMAGES: usize = 6;
 pub const SCREEN_LOGS: usize = 7;
 /// Augmentique's PersonaScreenOutfits (a nav button of its own while the mod is on).
 pub const SCREEN_OUTFITS: usize = 8;
+/// Ours: the achievements list (from the Logs screen's button), in the Logs screen's frame.
+pub const SCREEN_ACHIEVEMENTS: usize = 10;
 /// HUDRechargeWindow (repair bot): not a persona screen, a small window of its own.
 pub const SCREEN_RECHARGE: usize = 100;
 
@@ -99,6 +101,9 @@ pub enum PB {
     /// GMDX perks: the Perks / Perks (G) / Info button, and a perk's Upgrade button (index into the list shown).
     Perks,
     PerkBuy(usize),
+    /// Logs <-> Achievements.
+    Achievements,
+    BackLogs,
 }
 
 /// What the screen asks the frame to do.
@@ -259,6 +264,7 @@ fn screen_class(ctx: &Ctx, screen: usize) -> &'static str {
     match (ctx.bot.as_ref().is_some_and(|b| b.med), screen) {
         (true, SCREEN_HEALTH) => "HUDMedBotHealthScreen",
         (true, SCREEN_AUGS) => "HUDMedBotAddAugsScreen",
+        _ if screen == SCREEN_ACHIEVEMENTS => "PersonaScreenLogs",
         _ => CLASSES[screen.min(CLASSES.len() - 1)],
     }
 }
@@ -325,60 +331,64 @@ fn draw_base(
             })
             .collect()
     };
-    let bcols = int_p(&d, "clientBorderTextureCols", 3).max(1);
-    let ccols = int_p(&d, "clientTextureCols", 3).max(1);
-    for (tx, ty, p) in grid("clientBorderTextures", bcols, 6, &d) {
-        if let Some(t) = ctx.hud.tex(ctx.assets, &p) {
-            c.texture(
-                tx,
-                by + ty,
-                t.w as i32,
-                t.h as i32,
-                0,
-                0,
-                &t,
-                Style::Translucent,
-                crate::menuui::h_col(1),
-            );
+    // The art under the widgets is the same every frame for a screen, theme and scale: drawn once, copied in.
+    let key = ("persona", screen_class(ctx, screen).to_string(), crate::menuui::h_col(0), crate::menuui::h_col(1));
+    c.cached(key, |c| {
+        let bcols = int_p(&d, "clientBorderTextureCols", 3).max(1);
+        let ccols = int_p(&d, "clientTextureCols", 3).max(1);
+        for (tx, ty, p) in grid("clientBorderTextures", bcols, 6, &d) {
+            if let Some(t) = ctx.hud.tex(ctx.assets, &p) {
+                c.texture(
+                    tx,
+                    by + ty,
+                    t.w as i32,
+                    t.h as i32,
+                    0,
+                    0,
+                    &t,
+                    Style::Translucent,
+                    crate::menuui::h_col(1),
+                );
+            }
         }
-    }
-    c.set_clip(Some((cx, cy, cw, ch)));
-    for (tx, ty, p) in grid("clientTextures", ccols, 6, &d) {
-        if let Some(t) = ctx.hud.tex(ctx.assets, &p) {
-            c.texture(
-                cx + tx,
-                cy + ty,
-                t.w as i32,
-                t.h as i32,
-                0,
-                0,
-                &t,
-                Style::Translucent,
-                crate::menuui::h_col(0),
-            );
+        c.set_clip(Some((cx, cy, cw, ch)));
+        for (tx, ty, p) in grid("clientTextures", ccols, 6, &d) {
+            if let Some(t) = ctx.hud.tex(ctx.assets, &p) {
+                c.texture(
+                    cx + tx,
+                    cy + ty,
+                    t.w as i32,
+                    t.h as i32,
+                    0,
+                    0,
+                    &t,
+                    Style::Translucent,
+                    crate::menuui::h_col(0),
+                );
+            }
         }
-    }
-    c.set_clip(None);
-    // Nav bar.
-    for (i, (x, w)) in [(17, 256), (17 + 256, 256), (17 + 512, 97)]
-        .iter()
-        .enumerate()
-    {
-        if let Some(t) = ctx
-            .hud
-            .ui(ctx.assets, &format!("PersonaNavBarBackground_{}", i + 1))
+        c.set_clip(None);
+        // Nav bar.
+        for (i, (x, w)) in [(17, 256), (17 + 256, 256), (17 + 512, 97)]
+            .iter()
+            .enumerate()
         {
-            c.texture(*x, 6, *w, 21, 0, 0, &t, Style::Translucent, crate::menuui::h_col(0));
+            if let Some(t) = ctx
+                .hud
+                .ui(ctx.assets, &format!("PersonaNavBarBackground_{}", i + 1))
+            {
+                c.texture(*x, 6, *w, 21, 0, 0, &t, Style::Translucent, crate::menuui::h_col(0));
+            }
         }
-    }
-    for (i, (x, w)) in [(0, 256), (256, 256), (512, 175)].iter().enumerate() {
-        if let Some(t) = ctx
-            .hud
-            .ui(ctx.assets, &format!("PersonaNavBarBorder_{}", i + 1))
-        {
-            c.texture(*x, 0, *w, 64, 0, 0, &t, Style::Translucent, crate::menuui::h_col(1));
+        for (i, (x, w)) in [(0, 256), (256, 256), (512, 175)].iter().enumerate() {
+            if let Some(t) = ctx
+                .hud
+                .ui(ctx.assets, &format!("PersonaNavBarBorder_{}", i + 1))
+            {
+                c.texture(*x, 0, *w, 64, 0, 0, &t, Style::Translucent, crate::menuui::h_col(1));
+            }
         }
-    }
+    });
     let state = |b: PB| -> usize {
         if pressed == Some(b) && hover == Some(b) {
             2
@@ -647,7 +657,11 @@ pub fn page(
         SCREEN_AUGS if med(ctx) => med_augs_hits(ctx, ui, cx, cy, &mut hits),
         SCREEN_AUGS => augs_hits(ctx, ui, cx, cy, &mut hits),
         SCREEN_HEALTH => health_hits(ctx, cx, cy, &mut hits),
-        SCREEN_LOGS => hits.push((PB::ClearLog, (cx + 10, cy + 384, 90, 16), true)),
+        SCREEN_LOGS => {
+            hits.push((PB::ClearLog, (cx + 10, cy + 384, 90, 16), true));
+            hits.push((PB::Achievements, (cx + 104, cy + 384, 112, 16), true));
+        }
+        SCREEN_ACHIEVEMENTS => hits.push((PB::BackLogs, (cx + 10, cy + 384, 90, 16), true)),
         SCREEN_GOALS => {
             goals_hits(ui, ctx.fonts, cx, cy, &mut hits);
             if ui.asking_delete {
@@ -704,7 +718,8 @@ pub fn page(
         }
     }
     if inp.wheel != 0.0 {
-        ui.scroll -= (inp.wheel * ctx.fonts.small.height as f32) as i32;
+        let step = if screen == SCREEN_ACHIEVEMENTS { 23 } else { ctx.fonts.small.height };
+        ui.scroll -= (inp.wheel * step as f32) as i32;
     }
     // Keys.
     match screen {
@@ -783,6 +798,7 @@ pub fn page(
             "Conversations",
         ),
         SCREEN_IMAGES => s_default(ctx, CLASSES[screen], "ImagesTitleText", "Images"),
+        SCREEN_ACHIEVEMENTS => "Achievements".to_string(),
         SCREEN_OUTFITS => {
             let t = crate::augmentique::text("OutfitsTitleText");
             if t.is_empty() { "Outfits".into() } else { t }
@@ -811,6 +827,7 @@ pub fn page(
         SCREEN_CONVERSATIONS => draw_cons(&mut c, ctx, ui, cx, cy, &state),
         SCREEN_IMAGES => draw_images(&mut c, ctx, ui, cx, cy, &state),
         SCREEN_OUTFITS => draw_outfits(&mut c, ctx, ui, cx, cy, &state, s),
+        SCREEN_ACHIEVEMENTS => draw_achievements(&mut c, ctx, ui, cx, cy, &state),
         _ => 0,
     };
     ui.scroll = ui.scroll.clamp(0, max_scroll.max(0));
@@ -818,6 +835,11 @@ pub fn page(
 }
 
 fn screen_action(screen: usize, ui: &mut PersonaUi, ctx: &mut Ctx, b: PB) -> Option<Act> {
+    match b {
+        PB::Achievements => return Some(Act::Nav(SCREEN_ACHIEVEMENTS)),
+        PB::BackLogs => return Some(Act::Nav(SCREEN_LOGS)),
+        _ => {}
+    }
     if screen == SCREEN_OUTFITS {
         outfits_action(ui, b);
         return None;
@@ -2562,7 +2584,29 @@ fn draw_logs(
         state(PB::ClearLog),
         false,
     );
+    draw_button(c, ctx.hud, ctx.assets, &f.headers, cx + 104, cy + 384, 112, "Ac|&hievements", state(PB::Achievements), false);
     (lines.len() as i32 * f.small.height - h).max(0)
+}
+
+/// Ours: the achievements, in the Logs screen's frame - icon, name, goal and when it was unlocked (or progress).
+fn draw_achievements(c: &mut Canvas, ctx: &mut Ctx, ui: &mut PersonaUi, cx: i32, cy: i32, state: &dyn Fn(PB) -> usize) -> i32 {
+    let f = ctx.fonts;
+    let (x, y, w, h) = (cx + 14, cy + 30, 400, 346);
+    let max = crate::achievements::draw_list(c, &f.headers, &f.small, x, y, w, h, ui.scroll);
+    draw_button(c, ctx.hud, ctx.assets, &f.headers, cx + 10, cy + 384, 90, "|&Logs", state(PB::BackLogs), false);
+    let n = crate::achievements::unlocked_count();
+    c.text(
+        &f.headers,
+        cx + 110,
+        cy + 385,
+        300,
+        f.headers.height,
+        HAlign::Right,
+        VAlign::Top,
+        crate::menuui::h_col(9),
+        &format!("{n} of {} unlocked", crate::achievements::LIST.len()),
+    );
+    max
 }
 
 // ------------------------------------------------------------------------------------------------ goals, notes

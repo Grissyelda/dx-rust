@@ -51,6 +51,9 @@ pub const PRESET: &[(&str, f32)] = &[
     ("RestrictedCombatMusic", 1.0),
     // Gameplay and AI.
     ("BodyAlarms", 1.0),
+    ("SmarterAI", 1.0),
+    ("DiegeticScreens", 1.0),
+    ("AlertIndicators", 1.0),
     ("BulletPenetration", 1.0),
     ("CarryCover", 1.0),
     ("DTSEnergy", 1.0),

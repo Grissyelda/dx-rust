@@ -2041,6 +2041,7 @@ impl ConState {
             }
         }
         let con = p.con;
+        crate::achievements::choice(&self.db.cons[con].name, &ch.text);
         p.ev = if ch.label.is_empty() {
             p.ev
         } else {

@@ -811,7 +811,7 @@ pub fn security_system(
                     c.check_t = 0.0;
                     // CheckPlayerVisibility.
                     let d = me.distance(c.pos);
-                    if detectable && !radar_trans && d <= c.range && sees_player(&world, c.pos) {
+                    if detectable && !radar_trans && d <= crate::smartai::camera_range(c.range) && sees_player(&world, c.pos) {
                         let (rp, ry) = rotator(me - c.pos);
                         let yaw = wrap(c.rot.1 - ry).abs();
                         let pitch = wrap(c.rot.0 - rp).abs();
@@ -823,7 +823,7 @@ pub fn security_system(
                             c.seen = true;
                             c.track = true;
                             c.player_loc = me - DVec3::Z * (me_h - 5.0);
-                            if !c.triggered && c.trigger_t >= c.trigger_delay {
+                            if !c.triggered && c.trigger_t >= crate::smartai::camera_delay(c.trigger_delay) {
                                 cam_event(c, true);
                                 println!("SECURITY camera {} raises the alarm", lvl.actors[c.actor].name);
                             }
@@ -834,6 +834,10 @@ pub fn security_system(
             if c.seen {
                 if !c.triggered {
                     c.trigger_t += dt;
+                    // Smarter AI (GMDX bHardcoreAI1): every beep tells the guards near the player where they are.
+                    if c.trigger_t % 0.5 > 0.4 && (c.trigger_t - dt) % 0.5 <= 0.4 {
+                        crate::smartai::camera_spotted(c.player_loc + DVec3::Z * 40.0);
+                    }
                     if c.trigger_t % 0.5 > 0.4 {
                         lens = RED;
                         light = Some(0);

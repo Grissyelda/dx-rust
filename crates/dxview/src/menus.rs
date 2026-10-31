@@ -658,8 +658,11 @@ impl Enhance {
             ("DialogueHotkeys", "Interface", "Dialogue Hotkeys", "Number the first four conversation choices; keys 1-4 pick them."),
             ("InventorySort", "Interface", "Inventory Auto-Sort", "A Sort button on the inventory screen packs the items neatly, weapons first."),
             ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish, many more blood splats stay, and blood, bullet holes and casings are still there when you come back to a map or load a save."),
+            ("DiegeticScreens", "Interface", "Terminals In The World", "Computers, ATMs and keypads are used where they stand: the view moves in to the screen (the security terminal unfolds first), the original interface shows on the monitor and the mouse works on it; keypads are pressed button by button. Move the mouse off the screen for a second to step away."),
             ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord."),
             ("BodyAlarms", "AI", "Bodies Raise Alarms", "Guards who find a friend's body - dead or unconscious - run for the nearest alarm and then search the spot; with no alarm about they shout and others come to look."),
+            ("SmarterAI", "AI", "Smarter AI", "GMDX's AI work plus our stealth: guards see better by difficulty and may open fire at once when they spot or hear you close by, wait a moment before shooting after losing you, lay down suppressive fire where you vanished, miss more against a moving target; cameras see farther and tell guards where you are. Ours: true darkness hides you beyond arm's reach, guards that searched in vain stay on edge, call each other over, and notice lights going out and doors opening."),
+            ("AlertIndicators", "AI", "Alert Indicators", "A small marker over a hostile guard's head: an eye filling as they grow suspicious, a question mark while they search, an exclamation mark in a fight."),
             ("ThrownNoise", "AI", "Thrown Objects Make Noise", "Anything you throw is heard where it lands or bounces - further for heavy things - and armed guards in earshot go to look. Good for distractions."),
             ("SurfaceFootsteps", "AI", "Footsteps Louder On Hard Floors", "Carpet and grass muffle your steps, metal and water give you away; guards hear you by what you walk on."),
             ("WeaponInertia", "Visuals", "Weapon Inertia", "The weapon in your hands trails a little behind when you turn (GMDX's Viewmodel Inertia)."),
@@ -1022,6 +1025,26 @@ static KEYPAD_RESULTS: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::
 pub fn open_keypad(blocker: usize, valid: String, instant: bool) {
     if let Ok(mut k) = KEYPAD_OPEN.lock() {
         *k = Some((blocker, valid, instant));
+    }
+}
+
+/// The keypad in use (its blocker), its code so far and the result showing (diegetic.rs).
+static KEYPAD_NOW: std::sync::Mutex<Option<(usize, String, Option<bool>, usize)>> = std::sync::Mutex::new(None);
+static KEYPAD_PRESSES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+pub fn keypad_blocker() -> Option<usize> {
+    KEYPAD_NOW.lock().ok().and_then(|k| k.as_ref().map(|k| k.0))
+}
+
+/// (code typed, result shown: Some(right?) during KeypadDelay, the code's length).
+pub fn keypad_state() -> Option<(String, Option<bool>, usize)> {
+    KEYPAD_NOW.lock().ok().and_then(|k| k.as_ref().map(|k| (k.1.clone(), k.2, k.3)))
+}
+
+/// A button pressed on the keypad in the world (0..8 = 1..9, 9 = *, 10 = 0, 11 = #).
+pub fn keypad_press_index(i: usize) {
+    if let Ok(mut q) = KEYPAD_PRESSES.lock() {
+        q.push(i);
     }
 }
 
@@ -1530,7 +1553,10 @@ fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waitin
     let (ww, wh) = win_size(&f, fonts);
     u.hit(W::Win, (0, 0, ww, wh), true);
     if let Body::Keypad(k) = &win.body {
-        draw_keypad(u, k, fonts);
+        // Diegetic keypads are used in the world: no window (diegetic.rs).
+        if !crate::diegetic::keypad_active() {
+            draw_keypad(u, k, fonts);
+        }
         return;
     }
     // Shadow (MenuUIMessageBoxShadowWindow: two 256-wide halves, by button count).
@@ -2406,6 +2432,13 @@ pub fn menu_system(
             }
         }
     }
+    // Buttons pressed on the keypad in the world (diegetic.rs).
+    let presses: Vec<usize> = KEYPAD_PRESSES.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
+        for i in presses {
+            keypad_press(k, i);
+        }
+    }
     // HUDKeypadWindow.KeypadDelay: a second on the result, then close (right) or start over (wrong).
     if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
         if let Some((t, ok)) = k.wait.as_mut() {
@@ -2420,6 +2453,12 @@ pub fn menu_system(
                 }
             }
         }
+    }
+    if let Ok(mut now) = KEYPAD_NOW.lock() {
+        *now = match st.stack.last().map(|w| &w.body) {
+            Some(Body::Keypad(k)) => Some((k.blocker, k.input.clone(), k.wait.map(|w| w.1), k.valid.chars().count())),
+            _ => None,
+        };
     }
     // DeusExPlayer.QuickSave / QuickLoad (ConfirmQuickLoad asks first).
     if st.stack.is_empty() && st.intro.is_none() && !others && !others_before {

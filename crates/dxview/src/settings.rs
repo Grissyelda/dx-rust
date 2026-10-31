@@ -95,6 +95,9 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     // v2 medium enhancements (all off unless noted).
     ("DTSEnergy", 0.0),
     ("BodyAlarms", 0.0),
+    ("SmarterAI", 0.0),
+    ("DiegeticScreens", 0.0),
+    ("AlertIndicators", 0.0),
     ("ThrownNoise", 0.0),
     ("SurfaceFootsteps", 0.0),
     ("WeaponInertia", 0.0),

@@ -325,16 +325,21 @@ impl FireTex {
         // Spread and cool: each texel becomes the faded sum of its row neighbours and the texel below.
         let (w, h) = (self.width, self.height);
         let rise = if self.rising { 1 } else { 0 };
+        // (The edges wrap; the inner texels take no modulo, which was most of this texture's frame time.)
+        let fade = &self.fade;
         for y in 0..h {
-            let src = ((y + rise) % h) * w;
-            let next = ((y + rise + 1) % h) * w;
-            for x in 0..w {
-                let l = self.heat[src + (x + w - 1) % w] as usize;
-                let c = self.heat[src + x] as usize;
-                let r = self.heat[src + (x + 1) % w] as usize;
-                let b = self.heat[next + x] as usize;
-                self.work[y * w + x] = self.fade[l + c + r + b];
+            let src = &self.heat[((y + rise) % h) * w..][..w];
+            let next = &self.heat[((y + rise + 1) % h) * w..][..w];
+            let out = &mut self.work[y * w..][..w];
+            if w == 1 {
+                out[0] = fade[src[0] as usize * 3 + next[0] as usize];
+                continue;
             }
+            out[0] = fade[src[w - 1] as usize + src[0] as usize + src[1] as usize + next[0] as usize];
+            for x in 1..w - 1 {
+                out[x] = fade[src[x - 1] as usize + src[x] as usize + src[x + 1] as usize + next[x] as usize];
+            }
+            out[w - 1] = fade[src[w - 2] as usize + src[w - 1] as usize + src[0] as usize + next[w - 1] as usize];
         }
         std::mem::swap(&mut self.heat, &mut self.work);
     }
@@ -388,10 +393,9 @@ impl FireTex {
 
     /// Current frame as RGBA8 through the palette.
     pub fn rgba(&self, out: &mut Vec<u8>) {
-        out.clear();
-        out.reserve(self.heat.len() * 4);
-        for &v in &self.heat {
-            out.extend_from_slice(&self.palette[v as usize]);
+        out.resize(self.heat.len() * 4, 0);
+        for (px, &v) in out.chunks_exact_mut(4).zip(&self.heat) {
+            px.copy_from_slice(&self.palette[v as usize]);
         }
     }
 }

@@ -424,6 +424,8 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::smartai::reset_level();
+    crate::diegetic::reset_level();
     crate::abilities::reset_level();
     crate::shake::reset_level();
     crate::particles::reset_level();
@@ -652,6 +654,30 @@ fn dev_goto(world: &mut World) {
                 ));
                 println!("GOTO placed LAM at {v:?}");
             }
+            return;
+        }
+        // "secs;<ActorName>;frob": use a terminal or keypad (diegetic screen tests; DXVIEW_DG_MOUSE="u,v" puts the
+        // mouse on the screen).
+        Some("frob") => {
+            let lvl = &world.resource::<crate::LevelRes>().0;
+            if let Some(i) = lvl.actors.iter().position(|a| a.name.eq_ignore_ascii_case(map)) {
+                let class = lvl.actors[i].class.clone();
+                let code = match unreal_pkg::props::find(&lvl.actors[i].props, "validCode") {
+                    Some(unreal_pkg::props::Value::Str(s)) => s.clone(),
+                    _ => "1234".to_string(),
+                };
+                if crate::computers::is_terminal(&class) {
+                    crate::computers::frob(i);
+                } else if class.starts_with("Keypad") {
+                    let b = world.resource::<crate::actors::Blockers>().list.iter().position(|c| c.actor == i);
+                    if let Some(b) = b {
+                        crate::menus::open_keypad(b, code, false);
+                    }
+                }
+                println!("GOTO frob {map} ({class})");
+            }
+            *SHOT_AT.lock().unwrap() = Some((now + std::time::Duration::from_secs_f32(
+                std::env::var("DXVIEW_GOTO_SHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
             return;
         }
         // "secs;<FlagName>;flag": set a game flag (mission script tests).

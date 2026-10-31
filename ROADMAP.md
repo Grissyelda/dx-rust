@@ -60,7 +60,9 @@ None left. The credits easter eggs THEREISNOSPOON (the Matrix view) and IAMWARRE
 NPC updates, transform and visibility propagation, the extra camera passes, draw-call count, and mirrors (each
 reflecting surface is a full extra render). Done so far: memory-mapped packages, compressed (BC1) textures on the
 GPU, paged GPU vertex animation, weapons prepared at map load so drawing one never stalls, and far fewer meshes
-re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand).
+re-uploaded every frame (shiny surfaces, relit decorations, the weapon in hand). Since then: the inventory, persona and
+menu screens draw at 1x and copy their unchanging art (about a third of the frame time they used), fire textures
+only animate while seen and step on all cores, and rain drops find their landing spots per cell instead of per drop.
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.
@@ -148,14 +150,21 @@ Augmentation (image-intensifier night vision with flare, grain and white-hot bod
 Shadows with contact hardening.
 
 ### Very large (needs skeletons, new content, or touches the whole engine)
-38. Smarter AI (opt-in), including stealth that respects darkness more than the original's guards do.
+38. Smarter AI (done, opt-in): GMDX's AI work - perception tightened by difficulty, guards that may open fire at
+    once when they spot or hear you close by, a moment's pause before shooting after losing sight of you,
+    suppressive fire where you vanished, worse aim against a moving target, cameras that see farther and tell the
+    guards where you are - plus our own stealth: true darkness hides you beyond arm's reach, guards that searched in
+    vain stay on edge, call each other over, and notice lights going out and doors opening; optional alert markers
+    over their heads. Still to come from GMDX: smarter strafing, melee bashes, NPC grenades, wider alarms.
 39. HD textures and models (done with the HDTP, New Vision and Helios mods - Helios dresses the people, HDTP the
     items - switchable in Settings), PBR and smoother animation.
 40. JC's body visible in first person.
 41. Diegetic damage, healing and augs shown on the body.
 42. Ragdolls and posable models.
 43. Cloth and wetness.
-44. Computers shown in the world while it keeps running.
+44. Computers shown in the world while it keeps running (done: Terminals In The World - the view moves in to the
+    monitor, the security terminal unfolds, the original interface shows on the screen and the mouse works on it;
+    keypads are pressed button by button with a small display above; move the mouse away to step back).
 45. More NPCs and livelier locations.
 46. **Mod support** (done in code; being tested): the Lay D Denton Project, HDTP, New Vision, Visible
     Attachments, Augmentique (outfits and weapon skins) and GMDX: Augmented Edition (perks, bugfixes and
@@ -178,6 +187,9 @@ Shadows with contact hardening.
     from an environment map per zone or screen-space reflections, instead of today's flat, matte materials.
 52. **Emissive surfaces**: every glowing texture group (lamp fixtures, ceiling panels, console screens, signs,
     alarm lights) marked emissive so it blooms and, with remastered lighting, lights its surroundings itself.
+
+Also done: **achievements** - the fifty of Deus Ex Remastered with our own icons, an Achievements screen off the
+Logs screen, an unlock notice in the HUD, kept for the player across saves.
 
 Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sit in the
 last tier.
