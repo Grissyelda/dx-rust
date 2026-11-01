@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### macOS
+- Apple Silicon Macs run the game natively on Metal. `BUILD_MAC.sh` makes `dist/DX RUST.app`.
+- The launcher and the game find the Deus Ex folder in the Steam library, in the folder that Steam's
+  `download_depot` command writes, and in the usual folders.
+- An app bundle keeps settings and saves in Application Support.
+- The mouse is released when the game loses focus, and the window keeps its size on a Retina display.
+
 ### Remastered lighting (enhancements, on in Modern)
 - Remastered Lighting: every wall and floor relit per pixel by its strongest lamps, with real falloff and shape,
   keeping the original's baked shadows.
