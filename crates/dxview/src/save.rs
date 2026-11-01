@@ -603,7 +603,7 @@ pub fn format_date(unix: u64) -> String {
     format!("{m}/{d}/{y} {h12}:{min:02} {ap}")
 }
 
-/// The system's UTC offset in minutes (Windows: GetTimeZoneInformation; elsewhere UTC unless TZ_OFFSET_HOURS).
+/// The system's UTC offset in minutes (Windows: GetTimeZoneInformation; Unix: localtime_r).
 #[cfg(windows)]
 fn local_offset_minutes() -> i64 {
     #[repr(C)]
@@ -628,7 +628,27 @@ fn local_offset_minutes() -> i64 {
     let bias = tz.bias + if r == 2 { tz.daylight_bias } else { tz.standard_bias };
     -(bias as i64)
 }
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn local_offset_minutes() -> i64 {
+    /// `struct tm` up to tm_gmtoff, the same on 64-bit Linux and macOS.
+    #[repr(C)]
+    struct Tm {
+        fields: [std::ffi::c_int; 9],
+        gmtoff: std::ffi::c_long,
+        zone: *const std::ffi::c_char,
+    }
+    extern "C" {
+        fn time(out: *mut i64) -> i64;
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let mut tm: Tm = unsafe { std::mem::zeroed() };
+    let now = unsafe { time(std::ptr::null_mut()) };
+    if unsafe { localtime_r(&now, &mut tm) }.is_null() {
+        return 0;
+    }
+    tm.gmtoff as i64 / 60
+}
+#[cfg(not(any(windows, unix)))]
 fn local_offset_minutes() -> i64 {
     0
 }
