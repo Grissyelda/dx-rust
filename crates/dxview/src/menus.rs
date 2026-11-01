@@ -3546,7 +3546,7 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                     ("FullScreen", _) => acts.push(Act::ToggleFullscreen),
                     ("RenderDevice", _) => acts.push(Act::Msg(
                         "Rendering Device".into(),
-                        "This version always renders with wgpu (Vulkan / DirectX 12).".into(),
+                        "This version always renders with wgpu (Vulkan, DirectX 12 or Metal).".into(),
                         false,
                         MsgPurpose::Restart,
                     )),
