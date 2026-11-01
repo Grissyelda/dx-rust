@@ -480,39 +480,26 @@ pub fn weather_system(
         let end = pos + vel * life as f64;
         let lkey = ((pos.x / 16.0).floor() as i32, (pos.y / 16.0).floor() as i32, key.2);
         let ws = &mut *st;
-        let land = *ws.landing.entry(lkey).or_insert_with(|| {
-            // Straight down from the cell's ceiling (wind slant is small against the fall).
-            let c = DVec3::new((lkey.0 as f64 + 0.5) * 16.0, (lkey.1 as f64 + 0.5) * 16.0, top);
-            let low = DVec3::new(c.x, c.y, me.z - 2500.0);
-            let h = lvl.collision.trace(c, low, DVec3::ZERO);
-            let (mut z, mut n) = if h.fraction < 1.0 { (c.z + (low.z - c.z) * h.fraction, h.normal) } else { (f64::NEG_INFINITY, DVec3::Z) };
-            // A drawn roof above where it would land (no collision there): it lands on the roof.
-            if let Some(rz) = roofs_below(&ws.roofs, c, c.z - z.max(low.z)) {
-                if rz > z + 1.0 {
-                    z = rz;
-                    n = DVec3::Z;
-                }
-            }
-            // Water on the way down: if where it ends is in water, the surface is somewhere between (bisect).
-            let at = DVec3::new(c.x, c.y, z.max(low.z) + 0.5);
-            let water = crate::actors::water_at(lvl, at).map(|_| {
-                let (mut a, mut b) = (c, at);
-                if crate::actors::water_at(lvl, a).is_some() {
-                    return a.z + 1.0;
-                }
-                for _ in 0..12 {
-                    let m = (a + b) * 0.5;
-                    if crate::actors::water_at(lvl, m).is_some() {
-                        b = m;
-                    } else {
-                        a = m;
-                    }
-                }
-                b.z
-            });
-            Land { z, n, water }
-        });
+        let land = land_cell(ws, lvl, lkey, top, me.z);
         // Starting below where this cell's rain lands (inside, under the roof): it never fell from the sky.
+        if land.z > pos.z - 1.0 {
+            continue;
+        }
+        // The wind slants the fall: where it comes down is another cell (under a roof's edge, the dock's), so land
+        // by the cell under the point it reaches that height (twice, for a slope).
+        let mut land = land;
+        for _ in 0..2 {
+            let t = ((pos.z - land.z.max(end.z)) / -vel.z).max(0.0);
+            let p = pos + vel * t;
+            let k2 = ((p.x / 16.0).floor() as i32, (p.y / 16.0).floor() as i32, key.2);
+            if k2 == lkey {
+                break;
+            }
+            land = land_cell(ws, lvl, k2, top, me.z);
+            if land.z > pos.z - 1.0 {
+                break;
+            }
+        }
         if land.z > pos.z - 1.0 {
             continue;
         }
@@ -799,4 +786,47 @@ impl Material for RainMaterial {
 
 pub fn setup_rain_shader(mut shaders: ResMut<Assets<Shader>>) {
     let _ = shaders.insert(&RAIN_SHADER, Shader::from_wgsl(include_str!("shaders/rain.wgsl"), "dxview/rain.wgsl"));
+}
+
+/// Where rain coming down a 16-unit cell lands: straight down from the cell's ceiling `top` (the collision, a drawn
+/// roof over it, water on the way down), cached per cell.
+fn land_cell(ws: &mut WeatherState, lvl: &dx_level::Level, lkey: (i32, i32, i32), top: f64, me_z: f64) -> Land {
+    if let Some(l) = ws.landing.get(&lkey) {
+        return *l;
+    }
+    let me = DVec3::new(0.0, 0.0, me_z);
+    let land = (|| {
+            // Straight down from the cell's ceiling (wind slant is small against the fall).
+            let c = DVec3::new((lkey.0 as f64 + 0.5) * 16.0, (lkey.1 as f64 + 0.5) * 16.0, top);
+            let low = DVec3::new(c.x, c.y, me.z - 2500.0);
+            let h = lvl.collision.trace(c, low, DVec3::ZERO);
+            let (mut z, mut n) = if h.fraction < 1.0 { (c.z + (low.z - c.z) * h.fraction, h.normal) } else { (f64::NEG_INFINITY, DVec3::Z) };
+            // A drawn roof above where it would land (no collision there): it lands on the roof.
+            if let Some(rz) = roofs_below(&ws.roofs, c, c.z - z.max(low.z)) {
+                if rz > z + 1.0 {
+                    z = rz;
+                    n = DVec3::Z;
+                }
+            }
+            // Water on the way down: if where it ends is in water, the surface is somewhere between (bisect).
+            let at = DVec3::new(c.x, c.y, z.max(low.z) + 0.5);
+            let water = crate::actors::water_at(lvl, at).map(|_| {
+                let (mut a, mut b) = (c, at);
+                if crate::actors::water_at(lvl, a).is_some() {
+                    return a.z + 1.0;
+                }
+                for _ in 0..12 {
+                    let m = (a + b) * 0.5;
+                    if crate::actors::water_at(lvl, m).is_some() {
+                        b = m;
+                    } else {
+                        a = m;
+                    }
+                }
+                b.z
+            });
+            Land { z, n, water }
+        })();
+    ws.landing.insert(lkey, land);
+    land
 }

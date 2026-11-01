@@ -250,7 +250,32 @@ fn bodies() -> &'static HashMap<String, Body> {
 /// The rebuilt body for an original mesh ("DeusExCharacters.GM_Trench" or "GM_Trench"), if there is one.
 pub fn body_for(mesh: &str) -> Option<&'static Body> {
     let short = mesh.rsplit('.').next().unwrap_or(mesh).to_ascii_lowercase();
-    bodies().get(&short)
+    if let Some(b) = bodies().get(&short) {
+        return Some(b);
+    }
+    // Augmentique's outfit meshes (AMTGM_Trench, AMTGFM_SuitSkirt_F...) are the
+    // vanilla bodies under another name; variants (_F, _S, _B without a body of their own) fall back to the base.
+    let mut n = short.as_str();
+    for p in ["amt"] {
+        if let Some(r) = n.strip_prefix(p) {
+            n = r;
+        }
+    }
+    let mut n = n.to_string();
+    loop {
+        if let Some(b) = bodies().get(&n) {
+            return Some(b);
+        }
+        match n.rfind('_') {
+            Some(i) if n[..i].contains('_') => n.truncate(i),
+            _ => return None,
+        }
+    }
+}
+
+fn log_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("DXVIEW_SKELLOG").is_some())
 }
 
 pub fn enabled() -> bool {
@@ -595,7 +620,11 @@ fn build(
                 continue;
             }
             let tex = slot_tex.get(&(sec.slot as u32)).cloned().flatten();
-            let mh = meshes.add(build_mesh(sec, nm));
+            let mut mesh = build_mesh(sec, nm);
+            if dx_level::actors::LID_FIX.load(std::sync::atomic::Ordering::Relaxed) {
+                helios_lids(&mut mesh, sec, body);
+            }
+            let mh = meshes.add(mesh);
             first_mesh.get_or_insert(mh.clone());
             let alpha = match sec.style.as_str() {
                 "MASKED" => AlphaMode::Mask(0.5),
@@ -613,7 +642,14 @@ fn build(
                     alpha_mode: alpha,
                     ..default()
                 },
-                extension: ActorLit { lights: ActorLights { misc: Vec4::new(0.0, dx_level::lighting::LIGHT_GAIN, 0.0, 0.0), ..default() } },
+                // Modulated sections (glasses frames, masks) take no light in Unreal: lit, a GrayMaskTex slot (meant
+                // to vanish) drew as black glasses.
+                extension: ActorLit {
+                    lights: ActorLights {
+                        misc: Vec4::new(0.0, dx_level::lighting::LIGHT_GAIN, if sec.style == "MODULATED" { 1.0 } else { 0.0 }, 0.0),
+                        ..default()
+                    },
+                },
             });
             let layer = layers.clone().unwrap_or_else(|| {
                 if matches!(alpha, AlphaMode::Opaque | AlphaMode::Mask(_)) {
@@ -752,12 +788,27 @@ pub fn pose_system(
     *tick = tick.wrapping_add(1);
     let tick = *tick;
     let eye = cam.iter().next().map(|t| t.translation());
-    // Which bodies are drawn (any of their sections was on screen last frame).
+    // Which bodies to pose: any of their sections on screen last frame, or near the eye (the skinned bounds lag a
+    // frame behind the pose and a body culled on stale bounds must not freeze for good), or never posed yet.
     let on_screen: std::collections::HashSet<Entity> = q
         .iter()
-        .filter(|(_, s, ..)| s.meshes.iter().any(|m| seen.get(*m).is_ok_and(|v| v.get())) || s.shown_seq.is_none())
+        .filter(|(_, s, _, gt, ..)| {
+            s.shown_seq.is_none()
+                || eye.is_none_or(|c| c.distance_squared(gt.translation()) < 45.0 * 45.0)
+                || s.meshes.iter().any(|m| seen.get(*m).is_ok_and(|v| v.get()))
+        })
         .map(|(e, ..)| e)
         .collect();
+    if log_on() && tick % 120 == 0 {
+        for (e, s, a, gt, ..) in q.iter() {
+            let seen_any = s.meshes.iter().any(|m| seen.get(*m).is_ok_and(|v| v.get()));
+            let d = eye.map_or(-1.0, |c| c.distance(gt.translation()));
+            bevy::log::info!(
+                "SKEL {:?} actor {} seq {:?} t {:.2} seen {} near {:.1} m posed {} ragdoll {} lights {:.2}",
+                e, s.mesh_actor, s.shown_seq, a.time, seen_any, d, on_screen.contains(&e), s.ragdoll, s.light_in
+            );
+        }
+    }
     // Poses, faces and weapon frames, in parallel.
     let hurt = crate::bodyfx::hurt_on();
     let cloth = cloth_on();
@@ -813,10 +864,11 @@ pub fn pose_system(
         }
         let Some(ma) = lvl.mesh_actors.get(s.mesh_actor) else { continue };
         s.light_in -= dt;
-        if s.light_in > 0.0 || !on_screen.contains(&e) {
+        if s.light_in > 0.0 {
             continue;
         }
-        s.light_in = 0.15;
+        // Off screen too (slower): a body walking into view is never drawn unlit.
+        s.light_in = if on_screen.contains(&e) { 0.15 } else { 1.0 };
         let ue = dx_level::bevy_to_ue(gt.translation().to_array());
         relight(&mut s, lvl, ue, ma.scale_glow, &mut mats);
     }
@@ -866,10 +918,58 @@ fn weapon_frame(s: &SkelBody) -> Option<[[f32; 3]; 4]> {
     Some([o.to_array(), x.to_array(), y.to_array(), z.to_array()])
 }
 
+/// Helios repaints the eyes larger, up into the strip of the face picture the eyelids sample, so a closing lid
+/// would show a painted eye. With Helios dressing the people, every vertex the Blink shape moves takes the picture
+/// coordinates of the nearest still vertex above it (the skin of the crease): the lids close as skin, as they do on
+/// the original faces with the original art.
+fn helios_lids(mesh: &mut Mesh, sec: &Section, body: &Body) {
+    let Some(k) = body.morphs.iter().position(|m| m.eq_ignore_ascii_case("Blink")) else { return };
+    let Some(Some(d)) = sec.morphs.get(k) else { return };
+    let moving: Vec<bool> = d.iter().map(|v| v[0].abs() + v[1].abs() + v[2].abs() > 1e-4).collect();
+    if !moving.iter().any(|m| *m) {
+        return;
+    }
+    let mut uvs = sec.uvs.clone();
+    for (v, &m) in moving.iter().enumerate() {
+        if !m {
+            continue;
+        }
+        let p = Vec3::from(sec.positions[v]);
+        let best = (0..sec.positions.len())
+            .filter(|&u| !moving[u] && sec.positions[u][1] > p.y)
+            .min_by(|&a, &b| Vec3::from(sec.positions[a]).distance_squared(p).total_cmp(&Vec3::from(sec.positions[b]).distance_squared(p)));
+        if let Some(u) = best {
+            uvs[v] = sec.uvs[u];
+        }
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+}
+
+/// DXVIEW_FACETEST="MouthA:1,Blink:0.5": hold these face shapes on every rebuilt body (screenshots).
+fn face_test() -> &'static [(String, f32)] {
+    static T: OnceLock<Vec<(String, f32)>> = OnceLock::new();
+    T.get_or_init(|| {
+        std::env::var("DXVIEW_FACETEST")
+            .ok()
+            .map(|v| v.split(',').filter_map(|p| p.split_once(':').and_then(|(n, x)| Some((n.trim().to_string(), x.trim().parse().ok()?)))).collect())
+            .unwrap_or_default()
+    })
+}
+
 fn face_weights(s: &mut SkelBody, mesh: &dx_level::actors::AnimMesh, face: Option<&crate::actors::FaceKey>, talking: bool, dt: f32, w: &mut [f32]) {
     let idx = |name: &str| s.body.morphs.iter().position(|m| m.eq_ignore_ascii_case(name));
     for x in w.iter_mut() {
         *x = 0.0;
+    }
+    if !face_test().is_empty() {
+        for (n, v) in face_test() {
+            if let Some(i) = idx(n) {
+                if let Some(x) = w.get_mut(i) {
+                    *x = *v;
+                }
+            }
+        }
+        return;
     }
     let mut set = |name: &str, v: f32, w: &mut [f32]| {
         if let Some(i) = idx(name) {
@@ -1122,7 +1222,9 @@ fn relight(s: &mut SkelBody, lvl: &dx_level::Level, ue: [f32; 3], scale_glow: f3
     s.wet_shown = s.wet;
     for h in &s.mats {
         if let Some(mut m) = mats.get_mut(h) {
+            let unlit = m.extension.lights.misc.z;
             m.extension.lights = lt;
+            m.extension.lights.misc.z = unlit;
         }
     }
 }
@@ -1150,8 +1252,17 @@ impl BuildParams<'_, '_> {
         }
     }
 
+    /// `build_from_mirror` drawn in the world (and shadows), like the NPCs' bodies.
+    pub fn build_from_mirror_world(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity) -> Option<SkelBody> {
+        self.build_mirror(commands, b, body, parent, None)
+    }
+
     /// A rebuilt body under `parent` with the textures JC's mirror body wears (None until its parts exist).
     pub fn build_from_mirror(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity, layers: RenderLayers) -> Option<SkelBody> {
+        self.build_mirror(commands, b, body, parent, Some(layers))
+    }
+
+    fn build_mirror(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity, layers: Option<RenderLayers>) -> Option<SkelBody> {
         let ch = self.kids.get(b.root).ok()?;
         let mut slot_tex: HashMap<u32, Option<Handle<Image>>> = HashMap::new();
         for c in ch.iter() {
@@ -1165,7 +1276,7 @@ impl BuildParams<'_, '_> {
         if slot_tex.is_empty() {
             return None;
         }
-        Some(build(commands, &mut self.meshes, &mut self.mats, &mut self.ibms, body, parent, &slot_tex, &b.mesh, 1.0, usize::MAX, Some(layers)))
+        Some(build(commands, &mut self.meshes, &mut self.mats, &mut self.ibms, body, parent, &slot_tex, &b.mesh, 1.0, usize::MAX, layers))
     }
 }
 
@@ -1289,7 +1400,7 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         s.cloth_prev = vec![Vec3::ZERO; bones.len()];
     }
     let scale = world.x_axis.truncate().length();
-    let gravity = Vec3::NEG_Y * (950.0 / 52.5) * 0.35;
+    let gravity = Vec3::NEG_Y * (950.0 / 52.5) * 0.15;
     for (k, &(i, len)) in bones.iter().enumerate() {
         let parent = rig.parent[i].map_or(Mat4::IDENTITY, |p| g[p]);
         let anim = parent * s.pose[i].mat();
@@ -1307,8 +1418,12 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
             g[i] = anim;
             continue;
         }
-        let vel = (tail - prev) * 0.9;
-        let mut next = tail + vel + (target_w - tail) * 0.18 + gravity * dt * dt;
+        // A subtle ripple: well damped, pulled firmly back to the animated pose (per 60 Hz step, so a body posed
+        // every 3rd frame far away moves alike), and never more than a few degrees off it (below).
+        let steps = (dt * 60.0).clamp(0.25, 4.0);
+        let vel = (tail - prev) * 0.72f32.powf(steps);
+        let pull = 1.0 - (1.0 - 0.4f32).powf(steps);
+        let mut next = tail + vel + (target_w - tail) * pull + gravity * dt * dt;
         // Hold the length.
         next = head_w + (next - head_w).normalize_or(target_w - head_w) * len_w;
         // Out of the legs.
@@ -1322,6 +1437,17 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
             }
         }
         next = head_w + (next - head_w).normalize_or(target_w - head_w) * len_w;
+        // At most MAX_SWING off the animated direction (each bone of a chain from its parent's), so a fast turn or
+        // a stop never flips the coat over.
+        const MAX_SWING: f32 = 0.17;
+        let a_dir = (target_w - head_w).normalize_or(Vec3::NEG_Y);
+        let n_dir = (next - head_w).normalize_or(a_dir);
+        let ang = a_dir.angle_between(n_dir);
+        if ang > MAX_SWING {
+            let q = Quat::from_rotation_arc(a_dir, n_dir);
+            let (axis, _) = q.to_axis_angle();
+            next = head_w + Quat::from_axis_angle(axis, MAX_SWING) * a_dir * len_w;
+        }
         tail = next;
         s.cloth_prev[k] = s.cloth_tail[k];
         s.cloth_tail[k] = tail;

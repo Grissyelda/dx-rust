@@ -171,10 +171,12 @@ Shadows with contact hardening.
     and diegetic healing - hold a medkit, look at the limb to treat and use it there (anywhere else treats the head).
 42. Ragdolls (done in code, with the Avian physics crate): the killed and knocked out go limp at once, pushed by the
     hit and carried by their run, on 11 jointed capsules against the level's real geometry; frozen once still.
+    JC falls the same way when he dies.
     Explosions still gib, now with Fluid Blood: droplets that fly and splatter, blood that runs down walls and
     pools spreading under the dead. Still to come: posable models.
-43. Cloth and wetness (done in code): coat tails swing and fall around the legs (spring bones pushed out of the
-    legs), and people soak through in the rain - darker, with a sheen - and dry off under cover.
+43. Cloth and wetness (done in code): coat tails ripple and settle around the legs (damped spring bones held within
+    a few degrees of the animation and pushed out of the legs), and people soak through in the rain - darker, with a
+    sheen - and dry off under cover.
 44. Computers shown in the world while it keeps running (done: Terminals In The World - the view moves in to the
     monitor, the security terminal unfolds, the original interface shows on the screen and the mouse works on it;
     keypads are pressed button by button with a small display above; move the mouse away to step back).
@@ -219,8 +221,10 @@ Logs screen, an unlock notice in the HUD, kept for the player across saves.
     Done: twelve bodies baked and packed small enough to ship inside the exe (about 3 MB), every person on those
     meshes drawn with them in their original skins, moves cross-faded, lip sync / blinks / glances / brows on the
     face's blend shapes, the weapon in the rebuilt hand, lit by the same lights as before, and JC's mirror and
-    third-person body. Still to come: aim layered over running, heads turning to speakers, animation notifies
-    from the rig. Not covered by the rig: commandos, robots, animals and the HD mods' replacement meshes.
+    third-person body. Mods: Helios repaints and Augmentique outfits (JC, Lay D and the people they dress) are worn
+    by the rebuilt bodies; HDTP's people are switched off while Skeletal Characters is on. Still to come: aim layered
+    over running, heads turning to speakers, strafing right (the left strafe plays for both), animation notifies
+    from the rig. Not covered by the rig: commandos, robots, animals and HDTP's replacement meshes.
 
 Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sat in the
 last tier until the skeletal bodies above arrived.

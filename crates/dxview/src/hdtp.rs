@@ -449,7 +449,8 @@ fn models_on() -> bool {
 
 fn characters_on() -> bool {
     // Helios's character textures replace HDTP's people (setting DdsCharacters).
-    crate::settings::get("HDCharacters") > 0.5 && !dds_characters()
+    // Skeletal characters skin our own bodies (from the vanilla meshes' rigs), so HDTP's people stay out then.
+    crate::settings::get("HDCharacters") > 0.5 && !dds_characters() && !crate::skeletal::enabled()
 }
 
 /// A DDS pack (Helios) is in use for the people.

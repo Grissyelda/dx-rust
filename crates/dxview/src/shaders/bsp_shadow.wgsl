@@ -63,6 +63,18 @@ fn shadowed_lightmap(lm: vec3<f32>, world_position: vec4<f32>, n: vec3<f32>, fra
         if (d >= r || d < 1e-3) {
             continue;
         }
+        // Only inside the spot's cone: outside it (or behind the light) the shadow map has nothing for this
+        // fragment and the lookup reads another texel's depth (black triangles all over the level).
+        var spot_dir = vec3<f32>((*light).light_custom_data.x, 0.0, (*light).light_custom_data.y);
+        spot_dir.y = sqrt(max(0.0, 1.0 - spot_dir.x * spot_dir.x - spot_dir.z * spot_dir.z));
+        if (((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE) != 0u) {
+            spot_dir.y = -spot_dir.y;
+        }
+        let c = dot(-to / d, spot_dir);
+        let t = (*light).spot_light_tan_angle * 0.95;
+        if (c <= 0.05 || c * c * (1.0 + t * t) < 1.0) {
+            continue;
+        }
         let shadow = shadows::fetch_spot_shadow(light_id, world_position, n, (*light).shadow_map_near_z, frag_coord.xy);
         if (shadow >= 0.999 && bsp.p.w < 1.5) {
             continue;

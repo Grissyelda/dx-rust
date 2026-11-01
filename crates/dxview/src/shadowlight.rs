@@ -263,7 +263,7 @@ pub fn shadow_light_system(
                         .zip(&dirs)
                         .map(|(c, d)| d.dot(mid).clamp(-1.0, 1.0).acos() + (60.0 / c.distance(lp).max(30.0)).atan())
                         .fold(0.0f64, f64::max)
-                        .clamp(0.35, 1.35) as f32;
+                        .clamp(0.35, 1.1) as f32;
                     aims.push((i, Vec3::new(mid.x as f32, mid.z as f32, mid.y as f32), half));
                     // Hold on to the lights already shown (no flicking between two alike).
                     if held.contains(&i) {

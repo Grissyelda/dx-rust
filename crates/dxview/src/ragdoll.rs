@@ -14,6 +14,20 @@ use std::sync::Mutex;
 
 use crate::skeletal::SkelBody;
 
+/// The blocker number a Death for JC himself carries.
+pub const PLAYER: usize = usize::MAX;
+
+/// JC's body when he dies on a rebuilt body (death.rs then hides its vertex-animated one).
+#[derive(Component)]
+pub struct PlayerBody;
+
+static PLAYER_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// JC fell as a ragdoll (death.rs hides its own death body).
+pub fn player_ragdoll() -> bool {
+    PLAYER_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn enabled() -> bool {
     crate::settings::get("Ragdolls") > 0.5 && crate::skeletal::enabled()
 }
@@ -54,7 +68,7 @@ impl Plugin for RagdollPlugin {
         app.add_plugins(PhysicsPlugins::default())
             .insert_resource(Gravity(Vec3::NEG_Y * GRAVITY))
             .init_resource::<RagWorld>()
-            .add_systems(Update, start_system.after(crate::skeletal::pose_system))
+            .add_systems(Update, (player_body_system.before(start_system), start_system.after(crate::skeletal::pose_system)))
             .add_systems(PostUpdate, drive_system.before(bevy::transform::TransformSystems::Propagate));
     }
 }
@@ -211,7 +225,7 @@ pub fn start_system(
     mut commands: Commands,
     level: Res<crate::LevelRes>,
     mut world: ResMut<RagWorld>,
-    mut pawns: Query<(Entity, &crate::ai::Npc, &mut SkelBody), Without<Ragdoll>>,
+    mut pawns: Query<(Entity, Option<&crate::ai::Npc>, Option<&PlayerBody>, &mut SkelBody), Without<Ragdoll>>,
     gts: Query<&GlobalTransform>,
     tfs: Query<&Transform>,
     mut map_gen: Local<u64>,
@@ -228,7 +242,12 @@ pub fn start_system(
         world.build(&level.0);
     }
     for d in deaths {
-        let Some((_e, _, mut s)) = pawns.iter_mut().find(|(_, n, _)| n.blocker == d.blocker) else { continue };
+        let Some((_e, _, _, mut s)) = pawns
+            .iter_mut()
+            .find(|(_, n, pb, _)| n.is_some_and(|n| n.blocker == d.blocker) || (pb.is_some() && d.blocker == PLAYER))
+        else {
+            continue;
+        };
         let e = _e;
         let Ok(root_g) = gts.get(s.root) else { continue };
         // The pose on screen, as world transforms.
@@ -430,4 +449,97 @@ pub fn drive_system(
             commands.entity(e).remove::<Ragdoll>();
         }
     }
+}
+
+/// JC dies on his rebuilt body (Skeletal Characters + Ragdolls, and a body for his mesh / outfit): a body with the
+/// textures his mirror / third-person body wears, where he stood, in the pose he was in, then a ragdoll the next
+/// frame (the bones exist by then), pushed back from the view as death.rs's DeathBack would fall.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn player_body_system(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut ph: ResMut<crate::ai::PlayerHealth>,
+    player: Res<crate::Player>,
+    level: Res<crate::LevelRes>,
+    mirror: Res<crate::mirror::MirrorBodyRes>,
+    mut bp: crate::skeletal::BuildParams,
+    mut bodies: Query<&mut SkelBody, (With<PlayerBody>, Without<crate::skeletal::MirrorSkel>)>,
+    live: Query<&SkelBody, (With<crate::skeletal::MirrorSkel>, Without<PlayerBody>)>,
+    gts: Query<&GlobalTransform>,
+    cam: Query<&GlobalTransform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
+    mut st: Local<Option<(Entity, u32, Vec3)>>,
+    mut map_gen: Local<u64>,
+) {
+    if crate::loader::new_map(&mut map_gen) {
+        *st = None;
+    }
+    // Developer aid: DXVIEW_DIE_AT=<secs> kills JC that long into the run (ragdoll tests).
+    if !ph.dead {
+        if let Some(at) = std::env::var("DXVIEW_DIE_AT").ok().and_then(|v| v.parse::<f32>().ok()) {
+            if time.elapsed_secs() > at && time.elapsed_secs() - time.delta_secs() <= at {
+                ph.damage(1000.0, "Shot", DVec3::ZERO);
+            }
+        }
+    }
+    if !ph.dead {
+        if let Some((root, ..)) = st.take() {
+            commands.entity(root).despawn();
+        }
+        PLAYER_ON.store(false, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+    if let Some((root, frames, fwd)) = st.as_mut() {
+        *frames += 1;
+        if *frames == 2 {
+            let loc = player.body.location;
+            let f = DVec3::new(fwd.x as f64, fwd.z as f64, fwd.y as f64);
+            request(Death {
+                blocker: PLAYER,
+                hit: loc + DVec3::new(0.0, 0.0, 20.0),
+                from: loc + DVec3::new(0.0, 0.0, 20.0) + f * 200.0,
+                damage: 25.0,
+                vel: player.body.velocity,
+            });
+        }
+        if let (Ok(mut s), Ok(g)) = (bodies.get_mut(*root), gts.get(*root)) {
+            let ue = dx_level::bevy_to_ue(g.translation().to_array());
+            bp.relight(&mut s, &level.0, ue, time.delta_secs());
+        }
+        return;
+    }
+    if !enabled() {
+        return;
+    }
+    let Some(b) = mirror.0.as_ref() else { return };
+    let Some(body) = crate::skeletal::body_for(&crate::travel::jc_mesh()) else { return };
+    let fwd = cam.iter().next().map_or(Vec3::NEG_Z, |t| t.forward().as_vec3());
+    let flat = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
+    // The mirror body stands where JC does; face it the way he looked.
+    let loc = player.body.location;
+    let yaw = (flat.z as f64).atan2(flat.x as f64);
+    let m = dx_level::actors::rotator_to_bevy_mat3([0, (yaw / std::f64::consts::TAU * 65536.0) as i32, 0]);
+    let root = commands
+        .spawn((
+            Transform::from_translation(Vec3::from(dx_level::ue_to_bevy(loc.as_vec3().to_array())))
+                .with_rotation(Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2])))),
+            Visibility::default(),
+        ))
+        .id();
+    let Some(mut s) = bp.build_from_mirror_world(&mut commands, b, body, root) else {
+        commands.entity(root).despawn();
+        return;
+    };
+    // The pose he had (his live rebuilt body), else his idle.
+    if let Some(l) = live.iter().next().filter(|l| l.pose.len() == s.pose.len()) {
+        s.pose.clone_from(&l.pose);
+    } else if let Some(q) = b.mesh.seqs.iter().find(|q| q.name.eq_ignore_ascii_case("BreatheLight")) {
+        crate::skeletal::advance_pub(&mut s, "BreatheLight", q.start_frame.max(0) as usize, q.num_frames.max(1) as usize, 0.0, true, 0.0);
+    }
+    for (i, n) in s.nodes.iter().enumerate() {
+        let p = s.pose[i];
+        commands.entity(*n).insert(Transform { translation: p.t, rotation: p.r, scale: p.s });
+    }
+    commands.entity(root).insert((s, PlayerBody));
+    *st = Some((root, 0, flat));
+    PLAYER_ON.store(true, std::sync::atomic::Ordering::Relaxed);
 }

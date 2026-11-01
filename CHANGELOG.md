@@ -14,6 +14,18 @@
 - Wounds on bodies, hurt poses (hanging arms, limps), coat cloth, wet bodies in the rain.
 - First-person body, diegetic healing (treat the limb you look at with a medkit; elsewhere it treats the head),
   aug glows on JC's body and a healing glow.
+- JC dies as a ragdoll too. Helios repaints and Augmentique outfits (JC, Lay D, the people they dress) carry over to
+  the rebuilt bodies; HDTP's people are off while Skeletal Characters is on, so JC keeps his rebuilt body.
+
+### Fixed
+- Black triangles all over the level with real-time shadows: surfaces outside a shadow light's cone read its
+  shadow map anyway.
+- Rebuilt characters that stood frozen, unlit and black (a body missed for one frame stayed unposed); they are now
+  posed and lit whenever near.
+- Black sunglasses on people who wear none (the hidden glasses slot was being lit).
+- Coat tails whipping and flipping: they now ripple, damped and held close to the animation.
+- Rain splashing under the dock roof when the wind slanted the drops in.
+- JC's skeletal, ragdoll and first-person bodies missing with HDTP or Augmentique installed.
 
 ## v0.10.0
 

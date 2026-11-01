@@ -165,7 +165,12 @@ pub fn switch_values(to_modern: bool, current: impl Fn(&str) -> f32) -> (Vec<(St
 /// for it to show).
 pub fn switch(to_modern: bool) -> bool {
     let (vals, memory) = switch_values(to_modern, crate::settings::get);
-    let mods_changed = vals.iter().any(|(k, v)| MOD_KEYS.iter().any(|m| m.0 == k) && crate::settings::get(k) != *v);
+    // Skeletal characters switch HDTP's people off (hdtp::characters_on), so with HDTP that is a reload too.
+    let mods_changed = vals.iter().any(|(k, v)| {
+        (MOD_KEYS.iter().any(|m| m.0 == k)
+            || (k == "SkeletalCharacters" && unreal_pkg::mods::active("hdtp").is_some()))
+            && crate::settings::get(k) != *v
+    });
     for (k, v) in memory.iter().chain(vals.iter()) {
         crate::settings::set(k, *v);
     }

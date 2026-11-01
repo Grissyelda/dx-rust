@@ -58,10 +58,11 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   - a photographic city skyline, light halos and modern coronas, a modern night-vision view;
   - Helios repaints and HD textures, and enhanced particle effects, barrel smoke and bullet impacts;
   - **skeletal characters**: the Machine God team's rebuilt human bodies on a real skeleton, in the original skins,
-    with blended moves and faces that lip-sync, blink and glance around; JC's own body in mirrors, third person and
-    under the view in first person;
-  - **ragdolls** (Avian physics) for the killed and knocked out, fluid blood (droplets, runs down walls, pools
-    under the dead, bloodier gibs), wound marks, hurt poses and limps, coat cloth and wet bodies in the rain.
+    with blended moves and faces that lip-sync, blink and glance around; JC's own body (or Lay D's, in any
+    Augmentique outfit) in mirrors, third person and under the view in first person; Helios repaints carry over to
+    the rebuilt bodies, and HDTP's people step aside while they are on;
+  - **ragdolls** (Avian physics) for the killed and knocked out, and for JC himself, fluid blood (droplets, runs down walls, pools
+    under the dead, bloodier gibs), wound marks, hurt poses and limps, coat tails that ripple as people move, and wet bodies in the rain.
 - **Modern play (all optional):**
   - Modern Aiming: the aim sways within the accuracy cone (wide when untrained, steady when you master the
     weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns;

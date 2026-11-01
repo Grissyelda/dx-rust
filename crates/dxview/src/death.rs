@@ -147,6 +147,10 @@ pub fn death_system(
     }
     let t = st.t;
     let Some(b) = st.body.as_ref() else { return };
+    // JC fell as a ragdoll on his rebuilt body (ragdoll::player_body_system): this one stays hidden.
+    if crate::ragdoll::player_ragdoll() {
+        commands.entity(b.root).insert(Visibility::Hidden);
+    }
     // Animate the death (holds the last frame).
     let f = (t * b.rate).min(b.frames as f32 - 1.001);
     for (pi, h) in b.handles.iter().enumerate() {
