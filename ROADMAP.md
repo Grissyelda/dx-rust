@@ -87,8 +87,9 @@ mimalloc, per-system allocation counts in profile runs, and the game's own per-f
 (JC's mesh lookup was copying HDTP's whole override list twice a frame; snapshots, queues, HUD keys and string tests
 now reuse buffers or borrow). Next: Bevy's per-view render bookkeeping (bind groups and buffers rebuilt each frame),
 the weapon view's own pass, the Update schedule's scheduling overhead (about 160 small systems), and splitting the
-NPC component and its update into smaller components and systems (poison and bleeding are out; perception,
-reactions, combat, orders and movement are next).
+NPC component and its update into smaller components and systems (poison and bleeding are their own component and
+system; the update's damage, sight, hearing and state code are separate functions now; next: perception, reactions,
+combat, orders and movement as components and systems of their own).
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.

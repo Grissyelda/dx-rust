@@ -66,6 +66,10 @@
     per frame), and the weapon frame and coat cloth reuse their bone matrices and cached bone indices.
   - Poison and bleeding moved out of the NPC update into their own component and system (with tests), a first step
     in splitting up the NPC component.
+  - The NPC update is broken up: it was one function of about 3,200 lines nested up to 16 levels deep; damage
+    handling, sight, hearing, first-frame setup and the Attacking, firing, Fleeing, Alerting and Burning states are
+    now their own functions with explicit inputs (the update itself is about 1,500 lines, nested at most 8 deep).
+    Line-of-sight and alliance checks are one shared `Senses` type instead of closures repeated in each part.
   - Unused code removed and compiler warnings down from 65 to 19.
 
 ### Launcher

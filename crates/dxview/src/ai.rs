@@ -1417,6 +1417,15 @@ impl Npc {
     }
 
     /// SetEnemy + HandleEnemy: attack, after the surprise pause that ReactionLevel hasn't covered yet.
+    /// HandleEnemy: HandlingEnemy -> Attacking, or fleeing for a pawn with nothing to fight with.
+    fn handle_enemy(&mut self, t: Target, pos: DVec3, seen_at: f32, now: f32) {
+        if self.weapon.is_some() {
+            self.begin_attack(t, pos, seen_at);
+        } else {
+            self.flee_from(t, pos, now, false);
+        }
+    }
+
     fn begin_attack(&mut self, t: Target, pos: DVec3, seen_at: f32) {
         self.target = Some(t);
         self.fear_flee = false;
@@ -2841,6 +2850,280 @@ pub struct NpcScratch {
     heard: Vec<Noise>,
 }
 
+/// Burning: running about on fire (Panic), for water within reach for a pawn that can swim.
+fn burning_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
+    let ActCx { lvl, blockers, .. } = *cx;
+    let player_center = cx.player_center;
+    let dt = cx.dt;
+    let me = cx.me;
+    let (mut wish, mut running, firing) = (DVec3::ZERO, false, false);
+    npc.weapon_drawn = false;
+    if npc.on_fire.is_none() {
+        npc.state = if npc.target.is_some() {
+            NpcState::Attacking
+        } else {
+            NpcState::Idle
+        };
+        npc.route = None;
+        npc.flee_dest = None;
+    } else {
+        // PickDestination: about 300 units off, away from the enemy if there is one; run there; repeat.
+        let away_from = match npc.target {
+            Some(t) => target_pos(t, player_center, &blockers.list),
+            None => me.center + DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0) * -100.0,
+        };
+        let arrived = npc
+            .flee_dest
+            .map_or(true, |d| (d - me.center).truncate().length() < 40.0);
+        npc.flee_repick -= dt;
+        if arrived || npc.flee_repick <= 0.0 {
+            // Burning.PickDestination: water first - the nearest navigation point in a water zone
+            // within 2000, if this pawn can swim.
+            let water = npc.can_swim.then(|| {
+                lvl.nav
+                    .points
+                    .iter()
+                    .map(|p| DVec3::from_array(p.pos))
+                    .filter(|p| p.distance(me.center) < 2000.0 && crate::actors::water_at(lvl, *p).is_some())
+                    .min_by(|a, b| a.distance(me.center).total_cmp(&b.distance(me.center)))
+            }).flatten();
+            let r = npc.rand();
+            let r2 = npc.rand();
+            let mut d = match water {
+                Some(w) => w,
+                None => pick_flee_dest(lvl, me.center, away_from, npc.params.radius, r, r2),
+            };
+            // Else run willy-nilly: about 300 units (x 0.8 - 1.2) off, away from the enemy.
+            if water.is_none() && d.distance(me.center) > 400.0 {
+                d = me.center + (d - me.center).normalize_or_zero() * 300.0 * (0.8 + 0.4 * r2 as f64);
+            }
+            npc.flee_dest = Some(d);
+            npc.route = None;
+            npc.flee_repick = 3.0;
+        }
+        let dest = npc.flee_dest.unwrap();
+        if npc.route.is_none() {
+            npc.route = Some(plan_route(lvl, me.center, dest, &npc.params, None));
+        }
+        let r = npc.route.as_mut().unwrap();
+        wish = follow(lvl, r, me.center, &npc.params, dt);
+        running = true;
+        if wish.length_squared() > 1e-6 {
+            npc.yaw =
+                turn_toward(npc.yaw, wish.y.atan2(wish.x), npc.yaw_rate * dt as f64);
+        }
+    }
+    (wish, running, firing)
+}
+
+/// Fleeing (ScriptedPawn state Fleeing): running from the enemy to hiding points until unseen long enough or no
+/// longer afraid.
+fn fleeing_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
+    let ActCx { lvl, blockers, hp, .. } = *cx;
+    let player_center = cx.player_center;
+    let now = cx.now;
+    let dt = cx.dt;
+    let me = cx.me;
+    let ph = &mut *cx.ph;
+    let valid_enemy = |npc: &Npc, t: Target| cx.senses.valid_enemy(npc, t);
+    let (mut wish, mut running, firing) = (DVec3::ZERO, false, false);
+    npc.weapon_drawn = false;
+    let target_dead = match npc.target {
+        Some(Target::Pawn(b)) => *hp.0.get(&b).unwrap_or(&1.0) <= 0.0,
+        Some(Target::Player) => ph.dead,
+        None => true,
+    };
+    // Fleeing.Tick: from an enemy, until it's been out of sight for FearSustainTime; from something
+    // merely frightening, until no longer fearful.
+    let from_enemy = npc.target.is_some_and(|t| valid_enemy(npc, t));
+    let done = target_dead
+        || if from_enemy || !npc.fear_flee {
+            now - npc.last_seen > npc.fear_sustain
+        } else {
+            !npc.fear.fearful()
+        };
+    if done {
+        npc.fear_flee = false;
+        // FinishFleeing: back to orders.
+        npc.state = NpcState::Idle;
+        npc.target = None;
+        npc.route = None;
+        npc.flee_dest = None;
+        npc.patrol_dest = None;
+        npc.orders_failed = false;
+    } else {
+        let enemy_pos = target_pos(
+            npc.target.unwrap_or(Target::Player),
+            player_center,
+            &blockers.list,
+        );
+        // bCower: crouch and cover up where it stands, facing the danger (Fleeing's Cower label).
+        if npc.cower {
+            npc.route = None;
+            let to = enemy_pos - me.center;
+            npc.yaw = turn_toward(npc.yaw, to.y.atan2(to.x), npc.yaw_rate * dt as f64);
+        } else {
+        let seen = now - npc.last_seen < 0.6;
+        let arrived = npc
+            .flee_dest
+            .map_or(true, |d| (d - me.center).truncate().length() < 48.0);
+        npc.flee_repick -= dt;
+        // PickDestination when starting, when the hiding place turns out to be in view, or on arrival
+        // while still seen.
+        if npc.flee_dest.is_none() || (seen && (arrived || npc.flee_repick <= 0.0)) {
+            let r = npc.rand();
+            let r2 = npc.rand();
+            npc.flee_dest = Some(pick_flee_dest(
+                lvl,
+                me.center,
+                enemy_pos,
+                npc.params.radius,
+                r,
+                r2,
+            ));
+            npc.route = None;
+            npc.flee_repick = 2.0;
+        }
+        let dest = npc.flee_dest.unwrap();
+        if !arrived {
+            let replan = npc
+                .route
+                .as_ref()
+                .map_or(true, |r| r.age > 1.5 || r.goal.distance(dest) > 32.0);
+            if replan {
+                npc.route = Some(plan_route(lvl, me.center, dest, &npc.params, None));
+            }
+            let r = npc.route.as_mut().unwrap();
+            wish = follow(lvl, r, me.center, &npc.params, dt);
+            running = true;
+            if wish.length_squared() > 1e-6 {
+                npc.yaw = turn_toward(
+                    npc.yaw,
+                    wish.y.atan2(wish.x),
+                    npc.yaw_rate * dt as f64,
+                );
+            }
+        } else {
+            // Hidden: wait, facing the way we came.
+            npc.route = None;
+            let to = enemy_pos - me.center;
+            npc.yaw = turn_toward(npc.yaw, to.y.atan2(to.x), npc.yaw_rate * dt as f64);
+        }
+        }
+    }
+    (wish, running, firing)
+}
+
+/// Alerting (ScriptedPawn state Alerting): running to an alarm unit and pushing its button, then attacking or fleeing.
+fn alerting_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
+    let ActCx { lvl, .. } = *cx;
+    let dt = cx.dt;
+    let me = cx.me;
+    let alarms = &mut *cx.alarms;
+    let new_hits = &mut *cx.new_hits;
+    // Alerting: weapon away, run to the alarm, push it, then fight (or flee).
+    let (mut wish, running, firing) = (DVec3::ZERO, true, false);
+    npc.weapon_drawn = false;
+    let me_c = me.center;
+    match npc.alert {
+        None => {
+            npc.state = if npc.raise_alarm == 0 {
+                NpcState::Attacking
+            } else {
+                NpcState::Fleeing
+            };
+        }
+        Some((i, push)) => {
+            let (spot, in_range, alarm_pos) = {
+                let u = &alarms.units[i];
+                (
+                    u.push_spot(npc.params.radius),
+                    u.in_range(me_c, npc.params.radius, npc.params.height),
+                    u.pos,
+                )
+            };
+            if push > 0.0 || in_range {
+                // SoundAlarm: TurnToward, PlayPushing (PushButton), FinishAnim, TriggerAlarm.
+                npc.route = None;
+                let to = alarm_pos - me_c;
+                npc.yaw =
+                    turn_toward(npc.yaw, to.y.atan2(to.x), npc.yaw_rate * dt as f64);
+                let left = if push > 0.0 {
+                    push - dt
+                } else {
+                    let ma = &lvl.mesh_actors[an.mesh_actor];
+                    let clip = ma
+                        .anim
+                        .as_ref()
+                        .and_then(|a| Clip::named(&a.mesh, "PushButton", false));
+                    let len = clip
+                        .as_ref()
+                        .map(|c| (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0))
+                        .unwrap_or(1.0);
+                    if let Some(c) = clip {
+                        an.clip = Some(c);
+                        npc.anim = "PushButton";
+                    }
+                    len.max(0.2)
+                };
+                if left <= 0.0 {
+                    npc.alarm_timer = 120.0;
+                    // TriggerAlarm: only if it hasn't been hacked; GMDX Sabotage shocks whoever
+                    // pushes a bypassed one (200 'Stunned').
+                    if !alarms.units[i].bypassed {
+                        alarms.trigger(i, npc.target);
+                    } else if crate::perks::has("PerkSabotage") {
+                        new_hits.push(crate::damage::PawnHit {
+                            blocker: npc.blocker,
+                            damage: 200.0,
+                            damage_type: "Stunned",
+                            hit_loc: me_c,
+                            attacker: Some(npc.blocker),
+                            attacker_pos: me_c,
+                        });
+                    }
+                    alarms.units[i].associated = None;
+                    npc.alert = None;
+                    npc.anim = "";
+                    if let Some(at) = npc.body_alarm.take() {
+                        // Pushed because of a body: now search there.
+                        npc.set_seek_location(at, SeekKind::Carcass, false);
+                        npc.enter_seeking();
+                    } else if npc.raise_alarm == 0 {
+                        npc.state = NpcState::Attacking;
+                    } else {
+                        npc.enter_fleeing();
+                    }
+                } else {
+                    npc.alert = Some((i, left));
+                }
+            } else {
+                let replan = npc
+                    .route
+                    .as_ref()
+                    .map_or(true, |r| r.age > 2.0 || r.goal.distance(spot) > 32.0);
+                if replan {
+                    npc.route = Some(plan_route(lvl, me_c, spot, &npc.params, None));
+                }
+                let r = npc.route.as_mut().unwrap();
+                wish = follow(lvl, r, me_c, &npc.params, dt);
+                if wish.length_squared() > 1e-6 {
+                    npc.yaw = turn_toward(
+                        npc.yaw,
+                        wish.y.atan2(wish.x),
+                        npc.yaw_rate * dt as f64,
+                    );
+                } else if r.age > 1.0 {
+                    // Can't get there: give up on the alarm.
+                    alarms.units[i].associated = None;
+                    npc.alert = None;
+                }
+            }
+        }
+    }
+    (wish, running, firing)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn npc_system(
     time: Res<Time>,
@@ -2964,15 +3247,6 @@ pub fn npc_system(
     }
     snaps.truncate(count);
     let pawns: &[Snap] = snaps;
-    let snap_of = |b: usize| pawns.iter().find(|p| p.blocker == b);
-    // GetPawnAllianceType == Hostile: either side hostile to the other's alliance.
-    let snap_of_hostile = |npc: &Npc, t: Target| -> bool {
-        match t {
-            Target::Player => npc.hates("Player"),
-            Target::Pawn(b) => snap_of(b)
-                .is_some_and(|p| npc.hates(&p.alliance) || p.alliances.hostile_to(&npc.alliance)),
-        }
-    };
 
     let ai_log = walk_test.is_some() || env_on!("DXVIEW_AILOG");
     // Orders wait while their pawn is in a conversation (ConvOrders, applied when it ends).
@@ -3123,81 +3397,7 @@ pub fn npc_system(
             }
         }
         // Lazy setup: weapon from InitialInventory, seat, walking body once the pawn has landed.
-        if !npc.inited {
-            npc.inited = true;
-            let a = &lvl.actors[npc.actor];
-            // InitializeInventory: Count copies of each entry; ammo adds Count x AmmoAmount; a weapon whose AmmoName
-            // isn't carried gets a default box of it.
-            for x in a.props.iter().filter(|x| x.name == "InitialInventory") {
-                if let Value::Item(path, count) = &x.value {
-                    let class = path.rsplit('.').next().unwrap_or("");
-                    if *count <= 0 || class.is_empty() || class == "None" {
-                        continue;
-                    }
-                    if class.starts_with("Ammo") {
-                        if npc.ammo.is_none() {
-                            npc.ammo = Some(class.to_string());
-                        }
-                        let per = match find(&assets.classes.defaults(class), "AmmoAmount") {
-                            Some(Value::Int(n)) => *n,
-                            _ => 1,
-                        };
-                        match npc.ammo_left.iter_mut().find(|e| e.0 == class) {
-                            Some(e) => e.1 += per * count,
-                            None => npc.ammo_left.push((class.to_string(), per * count)),
-                        }
-                    }
-                    if class.starts_with("Weapon") && !npc.arsenal.iter().any(|w| w.class == class)
-                    {
-                        let d = assets.classes.defaults(class);
-                        if let Some(w) = weapon_stats(class, &d) {
-                            npc.arsenal.push(w);
-                        }
-                    }
-                }
-            }
-            for i in 0..npc.arsenal.len() {
-                let w = npc.arsenal[i].clone();
-                if let Some(a) = w.ammo_class.clone() {
-                    if npc.ammo_class_for(&w).as_deref() == Some(a.as_str())
-                        && !npc.ammo_left.iter().any(|e| e.0 == a)
-                    {
-                        let per = match find(&assets.classes.defaults(&a), "AmmoAmount") {
-                            Some(Value::Int(n)) => *n,
-                            _ => 1,
-                        };
-                        npc.ammo_left.push((a, per));
-                    }
-                }
-            }
-            // SetupWeapon: the first weapon given is the one drawn until a fight picks the best.
-            if let Some(w) = npc.arsenal.first().cloned() {
-                let left = npc
-                    .ammo_class_for(&w)
-                    .map(|a| npc.ammo_count(&a))
-                    .unwrap_or(i32::MAX);
-                npc.loaded = if w.reload_count == 0 {
-                    1
-                } else {
-                    (w.reload_count as i32).min(left).max(0) as u32
-                };
-                npc.weapon = Some(w);
-                npc.switch_to_best_weapon(None);
-            }
-            if npc.orders == Orders::Sitting {
-                sit_down(lvl, npc, &mut deco, &a.props);
-                if npc.sitting {
-                    blockers.list[npc.blocker].height = npc.params.height;
-                }
-            }
-            if a.class == "Gray" {
-                npc.aura = Some((
-                    fv(&a.props, "DamageRadius", 256.0) as f64,
-                    fv(&a.props, "damageInterval", 1.0),
-                    fv(&a.props, "DamageAmount", 10.0),
-                ));
-            }
-        }
+        lazy_init(npc, &mut deco, lvl, &mut assets, &mut blockers);
         if npc.body.is_none() {
             if deco.body.physics == imsim_core::body::BodyPhysics::None {
                 let mut c = Character::new(deco.body.location);
@@ -3229,547 +3429,23 @@ pub fn npc_system(
             }
         }
         if let Some(list) = hits_by.remove(&npc.blocker) {
-            let center = blockers.list[npc.blocker].center;
-            for h in list {
-                // FilterDamageType overrides: Karkians, Greasels and Grays shrug off gas; Grays also radiation and
-                // fire. Animal.ModifyDamage zeroes 'Stunned' (prods don't work on animals).
-                let cls = lvl.actors[npc.actor].class.as_str();
-                if matches!(cls, "Karkian" | "KarkianBaby" | "Greasel" | "Gray")
-                    && matches!(h.damage_type, "TearGas" | "HalonGas" | "PoisonGas")
-                {
-                    continue;
-                }
-                if cls == "Gray" && matches!(h.damage_type, "Radiation" | "Flamed" | "Burned") {
-                    continue;
-                }
-                if npc.animal && h.damage_type == "Stunned" {
-                    // The prod does no damage to animals; ordinary ones (not transgenics) run from it.
-                    if !matches!(cls, "Karkian" | "KarkianBaby" | "Greasel" | "Gray") {
-                        let away = (center - h.attacker_pos).truncate().normalize_or_zero();
-                        let away = if away.length_squared() < 1e-6 {
-                            DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0)
-                        } else {
-                            DVec3::new(away.x, away.y, 0.0)
-                        };
-                        npc.avoiding = 3.0;
-                        npc.flee_dest = Some(center + away * 400.0);
-                        npc.route = None;
-                    }
-                    continue;
-                }
-                // Class overrides of ShieldDamage / ModifyDamage / IgnoreDamageType (bosses and commandos).
-                let mut h = h;
-                {
-                    let scale = crate::pawnclass::damage_scale(cls, h.damage_type);
-                    if scale <= 0.0 {
-                        continue;
-                    }
-                    h.damage *= scale;
-                }
-                // A wound mark on a rebuilt body where the shot went in (bodyfx.rs).
-                if !npc.hp_body.robot && matches!(h.damage_type, "Shot" | "Sabot" | "Exploded" | "Burned" | "Flamed") {
-                    crate::bodyfx::wound(npc.blocker, h.hit_loc, h.hit_loc - h.attacker_pos, h.damage_type);
-                }
-                let stunned = matches!(npc.state, NpcState::Stunned(_) | NpcState::RubbingEyes(_));
-                // EMP: robots lose EMPHitPoints and shut down (Robot state Disabled) at zero; people don't care.
-                if h.damage_type == "EMP" {
-                    if npc.hp_body.robot && npc.emp_hp > 0.0 {
-                        npc.emp_hp -= h.damage;
-                        if npc.emp_hp <= 0.0 {
-                            npc.emp_hp = 0.0;
-                            npc.state = NpcState::Stunned(1.0e9);
-                            npc.target = None;
-                            npc.anim = "";
-                            println!("PAWN {} disabled by EMP", lvl.actors[npc.actor].name);
-                        }
-                    }
-                    continue;
-                }
-                // Tear gas: no damage, but the pawn turns on whoever gassed it and goes to RubbingEyes
-                // (GotoDisabledState). Robots don't care.
-                // FilterDamageType: halon puts a burning pawn out; then it's treated like tear gas.
-                if h.damage_type == "HalonGas" {
-                    npc.on_fire = None;
-                }
-                if h.damage_type == "TearGas" || h.damage_type == "HalonGas" {
-                    if npc.hp_body.robot
-                        || matches!(npc.state, NpcState::RubbingEyes(_))
-                        || crate::pawnclass::ignores_gas_reaction(cls)
-                    {
-                        continue;
-                    }
-                    // ReactToInjury: a provocation; the gasser only becomes the enemy if that makes them hostile.
-                    let (who, alliance) = match h.attacker {
-                        None => (Target::Player, "Player".to_string()),
-                        Some(b) => (
-                            Target::Pawn(b),
-                            snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
-                        ),
-                    };
-                    if npc.hate_injury {
-                        npc.alliances.provoke(&alliance, None);
-                    }
-                    if npc.alliances.hostile_to(&alliance)
-                        || (who != Target::Player && snap_of_hostile(npc, who))
-                    {
-                        npc.target = Some(who);
-                        npc.last_pos = target_pos(who, player_center, &blockers.list);
-                        npc.last_seen = now;
-                    }
-                    npc.stand_up();
-                    npc.weapon_drawn = false;
-                    npc.route = None;
-                    npc.seek = None;
-                    let ma = &lvl.mesh_actors[an.mesh_actor];
-                    let start = ma
-                        .anim
-                        .as_ref()
-                        .and_then(|a| Clip::named(&a.mesh, "RubEyesStart", false));
-                    let start_len = start
-                        .as_ref()
-                        .map(|c| (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0))
-                        .unwrap_or(0.0);
-                    if let Some(c) = start {
-                        an.clip = Some(c);
-                        npc.anim = "RubEyesStart";
-                    }
-                    npc.state = NpcState::RubbingEyes(15.0 + start_len);
-                    println!("PAWN {} gassed", lvl.actors[npc.actor].name);
-                    continue;
-                }
-                // Robot.TakeDamageBase, NanoVirus (scramble grenade): CrazedTimer += damage / 2 - its alliances are
-                // reversed until it runs out.
-                if npc.hp_body.robot && h.damage_type == "NanoVirus" {
-                    npc.crazed += 0.5 * h.damage;
-                    npc.target = None;
-                    println!("PAWN {} scrambled for {:.0} s", lvl.actors[npc.actor].name, npc.crazed);
-                    continue;
-                }
-                let health_before = npc.hp_body.health;
-                let out = npc
-                    .hp_body
-                    .take(&h, center, npc.yaw, stunned, npc.take_hit_timer <= 0.0);
-                // TakeDamageBase: bleedRate += damage taken / (0.3 x default health), for wounds that bleed.
-                if npc.can_bleed
-                    && !npc.hp_body.robot
-                    && !matches!(
-                        h.damage_type,
-                        "Stunned"
-                            | "TearGas"
-                            | "HalonGas"
-                            | "PoisonGas"
-                            | "Radiation"
-                            | "EMP"
-                            | "NanoVirus"
-                            | "Drowned"
-                            | "KnockedOut"
-                            | "Poison"
-                            | "PoisonEffect"
-                    )
-                {
-                    npc.bleed_rate += (health_before - npc.hp_body.health).max(0.0)
-                        / (0.3 * npc.hp_body.max_health.max(1.0));
-                }
-                hp.0.insert(npc.blocker, npc.hp_body.health);
-                attackers.0.insert(npc.blocker, h.attacker);
-                match out {
-                    crate::damage::Outcome::Ignored => {}
-                    crate::damage::Outcome::Died {
-                        knocked_out,
-                        fall_back,
-                    } => {
-                        // MIB / WIB / Anna / Gunther: SpawnCarcass explodes them unless they're stunned (knocked
-                        // out bodies stay): 100 damage over 256, LoudNoise, explosions, scorch, rock and flesh chips.
-                        let self_destruct = crate::pawnclass::explodes_on_death(cls) && !(knocked_out || stunned);
-                        if self_destruct {
-                            crate::sound::play("DeusExSounds.Generic.LargeExplosion1", center, 1.0, 256.0 * 16.0, 1.0);
-                            booms.0.push(crate::explosion::Boom {
-                                pos: center,
-                                damage: 100.0,
-                                radius: 256.0,
-                                damage_type: "Exploded",
-                                from: Some(npc.blocker),
-                                rings: false,
-                                fireball: true,
-                                fx: 0,
-                            });
-                        }
-                        // Robots blow up (Robot.Explode: HurtRadius(0.5 r, 8 r) with r = (radius + height) / 2);
-                        // anyone else killed by an explosion is gibbed (Health < -100).
-                        if npc.hp_body.robot || h.damage_type == "Exploded" || self_destruct {
-                            let r = (npc.params.radius + npc.params.height) / 2.0;
-                            if npc.hp_body.robot {
-                                // Robot.Explode: explosionSound (volume 2) and a large explosion, out to r x 32.
-                                let rr = (r * 32.0) as f32;
-                                if let Some(snd) = crate::sound::prop(
-                                    &lvl.actors[npc.actor].props,
-                                    "explosionSound",
-                                ) {
-                                    crate::sound::play(&snd, center, 2.0, rr, 1.0);
-                                }
-                                crate::sound::play(
-                                    if r < 48.0 {
-                                        "DeusExSounds.Generic.LargeExplosion1"
-                                    } else {
-                                        "DeusExSounds.Generic.LargeExplosion2"
-                                    },
-                                    center,
-                                    1.0,
-                                    rr,
-                                    1.0,
-                                );
-                                booms.0.push(crate::explosion::Boom {
-                                    pos: center,
-                                    damage: (0.5 * r) as f32,
-                                    radius: 8.0 * r,
-                                    damage_type: "Exploded",
-                                    from: None,
-                                    rings: false,
-                                    fireball: true,
-                                    fx: 0,
-                                });
-                            }
-                            gibs.0.push((
-                                center,
-                                npc.params.radius,
-                                npc.params.height,
-                                npc.hp_body.robot,
-                            ));
-                            // GMDX fix (G-Flex / Shifter; setting FixGibLoot): what a gibbed person carried is
-                            // thrown out with the chunks instead of destroyed (not robots or animals).
-                            if crate::settings::get("FixGibLoot") > 0.5 && !npc.hp_body.robot && !npc.animal {
-                                for (k, w) in npc.arsenal.iter().enumerate() {
-                                    let a = npc.yaw + k as f64 * 2.4;
-                                    weapon_drops.0.push((
-                                        w.class.clone(),
-                                        center + DVec3::new(a.cos(), a.sin(), 0.0) * (npc.params.radius * 0.8),
-                                    ));
-                                }
-                                npc.arsenal.clear();
-                                npc.weapon = None;
-                            }
-                            takedowns.log.push(Takedown {
-                                alliance: npc.alliance.clone(),
-                                name: lvl.actors[npc.actor].name.clone(),
-                                class: lvl.actors[npc.actor].class.clone(),
-                                lethal: true,
-                                by_player: h.attacker.is_none(),
-                                damage_type: h.damage_type,
-                            });
-                            crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
-                            if npc.important && !npc.bind_name.is_empty() {
-                                flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
-                            }
-                            npc.state = NpcState::Dead;
-                            npc.weapon_drawn = false;
-                            npc.carried = true; // gone: nothing left to search or carry
-                            npc.searched = true;
-                            blockers.list[npc.blocker].radius = 0.0;
-                            blockers.list[npc.blocker].height = 0.0;
-                            deco.body.physics = imsim_core::body::BodyPhysics::None;
-                            println!(
-                                "PAWN {} {} ({})",
-                                lvl.actors[npc.actor].name,
-                                if npc.hp_body.robot {
-                                    "destroyed"
-                                } else {
-                                    "gibbed"
-                                },
-                                h.damage_type
-                            );
-                            break;
-                        }
-                        // Animals can't be knocked out: a baton or tranquilizer dart kills them. In water nobody is
-                        // only unconscious (DeusExCarcass: "you will die in water every time").
-                        let in_water = crate::actors::water_at(lvl, me_center_of(&blockers, npc.blocker)).is_some();
-                        let knocked_out = knocked_out && !npc.animal && !in_water;
-                        if in_water && !npc.hp_body.robot {
-                            if let Some(Value::Path(c)) = find(&lvl.actors[npc.actor].props, "CarcassType") {
-                                npc.water_carcass = Some((c.rsplit('.').next().unwrap_or("").to_string(), 1.5));
-                            }
-                        }
-                        npc.state = NpcState::Dead;
-                        npc.knocked_out = knocked_out;
-                        // A rebuilt body goes limp at once (ragdoll.rs), pushed by the blow and carried by its run.
-                        crate::ragdoll::request(crate::ragdoll::Death {
-                            blocker: npc.blocker,
-                            hit: h.hit_loc,
-                            from: h.attacker_pos,
-                            damage: h.damage,
-                            vel: deco.body.velocity,
-                        });
-                        npc.weapon_drawn = false;
-                        // DeusExCarcass.InitFor: the body alerts others only if dead (not unconscious), not a robot.
-                        npc.killer_alliance = match h.attacker {
-                            None => "Player".to_string(),
-                            Some(b) => snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
-                        };
-                        npc.killer_bind = match h.attacker {
-                            None => "JCDenton".to_string(),
-                            Some(b) => snap_of(b).map(|p| p.bind.clone()).unwrap_or_default(),
-                        };
-                        npc.emit_carcass = !knocked_out && !npc.hp_body.robot;
-                        npc.alert = None;
-                        // ScriptedPawn.Died: important characters leave <BindName>_Dead (and _Unconscious if
-                        // knocked out) flags that never expire.
-                        if npc.important && !npc.bind_name.is_empty() {
-                            flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
-                            if knocked_out {
-                                flags
-                                    .0
-                                    .set_bool(&format!("{}_Unconscious", npc.bind_name), true);
-                            }
-                        }
-                        takedowns.log.push(Takedown {
-                            alliance: npc.alliance.clone(),
-                            name: lvl.actors[npc.actor].name.clone(),
-                            class: lvl.actors[npc.actor].class.clone(),
-                            lethal: !knocked_out,
-                            by_player: h.attacker.is_none(),
-                            damage_type: h.damage_type,
-                        });
-                        crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
-                        blockers.list[npc.blocker].radius = 0.0;
-                        blockers.list[npc.blocker].height = 0.0;
-                        deco.body.physics = imsim_core::body::BodyPhysics::None;
-                        let ma = &lvl.mesh_actors[an.mesh_actor];
-                        if let Some(anim) = &ma.anim {
-                            let name = if npc.sitting {
-                                "DeathFront"
-                            } else if fall_back {
-                                "DeathBack"
-                            } else {
-                                "DeathFront"
-                            };
-                            an.clip = Clip::named(&anim.mesh, name, false);
-                            an.time = 0.0;
-                            // Animal.bPlayDying False (rats, birds...): no death animation; the carcass appears at once.
-                            if an.clip.is_none() {
-                                if let Some(Value::Path(c)) =
-                                    find(&lvl.actors[npc.actor].props, "CarcassType")
-                                {
-                                    npc.swap_carcass =
-                                        Some(c.rsplit('.').next().unwrap_or("").to_string());
-                                }
-                            }
-                        }
-                        println!(
-                            "PAWN {} {} ({})",
-                            lvl.actors[npc.actor].name,
-                            if knocked_out { "knocked out" } else { "killed" },
-                            h.damage_type
-                        );
-                        // PlayDyingSound: the Die cry, a LoudNoise and a Distress call (friends only answer it if this
-                        // pawn had an enemy it had seen, so a silent takedown from behind stays silent).
-                        if let Some(snd) = crate::sound::prop(&lvl.actors[npc.actor].props, "Die") {
-                            crate::sound::play_owned(
-                                crate::sound::npc_owner(npc.blocker),
-                                crate::sound::slot::PAIN,
-                                &snd,
-                                Some(center),
-                                crate::sound::fprop(
-                                    &lvl.actors[npc.actor].props,
-                                    "TransientSoundVolume",
-                                    1.0,
-                                ),
-                                0.0,
-                                crate::sound::random_pitch(),
-                            );
-                        }
-                        let me = Some(Target::Pawn(npc.blocker));
-                        new_noises.push(Noise {
-                            pos: center,
-                            volume: 1.0,
-                            radius: 800.0,
-                            maker: me,
-                            instigator: me,
-                            kind: NoiseKind::Loud,
-                        });
-                        new_noises.push(Noise {
-                            pos: center,
-                            volume: 1.0,
-                            radius: 800.0,
-                            maker: me,
-                            instigator: me,
-                            kind: NoiseKind::Distress,
-                        });
-                        break;
-                    }
-                    crate::damage::Outcome::Hurt { hit, pain, stunned } => {
-                        // TakeDamage: 'Flamed' sets a pawn alight (CatchFire), robots excepted.
-                        if h.damage_type == "Flamed"
-                            && npc.on_fire.is_none()
-                            && npc.burn_period > 0.0
-                            && !npc.hp_body.robot
-                        {
-                            npc.on_fire = Some(0.0);
-                            npc.burn_tick = 0.0;
-                            println!("PAWN {} caught fire", lvl.actors[npc.actor].name);
-                        }
-                        // GMDX Hemorrhage: a player's shuriken (crate::perks) starts the bleed (StartBleed:
-                        // 16 ticks of int(Damage x 0.1)); each BleedEffect tick sprays blood drops.
-                        if crate::perks::take_bleed(npc.blocker, h.damage) {
-                            aff.bleed_counter = 16;
-                            aff.bleed_timer = 0.0;
-                            aff.bleed_damage = (h.damage * 0.1).floor();
-                        }
-                        if h.damage_type == "BleedEffect" && npc.can_bleed {
-                            for i in 0..10u32 {
-                                if (npc.blocker as u32 * 31 + i * 17 + aff.bleed_counter * 7) % 2 == 0 {
-                                    drips.0.push(center + DVec3::Z * npc.params.height * 0.3);
-                                }
-                            }
-                        }
-                        if h.damage_type == "Poison" {
-                            // StartPoison: eight more doses, two seconds apart.
-                            aff.poison_counter = 8;
-                            aff.poison_timer = 0.0;
-                            aff.poison_damage = aff.poison_damage.max(h.damage);
-                            aff.poisoner = h.attacker;
-                        }
-                        println!(
-                            "PAWN {} hurt {:?} pain={} stunned={} health={:.0} parts={:?}",
-                            lvl.actors[npc.actor].name,
-                            hit,
-                            pain,
-                            stunned,
-                            npc.hp_body.health,
-                            npc.hp_body.parts
-                        );
-                        // PlayTakeHitSound: HitSound1 up to 30 damage, HitSound2 above, at most every 0.25 s; the cry
-                        // of pain is a Distress call.
-                        {
-                            let props = &lvl.actors[npc.actor].props;
-                            let which = if h.damage <= 30.0 {
-                                "HitSound1"
-                            } else {
-                                "HitSound2"
-                            };
-                            if let Some(snd) = crate::sound::prop(props, which) {
-                                let vol = crate::sound::fprop(props, "TransientSoundVolume", 1.0)
-                                    .max(2.0);
-                                crate::sound::play_req(crate::sound::Req {
-                                    sound: snd,
-                                    pos: Some(center),
-                                    volume: vol,
-                                    radius: 0.0,
-                                    pitch: crate::sound::random_pitch(),
-                                    owner: crate::sound::npc_owner(npc.blocker),
-                                    slot: crate::sound::slot::PAIN,
-                                    no_override: false,
-                                    min_gap: 0.25,
-                                });
-                            }
-                        }
-                        let me = Some(Target::Pawn(npc.blocker));
-                        new_noises.push(Noise {
-                            pos: center,
-                            volume: 1.0,
-                            radius: 800.0,
-                            maker: me,
-                            instigator: me,
-                            kind: NoiseKind::Distress,
-                        });
-                        // RubbingEyes: BlockReactions - no ReactToInjury (no new enemy, no fear, no pain animation),
-                        // and TakeDamageBase without bPlayAnim.
-                        if !matches!(npc.state, NpcState::RubbingEyes(_)) {
-                            // ReactToInjury: IncreaseAgitation toward the attacker's alliance (members of the own alliance
-                            // never count), then SetEnemy only succeeds if that alliance is now hostile. Friendly fire just
-                            // hurts.
-                            let (who, alliance) = match h.attacker {
-                                None => (Target::Player, "Player".to_string()),
-                                Some(b) => (
-                                    Target::Pawn(b),
-                                    snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
-                                ),
-                            };
-                            // ShouldReactToInjuryType: bHate/bFearInjury for direct harm, bHate/bFearIndirectInjury for
-                            // gas, blasts and the like; fear of being hurt is IncreaseFear(instigator, 2.0).
-                            let hate_this = imsim_core::reactions::reacts_to_injury(
-                                h.damage_type,
-                                npc.hate_injury,
-                                npc.hate_indirect_injury,
-                            );
-                            let fear_this = imsim_core::reactions::reacts_to_injury(
-                                h.damage_type,
-                                npc.fear_injury,
-                                npc.fear_indirect_injury,
-                            );
-                            if hate_this {
-                                npc.alliances.provoke(&alliance, None);
-                            }
-                            if fear_this {
-                                npc.fear.increase(2.0, 0.0);
-                            }
-                            let made_enemy = npc.alliances.hostile_to(&alliance)
-                                || (who != Target::Player && snap_of_hostile(npc, who));
-                            if made_enemy {
-                                npc.target = Some(who);
-                                npc.last_pos = target_pos(who, player_center, &blockers.list);
-                                npc.last_seen = now;
-                                npc.route = None;
-                            } else if fear_this && npc.fear.fearful() {
-                                // SetEnemy(instigatedBy, , true); SetNextState('Fleeing'): runs once the hit plays out.
-                                npc.target = Some(who);
-                                npc.last_pos = target_pos(who, player_center, &blockers.list);
-                                npc.last_seen = now;
-                                npc.fear_flee = true;
-                                if !matches!(npc.state, NpcState::Fleeing) {
-                                    npc.state = NpcState::Fleeing;
-                                    npc.route = None;
-                                    npc.flee_dest = None;
-                                }
-                            }
-                            if npc.sitting && (stunned || pain) {
-                                npc.sitting = false;
-                                npc.seat = None;
-                                if let Some(b) = npc.body.as_mut() {
-                                    b.physics = Physics::Falling;
-                                }
-                            }
-                            if stunned && !npc.hp_body.robot {
-                                npc.state = NpcState::Stunned(15.0);
-                                npc.weapon_drawn = false;
-                                npc.anim = "";
-                            } else if pain {
-                                if let Some(name) = hit.anim() {
-                                    let ma = &lvl.mesh_actors[an.mesh_actor];
-                                    if let Some(c) = ma
-                                        .anim
-                                        .as_ref()
-                                        .and_then(|a| Clip::named(&a.mesh, name, false))
-                                    {
-                                        let dur =
-                                            (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0) + 0.1;
-                                        an.clip = Some(c);
-                                        npc.anim = name;
-                                        npc.state = NpcState::TakingHit(dur);
-                                        // GMDX Piercing: 1.3 s with a hand-to-hand weapon in the player's hand
-                                        // (Grays and Karkians are slower to flinch there, so they keep 2).
-                                        let tough = matches!(
-                                            lvl.actors[npc.actor].class.as_str(),
-                                            "Gray" | "Karkian" | "KarkianBaby"
-                                        );
-                                        npc.take_hit_timer = crate::perks::flinch_time()
-                                            .filter(|_| !tough)
-                                            .unwrap_or(2.0);
-                                    }
-                                }
-                            } else if matches!(npc.state, NpcState::Idle | NpcState::Seeking)
-                                && made_enemy
-                            {
-                                let (t, pos, seen) = (
-                                    npc.target.unwrap_or(Target::Player),
-                                    npc.last_pos,
-                                    npc.last_seen,
-                                );
-                                npc.begin_attack(t, pos, seen);
-                            }
-                        }
-                    }
-                }
-            }
-            if npc.state == NpcState::Dead {
+            let mut hit_cx = HitCx {
+                lvl,
+                pawns,
+                player_center,
+                now,
+                blockers: &mut blockers,
+                new_noises: &mut new_noises,
+                flags: &mut flags,
+                takedowns: &mut takedowns,
+                booms: &mut booms,
+                weapon_drops: &mut weapon_drops,
+                hp: &mut hp,
+                gibs: &mut gibs,
+                drips: &mut drips,
+                attackers: &mut attackers,
+            };
+            if apply_hits(list, npc, &mut deco, &mut an, aff, &mut hit_cx) {
                 continue;
             }
         }
@@ -3871,176 +3547,39 @@ pub fn npc_system(
         let (sight_radius, fov_cos) = (npc.sight_radius, npc.fov_cos);
         // AICanSee: within SightRadius, inside the field of view (when checked), and a clear line from the eyes
         // to the head, middle or feet. Returns the distance.
-        let sees =
-            |center: DVec3, height: f64, check_dir: bool, other: Option<usize>| -> Option<f64> {
-                let dist = (center - my_eye).length();
-                if dist > sight_radius {
-                    return None;
-                }
-                let flat =
-                    DVec3::new(center.x - my_eye.x, center.y - my_eye.y, 0.0).normalize_or_zero();
-                if check_dir && dist > me.radius + 8.0 && flat.dot(facing) < fov_cos {
-                    return None;
-                }
-                let clear = [height * 0.8, 0.0, -height * 0.8].iter().any(|&dz| {
-                    let h =
-                        world.trace(my_eye, center + DVec3::new(0.0, 0.0, dz), DVec3::splat(1.0));
-                    h.fraction >= 0.999 || (other.is_some() && h.actor == other)
-                });
-                clear.then_some(dist)
-            };
-        let valid_enemy = |npc: &Npc, t: Target| -> bool {
-            match t {
-                Target::Player => !ph.dead && npc.hates("Player"),
-                Target::Pawn(b) => {
-                    b != npc.blocker
-                        && snap_of(b).map_or(false, |p| !p.dead)
-                        && snap_of_hostile(npc, t)
-                }
-            }
+        let senses = Senses {
+            world: &world,
+            pawns,
+            my_eye,
+            radius: me.radius,
+            facing,
+            sight_radius,
+            fov_cos,
+            player_dead: ph.dead,
         };
+        let sees = |center: DVec3, height: f64, check_dir: bool, other: Option<usize>| senses.sees(center, height, check_dir, other);
+        let valid_enemy = |npc: &Npc, t: Target| senses.valid_enemy(npc, t);
         npc.alliances.tick(dt);
         npc.cycle += dt;
         npc.think -= dt;
-        if npc.think <= 0.0 && npc.weapon.is_some() && !stunned_now {
-            npc.think = 0.1;
-            let period = std::mem::take(&mut npc.cycle);
-            if matches!(npc.state, NpcState::Idle | NpcState::Seeking) && npc.react_presence {
-                // CheckEnemyPresence: the nearest enemy in view. The player counts for how visible they are
-                // (light and movement, faded with distance, against VisibilityThreshold); other pawns are seen at once.
-                let mut cand: Option<(Target, DVec3, f64, f32)> = None;
-                // bHateCarcass: the alliance that killed a friend is hated on sight for 15 s (PotentialEnemyAlliance).
-                let potential_player = npc
-                    .potential_enemy
-                    .as_ref()
-                    .is_some_and(|(a, _)| a == "Player")
-                    && !ph.dead;
-                // Achievements (Section 9 Methods / Automotonophobia): the cloak or radar transparency hiding the
-                // player from a pawn looking right at him.
-                if check_player
-                    && valid_enemy(npc, Target::Player)
-                    && crate::abilities::invisible_to(npc.hp_body.robot, ph.camo)
-                    && (crate::abilities::aug_active("AugCloak") || crate::abilities::aug_active("AugRadarTrans"))
-                    && sees(player_center, player.params.height, true, None).is_some()
-                {
-                    crate::achievements::hidden_in_view(npc.hp_body.robot);
-                }
-                if check_player
-                    && (valid_enemy(npc, Target::Player) || potential_player)
-                    && !crate::abilities::invisible_to(npc.hp_body.robot, ph.camo)
-                {
-                    if let Some(d) = sees(player_center, player.params.height, true, None) {
-                        if potential_player && !npc.hates("Player") {
-                            npc.alliances.agitate("Player", 1.0);
-                            npc.potential_enemy = None;
-                        }
-                        let vis = crate::stealth::sight_visibility(
-                            crate::smartai::player_vis(
-                                crate::stealth::player_visibility(&plight, player.body.velocity),
-                                plight.brightness,
-                                d,
-                                player.crouched,
-                                player.body.velocity.truncate().length(),
-                            ),
-                            d,
-                            npc.sight_radius,
-                            npc.vis_threshold,
-                        );
-                        if vis > 0.0 {
-                            cand =
-                                Some((Target::Player, player_center, d, vis + npc.vis_threshold));
-                        }
-                    }
-                }
-                for p in pawns.iter().filter(|_| check_other) {
-                    let potential = !p.dead
-                        && npc
-                            .potential_enemy
-                            .as_ref()
-                            .is_some_and(|(a, _)| a.eq_ignore_ascii_case(&p.alliance));
-                    if !valid_enemy(npc, Target::Pawn(p.blocker)) && !potential {
-                        continue;
-                    }
-                    if potential
-                        && sees(
-                            blockers.list[p.blocker].center,
-                            blockers.list[p.blocker].height,
-                            true,
-                            Some(p.blocker),
-                        )
-                        .is_some()
-                    {
-                        npc.alliances.agitate(&p.alliance.clone(), 1.0);
-                        npc.potential_enemy = None;
-                    }
-                    if !valid_enemy(npc, Target::Pawn(p.blocker)) {
-                        continue;
-                    }
-                    let c = blockers.list[p.blocker];
-                    let d = (c.center - my_eye).length();
-                    if cand.map_or(true, |(_, _, bd, _)| d < bd)
-                        && sees(c.center, c.height, true, Some(p.blocker)).is_some()
-                    {
-                        cand = Some((Target::Pawn(p.blocker), c.center, d, 100000.0));
-                    }
-                }
-                // CheckCycle: readiness climbs at up to 2/s (full view) or as slow as 1/4.5 s (barely visible), holds
-                // for 3 s after losing sight, then decays over 4 s.
-                match cand {
-                    None => {
-                        npc.sustain -= period;
-                        if npc.sustain <= 0.0 {
-                            npc.sustain = 0.0;
-                            npc.readiness = (npc.readiness - period / 4.0).max(0.0);
-                        }
-                    }
-                    Some((t, pos, _, cum)) => {
-                        npc.sustain = 3.0;
-                        let c = (cum * 2.0).clamp(0.5 / 4.5, 1.0);
-                        npc.readiness += c * period / 0.5 * crate::smartai::rise_mult(npc);
-                        if npc.readiness >= 1.0 {
-                            npc.begin_attack(t, pos, now);
-                        } else if npc.readiness >= npc.sight_pct
-                            && t == Target::Player
-                            && npc.state != NpcState::Seeking
-                            && crate::smartai::quick_reflex(npc, &npc_class, (pos - me.center).length(), false)
-                        {
-                            // Smarter AI (GMDX HandleSighting): high alert - straight to the attack.
-                            npc.begin_attack(t, pos, now);
-                        } else if npc.readiness >= npc.sight_pct {
-                            // HandleSighting.
-                            if npc.state == NpcState::Idle {
-                                npc.set_seek_location(pos, SeekKind::Sight, false);
-                                npc.enter_seeking();
-                            } else if now - npc.last_seen > 2.0 {
-                                npc.reseek(pos, SeekKind::Sight);
-                            }
-                        }
-                    }
-                }
-            } else if matches!(
-                npc.state,
-                NpcState::Attacking | NpcState::Surprised(_) | NpcState::Fleeing
-            ) {
-                // UpdateActorVisibility in combat: lighting no longer matters, nor which way we face.
-                if let Some(t) = npc.target {
-                    let (c, h, other) = match t {
-                        Target::Player => (player_center, player.params.height, None),
-                        Target::Pawn(b) => {
-                            (blockers.list[b].center, blockers.list[b].height, Some(b))
-                        }
-                    };
-                    if (valid_enemy(npc, t) || (npc.state == NpcState::Fleeing && npc.fear_flee))
-                        && !(t == Target::Player
-                            && crate::abilities::invisible_to(npc.hp_body.robot, ph.camo))
-                        && sees(c, h, false, other).is_some()
-                    {
-                        npc.last_seen = now;
-                        npc.last_pos = c;
-                    }
-                }
-            }
-        }
+        sight_check(
+            npc,
+            &SightCx {
+                senses: &senses,
+                blockers: &blockers,
+                ph: &ph,
+                player: &player,
+                plight: &plight,
+                me,
+                my_eye,
+                now,
+                npc_class,
+                player_center,
+                check_other,
+                check_player,
+                stunned_now,
+            },
+        );
 
         drop(_a3); let _a4 = crate::prof::scope("ai/4 reactions");
         // The reaction callbacks (ScriptedPawn.UpdateReactionCallbacks): which stimuli this state listens for
@@ -4048,23 +3587,7 @@ pub fn npc_system(
         npc.fear.tick(dt);
         npc.futz_timer = (npc.futz_timer - dt).max(0.0);
         let lf = npc.looking_for(con_look.is_some(), !crate::consys::third_person());
-        let alliance_of = |t: Target| -> String {
-            match t {
-                Target::Player => "Player".to_string(),
-                Target::Pawn(b) => snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
-            }
-        };
         // HandleEnemy: HandlingEnemy -> Attacking, which runs instead for a pawn with nothing to fight with.
-        macro_rules! handle_enemy {
-            ($t:expr, $pos:expr, $seen:expr) => {{
-                let (t, pos, seen) = ($t, $pos, $seen);
-                if npc.weapon.is_some() {
-                    npc.begin_attack(t, pos, seen);
-                } else {
-                    npc.flee_from(t, pos, now, false);
-                }
-            }};
-        }
         // Smarter AI (ours): a guard that sees a light go out or a door move goes to look.
         if !stunned_now
             && !disturbances.is_empty()
@@ -4084,127 +3607,22 @@ pub fn npc_system(
                 }
             }
         }
-        if !stunned_now {
-            for n in &heard {
-                if n.maker == Some(Target::Pawn(npc.blocker))
-                    || crate::stealth::hear(lvl, my_eye, n) < npc.hear_threshold
-                {
-                    continue;
-                }
-                // AISetEventCallback('WeaponFire' / 'Distress', ..., bCheckVisibility, bCheckDir, , bCheckLOS): a shot or a
-                // cry for help only counts if this pawn can see where it came from and is facing that way. Anything
-                // else heard through walls is a LoudNoise, which only sends it to look.
-                if matches!(n.kind, NoiseKind::WeaponFire | NoiseKind::Distress) {
-                    let other = match n.maker {
-                        Some(Target::Pawn(b)) => Some(b),
-                        _ => None,
-                    };
-                    if sees(n.pos, 40.0, true, other).is_none() {
-                        continue;
-                    }
-                }
-                match n.kind {
-                    NoiseKind::WeaponFire => {
-                        // HandleShot: React, Fear, Hate.
-                        if !(lf.shot && (npc.react_shot || npc.fear_shot || npc.hate_shot)) {
-                            continue;
-                        }
-                        let Some(t) = n.instigator else { continue };
-                        if t == Target::Pawn(npc.blocker) {
-                            continue;
-                        }
-                        let alliance = alliance_of(t);
-                        if npc.hate_shot {
-                            npc.alliances.provoke(&alliance, None);
-                        }
-                        if npc.fear_shot {
-                            npc.fear.increase(1.0, 0.0);
-                        }
-                        let pos = target_pos(t, player_center, &blockers.list);
-                        if valid_enemy(npc, t) {
-                            handle_enemy!(t, pos, now);
-                        } else if npc.fear_shot && npc.fear.fearful() {
-                            npc.flee_from(t, pos, now, true);
-                        } else if t == Target::Player {
-                            npc.react_to_futz();
-                        }
-                    }
-                    NoiseKind::Loud => {
-                        // HandleLoudNoise (LoudNoiseScore culls anything not made by an enemy): go and look.
-                        if !(lf.loud_noise && npc.react_loud) {
-                            continue;
-                        }
-                        if let Some(t) = n.instigator {
-                            if valid_enemy(npc, t) && npc.weapon.is_some() {
-                                if t == Target::Player
-                                    && matches!(npc.state, NpcState::Idle | NpcState::Seeking)
-                                    && n.maker == Some(Target::Player)
-                                    && crate::smartai::quick_reflex(npc, &npc_class, (player_center - me.center).length(), true)
-                                {
-                                    // Smarter AI (GMDX HandleLoudNoise): heard close by - attack at once.
-                                    npc.begin_attack(t, player_center, now - 1.0);
-                                } else if npc.state == NpcState::Idle {
-                                    npc.set_seek_location(n.pos, SeekKind::Sound, false);
-                                    npc.enter_seeking();
-                                } else if now - npc.last_seen > 2.0 {
-                                    npc.reseek(n.pos, SeekKind::Sound);
-                                }
-                            }
-                        }
-                    }
-                    NoiseKind::Alert => {
-                        if !(lf.loud_noise && npc.react_loud) || npc.weapon.is_none() {
-                            continue;
-                        }
-                        if n.maker == Some(Target::Pawn(npc.blocker)) {
-                            continue;
-                        }
-                        if npc.state == NpcState::Idle {
-                            npc.set_seek_location(n.pos, SeekKind::Sound, false);
-                            npc.enter_seeking();
-                        } else if npc.state == NpcState::Seeking && now - npc.last_seen > 2.0 {
-                            npc.reseek(n.pos, SeekKind::Sound);
-                        }
-                    }
-                    NoiseKind::Distress => {
-                        // HandleDistress: a friend in trouble who has seen their attacker.
-                        if !(lf.distress && (npc.hate_distress || npc.react_distress || npc.fear_distress)) {
-                            continue;
-                        }
-                        let Some(Target::Pawn(d)) = n.maker else {
-                            continue;
-                        };
-                        let Some(victim) = snap_of(d) else { continue };
-                        let Some(foe) = victim.target else { continue };
-                        if foe == Target::Pawn(npc.blocker) {
-                            continue;
-                        }
-                        // DistressScore: only friends' cries count (anyone's for bFearDistress).
-                        let friend = npc.friendly(&victim.alliance);
-                        if !friend && !npc.fear_distress {
-                            continue;
-                        }
-                        if npc.fear_distress {
-                            npc.fear.increase(1.0, 0.0);
-                        }
-                        let foe_pos = target_pos(foe, player_center, &blockers.list);
-                        let mut attacking = false;
-                        if friend && now - victim.last_seen <= victim.enemy_timeout {
-                            if npc.hate_distress {
-                                npc.alliances.provoke(&alliance_of(foe), Some(1.0));
-                            }
-                            if valid_enemy(npc, foe) && (npc.react_distress || npc.hate_distress) {
-                                handle_enemy!(foe, foe_pos, victim.last_seen);
-                                attacking = true;
-                            }
-                        }
-                        if !attacking && npc.fear_distress && npc.fear.fearful() {
-                            npc.flee_from(foe, foe_pos, now, true);
-                        }
-                    }
-                }
-            }
-        }
+        hear_noises(
+            npc,
+            &HearCx {
+                senses: &senses,
+                lvl,
+                blockers: &blockers,
+                heard: &heard,
+                lf: &lf,
+                me,
+                my_eye,
+                now,
+                npc_class,
+                player_center,
+                stunned_now,
+            },
+        );
         // Continuous sights, checked every 0.25 s like a pulsing AIStartEvent: the player with a weapon out
         // (HandleWeapon), the player picking a lock or bypassing a device (HandleHacking), and one-off futzing
         // with owned things (HandleFutz).
@@ -4242,7 +3660,7 @@ pub fn npc_system(
                         npc.fear.increase(0.51, 0.0);
                     }
                     if valid_enemy(npc, Target::Player) {
-                        handle_enemy!(Target::Player, player_center, now);
+                        npc.handle_enemy(Target::Player, player_center, now, now);
                     } else if npc.fear_hacking && npc.fear.fearful() {
                         npc.flee_from(Target::Player, player_center, now, true);
                     } else {
@@ -4563,6 +3981,37 @@ pub fn npc_system(
         if npc.state != NpcState::Attacking {
             npc.atk_phase = AtkPhase::TurnFirst;
         }
+        // The context the state functions below take (built where one runs: it borrows the outputs mutably).
+        macro_rules! act_cx {
+            () => {
+                ActCx {
+                    lvl,
+                    senses: &senses,
+                    blockers: &blockers,
+                    world: &world,
+                    hp: &hp,
+                    player: &player,
+                    player_cyl: &player_cyl,
+                    carrying: &carrying,
+                    walk_test: walk_test.as_deref(),
+                    npc_class,
+                    player_center,
+                    player_yaw,
+                    now,
+                    dt,
+                    me,
+                    my_eye,
+                    ph: &mut ph,
+                    alarms: &mut alarms,
+                    weapon_drops: &mut weapon_drops,
+                    deco_hits: &mut deco_hits,
+                    launches: &mut launches,
+                    blood: &mut blood,
+                    new_hits: &mut new_hits,
+                    new_noises: &mut new_noises,
+                }
+            };
+        }
         match npc.state {
             NpcState::Dead => {}
             NpcState::TakingHit(t) => {
@@ -4667,862 +4116,20 @@ pub fn npc_system(
                 };
             }
             NpcState::Burning => {
-                npc.weapon_drawn = false;
-                if npc.on_fire.is_none() {
-                    npc.state = if npc.target.is_some() {
-                        NpcState::Attacking
-                    } else {
-                        NpcState::Idle
-                    };
-                    npc.route = None;
-                    npc.flee_dest = None;
-                } else {
-                    // PickDestination: about 300 units off, away from the enemy if there is one; run there; repeat.
-                    let away_from = match npc.target {
-                        Some(t) => target_pos(t, player_center, &blockers.list),
-                        None => me.center + DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0) * -100.0,
-                    };
-                    let arrived = npc
-                        .flee_dest
-                        .map_or(true, |d| (d - me.center).truncate().length() < 40.0);
-                    npc.flee_repick -= dt;
-                    if arrived || npc.flee_repick <= 0.0 {
-                        // Burning.PickDestination: water first - the nearest navigation point in a water zone
-                        // within 2000, if this pawn can swim.
-                        let water = npc.can_swim.then(|| {
-                            lvl.nav
-                                .points
-                                .iter()
-                                .map(|p| DVec3::from_array(p.pos))
-                                .filter(|p| p.distance(me.center) < 2000.0 && crate::actors::water_at(lvl, *p).is_some())
-                                .min_by(|a, b| a.distance(me.center).total_cmp(&b.distance(me.center)))
-                        }).flatten();
-                        let r = npc.rand();
-                        let r2 = npc.rand();
-                        let mut d = match water {
-                            Some(w) => w,
-                            None => pick_flee_dest(lvl, me.center, away_from, npc.params.radius, r, r2),
-                        };
-                        // Else run willy-nilly: about 300 units (x 0.8 - 1.2) off, away from the enemy.
-                        if water.is_none() && d.distance(me.center) > 400.0 {
-                            d = me.center + (d - me.center).normalize_or_zero() * 300.0 * (0.8 + 0.4 * r2 as f64);
-                        }
-                        npc.flee_dest = Some(d);
-                        npc.route = None;
-                        npc.flee_repick = 3.0;
-                    }
-                    let dest = npc.flee_dest.unwrap();
-                    if npc.route.is_none() {
-                        npc.route = Some(plan_route(lvl, me.center, dest, &npc.params, None));
-                    }
-                    let r = npc.route.as_mut().unwrap();
-                    wish = follow(lvl, r, me.center, &npc.params, dt);
-                    running = true;
-                    if wish.length_squared() > 1e-6 {
-                        npc.yaw =
-                            turn_toward(npc.yaw, wish.y.atan2(wish.x), npc.yaw_rate * dt as f64);
-                    }
-                }
+                let mut act_cx = act_cx!();
+                (wish, running, firing) = burning_state(npc, &mut an, &mut act_cx);
             }
             NpcState::Fleeing => {
-                npc.weapon_drawn = false;
-                let target_dead = match npc.target {
-                    Some(Target::Pawn(b)) => *hp.0.get(&b).unwrap_or(&1.0) <= 0.0,
-                    Some(Target::Player) => ph.dead,
-                    None => true,
-                };
-                // Fleeing.Tick: from an enemy, until it's been out of sight for FearSustainTime; from something
-                // merely frightening, until no longer fearful.
-                let from_enemy = npc.target.is_some_and(|t| valid_enemy(npc, t));
-                let done = target_dead
-                    || if from_enemy || !npc.fear_flee {
-                        now - npc.last_seen > npc.fear_sustain
-                    } else {
-                        !npc.fear.fearful()
-                    };
-                if done {
-                    npc.fear_flee = false;
-                    // FinishFleeing: back to orders.
-                    npc.state = NpcState::Idle;
-                    npc.target = None;
-                    npc.route = None;
-                    npc.flee_dest = None;
-                    npc.patrol_dest = None;
-                    npc.orders_failed = false;
-                } else {
-                    let enemy_pos = target_pos(
-                        npc.target.unwrap_or(Target::Player),
-                        player_center,
-                        &blockers.list,
-                    );
-                    // bCower: crouch and cover up where it stands, facing the danger (Fleeing's Cower label).
-                    if npc.cower {
-                        npc.route = None;
-                        let to = enemy_pos - me.center;
-                        npc.yaw = turn_toward(npc.yaw, to.y.atan2(to.x), npc.yaw_rate * dt as f64);
-                    } else {
-                    let seen = now - npc.last_seen < 0.6;
-                    let arrived = npc
-                        .flee_dest
-                        .map_or(true, |d| (d - me.center).truncate().length() < 48.0);
-                    npc.flee_repick -= dt;
-                    // PickDestination when starting, when the hiding place turns out to be in view, or on arrival
-                    // while still seen.
-                    if npc.flee_dest.is_none() || (seen && (arrived || npc.flee_repick <= 0.0)) {
-                        let r = npc.rand();
-                        let r2 = npc.rand();
-                        npc.flee_dest = Some(pick_flee_dest(
-                            lvl,
-                            me.center,
-                            enemy_pos,
-                            npc.params.radius,
-                            r,
-                            r2,
-                        ));
-                        npc.route = None;
-                        npc.flee_repick = 2.0;
-                    }
-                    let dest = npc.flee_dest.unwrap();
-                    if !arrived {
-                        let replan = npc
-                            .route
-                            .as_ref()
-                            .map_or(true, |r| r.age > 1.5 || r.goal.distance(dest) > 32.0);
-                        if replan {
-                            npc.route = Some(plan_route(lvl, me.center, dest, &npc.params, None));
-                        }
-                        let r = npc.route.as_mut().unwrap();
-                        wish = follow(lvl, r, me.center, &npc.params, dt);
-                        running = true;
-                        if wish.length_squared() > 1e-6 {
-                            npc.yaw = turn_toward(
-                                npc.yaw,
-                                wish.y.atan2(wish.x),
-                                npc.yaw_rate * dt as f64,
-                            );
-                        }
-                    } else {
-                        // Hidden: wait, facing the way we came.
-                        npc.route = None;
-                        let to = enemy_pos - me.center;
-                        npc.yaw = turn_toward(npc.yaw, to.y.atan2(to.x), npc.yaw_rate * dt as f64);
-                    }
-                    }
-                }
+                let mut act_cx = act_cx!();
+                (wish, running, firing) = fleeing_state(npc, &mut an, &mut act_cx);
             }
             NpcState::Alerting => {
-                // Alerting: weapon away, run to the alarm, push it, then fight (or flee).
-                npc.weapon_drawn = false;
-                running = true;
-                let me_c = me.center;
-                match npc.alert {
-                    None => {
-                        npc.state = if npc.raise_alarm == 0 {
-                            NpcState::Attacking
-                        } else {
-                            NpcState::Fleeing
-                        };
-                    }
-                    Some((i, push)) => {
-                        let (spot, in_range, alarm_pos) = {
-                            let u = &alarms.units[i];
-                            (
-                                u.push_spot(npc.params.radius),
-                                u.in_range(me_c, npc.params.radius, npc.params.height),
-                                u.pos,
-                            )
-                        };
-                        if push > 0.0 || in_range {
-                            // SoundAlarm: TurnToward, PlayPushing (PushButton), FinishAnim, TriggerAlarm.
-                            npc.route = None;
-                            let to = alarm_pos - me_c;
-                            npc.yaw =
-                                turn_toward(npc.yaw, to.y.atan2(to.x), npc.yaw_rate * dt as f64);
-                            let left = if push > 0.0 {
-                                push - dt
-                            } else {
-                                let ma = &lvl.mesh_actors[an.mesh_actor];
-                                let clip = ma
-                                    .anim
-                                    .as_ref()
-                                    .and_then(|a| Clip::named(&a.mesh, "PushButton", false));
-                                let len = clip
-                                    .as_ref()
-                                    .map(|c| (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0))
-                                    .unwrap_or(1.0);
-                                if let Some(c) = clip {
-                                    an.clip = Some(c);
-                                    npc.anim = "PushButton";
-                                }
-                                len.max(0.2)
-                            };
-                            if left <= 0.0 {
-                                npc.alarm_timer = 120.0;
-                                // TriggerAlarm: only if it hasn't been hacked; GMDX Sabotage shocks whoever
-                                // pushes a bypassed one (200 'Stunned').
-                                if !alarms.units[i].bypassed {
-                                    alarms.trigger(i, npc.target);
-                                } else if crate::perks::has("PerkSabotage") {
-                                    new_hits.push(crate::damage::PawnHit {
-                                        blocker: npc.blocker,
-                                        damage: 200.0,
-                                        damage_type: "Stunned",
-                                        hit_loc: me_c,
-                                        attacker: Some(npc.blocker),
-                                        attacker_pos: me_c,
-                                    });
-                                }
-                                alarms.units[i].associated = None;
-                                npc.alert = None;
-                                npc.anim = "";
-                                if let Some(at) = npc.body_alarm.take() {
-                                    // Pushed because of a body: now search there.
-                                    npc.set_seek_location(at, SeekKind::Carcass, false);
-                                    npc.enter_seeking();
-                                } else if npc.raise_alarm == 0 {
-                                    npc.state = NpcState::Attacking;
-                                } else {
-                                    npc.enter_fleeing();
-                                }
-                            } else {
-                                npc.alert = Some((i, left));
-                            }
-                        } else {
-                            let replan = npc
-                                .route
-                                .as_ref()
-                                .map_or(true, |r| r.age > 2.0 || r.goal.distance(spot) > 32.0);
-                            if replan {
-                                npc.route = Some(plan_route(lvl, me_c, spot, &npc.params, None));
-                            }
-                            let r = npc.route.as_mut().unwrap();
-                            wish = follow(lvl, r, me_c, &npc.params, dt);
-                            if wish.length_squared() > 1e-6 {
-                                npc.yaw = turn_toward(
-                                    npc.yaw,
-                                    wish.y.atan2(wish.x),
-                                    npc.yaw_rate * dt as f64,
-                                );
-                            } else if r.age > 1.0 {
-                                // Can't get there: give up on the alarm.
-                                alarms.units[i].associated = None;
-                                npc.alert = None;
-                            }
-                        }
-                    }
-                }
+                let mut act_cx = act_cx!();
+                (wish, running, firing) = alerting_state(npc, &mut an, &mut act_cx);
             }
             NpcState::Attacking => {
-                // HandlingEnemy with RAISEALARM_BeforeAttacking: an alarm to push comes first.
-                if std::mem::take(&mut npc.alert_pending) {
-                    let me_b = npc.blocker;
-                    let al = npc.alliances.clone();
-                    if let Some(i) = alarms.find_target(me_b, me.center, |a| al.hostile_to(a)) {
-                        alarms.units[i].associated = Some(me_b);
-                        npc.alert = Some((i, 0.0));
-                        npc.state = NpcState::Alerting;
-                        npc.route = None;
-                        println!("PAWN {} runs for the alarm", lvl.actors[npc.actor].name);
-                    }
-                }
-                // Attacking.BeginState: SetupWeapon(true) - the weapon comes out even when no surprise pause ran.
-                npc.weapon_drawn = true;
-                let target_dead = match npc.target {
-                    Some(Target::Pawn(b)) => *hp.0.get(&b).unwrap_or(&1.0) <= 0.0,
-                    Some(Target::Player) => ph.dead,
-                    None => true,
-                };
-                if target_dead {
-                    // Nobody left to fight: back to orders (patrols pick up at the closest point again).
-                    npc.state = NpcState::Idle;
-                    npc.target = None;
-                    npc.route = None;
-                    npc.patrol_dest = None;
-                    npc.orders_failed = false;
-                } else if npc.should_flee()
-                    || (npc.weapon.is_none() && !npc.arsenal.is_empty())
-                    || npc.should_drop_weapon() && npc.weapon.is_some()
-                {
-                    // HandleEnemy: drop the gun if an arm is gone (ShouldDropWeapon), then run if badly hurt
-                    // (bCriticalDamage) or out of ammo.
-                    if npc.should_drop_weapon() {
-                        if let Some(w) = npc.weapon.take() {
-                            weapon_drops.0.push((
-                                w.class.clone(),
-                                me.center
-                                    + DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0)
-                                        * (me.radius + 8.0),
-                            ));
-                            npc.arsenal.retain(|x| x.class != w.class);
-                            npc.dropped.push(w.class.clone());
-                        }
-                    }
-                    if npc.should_flee() || npc.weapon.is_none() {
-                        npc.enter_fleeing();
-                        // RAISEALARM_BeforeFleeing: push an alarm on the way out if there's one to reach.
-                        if npc.raise_alarm == 1 && npc.alarm_timer <= 0.0 {
-                            let me_b = npc.blocker;
-                            let al = npc.alliances.clone();
-                            if let Some(i) =
-                                alarms.find_target(me_b, me.center, |a| al.hostile_to(a))
-                            {
-                                alarms.units[i].associated = Some(me_b);
-                                npc.alert = Some((i, 0.0));
-                                npc.state = NpcState::Alerting;
-                                npc.route = None;
-                                println!(
-                                    "PAWN {} runs for the alarm before fleeing",
-                                    lvl.actors[npc.actor].name
-                                );
-                            }
-                        }
-                    }
-                } else if now - npc.last_seen > npc.enemy_timeout {
-                    // HasEnemyTimedOut: search where they are now (SEEKTYPE_Guess, post-combat).
-                    let at = target_pos(
-                        npc.target.unwrap_or(Target::Player),
-                        player_center,
-                        &blockers.list,
-                    );
-                    npc.set_seek_location(at, SeekKind::Guess, true);
-                    npc.enter_seeking();
-                } else {
-                    let target_pos = match npc.target {
-                        Some(Target::Player) => player_center,
-                        Some(Target::Pawn(b)) => blockers.list[b].center,
-                        None => npc.last_pos,
-                    };
-                    let seen_recently = now - npc.last_seen < 0.6;
-                    // Smarter AI: the fire react time (must see the enemy for a moment before shooting) and
-                    // suppressive fire (keep shooting where it was last seen for a while after losing it).
-                    let react_ok = crate::smartai::combat_tick(
-                        npc,
-                        &npc_class,
-                        now - npc.last_seen < 0.25,
-                        npc.target == Some(Target::Player),
-                        dt,
-                    );
-                    let suppress = !seen_recently && npc.smart.sfire > 0.0;
-                    let target_pos = if suppress { npc.last_pos } else { target_pos };
-                    let chase_to = if seen_recently {
-                        target_pos
-                    } else {
-                        npc.last_pos
-                    };
-                    let to = chase_to - me.center;
-                    let dist = to.length();
-                    // Every half second (and when the gun runs dry) pick the best weapon for this range.
-                    npc.switch_check -= dt;
-                    if npc.switch_check <= 0.0 && npc.reload_timer <= 0.0 {
-                        npc.switch_check = 0.5;
-                        let enemy = match npc.target {
-                            Some(Target::Player) => Some((dist, player.params.radius, false, true)),
-                            Some(Target::Pawn(b)) => {
-                                let c = blockers.list[b];
-                                Some((
-                                    dist,
-                                    c.radius,
-                                    find(&lvl.actors[c.actor].props, "EMPHitPoints").is_some(),
-                                    false,
-                                ))
-                            }
-                            None => None,
-                        };
-                        npc.switch_to_best_weapon(enemy);
-                    }
-                    let melee = npc.weapon.as_ref().map_or(false, |w| w.hand_to_hand);
-                    // Melee weapons close right in; guns hold off at a fraction of their range.
-                    let accurate = match npc.weapon.as_ref() {
-                        Some(w) if w.hand_to_hand => {
-                            (w.max_range as f64 * 0.8).max(me.radius + 20.0)
-                        }
-                        Some(w) => w.max_range as f64 * 0.4,
-                        None => 600.0,
-                    };
-                    // ShouldCrouch: a ranged weapon, out of the water, the enemy more than 300 away.
-                    let should_crouch = npc.can_crouch
-                        && !melee
-                        && dist > 300.0
-                        && crate::actors::water_at(lvl, me.center).is_none();
-                    if npc.crouching {
-                        npc.crouch_timer = (npc.crouch_timer - dt).max(0.0);
-                        if npc.crouch_timer <= 0.0 && !should_crouch {
-                            npc.crouching = false;
-                        }
-                    }
-                    if !seen_recently || dist > accurate {
-                        npc.crouch_rolled = false;
-                    } else if !npc.crouch_rolled {
-                        // Attacking's Fire label: ShouldCrouch() && FRand() < CrouchRate -> StartCrouch.
-                        npc.crouch_rolled = true;
-                        if should_crouch && npc.rand() < npc.crouch_rate {
-                            npc.crouching = true;
-                            npc.crouch_timer = 1.0 + npc.rand() * 0.5;
-                        }
-                    }
-                    if npc.crouching && npc.crouch_timer > 0.0 {
-                        // PickDestination: DEST_SameLocation while the crouch timer runs.
-                        npc.route = None;
-                    } else if npc.crouching && (!seen_recently || dist > accurate) {
-                        npc.crouching = false;
-                    }
-                    if suppress {
-                        // Suppressive fire: hold position and shoot.
-                        npc.route = None;
-                    } else if !npc.crouching && (!seen_recently || dist > accurate) {
-                        // Close in, over the path network if there's no straight way.
-                        let replan = npc
-                            .route
-                            .as_ref()
-                            .map_or(true, |r| r.age > 1.0 || r.goal.distance(chase_to) > 96.0);
-                        if replan {
-                            npc.route =
-                                Some(plan_route(lvl, me.center, chase_to, &npc.params, None));
-                        }
-                        let r = npc.route.as_mut().unwrap();
-                        wish = follow(lvl, r, me.center, &npc.params, dt);
-                        running = true;
-                    } else {
-                        npc.route = None;
-                    }
-                    // Attacking's labels (atk_phase): RunToRange opens with TurnToward(enemy) - standing, no shots -
-                    // then runs; stopping goes through Fire (TweenToShoot 0.15 s + TurnToward) into ContinueFire.
-                    let moving = wish.length_squared() > 1e-6;
-                    npc.atk_phase = match (npc.atk_phase, moving) {
-                        (AtkPhase::Moving | AtkPhase::TurnFirst, true) => npc.atk_phase,
-                        (_, true) => AtkPhase::TurnFirst,
-                        (AtkPhase::Moving | AtkPhase::TurnFirst, false) => AtkPhase::Settle(0.15),
-                        (AtkPhase::Settle(t), false) => AtkPhase::Settle(t - dt),
-                        (AtkPhase::Firing, false) => AtkPhase::Firing,
-                    };
-                    if npc.atk_phase == AtkPhase::TurnFirst {
-                        wish = DVec3::ZERO;
-                        running = false;
-                    }
-                    // StrafeFacing (bCanStrafe and a shot to take) runs facing the enemy; MoveToward faces the way it
-                    // goes; standing, turning and firing face the enemy.
-                    let strafing = npc.can_strafe && seen_recently;
-                    let face = if !moving || npc.atk_phase == AtkPhase::TurnFirst || strafing {
-                        to
-                    } else {
-                        wish
-                    };
-                    let want = face.y.atan2(face.x);
-                    npc.yaw = turn_toward(npc.yaw, want, npc.yaw_rate * dt as f64);
-                    let to_t = target_pos - me.center;
-                    let want_t = to_t.y.atan2(to_t.x);
-                    // TurnToward is done within 2000 rotation units (about 11 degrees).
-                    let facing_ok =
-                        (want_t - npc.yaw).sin().abs() < 0.2 && (want_t - npc.yaw).cos() > 0.0;
-                    let off_deg = (want_t - npc.yaw).sin().atan2((want_t - npc.yaw).cos()).abs().to_degrees() as f32;
-                    match npc.atk_phase {
-                        AtkPhase::TurnFirst if facing_ok => npc.atk_phase = AtkPhase::Moving,
-                        AtkPhase::Settle(t) if t <= 0.0 && facing_ok => npc.atk_phase = AtkPhase::Firing,
-                        _ => {}
-                    }
-                    // Attacking.Tick / ContinueFire: who may shoot now.
-                    let fire_ok = match npc.atk_phase {
-                        AtkPhase::TurnFirst | AtkPhase::Settle(_) => false,
-                        // bFacingTarget while strafing; else !bMustFaceTarget within FireAngle (Abs(yaw)*360/32768).
-                        AtkPhase::Moving => {
-                            if strafing {
-                                facing_ok
-                            } else {
-                                !npc.must_face && off_deg * 2.0 <= npc.fire_angle
-                            }
-                        }
-                        AtkPhase::Firing => facing_ok,
-                    };
-                    // Karkian.Bump: charging into its enemy faster than 100 with the ram (WeaponKarkianBump) out and
-                    // FireTimer clear hits twice for speed/5 'Shot', then FireTimer = AIFireDelay (8 s of biting).
-                    if lvl.actors[npc.actor].class == "Karkian"
-                        && npc.target == Some(Target::Player)
-                        && !ph.dead
-                        && npc.fire_timer <= 0.0
-                    {
-                        if let Some(delay) = npc
-                            .weapon
-                            .as_ref()
-                            .filter(|w| w.class == "WeaponKarkianBump")
-                            .map(|w| w.ai_fire_delay)
-                        {
-                            let v = npc.body.as_ref().map_or(DVec3::ZERO, |b| b.velocity);
-                            let flat = (player_center - me.center).truncate().length();
-                            let touching = flat <= me.radius + player.params.radius + 6.0
-                                && (player_center.z - me.center.z).abs()
-                                    <= me.height + player.params.height;
-                            if touching && v.length() > 100.0 {
-                                let dmg = (v.length() / 5.0) as f32;
-                                for o in [DVec3::new(1.0, 1.0, -1.0), DVec3::new(-1.0, -1.0, -1.0)]
-                                {
-                                    ph.damage(
-                                        dmg,
-                                        "Shot",
-                                        player_offset(player_center, player_yaw, player_center + o),
-                                    );
-                                }
-                                crate::shake::shake_view(0.15 + 0.002 * dmg * 2.0, dmg * 30.0 * 2.0, 0.3 * dmg * 2.0);
-                                npc.fire_timer = delay;
-                                npc.switch_check = 0.0;
-                            }
-                        }
-                    }
-                    firing = npc.weapon.is_some();
-                    npc.shot_timer -= dt;
-                    // ContinueFire: the next shot waits for the Shoot animation to finish (FinishAnim) and for the
-                    // weapon to be ready again (ShotTime), so fire rate is the slower of the two.
-                    let shoot_playing = npc.anim == "ShootOnce"
-                        && an.clip.as_ref().map(|c| !c.done()).unwrap_or(false);
-                    if npc.reload_timer > 0.0 {
-                        npc.reload_timer -= dt;
-                        if npc.reload_timer <= 0.0 {
-                            if let Some(snd) =
-                                npc.weapon.as_ref().and_then(|w| w.snd.reload_end.clone())
-                            {
-                                crate::sound::play(&snd, me.center, 1.0, 1024.0, 1.0);
-                            }
-                            let left = npc.weapon_ammo().unwrap_or(i32::MAX);
-                            npc.loaded = npc
-                                .weapon
-                                .as_ref()
-                                .map(|w| (w.reload_count.max(1) as i32).min(left).max(0) as u32)
-                                .unwrap_or(1);
-                        }
-                    } else if let Some(w) = npc.weapon.clone() {
-                        let in_reach = !melee || dist <= w.max_range as f64 + me.radius;
-                        let has_ammo = npc.weapon_ammo().map_or(true, |n| n > 0);
-                        // Melee: the swing starts with the Attack animation and the blow lands at its
-                        // HandToHandAttack notify (OwnerHandToHandAttack), still needing the target in reach.
-                        let mut strike_now = false;
-                        if let Some(t) = npc.melee_wait.as_mut() {
-                            *t -= dt;
-                            if *t <= 0.0 {
-                                npc.melee_wait = None;
-                                strike_now = in_reach;
-                            }
-                        }
-                        if strike_now
-                            || ((seen_recently || (suppress && !melee))
-                                && (react_ok || suppress)
-                                && fire_ok
-                                && in_reach
-                                && has_ammo
-                                && npc.shot_timer <= 0.0
-                                && !shoot_playing
-                                && npc.melee_wait.is_none())
-                        {
-                            'fire: {
-                                if !strike_now {
-                                    npc.shot_timer = w.shot_time.max(0.1);
-                                    npc.just_fired = true;
-                                    if std::env::var("DXVIEW_PAWNLOG").is_ok_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(&n)) {
-                                        println!("PAWNSHOT t={now:.2} {} phase={:?} moving={moving}", lvl.actors[npc.actor].name, npc.atk_phase);
-                                    }
-                                    if w.ai_fire_delay > 0.0 {
-                                        // FireIfClearShot: FireTimer = AIFireDelay; the next SwitchToBestWeapon moves off it.
-                                        npc.fire_timer = w.ai_fire_delay;
-                                    }
-                                    let fire_snd = if w.silenced && !w.hand_to_hand {
-                                        Some("DeusExSounds.Weapons.StealthPistolFire".to_string())
-                                    } else {
-                                        w.snd.fire.clone()
-                                    };
-                                    if let Some(snd) = fire_snd {
-                                        crate::sound::play(
-                                            &snd,
-                                            me.center,
-                                            w.snd.volume,
-                                            2048.0,
-                                            1.0,
-                                        );
-                                    }
-                                    if w.hand_to_hand {
-                                        let seq = lvl.mesh_actors[an.mesh_actor]
-                                            .anim
-                                            .as_ref()
-                                            .and_then(|a| {
-                                                a.mesh
-                                                    .seqs
-                                                    .iter()
-                                                    .find(|q| q.name.eq_ignore_ascii_case("Attack"))
-                                                    .cloned()
-                                            });
-                                        let delay = seq.map_or(0.25, |q| {
-                                            let at = q
-                                                .notifies
-                                                .iter()
-                                                .find(|n| {
-                                                    n.1.eq_ignore_ascii_case("HandToHandAttack")
-                                                })
-                                                .map_or(0.5, |n| n.0);
-                                            q.num_frames.max(1) as f32 / q.rate.max(0.1) * at
-                                        });
-                                        npc.melee_wait = Some(delay);
-                                        break 'fire;
-                                    }
-                                }
-                                // Gunfire is heard by enemies (WeaponFire, LoudNoise) and friends (Distress).
-                                if let Some(mut n) = crate::stealth::weapon_noise(
-                                    &w,
-                                    me.center,
-                                    Target::Pawn(npc.blocker),
-                                ) {
-                                    new_noises.push(n.clone());
-                                    n.kind = NoiseKind::Loud;
-                                    new_noises.push(n.clone());
-                                    n.kind = NoiseKind::Distress;
-                                    new_noises.push(n);
-                                }
-                                // NPC ammo (user decision 2026-10-12): pawns never run dry and only the mini-crossbow
-                                // (and any ReloadCount 1 weapon) reloads, every ReloadCount darts. DXVIEW_NPC_FINITE_AMMO=1 restores
-                                // the script's behaviour (UseAmmo per shot, ReloadAmmo every ClipCount shots).
-                                let finite = npc_finite_ammo();
-                                let reloads = finite || w.reload_count == 1 || w.class == "WeaponMiniCrossbow";
-                                if w.reload_count > 0 && reloads {
-                                    if finite {
-                                        npc.use_ammo();
-                                    }
-                                    npc.loaded = npc.loaded.saturating_sub(1);
-                                    if npc.weapon_ammo() == Some(0) {
-                                        // Out of ammo: switch to something else (a knife) straight away.
-                                        npc.switch_check = 0.0;
-                                    } else if npc.loaded == 0 {
-                                        // Reload.GetReloadTime for pawns: ReloadTime * (BaseAccuracy * 2 + 1).
-                                        npc.reload_timer =
-                                            w.reload_time * (npc.base_accuracy * 2.0 + 1.0);
-                                        if let Some(snd) = &w.snd.reload_begin {
-                                            crate::sound::play(snd, me.center, 1.0, 1024.0, 1.0);
-                                        }
-                                    }
-                                }
-                                // Aim at the target's chest with weapon + pawn inaccuracy.
-                                let aim_at = target_pos + DVec3::new(0.0, 0.0, 10.0);
-                                let fwd = (aim_at - my_eye).normalize_or_zero();
-                                let right = fwd.cross(DVec3::Z).normalize_or_zero();
-                                let up = right.cross(fwd).normalize_or_zero();
-                                let acc = (w.base_accuracy + npc.base_accuracy) as f64
-                                    + match npc.target {
-                                        Some(Target::Player) => crate::smartai::accuracy_mod(
-                                            player.body.velocity,
-                                            player.body.physics == Physics::Falling,
-                                            &w.class,
-                                        ),
-                                        _ => 0.0,
-                                    };
-                                let acc = acc.max(0.0);
-                                let mut continue_fire = true;
-                                if let Some(class) = w.projectile_for(npc.ammo.as_deref()) {
-                                    for _ in 0..w.shots_per_fire() {
-                                        let dir = crate::projectiles::projectile_dir(
-                                            fwd,
-                                            acc,
-                                            &mut npc.seed,
-                                        );
-                                        launches.0.push(crate::projectiles::Launch {
-                                            class: class.clone(),
-                                            pos: my_eye + fwd * (me.radius + 4.0),
-                                            dir,
-                                            from: Some(npc.blocker),
-                                            mult: 1.0,
-                                            life: None,
-                                            scale: None,
-                                            still: false,
-                                            track: None,
-                                            track_at: None,
-                                            speed: None,
-                                            ownerless: false,
-                                        });
-                                    }
-                                    continue_fire = false;
-                                }
-                                let mut ricocheted = false;
-                                for _ in 0..if continue_fire { w.shots_per_fire() } else { 0 } {
-                                    let range = w.max_range as f64;
-                                    let dir = spread_dir(fwd, right, up, acc, range, &mut npc.seed);
-                                    let end = my_eye + dir * range;
-                                    let wh = world.trace(my_eye, end, DVec3::splat(0.5));
-                                    let mut ph_hit =
-                                        trace_cylinder(&player_cyl, my_eye, end, DVec3::splat(0.5));
-                                    // Enhancement (Carried Objects As Cover, carry.rs): what you hold in front of
-                                    // you takes the bullets meant for you (the original turns its collision off).
-                                    if let Some(hc) = carrying.held.as_ref().filter(|h| crate::carry::cover_on() && h.mass >= 15.0 && !w.hand_to_hand) {
-                                        let box_cyl = Cylinder {
-                                            center: blockers.list[hc.blocker].center,
-                                            radius: hc.radius,
-                                            height: hc.height,
-                                            actor: usize::MAX,
-                                        };
-                                        if let Some(c) = trace_cylinder(&box_cyl, my_eye, end, DVec3::splat(0.5)) {
-                                            let nearer_than_player = ph_hit.is_none_or(|p| c.fraction <= p.fraction);
-                                            if c.fraction < wh.fraction && nearer_than_player && !ph.dead {
-                                                let at = my_eye + (end - my_eye) * c.fraction;
-                                                crate::fx::impact(at, -dir, dir, Some("wood"));
-                                                crate::sound::play(
-                                                    &format!("DeusExSounds.Generic.Ricochet{}", 1 + (crate::sound::frand() * 4.0) as u32 % 4),
-                                                    at,
-                                                    0.8,
-                                                    1024.0,
-                                                    1.0,
-                                                );
-                                                deco_hits.0.push(crate::destruct::DecoHit {
-                                                    blocker: hc.blocker,
-                                                    damage: w.hit_damage,
-                                                    damage_type: w.damage_type(npc.ammo.as_deref()),
-                                                });
-                                                ph_hit = None;
-                                            }
-                                        }
-                                    }
-                                    // TraceFire's tracer (10mm / 30.06 / 7.62mm, one slug, half the time).
-                                    if !w.hand_to_hand
-                                        && w.shots_per_fire() == 1
-                                        && crate::impacts::tracer_ammo(w.ammo_class.as_deref())
-                                        && crate::sound::frand() < 0.5
-                                    {
-                                        let f = match ph_hit {
-                                            Some(p) if p.fraction < wh.fraction && !ph.dead => p.fraction,
-                                            _ => wh.fraction,
-                                        };
-                                        crate::impacts::tracer(my_eye, end, my_eye + (end - my_eye) * f);
-                                    }
-                                    match ph_hit {
-                                        Some(p) if p.fraction < wh.fraction && !ph.dead => {
-                                            let dmg = w.hit_damage;
-                                            if walk_test.is_some() {
-                                                println!(
-                                                    "AI {} hit player for {dmg:.1}",
-                                                    lvl.actors[npc.actor].name
-                                                );
-                                            }
-                                            let at = my_eye + (end - my_eye) * p.fraction;
-                                            if w.hand_to_hand {
-                                                if let Some(snd) = &w.snd.misc[0] {
-                                                    crate::sound::play(
-                                                        snd, me.center, 1.0, 1024.0, 1.0,
-                                                    );
-                                                }
-                                            }
-                                            let off = player_offset(player_center, player_yaw, at);
-                                            ph.damage(dmg, w.damage_type(npc.ammo.as_deref()), off);
-                                        }
-                                        _ => {
-                                            if wh.fraction < 1.0 {
-                                                let at = my_eye + dir * range * wh.fraction;
-                                                let props = wh.actor.map(|b| {
-                                                    &lvl.actors[blockers.list[b].actor].props
-                                                });
-                                                let pawn = props.map_or(false, |p| {
-                                                    find(p, "GroundSpeed").is_some()
-                                                });
-                                                let robot = props.map_or(false, |p| {
-                                                    find(p, "EMPHitPoints").is_some()
-                                                });
-                                                if w.hand_to_hand {
-                                                    let k = if pawn {
-                                                        0
-                                                    } else if props.is_some() {
-                                                        2
-                                                    } else {
-                                                        1
-                                                    };
-                                                    if let Some(snd) = &w.snd.misc[k] {
-                                                        crate::sound::play(
-                                                            snd, me.center, 1.0, 1024.0, 1.0,
-                                                        );
-                                                    }
-                                                } else if !ricocheted
-                                                    && w.penetrating
-                                                    && (!pawn || robot)
-                                                    && matches!(
-                                                        w.damage_type(npc.ammo.as_deref()),
-                                                        "Shot" | "Sabot"
-                                                    )
-                                                {
-                                                    ricocheted = true;
-                                                    let armored = robot
-                                                        || props.map_or(false, |p| {
-                                                            crate::sound::fprop(
-                                                                p,
-                                                                "minDamageThreshold",
-                                                                0.0,
-                                                            ) > 10.0
-                                                        });
-                                                    let snd = if armored {
-                                                        "DeusExSounds.Generic.ArmorRicochet"
-                                                            .to_string()
-                                                    } else {
-                                                        format!(
-                                                            "DeusExSounds.Generic.Ricochet{}",
-                                                            1 + (crate::sound::frand() * 4.0)
-                                                                as u32
-                                                                % 4
-                                                        )
-                                                    };
-                                                    crate::sound::play(
-                                                        &snd,
-                                                        at,
-                                                        1.0,
-                                                        1024.0,
-                                                        1.1 - 0.2 * crate::sound::frand(),
-                                                    );
-                                                }
-                                            }
-                                            if wh.fraction < 1.0 && wh.actor.is_none() {
-                                                crate::movers::hit_line(
-                                                    my_eye,
-                                                    my_eye + dir * range * wh.fraction,
-                                                    w.hit_damage,
-                                                    w.damage_type(npc.ammo.as_deref()),
-                                                );
-                                                crate::impacts::wall_hit(
-                                                    my_eye + dir * range * wh.fraction,
-                                                    wh.normal,
-                                                    dir,
-                                                    w.hit_damage,
-                                                    crate::impacts::Source::Weapon {
-                                                        penetrating: w.penetrating,
-                                                        hand_to_hand: w.hand_to_hand,
-                                                    },
-                                                );
-                                            }
-                                            if let Some(b) = wh.actor {
-                                                let other = blockers.list[b];
-                                                let oa = &lvl.actors[other.actor];
-                                                if find(&oa.props, "GroundSpeed").is_none() {
-                                                    deco_hits.0.push(crate::destruct::DecoHit {
-                                                        blocker: b,
-                                                        damage: w.hit_damage,
-                                                        damage_type: w
-                                                            .damage_type(npc.ammo.as_deref()),
-                                                    });
-                                                } else {
-                                                    if w.penetrating
-                                                        && find(&oa.props, "EMPHitPoints").is_none()
-                                                    {
-                                                        blood.0.push((
-                                                            my_eye + dir * range * wh.fraction
-                                                                - dir,
-                                                            dir,
-                                                        ));
-                                                    }
-                                                    new_hits.push(crate::damage::PawnHit {
-                                                        blocker: b,
-                                                        damage: w.hit_damage,
-                                                        damage_type: w
-                                                            .damage_type(npc.ammo.as_deref()),
-                                                        hit_loc: my_eye + dir * range * wh.fraction,
-                                                        attacker: Some(npc.blocker),
-                                                        attacker_pos: me.center,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                let mut act_cx = act_cx!();
+                (wish, running, firing) = attack_state(npc, &mut an, &mut act_cx);
             }
         }
         // A medical/repair bot serving the player stands still with its arm raised.
@@ -6046,6 +4653,1720 @@ pub fn npc_system(
     *heard_buf = heard;
 }
 
+/// Lazy setup on the pawn's first frame: weapon from InitialInventory, ammo, seat, the walking body once landed.
+fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut RuntimeAssets, blockers: &mut Blockers) {
+    if !npc.inited {
+        npc.inited = true;
+        let a = &lvl.actors[npc.actor];
+        // InitializeInventory: Count copies of each entry; ammo adds Count x AmmoAmount; a weapon whose AmmoName
+        // isn't carried gets a default box of it.
+        for x in a.props.iter().filter(|x| x.name == "InitialInventory") {
+            if let Value::Item(path, count) = &x.value {
+                let class = path.rsplit('.').next().unwrap_or("");
+                if *count <= 0 || class.is_empty() || class == "None" {
+                    continue;
+                }
+                if class.starts_with("Ammo") {
+                    if npc.ammo.is_none() {
+                        npc.ammo = Some(class.to_string());
+                    }
+                    let per = match find(&assets.classes.defaults(class), "AmmoAmount") {
+                        Some(Value::Int(n)) => *n,
+                        _ => 1,
+                    };
+                    match npc.ammo_left.iter_mut().find(|e| e.0 == class) {
+                        Some(e) => e.1 += per * count,
+                        None => npc.ammo_left.push((class.to_string(), per * count)),
+                    }
+                }
+                if class.starts_with("Weapon") && !npc.arsenal.iter().any(|w| w.class == class)
+                {
+                    let d = assets.classes.defaults(class);
+                    if let Some(w) = weapon_stats(class, &d) {
+                        npc.arsenal.push(w);
+                    }
+                }
+            }
+        }
+        for i in 0..npc.arsenal.len() {
+            let w = npc.arsenal[i].clone();
+            if let Some(a) = w.ammo_class.clone() {
+                if npc.ammo_class_for(&w).as_deref() == Some(a.as_str())
+                    && !npc.ammo_left.iter().any(|e| e.0 == a)
+                {
+                    let per = match find(&assets.classes.defaults(&a), "AmmoAmount") {
+                        Some(Value::Int(n)) => *n,
+                        _ => 1,
+                    };
+                    npc.ammo_left.push((a, per));
+                }
+            }
+        }
+        // SetupWeapon: the first weapon given is the one drawn until a fight picks the best.
+        if let Some(w) = npc.arsenal.first().cloned() {
+            let left = npc
+                .ammo_class_for(&w)
+                .map(|a| npc.ammo_count(&a))
+                .unwrap_or(i32::MAX);
+            npc.loaded = if w.reload_count == 0 {
+                1
+            } else {
+                (w.reload_count as i32).min(left).max(0) as u32
+            };
+            npc.weapon = Some(w);
+            npc.switch_to_best_weapon(None);
+        }
+        if npc.orders == Orders::Sitting {
+            sit_down(lvl, npc, deco, &a.props);
+            if npc.sitting {
+                blockers.list[npc.blocker].height = npc.params.height;
+            }
+        }
+        if a.class == "Gray" {
+            npc.aura = Some((
+                fv(&a.props, "DamageRadius", 256.0) as f64,
+                fv(&a.props, "damageInterval", 1.0),
+                fv(&a.props, "DamageAmount", 10.0),
+            ));
+        }
+    }
+}
+
+/// Every 0.1 s with a weapon: CheckEnemyPresence (sight of enemies, the readiness to attack, CheckCycle) and the
+/// surprise / seeking that follows.
+fn sight_check(npc: &mut Npc, cx: &SightCx) {
+    let SightCx { senses, blockers, ph, player, plight, me, my_eye, now, npc_class, player_center, check_other, check_player, stunned_now } = *cx;
+    let pawns = senses.pawns;
+    let sees = |center: DVec3, height: f64, check_dir: bool, other: Option<usize>| senses.sees(center, height, check_dir, other);
+    let valid_enemy = |npc: &Npc, t: Target| senses.valid_enemy(npc, t);
+    if npc.think <= 0.0 && npc.weapon.is_some() && !stunned_now {
+        npc.think = 0.1;
+        let period = std::mem::take(&mut npc.cycle);
+        if matches!(npc.state, NpcState::Idle | NpcState::Seeking) && npc.react_presence {
+            // CheckEnemyPresence: the nearest enemy in view. The player counts for how visible they are
+            // (light and movement, faded with distance, against VisibilityThreshold); other pawns are seen at once.
+            let mut cand: Option<(Target, DVec3, f64, f32)> = None;
+            // bHateCarcass: the alliance that killed a friend is hated on sight for 15 s (PotentialEnemyAlliance).
+            let potential_player = npc
+                .potential_enemy
+                .as_ref()
+                .is_some_and(|(a, _)| a == "Player")
+                && !ph.dead;
+            // Achievements (Section 9 Methods / Automotonophobia): the cloak or radar transparency hiding the
+            // player from a pawn looking right at him.
+            if check_player
+                && valid_enemy(npc, Target::Player)
+                && crate::abilities::invisible_to(npc.hp_body.robot, ph.camo)
+                && (crate::abilities::aug_active("AugCloak") || crate::abilities::aug_active("AugRadarTrans"))
+                && sees(player_center, player.params.height, true, None).is_some()
+            {
+                crate::achievements::hidden_in_view(npc.hp_body.robot);
+            }
+            if check_player
+                && (valid_enemy(npc, Target::Player) || potential_player)
+                && !crate::abilities::invisible_to(npc.hp_body.robot, ph.camo)
+            {
+                if let Some(d) = sees(player_center, player.params.height, true, None) {
+                    if potential_player && !npc.hates("Player") {
+                        npc.alliances.agitate("Player", 1.0);
+                        npc.potential_enemy = None;
+                    }
+                    let vis = crate::stealth::sight_visibility(
+                        crate::smartai::player_vis(
+                            crate::stealth::player_visibility(&plight, player.body.velocity),
+                            plight.brightness,
+                            d,
+                            player.crouched,
+                            player.body.velocity.truncate().length(),
+                        ),
+                        d,
+                        npc.sight_radius,
+                        npc.vis_threshold,
+                    );
+                    if vis > 0.0 {
+                        cand =
+                            Some((Target::Player, player_center, d, vis + npc.vis_threshold));
+                    }
+                }
+            }
+            for p in pawns.iter().filter(|_| check_other) {
+                let potential = !p.dead
+                    && npc
+                        .potential_enemy
+                        .as_ref()
+                        .is_some_and(|(a, _)| a.eq_ignore_ascii_case(&p.alliance));
+                if !valid_enemy(npc, Target::Pawn(p.blocker)) && !potential {
+                    continue;
+                }
+                if potential
+                    && sees(
+                        blockers.list[p.blocker].center,
+                        blockers.list[p.blocker].height,
+                        true,
+                        Some(p.blocker),
+                    )
+                    .is_some()
+                {
+                    npc.alliances.agitate(&p.alliance.clone(), 1.0);
+                    npc.potential_enemy = None;
+                }
+                if !valid_enemy(npc, Target::Pawn(p.blocker)) {
+                    continue;
+                }
+                let c = blockers.list[p.blocker];
+                let d = (c.center - my_eye).length();
+                if cand.map_or(true, |(_, _, bd, _)| d < bd)
+                    && sees(c.center, c.height, true, Some(p.blocker)).is_some()
+                {
+                    cand = Some((Target::Pawn(p.blocker), c.center, d, 100000.0));
+                }
+            }
+            // CheckCycle: readiness climbs at up to 2/s (full view) or as slow as 1/4.5 s (barely visible), holds
+            // for 3 s after losing sight, then decays over 4 s.
+            match cand {
+                None => {
+                    npc.sustain -= period;
+                    if npc.sustain <= 0.0 {
+                        npc.sustain = 0.0;
+                        npc.readiness = (npc.readiness - period / 4.0).max(0.0);
+                    }
+                }
+                Some((t, pos, _, cum)) => {
+                    npc.sustain = 3.0;
+                    let c = (cum * 2.0).clamp(0.5 / 4.5, 1.0);
+                    npc.readiness += c * period / 0.5 * crate::smartai::rise_mult(npc);
+                    if npc.readiness >= 1.0 {
+                        npc.begin_attack(t, pos, now);
+                    } else if npc.readiness >= npc.sight_pct
+                        && t == Target::Player
+                        && npc.state != NpcState::Seeking
+                        && crate::smartai::quick_reflex(npc, &npc_class, (pos - me.center).length(), false)
+                    {
+                        // Smarter AI (GMDX HandleSighting): high alert - straight to the attack.
+                        npc.begin_attack(t, pos, now);
+                    } else if npc.readiness >= npc.sight_pct {
+                        // HandleSighting.
+                        if npc.state == NpcState::Idle {
+                            npc.set_seek_location(pos, SeekKind::Sight, false);
+                            npc.enter_seeking();
+                        } else if now - npc.last_seen > 2.0 {
+                            npc.reseek(pos, SeekKind::Sight);
+                        }
+                    }
+                }
+            }
+        } else if matches!(
+            npc.state,
+            NpcState::Attacking | NpcState::Surprised(_) | NpcState::Fleeing
+        ) {
+            // UpdateActorVisibility in combat: lighting no longer matters, nor which way we face.
+            if let Some(t) = npc.target {
+                let (c, h, other) = match t {
+                    Target::Player => (player_center, player.params.height, None),
+                    Target::Pawn(b) => {
+                        (blockers.list[b].center, blockers.list[b].height, Some(b))
+                    }
+                };
+                if (valid_enemy(npc, t) || (npc.state == NpcState::Fleeing && npc.fear_flee))
+                    && !(t == Target::Player
+                        && crate::abilities::invisible_to(npc.hp_body.robot, ph.camo))
+                    && sees(c, h, false, other).is_some()
+                {
+                    npc.last_seen = now;
+                    npc.last_pos = c;
+                }
+            }
+        }
+    }
+}
+
+/// Hearing (ScriptedPawn's HearNoise / HandleLoudNoise): what this pawn makes of the noises heard since last frame.
+fn hear_noises(npc: &mut Npc, cx: &HearCx) {
+    let HearCx { senses, lvl, blockers, heard, lf, me, my_eye, now, npc_class, player_center, stunned_now } = *cx;
+    let sees = |center: DVec3, height: f64, check_dir: bool, other: Option<usize>| senses.sees(center, height, check_dir, other);
+    let valid_enemy = |npc: &Npc, t: Target| senses.valid_enemy(npc, t);
+    let snap_of = |b: usize| senses.snap_of(b);
+    let alliance_of = |t: Target| senses.alliance_of(t);
+    if !stunned_now {
+        for n in heard {
+            if n.maker == Some(Target::Pawn(npc.blocker))
+                || crate::stealth::hear(lvl, my_eye, n) < npc.hear_threshold
+            {
+                continue;
+            }
+            // AISetEventCallback('WeaponFire' / 'Distress', ..., bCheckVisibility, bCheckDir, , bCheckLOS): a shot or a
+            // cry for help only counts if this pawn can see where it came from and is facing that way. Anything
+            // else heard through walls is a LoudNoise, which only sends it to look.
+            if matches!(n.kind, NoiseKind::WeaponFire | NoiseKind::Distress) {
+                let other = match n.maker {
+                    Some(Target::Pawn(b)) => Some(b),
+                    _ => None,
+                };
+                if sees(n.pos, 40.0, true, other).is_none() {
+                    continue;
+                }
+            }
+            match n.kind {
+                NoiseKind::WeaponFire => {
+                    // HandleShot: React, Fear, Hate.
+                    if !(lf.shot && (npc.react_shot || npc.fear_shot || npc.hate_shot)) {
+                        continue;
+                    }
+                    let Some(t) = n.instigator else { continue };
+                    if t == Target::Pawn(npc.blocker) {
+                        continue;
+                    }
+                    let alliance = alliance_of(t);
+                    if npc.hate_shot {
+                        npc.alliances.provoke(&alliance, None);
+                    }
+                    if npc.fear_shot {
+                        npc.fear.increase(1.0, 0.0);
+                    }
+                    let pos = target_pos(t, player_center, &blockers.list);
+                    if valid_enemy(npc, t) {
+                        npc.handle_enemy(t, pos, now, now);
+                    } else if npc.fear_shot && npc.fear.fearful() {
+                        npc.flee_from(t, pos, now, true);
+                    } else if t == Target::Player {
+                        npc.react_to_futz();
+                    }
+                }
+                NoiseKind::Loud => {
+                    // HandleLoudNoise (LoudNoiseScore culls anything not made by an enemy): go and look.
+                    if !(lf.loud_noise && npc.react_loud) {
+                        continue;
+                    }
+                    if let Some(t) = n.instigator {
+                        if valid_enemy(npc, t) && npc.weapon.is_some() {
+                            if t == Target::Player
+                                && matches!(npc.state, NpcState::Idle | NpcState::Seeking)
+                                && n.maker == Some(Target::Player)
+                                && crate::smartai::quick_reflex(npc, &npc_class, (player_center - me.center).length(), true)
+                            {
+                                // Smarter AI (GMDX HandleLoudNoise): heard close by - attack at once.
+                                npc.begin_attack(t, player_center, now - 1.0);
+                            } else if npc.state == NpcState::Idle {
+                                npc.set_seek_location(n.pos, SeekKind::Sound, false);
+                                npc.enter_seeking();
+                            } else if now - npc.last_seen > 2.0 {
+                                npc.reseek(n.pos, SeekKind::Sound);
+                            }
+                        }
+                    }
+                }
+                NoiseKind::Alert => {
+                    if !(lf.loud_noise && npc.react_loud) || npc.weapon.is_none() {
+                        continue;
+                    }
+                    if n.maker == Some(Target::Pawn(npc.blocker)) {
+                        continue;
+                    }
+                    if npc.state == NpcState::Idle {
+                        npc.set_seek_location(n.pos, SeekKind::Sound, false);
+                        npc.enter_seeking();
+                    } else if npc.state == NpcState::Seeking && now - npc.last_seen > 2.0 {
+                        npc.reseek(n.pos, SeekKind::Sound);
+                    }
+                }
+                NoiseKind::Distress => {
+                    // HandleDistress: a friend in trouble who has seen their attacker.
+                    if !(lf.distress && (npc.hate_distress || npc.react_distress || npc.fear_distress)) {
+                        continue;
+                    }
+                    let Some(Target::Pawn(d)) = n.maker else {
+                        continue;
+                    };
+                    let Some(victim) = snap_of(d) else { continue };
+                    let Some(foe) = victim.target else { continue };
+                    if foe == Target::Pawn(npc.blocker) {
+                        continue;
+                    }
+                    // DistressScore: only friends' cries count (anyone's for bFearDistress).
+                    let friend = npc.friendly(&victim.alliance);
+                    if !friend && !npc.fear_distress {
+                        continue;
+                    }
+                    if npc.fear_distress {
+                        npc.fear.increase(1.0, 0.0);
+                    }
+                    let foe_pos = target_pos(foe, player_center, &blockers.list);
+                    let mut attacking = false;
+                    if friend && now - victim.last_seen <= victim.enemy_timeout {
+                        if npc.hate_distress {
+                            npc.alliances.provoke(&alliance_of(foe), Some(1.0));
+                        }
+                        if valid_enemy(npc, foe) && (npc.react_distress || npc.hate_distress) {
+                            npc.handle_enemy(foe, foe_pos, victim.last_seen, now);
+                            attacking = true;
+                        }
+                    }
+                    if !attacking && npc.fear_distress && npc.fear.fearful() {
+                        npc.flee_from(foe, foe_pos, now, true);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What `attack_state` reads and writes besides the pawn.
+struct ActCx<'a> {
+    lvl: &'a dx_level::Level,
+    senses: &'a Senses<'a>,
+    blockers: &'a Blockers,
+    world: &'a World<'a>,
+    hp: &'a PawnHealth,
+    player: &'a Player,
+    player_cyl: &'a Cylinder,
+    carrying: &'a crate::carry::Carrying,
+    walk_test: Option<&'a crate::WalkTest>,
+    npc_class: &'a str,
+    player_center: DVec3,
+    player_yaw: f64,
+    now: f32,
+    dt: f32,
+    me: Cylinder,
+    my_eye: DVec3,
+    ph: &'a mut PlayerHealth,
+    alarms: &'a mut crate::alarms::Alarms,
+    weapon_drops: &'a mut WeaponDrops,
+    deco_hits: &'a mut crate::destruct::DecoHits,
+    launches: &'a mut crate::projectiles::Launches,
+    blood: &'a mut crate::effects::BloodFx,
+    new_hits: &'a mut Vec<crate::damage::PawnHit>,
+    new_noises: &'a mut Vec<Noise>,
+}
+
+/// Attacking: the pawn's fight with its target (ScriptedPawn state Attacking: RunToRange / Fire / ContinueFire,
+/// weapon choice, crouching, strafing, melee, reloading, alarms and fleeing on the way).
+fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
+    let ActCx { lvl, blockers, hp, player, npc_class, .. } = *cx;
+    let (player_center, player_yaw, now, dt, me) = (cx.player_center, cx.player_yaw, cx.now, cx.dt, cx.me);
+    let ph = &mut *cx.ph;
+    let alarms = &mut *cx.alarms;
+    let weapon_drops = &mut *cx.weapon_drops;
+    let (mut wish, mut running, mut firing) = (DVec3::ZERO, false, false);
+    // HandlingEnemy with RAISEALARM_BeforeAttacking: an alarm to push comes first.
+    if std::mem::take(&mut npc.alert_pending) {
+        let me_b = npc.blocker;
+        let al = npc.alliances.clone();
+        if let Some(i) = alarms.find_target(me_b, me.center, |a| al.hostile_to(a)) {
+            alarms.units[i].associated = Some(me_b);
+            npc.alert = Some((i, 0.0));
+            npc.state = NpcState::Alerting;
+            npc.route = None;
+            println!("PAWN {} runs for the alarm", lvl.actors[npc.actor].name);
+        }
+    }
+    // Attacking.BeginState: SetupWeapon(true) - the weapon comes out even when no surprise pause ran.
+    npc.weapon_drawn = true;
+    let target_dead = match npc.target {
+        Some(Target::Pawn(b)) => *hp.0.get(&b).unwrap_or(&1.0) <= 0.0,
+        Some(Target::Player) => ph.dead,
+        None => true,
+    };
+    if target_dead {
+        // Nobody left to fight: back to orders (patrols pick up at the closest point again).
+        npc.state = NpcState::Idle;
+        npc.target = None;
+        npc.route = None;
+        npc.patrol_dest = None;
+        npc.orders_failed = false;
+    } else if npc.should_flee()
+        || (npc.weapon.is_none() && !npc.arsenal.is_empty())
+        || npc.should_drop_weapon() && npc.weapon.is_some()
+    {
+        // HandleEnemy: drop the gun if an arm is gone (ShouldDropWeapon), then run if badly hurt
+        // (bCriticalDamage) or out of ammo.
+        if npc.should_drop_weapon() {
+            if let Some(w) = npc.weapon.take() {
+                weapon_drops.0.push((
+                    w.class.clone(),
+                    me.center
+                        + DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0)
+                            * (me.radius + 8.0),
+                ));
+                npc.arsenal.retain(|x| x.class != w.class);
+                npc.dropped.push(w.class.clone());
+            }
+        }
+        if npc.should_flee() || npc.weapon.is_none() {
+            npc.enter_fleeing();
+            // RAISEALARM_BeforeFleeing: push an alarm on the way out if there's one to reach.
+            if npc.raise_alarm == 1 && npc.alarm_timer <= 0.0 {
+                let me_b = npc.blocker;
+                let al = npc.alliances.clone();
+                if let Some(i) =
+                    alarms.find_target(me_b, me.center, |a| al.hostile_to(a))
+                {
+                    alarms.units[i].associated = Some(me_b);
+                    npc.alert = Some((i, 0.0));
+                    npc.state = NpcState::Alerting;
+                    npc.route = None;
+                    println!(
+                        "PAWN {} runs for the alarm before fleeing",
+                        lvl.actors[npc.actor].name
+                    );
+                }
+            }
+        }
+    } else if now - npc.last_seen > npc.enemy_timeout {
+        // HasEnemyTimedOut: search where they are now (SEEKTYPE_Guess, post-combat).
+        let at = target_pos(
+            npc.target.unwrap_or(Target::Player),
+            player_center,
+            &blockers.list,
+        );
+        npc.set_seek_location(at, SeekKind::Guess, true);
+        npc.enter_seeking();
+    } else {
+        let target_pos = match npc.target {
+            Some(Target::Player) => player_center,
+            Some(Target::Pawn(b)) => blockers.list[b].center,
+            None => npc.last_pos,
+        };
+        let seen_recently = now - npc.last_seen < 0.6;
+        // Smarter AI: the fire react time (must see the enemy for a moment before shooting) and
+        // suppressive fire (keep shooting where it was last seen for a while after losing it).
+        let react_ok = crate::smartai::combat_tick(
+            npc,
+            &npc_class,
+            now - npc.last_seen < 0.25,
+            npc.target == Some(Target::Player),
+            dt,
+        );
+        let suppress = !seen_recently && npc.smart.sfire > 0.0;
+        let target_pos = if suppress { npc.last_pos } else { target_pos };
+        let chase_to = if seen_recently {
+            target_pos
+        } else {
+            npc.last_pos
+        };
+        let to = chase_to - me.center;
+        let dist = to.length();
+        // Every half second (and when the gun runs dry) pick the best weapon for this range.
+        npc.switch_check -= dt;
+        if npc.switch_check <= 0.0 && npc.reload_timer <= 0.0 {
+            npc.switch_check = 0.5;
+            let enemy = match npc.target {
+                Some(Target::Player) => Some((dist, player.params.radius, false, true)),
+                Some(Target::Pawn(b)) => {
+                    let c = blockers.list[b];
+                    Some((
+                        dist,
+                        c.radius,
+                        find(&lvl.actors[c.actor].props, "EMPHitPoints").is_some(),
+                        false,
+                    ))
+                }
+                None => None,
+            };
+            npc.switch_to_best_weapon(enemy);
+        }
+        let melee = npc.weapon.as_ref().map_or(false, |w| w.hand_to_hand);
+        // Melee weapons close right in; guns hold off at a fraction of their range.
+        let accurate = match npc.weapon.as_ref() {
+            Some(w) if w.hand_to_hand => {
+                (w.max_range as f64 * 0.8).max(me.radius + 20.0)
+            }
+            Some(w) => w.max_range as f64 * 0.4,
+            None => 600.0,
+        };
+        // ShouldCrouch: a ranged weapon, out of the water, the enemy more than 300 away.
+        let should_crouch = npc.can_crouch
+            && !melee
+            && dist > 300.0
+            && crate::actors::water_at(lvl, me.center).is_none();
+        if npc.crouching {
+            npc.crouch_timer = (npc.crouch_timer - dt).max(0.0);
+            if npc.crouch_timer <= 0.0 && !should_crouch {
+                npc.crouching = false;
+            }
+        }
+        if !seen_recently || dist > accurate {
+            npc.crouch_rolled = false;
+        } else if !npc.crouch_rolled {
+            // Attacking's Fire label: ShouldCrouch() && FRand() < CrouchRate -> StartCrouch.
+            npc.crouch_rolled = true;
+            if should_crouch && npc.rand() < npc.crouch_rate {
+                npc.crouching = true;
+                npc.crouch_timer = 1.0 + npc.rand() * 0.5;
+            }
+        }
+        if npc.crouching && npc.crouch_timer > 0.0 {
+            // PickDestination: DEST_SameLocation while the crouch timer runs.
+            npc.route = None;
+        } else if npc.crouching && (!seen_recently || dist > accurate) {
+            npc.crouching = false;
+        }
+        if suppress {
+            // Suppressive fire: hold position and shoot.
+            npc.route = None;
+        } else if !npc.crouching && (!seen_recently || dist > accurate) {
+            // Close in, over the path network if there's no straight way.
+            let replan = npc
+                .route
+                .as_ref()
+                .map_or(true, |r| r.age > 1.0 || r.goal.distance(chase_to) > 96.0);
+            if replan {
+                npc.route =
+                    Some(plan_route(lvl, me.center, chase_to, &npc.params, None));
+            }
+            let r = npc.route.as_mut().unwrap();
+            wish = follow(lvl, r, me.center, &npc.params, dt);
+            running = true;
+        } else {
+            npc.route = None;
+        }
+        // Attacking's labels (atk_phase): RunToRange opens with TurnToward(enemy) - standing, no shots -
+        // then runs; stopping goes through Fire (TweenToShoot 0.15 s + TurnToward) into ContinueFire.
+        let moving = wish.length_squared() > 1e-6;
+        npc.atk_phase = match (npc.atk_phase, moving) {
+            (AtkPhase::Moving | AtkPhase::TurnFirst, true) => npc.atk_phase,
+            (_, true) => AtkPhase::TurnFirst,
+            (AtkPhase::Moving | AtkPhase::TurnFirst, false) => AtkPhase::Settle(0.15),
+            (AtkPhase::Settle(t), false) => AtkPhase::Settle(t - dt),
+            (AtkPhase::Firing, false) => AtkPhase::Firing,
+        };
+        if npc.atk_phase == AtkPhase::TurnFirst {
+            wish = DVec3::ZERO;
+            running = false;
+        }
+        // StrafeFacing (bCanStrafe and a shot to take) runs facing the enemy; MoveToward faces the way it
+        // goes; standing, turning and firing face the enemy.
+        let strafing = npc.can_strafe && seen_recently;
+        let face = if !moving || npc.atk_phase == AtkPhase::TurnFirst || strafing {
+            to
+        } else {
+            wish
+        };
+        let want = face.y.atan2(face.x);
+        npc.yaw = turn_toward(npc.yaw, want, npc.yaw_rate * dt as f64);
+        let to_t = target_pos - me.center;
+        let want_t = to_t.y.atan2(to_t.x);
+        // TurnToward is done within 2000 rotation units (about 11 degrees).
+        let facing_ok =
+            (want_t - npc.yaw).sin().abs() < 0.2 && (want_t - npc.yaw).cos() > 0.0;
+        let off_deg = (want_t - npc.yaw).sin().atan2((want_t - npc.yaw).cos()).abs().to_degrees() as f32;
+        match npc.atk_phase {
+            AtkPhase::TurnFirst if facing_ok => npc.atk_phase = AtkPhase::Moving,
+            AtkPhase::Settle(t) if t <= 0.0 && facing_ok => npc.atk_phase = AtkPhase::Firing,
+            _ => {}
+        }
+        // Attacking.Tick / ContinueFire: who may shoot now.
+        let fire_ok = match npc.atk_phase {
+            AtkPhase::TurnFirst | AtkPhase::Settle(_) => false,
+            // bFacingTarget while strafing; else !bMustFaceTarget within FireAngle (Abs(yaw)*360/32768).
+            AtkPhase::Moving => {
+                if strafing {
+                    facing_ok
+                } else {
+                    !npc.must_face && off_deg * 2.0 <= npc.fire_angle
+                }
+            }
+            AtkPhase::Firing => facing_ok,
+        };
+        // Karkian.Bump: charging into its enemy faster than 100 with the ram (WeaponKarkianBump) out and
+        // FireTimer clear hits twice for speed/5 'Shot', then FireTimer = AIFireDelay (8 s of biting).
+        if lvl.actors[npc.actor].class == "Karkian"
+            && npc.target == Some(Target::Player)
+            && !ph.dead
+            && npc.fire_timer <= 0.0
+        {
+            if let Some(delay) = npc
+                .weapon
+                .as_ref()
+                .filter(|w| w.class == "WeaponKarkianBump")
+                .map(|w| w.ai_fire_delay)
+            {
+                let v = npc.body.as_ref().map_or(DVec3::ZERO, |b| b.velocity);
+                let flat = (player_center - me.center).truncate().length();
+                let touching = flat <= me.radius + player.params.radius + 6.0
+                    && (player_center.z - me.center.z).abs()
+                        <= me.height + player.params.height;
+                if touching && v.length() > 100.0 {
+                    let dmg = (v.length() / 5.0) as f32;
+                    for o in [DVec3::new(1.0, 1.0, -1.0), DVec3::new(-1.0, -1.0, -1.0)]
+                    {
+                        ph.damage(
+                            dmg,
+                            "Shot",
+                            player_offset(player_center, player_yaw, player_center + o),
+                        );
+                    }
+                    crate::shake::shake_view(0.15 + 0.002 * dmg * 2.0, dmg * 30.0 * 2.0, 0.3 * dmg * 2.0);
+                    npc.fire_timer = delay;
+                    npc.switch_check = 0.0;
+                }
+            }
+        }
+        firing = npc.weapon.is_some();
+        npc.shot_timer -= dt;
+        // ContinueFire: the next shot waits for the Shoot animation to finish (FinishAnim) and for the
+        // weapon to be ready again (ShotTime), so fire rate is the slower of the two.
+        let shoot_playing = npc.anim == "ShootOnce"
+            && an.clip.as_ref().map(|c| !c.done()).unwrap_or(false);
+        if npc.reload_timer > 0.0 {
+            npc.reload_timer -= dt;
+            if npc.reload_timer <= 0.0 {
+                if let Some(snd) =
+                    npc.weapon.as_ref().and_then(|w| w.snd.reload_end.clone())
+                {
+                    crate::sound::play(&snd, me.center, 1.0, 1024.0, 1.0);
+                }
+                let left = npc.weapon_ammo().unwrap_or(i32::MAX);
+                npc.loaded = npc
+                    .weapon
+                    .as_ref()
+                    .map(|w| (w.reload_count.max(1) as i32).min(left).max(0) as u32)
+                    .unwrap_or(1);
+            }
+        } else if let Some(w) = npc.weapon.clone() {
+            fire_weapon(npc, an, w, cx, FireArgs { target_pos, dist, fire_ok, shoot_playing, melee, react_ok, suppress, seen_recently, moving });
+        }
+    }
+    (wish, running, firing)
+}
+
+/// What `attack_state` worked out this frame for `fire_weapon`.
+struct FireArgs {
+    target_pos: DVec3,
+    dist: f64,
+    fire_ok: bool,
+    shoot_playing: bool,
+    melee: bool,
+    react_ok: bool,
+    suppress: bool,
+    seen_recently: bool,
+    moving: bool,
+}
+
+/// Attacking.Fire / ContinueFire: one frame of shooting at the target with weapon `w` (shot timing with the Shoot
+/// animation, reloading, ammo, melee blows, projectiles, traced shots, what they hit).
+fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: crate::weapons::WeaponStats, cx: &mut ActCx, f: FireArgs) {
+    let ActCx { lvl, blockers, world, player, player_cyl, carrying, walk_test, .. } = *cx;
+    let (player_center, player_yaw, now, dt, me, my_eye) = (cx.player_center, cx.player_yaw, cx.now, cx.dt, cx.me, cx.my_eye);
+    let ph = &mut *cx.ph;
+    let deco_hits = &mut *cx.deco_hits;
+    let launches = &mut *cx.launches;
+    let blood = &mut *cx.blood;
+    let new_hits = &mut *cx.new_hits;
+    let new_noises = &mut *cx.new_noises;
+    let FireArgs { target_pos, dist, fire_ok, shoot_playing, melee, react_ok, suppress, seen_recently, moving } = f;
+    let in_reach = !melee || dist <= w.max_range as f64 + me.radius;
+    let has_ammo = npc.weapon_ammo().map_or(true, |n| n > 0);
+    // Melee: the swing starts with the Attack animation and the blow lands at its
+    // HandToHandAttack notify (OwnerHandToHandAttack), still needing the target in reach.
+    let mut strike_now = false;
+    if let Some(t) = npc.melee_wait.as_mut() {
+        *t -= dt;
+        if *t <= 0.0 {
+            npc.melee_wait = None;
+            strike_now = in_reach;
+        }
+    }
+    if strike_now
+        || ((seen_recently || (suppress && !melee))
+            && (react_ok || suppress)
+            && fire_ok
+            && in_reach
+            && has_ammo
+            && npc.shot_timer <= 0.0
+            && !shoot_playing
+            && npc.melee_wait.is_none())
+    {
+        'fire: {
+            if !strike_now {
+                npc.shot_timer = w.shot_time.max(0.1);
+                npc.just_fired = true;
+                if std::env::var("DXVIEW_PAWNLOG").is_ok_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(&n)) {
+                    println!("PAWNSHOT t={now:.2} {} phase={:?} moving={moving}", lvl.actors[npc.actor].name, npc.atk_phase);
+                }
+                if w.ai_fire_delay > 0.0 {
+                    // FireIfClearShot: FireTimer = AIFireDelay; the next SwitchToBestWeapon moves off it.
+                    npc.fire_timer = w.ai_fire_delay;
+                }
+                let fire_snd = if w.silenced && !w.hand_to_hand {
+                    Some("DeusExSounds.Weapons.StealthPistolFire".to_string())
+                } else {
+                    w.snd.fire.clone()
+                };
+                if let Some(snd) = fire_snd {
+                    crate::sound::play(
+                        &snd,
+                        me.center,
+                        w.snd.volume,
+                        2048.0,
+                        1.0,
+                    );
+                }
+                if w.hand_to_hand {
+                    let seq = lvl.mesh_actors[an.mesh_actor]
+                        .anim
+                        .as_ref()
+                        .and_then(|a| {
+                            a.mesh
+                                .seqs
+                                .iter()
+                                .find(|q| q.name.eq_ignore_ascii_case("Attack"))
+                                .cloned()
+                        });
+                    let delay = seq.map_or(0.25, |q| {
+                        let at = q
+                            .notifies
+                            .iter()
+                            .find(|n| {
+                                n.1.eq_ignore_ascii_case("HandToHandAttack")
+                            })
+                            .map_or(0.5, |n| n.0);
+                        q.num_frames.max(1) as f32 / q.rate.max(0.1) * at
+                    });
+                    npc.melee_wait = Some(delay);
+                    break 'fire;
+                }
+            }
+            // Gunfire is heard by enemies (WeaponFire, LoudNoise) and friends (Distress).
+            if let Some(mut n) = crate::stealth::weapon_noise(
+                &w,
+                me.center,
+                Target::Pawn(npc.blocker),
+            ) {
+                new_noises.push(n.clone());
+                n.kind = NoiseKind::Loud;
+                new_noises.push(n.clone());
+                n.kind = NoiseKind::Distress;
+                new_noises.push(n);
+            }
+            // NPC ammo (user decision 2026-10-12): pawns never run dry and only the mini-crossbow
+            // (and any ReloadCount 1 weapon) reloads, every ReloadCount darts. DXVIEW_NPC_FINITE_AMMO=1 restores
+            // the script's behaviour (UseAmmo per shot, ReloadAmmo every ClipCount shots).
+            let finite = npc_finite_ammo();
+            let reloads = finite || w.reload_count == 1 || w.class == "WeaponMiniCrossbow";
+            if w.reload_count > 0 && reloads {
+                if finite {
+                    npc.use_ammo();
+                }
+                npc.loaded = npc.loaded.saturating_sub(1);
+                if npc.weapon_ammo() == Some(0) {
+                    // Out of ammo: switch to something else (a knife) straight away.
+                    npc.switch_check = 0.0;
+                } else if npc.loaded == 0 {
+                    // Reload.GetReloadTime for pawns: ReloadTime * (BaseAccuracy * 2 + 1).
+                    npc.reload_timer =
+                        w.reload_time * (npc.base_accuracy * 2.0 + 1.0);
+                    if let Some(snd) = &w.snd.reload_begin {
+                        crate::sound::play(snd, me.center, 1.0, 1024.0, 1.0);
+                    }
+                }
+            }
+            // Aim at the target's chest with weapon + pawn inaccuracy.
+            let aim_at = target_pos + DVec3::new(0.0, 0.0, 10.0);
+            let fwd = (aim_at - my_eye).normalize_or_zero();
+            let right = fwd.cross(DVec3::Z).normalize_or_zero();
+            let up = right.cross(fwd).normalize_or_zero();
+            let acc = (w.base_accuracy + npc.base_accuracy) as f64
+                + match npc.target {
+                    Some(Target::Player) => crate::smartai::accuracy_mod(
+                        player.body.velocity,
+                        player.body.physics == Physics::Falling,
+                        &w.class,
+                    ),
+                    _ => 0.0,
+                };
+            let acc = acc.max(0.0);
+            let mut continue_fire = true;
+            if let Some(class) = w.projectile_for(npc.ammo.as_deref()) {
+                for _ in 0..w.shots_per_fire() {
+                    let dir = crate::projectiles::projectile_dir(
+                        fwd,
+                        acc,
+                        &mut npc.seed,
+                    );
+                    launches.0.push(crate::projectiles::Launch {
+                        class: class.clone(),
+                        pos: my_eye + fwd * (me.radius + 4.0),
+                        dir,
+                        from: Some(npc.blocker),
+                        mult: 1.0,
+                        life: None,
+                        scale: None,
+                        still: false,
+                        track: None,
+                        track_at: None,
+                        speed: None,
+                        ownerless: false,
+                    });
+                }
+                continue_fire = false;
+            }
+            let mut ricocheted = false;
+            for _ in 0..if continue_fire { w.shots_per_fire() } else { 0 } {
+                let range = w.max_range as f64;
+                let dir = spread_dir(fwd, right, up, acc, range, &mut npc.seed);
+                let end = my_eye + dir * range;
+                let wh = world.trace(my_eye, end, DVec3::splat(0.5));
+                let mut ph_hit =
+                    trace_cylinder(&player_cyl, my_eye, end, DVec3::splat(0.5));
+                // Enhancement (Carried Objects As Cover, carry.rs): what you hold in front of
+                // you takes the bullets meant for you (the original turns its collision off).
+                if let Some(hc) = carrying.held.as_ref().filter(|h| crate::carry::cover_on() && h.mass >= 15.0 && !w.hand_to_hand) {
+                    let box_cyl = Cylinder {
+                        center: blockers.list[hc.blocker].center,
+                        radius: hc.radius,
+                        height: hc.height,
+                        actor: usize::MAX,
+                    };
+                    if let Some(c) = trace_cylinder(&box_cyl, my_eye, end, DVec3::splat(0.5)) {
+                        let nearer_than_player = ph_hit.is_none_or(|p| c.fraction <= p.fraction);
+                        if c.fraction < wh.fraction && nearer_than_player && !ph.dead {
+                            let at = my_eye + (end - my_eye) * c.fraction;
+                            crate::fx::impact(at, -dir, dir, Some("wood"));
+                            crate::sound::play(
+                                &format!("DeusExSounds.Generic.Ricochet{}", 1 + (crate::sound::frand() * 4.0) as u32 % 4),
+                                at,
+                                0.8,
+                                1024.0,
+                                1.0,
+                            );
+                            deco_hits.0.push(crate::destruct::DecoHit {
+                                blocker: hc.blocker,
+                                damage: w.hit_damage,
+                                damage_type: w.damage_type(npc.ammo.as_deref()),
+                            });
+                            ph_hit = None;
+                        }
+                    }
+                }
+                // TraceFire's tracer (10mm / 30.06 / 7.62mm, one slug, half the time).
+                if !w.hand_to_hand
+                    && w.shots_per_fire() == 1
+                    && crate::impacts::tracer_ammo(w.ammo_class.as_deref())
+                    && crate::sound::frand() < 0.5
+                {
+                    let f = match ph_hit {
+                        Some(p) if p.fraction < wh.fraction && !ph.dead => p.fraction,
+                        _ => wh.fraction,
+                    };
+                    crate::impacts::tracer(my_eye, end, my_eye + (end - my_eye) * f);
+                }
+                match ph_hit {
+                    Some(p) if p.fraction < wh.fraction && !ph.dead => {
+                        let dmg = w.hit_damage;
+                        if walk_test.is_some() {
+                            println!(
+                                "AI {} hit player for {dmg:.1}",
+                                lvl.actors[npc.actor].name
+                            );
+                        }
+                        let at = my_eye + (end - my_eye) * p.fraction;
+                        if w.hand_to_hand {
+                            if let Some(snd) = &w.snd.misc[0] {
+                                crate::sound::play(
+                                    snd, me.center, 1.0, 1024.0, 1.0,
+                                );
+                            }
+                        }
+                        let off = player_offset(player_center, player_yaw, at);
+                        ph.damage(dmg, w.damage_type(npc.ammo.as_deref()), off);
+                    }
+                    _ => {
+                        if wh.fraction < 1.0 {
+                            let at = my_eye + dir * range * wh.fraction;
+                            let props = wh.actor.map(|b| {
+                                &lvl.actors[blockers.list[b].actor].props
+                            });
+                            let pawn = props.map_or(false, |p| {
+                                find(p, "GroundSpeed").is_some()
+                            });
+                            let robot = props.map_or(false, |p| {
+                                find(p, "EMPHitPoints").is_some()
+                            });
+                            if w.hand_to_hand {
+                                let k = if pawn {
+                                    0
+                                } else if props.is_some() {
+                                    2
+                                } else {
+                                    1
+                                };
+                                if let Some(snd) = &w.snd.misc[k] {
+                                    crate::sound::play(
+                                        snd, me.center, 1.0, 1024.0, 1.0,
+                                    );
+                                }
+                            } else if !ricocheted
+                                && w.penetrating
+                                && (!pawn || robot)
+                                && matches!(
+                                    w.damage_type(npc.ammo.as_deref()),
+                                    "Shot" | "Sabot"
+                                )
+                            {
+                                ricocheted = true;
+                                let armored = robot
+                                    || props.map_or(false, |p| {
+                                        crate::sound::fprop(
+                                            p,
+                                            "minDamageThreshold",
+                                            0.0,
+                                        ) > 10.0
+                                    });
+                                let snd = if armored {
+                                    "DeusExSounds.Generic.ArmorRicochet"
+                                        .to_string()
+                                } else {
+                                    format!(
+                                        "DeusExSounds.Generic.Ricochet{}",
+                                        1 + (crate::sound::frand() * 4.0)
+                                            as u32
+                                            % 4
+                                    )
+                                };
+                                crate::sound::play(
+                                    &snd,
+                                    at,
+                                    1.0,
+                                    1024.0,
+                                    1.1 - 0.2 * crate::sound::frand(),
+                                );
+                            }
+                        }
+                        if wh.fraction < 1.0 && wh.actor.is_none() {
+                            crate::movers::hit_line(
+                                my_eye,
+                                my_eye + dir * range * wh.fraction,
+                                w.hit_damage,
+                                w.damage_type(npc.ammo.as_deref()),
+                            );
+                            crate::impacts::wall_hit(
+                                my_eye + dir * range * wh.fraction,
+                                wh.normal,
+                                dir,
+                                w.hit_damage,
+                                crate::impacts::Source::Weapon {
+                                    penetrating: w.penetrating,
+                                    hand_to_hand: w.hand_to_hand,
+                                },
+                            );
+                        }
+                        if let Some(b) = wh.actor {
+                            let other = blockers.list[b];
+                            let oa = &lvl.actors[other.actor];
+                            if find(&oa.props, "GroundSpeed").is_none() {
+                                deco_hits.0.push(crate::destruct::DecoHit {
+                                    blocker: b,
+                                    damage: w.hit_damage,
+                                    damage_type: w
+                                        .damage_type(npc.ammo.as_deref()),
+                                });
+                            } else {
+                                if w.penetrating
+                                    && find(&oa.props, "EMPHitPoints").is_none()
+                                {
+                                    blood.0.push((
+                                        my_eye + dir * range * wh.fraction
+                                            - dir,
+                                        dir,
+                                    ));
+                                }
+                                new_hits.push(crate::damage::PawnHit {
+                                    blocker: b,
+                                    damage: w.hit_damage,
+                                    damage_type: w
+                                        .damage_type(npc.ammo.as_deref()),
+                                    hit_loc: my_eye + dir * range * wh.fraction,
+                                    attacker: Some(npc.blocker),
+                                    attacker_pos: me.center,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One pawn's senses this frame (AICanSee and its alliance checks), shared by npc_system and its parts.
+struct Senses<'a> {
+    world: &'a World<'a>,
+    pawns: &'a [Snap],
+    my_eye: DVec3,
+    radius: f64,
+    facing: DVec3,
+    sight_radius: f64,
+    fov_cos: f64,
+    player_dead: bool,
+}
+
+impl Senses<'_> {
+    fn snap_of(&self, b: usize) -> Option<&Snap> {
+        self.pawns.iter().find(|p| p.blocker == b)
+    }
+
+    /// GetPawnAllianceType == Hostile: either side hostile to the other's alliance.
+    fn hostile(&self, npc: &Npc, t: Target) -> bool {
+        match t {
+            Target::Player => npc.hates("Player"),
+            Target::Pawn(b) => self.snap_of(b).is_some_and(|p| npc.hates(&p.alliance) || p.alliances.hostile_to(&npc.alliance)),
+        }
+    }
+
+    /// AICanSee: within SightRadius, inside the field of view (when checked), and a clear line from the eyes to the
+    /// head, middle or feet. Returns the distance.
+    fn sees(&self, center: DVec3, height: f64, check_dir: bool, other: Option<usize>) -> Option<f64> {
+        let my_eye = self.my_eye;
+        let dist = (center - my_eye).length();
+        if dist > self.sight_radius {
+            return None;
+        }
+        let flat = DVec3::new(center.x - my_eye.x, center.y - my_eye.y, 0.0).normalize_or_zero();
+        if check_dir && dist > self.radius + 8.0 && flat.dot(self.facing) < self.fov_cos {
+            return None;
+        }
+        let clear = [height * 0.8, 0.0, -height * 0.8].iter().any(|&dz| {
+            let h = self.world.trace(my_eye, center + DVec3::new(0.0, 0.0, dz), DVec3::splat(1.0));
+            h.fraction >= 0.999 || (other.is_some() && h.actor == other)
+        });
+        clear.then_some(dist)
+    }
+
+    /// A living enemy: the player (not dead, hated) or another living pawn of a hostile alliance.
+    fn valid_enemy(&self, npc: &Npc, t: Target) -> bool {
+        match t {
+            Target::Player => !self.player_dead && npc.hates("Player"),
+            Target::Pawn(b) => b != npc.blocker && self.snap_of(b).is_some_and(|p| !p.dead) && self.hostile(npc, t),
+        }
+    }
+
+    fn alliance_of(&self, t: Target) -> String {
+        match t {
+            Target::Player => "Player".to_string(),
+            Target::Pawn(b) => self.snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
+        }
+    }
+}
+
+/// What `sight_check` reads.
+#[derive(Clone, Copy)]
+struct SightCx<'a> {
+    senses: &'a Senses<'a>,
+    blockers: &'a Blockers,
+    ph: &'a PlayerHealth,
+    player: &'a Player,
+    plight: &'a crate::stealth::PlayerLight,
+    me: Cylinder,
+    my_eye: DVec3,
+    now: f32,
+    npc_class: &'a str,
+    player_center: DVec3,
+    check_other: bool,
+    check_player: bool,
+    stunned_now: bool,
+}
+
+/// What `hear_noises` reads.
+#[derive(Clone, Copy)]
+struct HearCx<'a> {
+    senses: &'a Senses<'a>,
+    lvl: &'a dx_level::Level,
+    blockers: &'a Blockers,
+    heard: &'a [Noise],
+    lf: &'a imsim_core::reactions::LookingFor,
+    me: Cylinder,
+    my_eye: DVec3,
+    now: f32,
+    npc_class: &'a str,
+    player_center: DVec3,
+    stunned_now: bool,
+}
+
+/// What `apply_hits` reads and writes besides the pawn: the level, the other pawns' snapshot, and the outputs
+/// (noises, flags, takedowns, explosions, drops, health records, gibs, blood).
+struct HitCx<'a> {
+    lvl: &'a dx_level::Level,
+    pawns: &'a [Snap],
+    player_center: DVec3,
+    now: f32,
+    blockers: &'a mut Blockers,
+    new_noises: &'a mut Vec<Noise>,
+    flags: &'a mut GameFlags,
+    takedowns: &'a mut Takedowns,
+    booms: &'a mut crate::explosion::Explosions,
+    weapon_drops: &'a mut WeaponDrops,
+    hp: &'a mut PawnHealth,
+    gibs: &'a mut crate::effects::Gibs,
+    drips: &'a mut crate::effects::BloodDrips,
+    attackers: &'a mut LastAttacker,
+}
+
+/// Damage taken since last frame (ScriptedPawn.TakeDamage / HandleDamage and the reaction to it): the hits on this
+/// pawn, applied in order. Returns true when the pawn died (or was knocked out) from them.
+#[allow(clippy::too_many_arguments)]
+fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco, an: &mut Animated, aff: &mut Afflictions, cx: &mut HitCx) -> bool {
+    let HitCx { lvl, pawns, .. } = *cx;
+    let (player_center, now) = (cx.player_center, cx.now);
+    let blockers = &mut *cx.blockers;
+    let new_noises = &mut *cx.new_noises;
+    let flags = &mut *cx.flags;
+    let takedowns = &mut *cx.takedowns;
+    let booms = &mut *cx.booms;
+    let weapon_drops = &mut *cx.weapon_drops;
+    let hp = &mut *cx.hp;
+    let gibs = &mut *cx.gibs;
+    let drips = &mut *cx.drips;
+    let attackers = &mut *cx.attackers;
+    let snap_of = |b: usize| pawns.iter().find(|p| p.blocker == b);
+    let snap_of_hostile = |npc: &Npc, t: Target| -> bool {
+        match t {
+            Target::Player => npc.hates("Player"),
+            Target::Pawn(b) => snap_of(b).is_some_and(|p| npc.hates(&p.alliance) || p.alliances.hostile_to(&npc.alliance)),
+        }
+    };
+        let center = blockers.list[npc.blocker].center;
+        for h in list {
+            // FilterDamageType overrides: Karkians, Greasels and Grays shrug off gas; Grays also radiation and
+            // fire. Animal.ModifyDamage zeroes 'Stunned' (prods don't work on animals).
+            let cls = lvl.actors[npc.actor].class.as_str();
+            if matches!(cls, "Karkian" | "KarkianBaby" | "Greasel" | "Gray")
+                && matches!(h.damage_type, "TearGas" | "HalonGas" | "PoisonGas")
+            {
+                continue;
+            }
+            if cls == "Gray" && matches!(h.damage_type, "Radiation" | "Flamed" | "Burned") {
+                continue;
+            }
+            if npc.animal && h.damage_type == "Stunned" {
+                // The prod does no damage to animals; ordinary ones (not transgenics) run from it.
+                if !matches!(cls, "Karkian" | "KarkianBaby" | "Greasel" | "Gray") {
+                    let away = (center - h.attacker_pos).truncate().normalize_or_zero();
+                    let away = if away.length_squared() < 1e-6 {
+                        DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0)
+                    } else {
+                        DVec3::new(away.x, away.y, 0.0)
+                    };
+                    npc.avoiding = 3.0;
+                    npc.flee_dest = Some(center + away * 400.0);
+                    npc.route = None;
+                }
+                continue;
+            }
+            // Class overrides of ShieldDamage / ModifyDamage / IgnoreDamageType (bosses and commandos).
+            let mut h = h;
+            {
+                let scale = crate::pawnclass::damage_scale(cls, h.damage_type);
+                if scale <= 0.0 {
+                    continue;
+                }
+                h.damage *= scale;
+            }
+            // A wound mark on a rebuilt body where the shot went in (bodyfx.rs).
+            if !npc.hp_body.robot && matches!(h.damage_type, "Shot" | "Sabot" | "Exploded" | "Burned" | "Flamed") {
+                crate::bodyfx::wound(npc.blocker, h.hit_loc, h.hit_loc - h.attacker_pos, h.damage_type);
+            }
+            let stunned = matches!(npc.state, NpcState::Stunned(_) | NpcState::RubbingEyes(_));
+            // EMP: robots lose EMPHitPoints and shut down (Robot state Disabled) at zero; people don't care.
+            if h.damage_type == "EMP" {
+                if npc.hp_body.robot && npc.emp_hp > 0.0 {
+                    npc.emp_hp -= h.damage;
+                    if npc.emp_hp <= 0.0 {
+                        npc.emp_hp = 0.0;
+                        npc.state = NpcState::Stunned(1.0e9);
+                        npc.target = None;
+                        npc.anim = "";
+                        println!("PAWN {} disabled by EMP", lvl.actors[npc.actor].name);
+                    }
+                }
+                continue;
+            }
+            // Tear gas: no damage, but the pawn turns on whoever gassed it and goes to RubbingEyes
+            // (GotoDisabledState). Robots don't care.
+            // FilterDamageType: halon puts a burning pawn out; then it's treated like tear gas.
+            if h.damage_type == "HalonGas" {
+                npc.on_fire = None;
+            }
+            if h.damage_type == "TearGas" || h.damage_type == "HalonGas" {
+                if npc.hp_body.robot
+                    || matches!(npc.state, NpcState::RubbingEyes(_))
+                    || crate::pawnclass::ignores_gas_reaction(cls)
+                {
+                    continue;
+                }
+                // ReactToInjury: a provocation; the gasser only becomes the enemy if that makes them hostile.
+                let (who, alliance) = match h.attacker {
+                    None => (Target::Player, "Player".to_string()),
+                    Some(b) => (
+                        Target::Pawn(b),
+                        snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
+                    ),
+                };
+                if npc.hate_injury {
+                    npc.alliances.provoke(&alliance, None);
+                }
+                if npc.alliances.hostile_to(&alliance)
+                    || (who != Target::Player && snap_of_hostile(npc, who))
+                {
+                    npc.target = Some(who);
+                    npc.last_pos = target_pos(who, player_center, &blockers.list);
+                    npc.last_seen = now;
+                }
+                npc.stand_up();
+                npc.weapon_drawn = false;
+                npc.route = None;
+                npc.seek = None;
+                let ma = &lvl.mesh_actors[an.mesh_actor];
+                let start = ma
+                    .anim
+                    .as_ref()
+                    .and_then(|a| Clip::named(&a.mesh, "RubEyesStart", false));
+                let start_len = start
+                    .as_ref()
+                    .map(|c| (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0))
+                    .unwrap_or(0.0);
+                if let Some(c) = start {
+                    an.clip = Some(c);
+                    npc.anim = "RubEyesStart";
+                }
+                npc.state = NpcState::RubbingEyes(15.0 + start_len);
+                println!("PAWN {} gassed", lvl.actors[npc.actor].name);
+                continue;
+            }
+            // Robot.TakeDamageBase, NanoVirus (scramble grenade): CrazedTimer += damage / 2 - its alliances are
+            // reversed until it runs out.
+            if npc.hp_body.robot && h.damage_type == "NanoVirus" {
+                npc.crazed += 0.5 * h.damage;
+                npc.target = None;
+                println!("PAWN {} scrambled for {:.0} s", lvl.actors[npc.actor].name, npc.crazed);
+                continue;
+            }
+            let health_before = npc.hp_body.health;
+            let out = npc
+                .hp_body
+                .take(&h, center, npc.yaw, stunned, npc.take_hit_timer <= 0.0);
+            // TakeDamageBase: bleedRate += damage taken / (0.3 x default health), for wounds that bleed.
+            if npc.can_bleed
+                && !npc.hp_body.robot
+                && !matches!(
+                    h.damage_type,
+                    "Stunned"
+                        | "TearGas"
+                        | "HalonGas"
+                        | "PoisonGas"
+                        | "Radiation"
+                        | "EMP"
+                        | "NanoVirus"
+                        | "Drowned"
+                        | "KnockedOut"
+                        | "Poison"
+                        | "PoisonEffect"
+                )
+            {
+                npc.bleed_rate += (health_before - npc.hp_body.health).max(0.0)
+                    / (0.3 * npc.hp_body.max_health.max(1.0));
+            }
+            hp.0.insert(npc.blocker, npc.hp_body.health);
+            attackers.0.insert(npc.blocker, h.attacker);
+            match out {
+                crate::damage::Outcome::Ignored => {}
+                crate::damage::Outcome::Died {
+                    knocked_out,
+                    fall_back,
+                } => {
+                    // MIB / WIB / Anna / Gunther: SpawnCarcass explodes them unless they're stunned (knocked
+                    // out bodies stay): 100 damage over 256, LoudNoise, explosions, scorch, rock and flesh chips.
+                    let self_destruct = crate::pawnclass::explodes_on_death(cls) && !(knocked_out || stunned);
+                    if self_destruct {
+                        crate::sound::play("DeusExSounds.Generic.LargeExplosion1", center, 1.0, 256.0 * 16.0, 1.0);
+                        booms.0.push(crate::explosion::Boom {
+                            pos: center,
+                            damage: 100.0,
+                            radius: 256.0,
+                            damage_type: "Exploded",
+                            from: Some(npc.blocker),
+                            rings: false,
+                            fireball: true,
+                            fx: 0,
+                        });
+                    }
+                    // Robots blow up (Robot.Explode: HurtRadius(0.5 r, 8 r) with r = (radius + height) / 2);
+                    // anyone else killed by an explosion is gibbed (Health < -100).
+                    if npc.hp_body.robot || h.damage_type == "Exploded" || self_destruct {
+                        let r = (npc.params.radius + npc.params.height) / 2.0;
+                        if npc.hp_body.robot {
+                            // Robot.Explode: explosionSound (volume 2) and a large explosion, out to r x 32.
+                            let rr = (r * 32.0) as f32;
+                            if let Some(snd) = crate::sound::prop(
+                                &lvl.actors[npc.actor].props,
+                                "explosionSound",
+                            ) {
+                                crate::sound::play(&snd, center, 2.0, rr, 1.0);
+                            }
+                            crate::sound::play(
+                                if r < 48.0 {
+                                    "DeusExSounds.Generic.LargeExplosion1"
+                                } else {
+                                    "DeusExSounds.Generic.LargeExplosion2"
+                                },
+                                center,
+                                1.0,
+                                rr,
+                                1.0,
+                            );
+                            booms.0.push(crate::explosion::Boom {
+                                pos: center,
+                                damage: (0.5 * r) as f32,
+                                radius: 8.0 * r,
+                                damage_type: "Exploded",
+                                from: None,
+                                rings: false,
+                                fireball: true,
+                                fx: 0,
+                            });
+                        }
+                        gibs.0.push((
+                            center,
+                            npc.params.radius,
+                            npc.params.height,
+                            npc.hp_body.robot,
+                        ));
+                        // GMDX fix (G-Flex / Shifter; setting FixGibLoot): what a gibbed person carried is
+                        // thrown out with the chunks instead of destroyed (not robots or animals).
+                        if crate::settings::get("FixGibLoot") > 0.5 && !npc.hp_body.robot && !npc.animal {
+                            for (k, w) in npc.arsenal.iter().enumerate() {
+                                let a = npc.yaw + k as f64 * 2.4;
+                                weapon_drops.0.push((
+                                    w.class.clone(),
+                                    center + DVec3::new(a.cos(), a.sin(), 0.0) * (npc.params.radius * 0.8),
+                                ));
+                            }
+                            npc.arsenal.clear();
+                            npc.weapon = None;
+                        }
+                        takedowns.log.push(Takedown {
+                            alliance: npc.alliance.clone(),
+                            name: lvl.actors[npc.actor].name.clone(),
+                            class: lvl.actors[npc.actor].class.clone(),
+                            lethal: true,
+                            by_player: h.attacker.is_none(),
+                            damage_type: h.damage_type,
+                        });
+                        crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
+                        if npc.important && !npc.bind_name.is_empty() {
+                            flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
+                        }
+                        npc.state = NpcState::Dead;
+                        npc.weapon_drawn = false;
+                        npc.carried = true; // gone: nothing left to search or carry
+                        npc.searched = true;
+                        blockers.list[npc.blocker].radius = 0.0;
+                        blockers.list[npc.blocker].height = 0.0;
+                        deco.body.physics = imsim_core::body::BodyPhysics::None;
+                        println!(
+                            "PAWN {} {} ({})",
+                            lvl.actors[npc.actor].name,
+                            if npc.hp_body.robot {
+                                "destroyed"
+                            } else {
+                                "gibbed"
+                            },
+                            h.damage_type
+                        );
+                        break;
+                    }
+                    // Animals can't be knocked out: a baton or tranquilizer dart kills them. In water nobody is
+                    // only unconscious (DeusExCarcass: "you will die in water every time").
+                    let in_water = crate::actors::water_at(lvl, me_center_of(&blockers, npc.blocker)).is_some();
+                    let knocked_out = knocked_out && !npc.animal && !in_water;
+                    if in_water && !npc.hp_body.robot {
+                        if let Some(Value::Path(c)) = find(&lvl.actors[npc.actor].props, "CarcassType") {
+                            npc.water_carcass = Some((c.rsplit('.').next().unwrap_or("").to_string(), 1.5));
+                        }
+                    }
+                    npc.state = NpcState::Dead;
+                    npc.knocked_out = knocked_out;
+                    // A rebuilt body goes limp at once (ragdoll.rs), pushed by the blow and carried by its run.
+                    crate::ragdoll::request(crate::ragdoll::Death {
+                        blocker: npc.blocker,
+                        hit: h.hit_loc,
+                        from: h.attacker_pos,
+                        damage: h.damage,
+                        vel: deco.body.velocity,
+                    });
+                    npc.weapon_drawn = false;
+                    // DeusExCarcass.InitFor: the body alerts others only if dead (not unconscious), not a robot.
+                    npc.killer_alliance = match h.attacker {
+                        None => "Player".to_string(),
+                        Some(b) => snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
+                    };
+                    npc.killer_bind = match h.attacker {
+                        None => "JCDenton".to_string(),
+                        Some(b) => snap_of(b).map(|p| p.bind.clone()).unwrap_or_default(),
+                    };
+                    npc.emit_carcass = !knocked_out && !npc.hp_body.robot;
+                    npc.alert = None;
+                    // ScriptedPawn.Died: important characters leave <BindName>_Dead (and _Unconscious if
+                    // knocked out) flags that never expire.
+                    if npc.important && !npc.bind_name.is_empty() {
+                        flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
+                        if knocked_out {
+                            flags
+                                .0
+                                .set_bool(&format!("{}_Unconscious", npc.bind_name), true);
+                        }
+                    }
+                    takedowns.log.push(Takedown {
+                        alliance: npc.alliance.clone(),
+                        name: lvl.actors[npc.actor].name.clone(),
+                        class: lvl.actors[npc.actor].class.clone(),
+                        lethal: !knocked_out,
+                        by_player: h.attacker.is_none(),
+                        damage_type: h.damage_type,
+                    });
+                    crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
+                    blockers.list[npc.blocker].radius = 0.0;
+                    blockers.list[npc.blocker].height = 0.0;
+                    deco.body.physics = imsim_core::body::BodyPhysics::None;
+                    let ma = &lvl.mesh_actors[an.mesh_actor];
+                    if let Some(anim) = &ma.anim {
+                        let name = if npc.sitting {
+                            "DeathFront"
+                        } else if fall_back {
+                            "DeathBack"
+                        } else {
+                            "DeathFront"
+                        };
+                        an.clip = Clip::named(&anim.mesh, name, false);
+                        an.time = 0.0;
+                        // Animal.bPlayDying False (rats, birds...): no death animation; the carcass appears at once.
+                        if an.clip.is_none() {
+                            if let Some(Value::Path(c)) =
+                                find(&lvl.actors[npc.actor].props, "CarcassType")
+                            {
+                                npc.swap_carcass =
+                                    Some(c.rsplit('.').next().unwrap_or("").to_string());
+                            }
+                        }
+                    }
+                    println!(
+                        "PAWN {} {} ({})",
+                        lvl.actors[npc.actor].name,
+                        if knocked_out { "knocked out" } else { "killed" },
+                        h.damage_type
+                    );
+                    // PlayDyingSound: the Die cry, a LoudNoise and a Distress call (friends only answer it if this
+                    // pawn had an enemy it had seen, so a silent takedown from behind stays silent).
+                    if let Some(snd) = crate::sound::prop(&lvl.actors[npc.actor].props, "Die") {
+                        crate::sound::play_owned(
+                            crate::sound::npc_owner(npc.blocker),
+                            crate::sound::slot::PAIN,
+                            &snd,
+                            Some(center),
+                            crate::sound::fprop(
+                                &lvl.actors[npc.actor].props,
+                                "TransientSoundVolume",
+                                1.0,
+                            ),
+                            0.0,
+                            crate::sound::random_pitch(),
+                        );
+                    }
+                    let me = Some(Target::Pawn(npc.blocker));
+                    new_noises.push(Noise {
+                        pos: center,
+                        volume: 1.0,
+                        radius: 800.0,
+                        maker: me,
+                        instigator: me,
+                        kind: NoiseKind::Loud,
+                    });
+                    new_noises.push(Noise {
+                        pos: center,
+                        volume: 1.0,
+                        radius: 800.0,
+                        maker: me,
+                        instigator: me,
+                        kind: NoiseKind::Distress,
+                    });
+                    break;
+                }
+                crate::damage::Outcome::Hurt { hit, pain, stunned } => {
+                    // TakeDamage: 'Flamed' sets a pawn alight (CatchFire), robots excepted.
+                    if h.damage_type == "Flamed"
+                        && npc.on_fire.is_none()
+                        && npc.burn_period > 0.0
+                        && !npc.hp_body.robot
+                    {
+                        npc.on_fire = Some(0.0);
+                        npc.burn_tick = 0.0;
+                        println!("PAWN {} caught fire", lvl.actors[npc.actor].name);
+                    }
+                    // GMDX Hemorrhage: a player's shuriken (crate::perks) starts the bleed (StartBleed:
+                    // 16 ticks of int(Damage x 0.1)); each BleedEffect tick sprays blood drops.
+                    if crate::perks::take_bleed(npc.blocker, h.damage) {
+                        aff.bleed_counter = 16;
+                        aff.bleed_timer = 0.0;
+                        aff.bleed_damage = (h.damage * 0.1).floor();
+                    }
+                    if h.damage_type == "BleedEffect" && npc.can_bleed {
+                        for i in 0..10u32 {
+                            if (npc.blocker as u32 * 31 + i * 17 + aff.bleed_counter * 7) % 2 == 0 {
+                                drips.0.push(center + DVec3::Z * npc.params.height * 0.3);
+                            }
+                        }
+                    }
+                    if h.damage_type == "Poison" {
+                        // StartPoison: eight more doses, two seconds apart.
+                        aff.poison_counter = 8;
+                        aff.poison_timer = 0.0;
+                        aff.poison_damage = aff.poison_damage.max(h.damage);
+                        aff.poisoner = h.attacker;
+                    }
+                    println!(
+                        "PAWN {} hurt {:?} pain={} stunned={} health={:.0} parts={:?}",
+                        lvl.actors[npc.actor].name,
+                        hit,
+                        pain,
+                        stunned,
+                        npc.hp_body.health,
+                        npc.hp_body.parts
+                    );
+                    // PlayTakeHitSound: HitSound1 up to 30 damage, HitSound2 above, at most every 0.25 s; the cry
+                    // of pain is a Distress call.
+                    {
+                        let props = &lvl.actors[npc.actor].props;
+                        let which = if h.damage <= 30.0 {
+                            "HitSound1"
+                        } else {
+                            "HitSound2"
+                        };
+                        if let Some(snd) = crate::sound::prop(props, which) {
+                            let vol = crate::sound::fprop(props, "TransientSoundVolume", 1.0)
+                                .max(2.0);
+                            crate::sound::play_req(crate::sound::Req {
+                                sound: snd,
+                                pos: Some(center),
+                                volume: vol,
+                                radius: 0.0,
+                                pitch: crate::sound::random_pitch(),
+                                owner: crate::sound::npc_owner(npc.blocker),
+                                slot: crate::sound::slot::PAIN,
+                                no_override: false,
+                                min_gap: 0.25,
+                            });
+                        }
+                    }
+                    let me = Some(Target::Pawn(npc.blocker));
+                    new_noises.push(Noise {
+                        pos: center,
+                        volume: 1.0,
+                        radius: 800.0,
+                        maker: me,
+                        instigator: me,
+                        kind: NoiseKind::Distress,
+                    });
+                    // RubbingEyes: BlockReactions - no ReactToInjury (no new enemy, no fear, no pain animation),
+                    // and TakeDamageBase without bPlayAnim.
+                    if !matches!(npc.state, NpcState::RubbingEyes(_)) {
+                        // ReactToInjury: IncreaseAgitation toward the attacker's alliance (members of the own alliance
+                        // never count), then SetEnemy only succeeds if that alliance is now hostile. Friendly fire just
+                        // hurts.
+                        let (who, alliance) = match h.attacker {
+                            None => (Target::Player, "Player".to_string()),
+                            Some(b) => (
+                                Target::Pawn(b),
+                                snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
+                            ),
+                        };
+                        // ShouldReactToInjuryType: bHate/bFearInjury for direct harm, bHate/bFearIndirectInjury for
+                        // gas, blasts and the like; fear of being hurt is IncreaseFear(instigator, 2.0).
+                        let hate_this = imsim_core::reactions::reacts_to_injury(
+                            h.damage_type,
+                            npc.hate_injury,
+                            npc.hate_indirect_injury,
+                        );
+                        let fear_this = imsim_core::reactions::reacts_to_injury(
+                            h.damage_type,
+                            npc.fear_injury,
+                            npc.fear_indirect_injury,
+                        );
+                        if hate_this {
+                            npc.alliances.provoke(&alliance, None);
+                        }
+                        if fear_this {
+                            npc.fear.increase(2.0, 0.0);
+                        }
+                        let made_enemy = npc.alliances.hostile_to(&alliance)
+                            || (who != Target::Player && snap_of_hostile(npc, who));
+                        if made_enemy {
+                            npc.target = Some(who);
+                            npc.last_pos = target_pos(who, player_center, &blockers.list);
+                            npc.last_seen = now;
+                            npc.route = None;
+                        } else if fear_this && npc.fear.fearful() {
+                            // SetEnemy(instigatedBy, , true); SetNextState('Fleeing'): runs once the hit plays out.
+                            npc.target = Some(who);
+                            npc.last_pos = target_pos(who, player_center, &blockers.list);
+                            npc.last_seen = now;
+                            npc.fear_flee = true;
+                            if !matches!(npc.state, NpcState::Fleeing) {
+                                npc.state = NpcState::Fleeing;
+                                npc.route = None;
+                                npc.flee_dest = None;
+                            }
+                        }
+                        if npc.sitting && (stunned || pain) {
+                            npc.sitting = false;
+                            npc.seat = None;
+                            if let Some(b) = npc.body.as_mut() {
+                                b.physics = Physics::Falling;
+                            }
+                        }
+                        if stunned && !npc.hp_body.robot {
+                            npc.state = NpcState::Stunned(15.0);
+                            npc.weapon_drawn = false;
+                            npc.anim = "";
+                        } else if pain {
+                            if let Some(name) = hit.anim() {
+                                let ma = &lvl.mesh_actors[an.mesh_actor];
+                                if let Some(c) = ma
+                                    .anim
+                                    .as_ref()
+                                    .and_then(|a| Clip::named(&a.mesh, name, false))
+                                {
+                                    let dur =
+                                        (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0) + 0.1;
+                                    an.clip = Some(c);
+                                    npc.anim = name;
+                                    npc.state = NpcState::TakingHit(dur);
+                                    // GMDX Piercing: 1.3 s with a hand-to-hand weapon in the player's hand
+                                    // (Grays and Karkians are slower to flinch there, so they keep 2).
+                                    let tough = matches!(
+                                        lvl.actors[npc.actor].class.as_str(),
+                                        "Gray" | "Karkian" | "KarkianBaby"
+                                    );
+                                    npc.take_hit_timer = crate::perks::flinch_time()
+                                        .filter(|_| !tough)
+                                        .unwrap_or(2.0);
+                                }
+                            }
+                        } else if matches!(npc.state, NpcState::Idle | NpcState::Seeking)
+                            && made_enemy
+                        {
+                            let (t, pos, seen) = (
+                                npc.target.unwrap_or(Target::Player),
+                                npc.last_pos,
+                                npc.last_seen,
+                            );
+                            npc.begin_attack(t, pos, seen);
+                        }
+                    }
+                }
+            }
+        }
+    npc.state == NpcState::Dead
+}
+
 /// Health readout, red damage flash, and restart after death.
 #[allow(clippy::too_many_arguments)]
 pub fn player_health_ui(
@@ -6507,7 +6828,7 @@ mod player_health_tests {
         let mut h = PlayerHealth::default();
         h.damage(10.0, "Shot", DVec3::new(0.0, PLAYER_RADIUS, 0.0));
         assert_eq!(h.parts[P_ARM_R], 85.0);
-        assert!(h.accuracy_penalty() == 0.0);
+        assert!(h.accuracy_penalty_with(false) == 0.0);
     }
 }
 
