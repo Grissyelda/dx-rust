@@ -18,9 +18,72 @@
 struct BspShadowParams {
     p: vec4<f32>,
     q: vec4<f32>,
+    r: vec4<f32>,
+    s: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> bsp: BspShadowParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var relight_mask: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var relight_mask_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var relight_lights: texture_2d<f32>;
+
+// Remastered lighting (relight.rs): the lightmap relit per pixel by the surface's three strongest lights (their ids
+// ride in the vertex colour, their reach per texel in the mask atlas, both from dx-level's bake). Each light's baked
+// term - colour x (1 - d/r) x |N.L| over the flat face - is swapped for the same term over the normal-mapped
+// face, so bricks and planks catch the light while every shadow of the bake stays; a highlight per light by the
+// material's roughness comes on top. Returns (relit lightmap, highlight).
+struct Relit {
+    light: vec3<f32>,
+    spec: vec3<f32>,
+}
+
+fn ggx(ndh: f32, rough: f32) -> f32 {
+    let a = max(rough * rough, 0.02);
+    let a2 = a * a;
+    let d = ndh * ndh * (a2 - 1.0) + 1.0;
+    return a2 / (3.14159 * d * d);
+}
+
+fn relight(lm: vec3<f32>, wp: vec3<f32>, flat_n: vec3<f32>, mapped_n: vec3<f32>, ids: vec4<f32>, uv_b: vec2<f32>, v: vec3<f32>) -> Relit {
+    var s = to_srgb(lm);
+    var spec = vec3<f32>(0.0);
+    let vis = textureSampleLevel(relight_mask, relight_mask_sampler, uv_b, 0.0);
+    let gain = bsp.p.z;
+    for (var c: u32 = 0u; c < 3u; c = c + 1u) {
+        let idf = ids[c];
+        if (idf < 0.75) {
+            continue;
+        }
+        let id = i32(round(idf) - 1.0);
+        let lp = textureLoad(relight_lights, vec2<i32>(id * 2, 0), 0);
+        let lc = textureLoad(relight_lights, vec2<i32>(id * 2 + 1, 0), 0).rgb;
+        let to = lp.xyz - wp;
+        let d = length(to);
+        if (d >= lp.w || d < 1e-4) {
+            continue;
+        }
+        let l = to / d;
+        let reach = (1.0 - d / lp.w) * vis[c];
+        let fd = dot(flat_n, l);
+        // The bake lit both sides of a face (|N.L|): lit from behind, mirror the mapped normal through the face.
+        var m = mapped_n;
+        if (fd < 0.0) {
+            m = m - 2.0 * dot(m, flat_n) * flat_n;
+        }
+        let mapped = max(dot(m, l * sign(fd + 1e-6)), 0.0);
+        s = s + lc * reach * (mapped - abs(fd)) * gain;
+        // Highlight: GGX with a Schlick Fresnel (metal tints it by... the caller), energy kept modest.
+        let h = normalize(l * sign(fd + 1e-6) + v);
+        let ndh = max(dot(m, h), 0.0);
+        let f = 0.04 + 0.96 * pow(1.0 - max(dot(h, v), 0.0), 5.0);
+        spec = spec + lc * reach * mapped * ggx(ndh, bsp.r.z) * f * gain * 0.25;
+    }
+    s = max(s, vec3<f32>(0.0)) * bsp.s.x + vec3<f32>(bsp.s.y);
+    var out: Relit;
+    out.light = from_srgb(s);
+    out.spec = spec;
+    return out;
+}
 
 fn to_srgb(c: vec3<f32>) -> vec3<f32> {
     let lo = c * 12.92;
@@ -109,10 +172,19 @@ fn shadowed_lightmap(lm: vec3<f32>, world_position: vec4<f32>, n: vec3<f32>, fra
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
-    // The face's own normal, not the normal prepass's (Bevy loads that when MSAA is off; a texel the prepass
+#ifdef VERTEX_COLORS
+    // The vertex colour carries remastered lighting's light ids, not a tint: StandardMaterial multiplied the
+    // colour by it, so divide it back out (the ids are never 0).
+    pbr_input.material.base_color = pbr_input.material.base_color / max(in.color, vec4<f32>(0.25));
+#endif
+    // The normal-mapped normal (relief maps), kept for remastered lighting before...
+    let mapped_n = normalize(pbr_input.N);
+    // ...the face's own normal, not the normal prepass's (Bevy loads that when MSAA is off; a texel the prepass
     // didn't cover would light the face from the wrong side).
     pbr_input.N = normalize(pbr_input.world_normal);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    var spec = vec3<f32>(0.0);
+    var unlit_glow = 0.0;
 #ifdef LIGHTMAP
     if (bsp.p.x > 0.0) {
         pbr_input.lightmap_light = shadowed_lightmap(
@@ -123,6 +195,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             pbr_input.is_orthographic,
         );
     }
+#endif
+#ifdef LIGHTMAP
+#ifdef VERTEX_COLORS
+    if (bsp.r.x > 0.5) {
+        // Surfaces drawn full bright (PF_Unlit: lamps, screens, signs) have a white lightmap: they glow instead.
+        if (min(pbr_input.lightmap_light.r, min(pbr_input.lightmap_light.g, pbr_input.lightmap_light.b)) > 0.98) {
+            unlit_glow = bsp.s.w;
+        } else {
+            let v = normalize(view_bindings::view.world_position.xyz - pbr_input.world_position.xyz);
+            let r = relight(pbr_input.lightmap_light, pbr_input.world_position.xyz, pbr_input.world_normal, mapped_n, in.color, in.uv_b, v);
+            pbr_input.lightmap_light = r.light;
+            spec = r.spec * bsp.r.y;
+        }
+    }
+#endif
 #endif
 #ifdef SCREEN_SPACE_AMBIENT_OCCLUSION
 #ifdef LIGHTMAP
@@ -137,6 +224,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     } else {
         out.color = pbr_input.material.base_color;
     }
+    // Highlights (metal tints them by its colour) and glow (bloom picks up what goes past white).
+    let base = pbr_input.material.base_color.rgb;
+    let tint = mix(vec3<f32>(1.0), base * 2.0, bsp.r.w);
+    out.color = vec4<f32>(out.color.rgb + spec * tint, out.color.a);
+    let lum = dot(base, vec3<f32>(0.299, 0.587, 0.114));
+    let glow = max(bsp.s.z, unlit_glow * smoothstep(0.35, 0.85, lum));
+    out.color = vec4<f32>(out.color.rgb + base * glow, out.color.a);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

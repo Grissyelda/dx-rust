@@ -32,8 +32,9 @@ pub const PRESET: &[(&str, f32)] = &[
     ("SkeletalCharacters", 1.0),
     ("Ragdolls", 1.0),
     ("FluidBlood", 1.0),
+    ("RemasteredLighting", 1.0),
+    ("EmissiveSurfaces", 1.0),
     ("AugGlows", 1.0),
-    ("WetBodies", 1.0),
     ("CoatCloth", 1.0),
     ("DiegeticHealing", 1.0),
     ("FirstPersonBody", 1.0),
@@ -168,6 +169,7 @@ pub fn switch(to_modern: bool) -> bool {
     // Skeletal characters switch HDTP's people off (hdtp::characters_on), so with HDTP that is a reload too.
     let mods_changed = vals.iter().any(|(k, v)| {
         (MOD_KEYS.iter().any(|m| m.0 == k)
+            || crate::relight::RELOAD_KEYS.contains(&k.as_str())
             || (k == "SkeletalCharacters" && unreal_pkg::mods::active("hdtp").is_some()))
             && crate::settings::get(k) != *v
     });

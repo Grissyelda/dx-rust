@@ -24,7 +24,29 @@ def read(ai):
     a = acc[ai]
     n = NC[a['type']]
     if 'bufferView' not in a:
-        return np.zeros((a['count'], n), dtype=DT[a['componentType']])
+        arr = np.zeros((a['count'], n), dtype=DT[a['componentType']])
+    else:
+        arr = None
+    # Sparse accessors (Blender writes shape keys this way when only some vertices move - every face key): the
+    # base (zeros without a bufferView) with the listed elements replaced. Read as all zeros, the faces were lost.
+    sp = a.get('sparse')
+    if sp is not None:
+        base = arr if arr is not None else dense(a, n).copy()
+        iv = bvs[sp['indices']['bufferView']]
+        idt = np.dtype(DT[sp['indices']['componentType']])
+        ioff = iv.get('byteOffset', 0) + sp['indices'].get('byteOffset', 0)
+        idx = np.frombuffer(binb, dtype=idt, count=sp['count'], offset=ioff).astype(np.int64)
+        vv = bvs[sp['values']['bufferView']]
+        voff = vv.get('byteOffset', 0) + sp['values'].get('byteOffset', 0)
+        vals = np.frombuffer(binb, dtype=np.dtype(DT[a['componentType']]), count=sp['count'] * n, offset=voff).reshape(sp['count'], n)
+        base = base.copy()
+        base[idx] = vals
+        return base
+    if arr is not None:
+        return arr
+    return dense(a, n)
+
+def dense(a, n):
     v = bvs[a['bufferView']]
     off = v.get('byteOffset', 0) + a.get('byteOffset', 0)
     dt = np.dtype(DT[a['componentType']])

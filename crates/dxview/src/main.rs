@@ -16,6 +16,7 @@ use bevy::{
 mod abilities;
 mod weather;
 mod shadowlight;
+mod relight;
 mod glow;
 mod vision;
 mod shafts;
@@ -616,6 +617,27 @@ fn main() {
     }
     unreal_pkg::paths::set(&PathBuf::from(&root), mods);
     unreal_pkg::mods::activate(&enabled);
+    // Relief maps (remastered lighting): the Parallax Maps mod's folder, the copy shipped beside the exe
+    // (relief/), and packs installed in the game's Textures folder the DX11 renderer's way.
+    {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(p) = unreal_pkg::mods::active("relief") {
+            dirs.push(p);
+        }
+        if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("relief"))) {
+            if exe.is_dir() {
+                dirs.push(exe);
+            }
+        }
+        let tex = PathBuf::from(&root).join("Textures");
+        if tex.is_dir() {
+            dirs.push(tex);
+        }
+        let n = dx_level::relief::set_dirs(&dirs);
+        if n > 0 {
+            println!("dxview: relief maps for {n} textures");
+        }
+    }
     unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
     hdtp::apply_dds_filter();
     travel::init_lddp();
@@ -1250,6 +1272,15 @@ fn setup(
         .iter()
         .map(|t| images.add(make_image(t)))
         .collect();
+    // Remastered lighting (relight.rs): the bake's per-texel reach of each surface's three strongest lights, and
+    // the light table.
+    let relight_imgs: Option<(Handle<Image>, Handle<Image>)> = level
+        .lightmap
+        .as_ref()
+        .filter(|a| !a.mask.is_empty())
+        .map(|a| (images.add(relight::mask_image(a)), images.add(relight::light_image(&a.lights))));
+    let mut relief_mats: std::collections::HashSet<AssetId<StandardMaterial>> = Default::default();
+    let relief_t0 = std::time::Instant::now();
     let mut cache: std::collections::HashMap<
         (Option<usize>, SurfaceClass, bool, [i32; 2], bool),
         Handle<StandardMaterial>,
@@ -1288,6 +1319,16 @@ fn setup(
                     },
                     ..default()
                 });
+                // Relief maps for the solid world (remastered lighting).
+                if !b.sky && b.mirror.is_none() && matches!(b.class, SurfaceClass::Opaque | SurfaceClass::Masked) {
+                    if let Some(t) = b.texture.map(|i| &level.textures[i]) {
+                        if let Some(mut m) = materials.get_mut(&h) {
+                            if relight::apply_relief(&mut m, t, &mut images) {
+                                relief_mats.insert(h.id());
+                            }
+                        }
+                    }
+                }
                 let water = b.class == SurfaceClass::Water;
                 if water || b.uv_scroll != [0.0, 0.0] {
                     scrollers
@@ -1316,6 +1357,14 @@ fn setup(
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
             mesh.insert_indices(Indices::U32(b.indices.clone()));
+            // The lit world's light ids for remastered lighting (bsp_shadow.wgsl divides them back out of the
+            // colour), and tangents where a relief map needs them.
+            if b.mirror.is_none() && b.light_ids.len() == b.positions.len() {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, b.light_ids.clone());
+            }
+            if relief_mats.contains(&mat.id()) && b.mirror.is_none() {
+                let _ = mesh.generate_tangents();
+            }
         }
         let mut e = match b.mirror {
             // Water: the WetTexture source picture rippled by the water shader (water.rs).
@@ -1358,7 +1407,13 @@ fn setup(
                 let bm = bsp_cache
                     .entry(mat.id())
                     .or_insert_with(|| {
-                        let h = bsp_mats.add(shadowlight::bsp_material(materials.get(&mat).cloned().unwrap_or_default()));
+                        let mut bm = shadowlight::bsp_material(materials.get(&mat).cloned().unwrap_or_default());
+                        relight::params(b.texture.map(|i| level.textures[i].name.as_str()), &mut bm.extension.params);
+                        if let Some((mask, lights)) = relight_imgs.as_ref() {
+                            bm.extension.mask = Some(mask.clone());
+                            bm.extension.lights = Some(lights.clone());
+                        }
+                        let h = bsp_mats.add(bm);
                         if let Some((_, speed, _)) = scrollers.0.iter().find(|(m, _, w)| m.id() == mat.id() && !*w) {
                             scrollers.1.push((h.clone(), *speed));
                         }
@@ -1388,6 +1443,9 @@ fn setup(
         }
     }
 
+    if relight::relief_level() > 0 {
+        println!("relight: {} textures with relief maps ({} ms)", relief_mats.len(), relief_t0.elapsed().as_millis());
+    }
     if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches, &sheet_pts) {
         if let (Some(bevy::mesh::VertexAttributeValues::Float32x3(p)), Some(Indices::U32(i))) = (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices()) {
             let y = p.first().map_or(0.0, |v| v[1]);

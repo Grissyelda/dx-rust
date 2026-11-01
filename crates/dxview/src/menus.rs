@@ -704,7 +704,6 @@ impl Enhance {
             ("FirstPersonBody", "Visuals", "First-Person Body", "With Skeletal Characters on, look down and see JC's body and legs under you; his arms show while a medkit is in hand."),
             ("DiegeticHealing", "Gameplay", "Diegetic Healing", "With First-Person Body on: hold a medkit, look at the arm, leg or chest you want to treat and use it there. Used looking anywhere else, it treats the head. A label under the crosshair says which part."),
             ("AugGlows", "Visuals", "Aug Glows", "Running augmentations glow on JC's body where they sit: eyes, arms, legs, chest (in mirrors, third person and the first-person body)."),
-            ("WetBodies", "Visuals", "Wet Bodies", "With Skeletal Characters on, people out in the rain slowly soak through - darker, with a sheen where the light catches them - and dry off under cover. Out of the water they are wet at once."),
             ("CoatCloth", "Visuals", "Coat Cloth", "With Skeletal Characters on, long coats swing and trail with the body's motion and fall around the legs instead of moving as one stiff piece."),
             ("EnhancedFX", "Visuals", "Enhanced Effects", "More particles: sparks off metal, dust off stone, splinters off wood and splashes off water where bullets hit; spark showers and rolling smoke from explosions; smoke from gun barrels; a spray of blood on hits."),
             ("Elements", "Gameplay", "Elemental Reactions", "Electric shocks run through water to everyone standing in it (you too), people on fire set others they touch alight, and fire caught by someone in water goes out."),
@@ -799,6 +798,22 @@ impl Enhance {
             c.help = "People and objects cast moving shadows from the lamps around them, as dark as the light they block. Low uses the two strongest lights near you, High four.".into();
             c.kind = ChoiceKind::Enum(vec!["Off".into(), "Low".into(), "High".into()]);
             c.value = crate::settings::get("RealtimeShadows");
+            c.saved = c.value;
+            items.push(tag(c, "Visuals"));
+        }
+        // Remastered lighting (relight.rs): applied when the map next loads.
+        for (key, label, help, values) in [
+            ("RemasteredLighting", "Remastered Lighting", "Every wall and floor lit per pixel by the lamps that reach it, with real falloff and shape, and the original's shadows kept. Needed for Relief Maps and Material Highlights. Takes effect on the next map.", vec!["Off", "On"]),
+            ("ReliefMaps", "Relief Maps", "With Remastered Lighting: bricks, planks, tiles and grates catch the light with normal maps - the Parallax Occlusion addon's where it has them (shipped with the game), the rest made from each texture. Parallax adds depth to them as you move. Takes effect on the next map.", vec!["Off", "Normal Maps", "Normal + Parallax"]),
+            ("MaterialSpecular", "Material Highlights", "With Remastered Lighting: metal, glass, tiles and polished floors shine where the light catches them. Takes effect on the next map.", vec!["Off", "On"]),
+            ("EmissiveSurfaces", "Glowing Surfaces", "Light fittings, screens and signs glow past white (with Bloom, a soft halo). Takes effect on the next map.", vec!["Off", "On"]),
+        ] {
+            let mut c = debug_mode_choice();
+            c.key = key.into();
+            c.label = label.into();
+            c.help = help.into();
+            c.kind = ChoiceKind::Enum(values.iter().map(|v| v.to_string()).collect());
+            c.value = crate::settings::get(key);
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }

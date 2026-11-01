@@ -253,6 +253,11 @@ pub fn body_for(mesh: &str) -> Option<&'static Body> {
     if let Some(b) = bodies().get(&short) {
         return Some(b);
     }
+    // Carcass meshes (GM_Trench_Carcass...) are a lying pose of their own, not the standing body: mapped onto the
+    // rig they stood in its rest pose (a T-pose), unlit, where the map places a body.
+    if short.contains("carcass") {
+        return None;
+    }
     // Augmentique's outfit meshes (AMTGM_Trench, AMTGFM_SuitSkirt_F...) are the
     // vanilla bodies under another name; variants (_F, _S, _B without a body of their own) fall back to the base.
     let mut n = short.as_str();
@@ -271,6 +276,12 @@ pub fn body_for(mesh: &str) -> Option<&'static Body> {
             _ => return None,
         }
     }
+}
+
+/// The textures Deus Ex hides a mesh section with.
+fn is_mask(name: &str) -> bool {
+    let n = name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase();
+    matches!(n.as_str(), "graymasktex" | "blackmasktex" | "pinkmasktex")
 }
 
 fn log_on() -> bool {
@@ -356,13 +367,17 @@ pub type ActorMaterial = ExtendedMaterial<StandardMaterial, ActorLit>;
 #[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
 pub struct ActorLights {
     /// xyz: light position (Bevy world), w: radius (Bevy units).
-    pub pos: [Vec4; 8],
+    pub pos: [Vec4; 16],
     /// rgb: Unreal light colour (brightness included).
-    pub col: [Vec4; 8],
+    pub col: [Vec4; 16],
     /// x: lights in use, y: LIGHT_GAIN x ScaleGlow, z: 1 = unlit, w: 1 = lit from both sides.
     pub misc: Vec4,
-    /// x: wetness 0..1 (darker, with a sheen: enhancement "Wet Bodies").
+    /// x, y: unused (the Wet Bodies enhancement is gone), z: world height above which nothing is drawn, w: 1 = that
+    /// cut is on.
     pub wet: Vec4,
+    /// rgb: the lights past the sixteen strongest, summed as an even fill (the vertex-lit meshes add up every
+    /// light; leaving them out drew the rebuilt people darker).
+    pub amb: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -402,6 +417,12 @@ pub struct SkelBody {
     mats: Vec<Handle<ActorMaterial>>,
     /// Pose on screen, and the pose a cross-fade started from.
     pub(crate) pose: Vec<Trs>,
+    /// Frames left in which the section meshes' Transforms are touched, and whether any was on screen last frame:
+    /// Bevy 0.19 keeps a mesh instance's morph descriptor index from when the instance was last re-extracted, and a
+    /// skinned section never moves (only its joints do), so one first seen before its weights were extracted kept
+    /// "no morphs" for good - every standing person's face was frozen (JC's body moves, so his worked).
+    morph_kick: u8,
+    seen_last: bool,
     from: Vec<Trs>,
     scratch: Vec<Trs>,
     posed: bool,
@@ -540,15 +561,19 @@ pub fn spawn_system(
                 .map(|m| m.base_color_texture.clone())
                 .or_else(|| am.and_then(|h| anim_mats.get(&h.0)).map(|m| m.base.base_color_texture.clone()));
             let Some(tex) = tex else { continue };
-            for s in &ma.parts[pi].slots {
-                slot_tex.entry(*s).or_insert(tex.clone());
+            // GrayMaskTex / BlackMaskTex / PinkMaskTex: the slot is hidden (Paul's empty glasses slots).
+            let masked = ma.parts[pi].texture.and_then(|t| lvl.textures.get(t)).is_some_and(|t| is_mask(&t.name));
+            if !masked {
+                for s in &ma.parts[pi].slots {
+                    slot_tex.entry(*s).or_insert(tex.clone());
+                }
             }
             if let Ok(mut v) = vis.get_mut(c) {
                 *v = Visibility::Hidden;
             }
             commands.entity(c).insert(HiddenPart);
         }
-        let sb = build(&mut commands, &mut meshes, &mut mats, &mut ibms, body, e, &slot_tex, &anim.mesh, anim.draw_scale, a.mesh_actor, None);
+        let sb = build(&mut commands, &mut meshes, &mut mats, &mut ibms, body, e, &slot_tex, &anim.mesh, anim.draw_scale, a.mesh_actor, None, &[], None);
         commands.entity(e).insert(sb);
     }
 }
@@ -569,6 +594,8 @@ fn build(
     ds: f32,
     mesh_actor: usize,
     layers: Option<RenderLayers>,
+    drop: &[&str],
+    cut: Option<f32>,
 ) -> SkelBody {
     let rig = &rigs()[body.female as usize];
     {
@@ -621,6 +648,44 @@ fn build(
             }
             let tex = slot_tex.get(&(sec.slot as u32)).cloned().flatten();
             let mut mesh = build_mesh(sec, nm);
+            // Left out (the first-person body's head and arms): triangles with a corner mostly on those bones,
+            // cut away rather than shrunk (shrinking the bones dragged the shoulders and collar into wings).
+            // `cut`: also every triangle with a corner above that fraction of the body's height as it stands in its
+            // bind pose (the first-person body keeps the waist and legs; a cut in the shader left the depth prepass
+            // drawing the rest, black).
+            let top = cut.map(|f| {
+                let h = body.sections.iter().flat_map(|q| q.positions.iter()).fold(0.0f32, |m, p| m.max(p[1]));
+                h * f
+            });
+            if !drop.is_empty() || top.is_some() {
+                let gone: Vec<bool> = (0..sec.positions.len())
+                    .map(|v| {
+                        if top.is_some_and(|t| sec.positions[v][1] > t) {
+                            return true;
+                        }
+                        let w: f32 = (0..4)
+                            .filter(|&k| {
+                                body.joint_names
+                                    .get(sec.joints[v][k] as usize)
+                                    .is_some_and(|n| drop.iter().any(|d| n.starts_with(d)))
+                            })
+                            .map(|k| sec.weights[v][k])
+                            .sum();
+                        w > 0.4
+                    })
+                    .collect();
+                let kept: Vec<u16> = sec
+                    .indices
+                    .chunks(3)
+                    .filter(|t| t.len() == 3 && !t.iter().any(|&i| gone[i as usize]))
+                    .flatten()
+                    .copied()
+                    .collect();
+                if kept.is_empty() {
+                    continue;
+                }
+                mesh.insert_indices(bevy::mesh::Indices::U16(kept));
+            }
             if dx_level::actors::LID_FIX.load(std::sync::atomic::Ordering::Relaxed) {
                 helios_lids(&mut mesh, sec, body);
             }
@@ -647,6 +712,8 @@ fn build(
                 extension: ActorLit {
                     lights: ActorLights {
                         misc: Vec4::new(0.0, dx_level::lighting::LIGHT_GAIN, if sec.style == "MODULATED" { 1.0 } else { 0.0 }, 0.0),
+                        // Lenses and masks never get wet: a sheen on an additive section draws it.
+                        wet: Vec4::new(0.0, if matches!(sec.style.as_str(), "MODULATED" | "TRANSLUCENT") { 1.0 } else { 0.0 }, 0.0, 0.0),
                         ..default()
                     },
                 },
@@ -690,6 +757,8 @@ fn build(
             meshes: mesh_ents,
             mats: mat_handles,
             pose: rest.clone(),
+            morph_kick: 30,
+            seen_last: false,
             from: rest,
             scratch: Vec::new(),
             posed: false,
@@ -730,6 +799,9 @@ fn advance(s: &mut SkelBody, seq: &str, start: usize, frames: usize, f: f32, loo
     let mut pose = std::mem::take(&mut s.scratch);
     pose.resize(s.rig.rest.len(), s.rig.rest[0]);
     if let Some(c) = clip {
+        // The callers' frame keeps counting past the end of a looping sequence (Unreal wraps it when drawing): wrap
+        // it here, or every looping move froze on its first frame after one pass (people slid about standing still).
+        let f = if looped && frames > 1 { f.rem_euclid(frames as f32) } else { f };
         // Same frame count: frame f is clip time f / 10; otherwise stretch the clip over the sequence.
         let n = c.frames() as f32;
         let fr = if (n - frames as f32).abs() < 0.5 || frames <= 1 { f } else { f * n / frames as f32 };
@@ -762,10 +834,17 @@ fn write_bones(s: &SkelBody, tfs: &mut Query<&mut Transform, Without<SkelBody>>)
     }
 }
 
+/// The sequence a frame belongs to: the one starting there, else the shortest holding it. (Deus Ex meshes list an
+/// "All" sequence over every frame first; taking the first match named every pose and mouth shape "All", so no
+/// person walked, gestured or moved their lips.)
 fn seq_name(mesh: &dx_level::actors::AnimMesh, frame: usize) -> Option<&str> {
+    let holds = |s: &&unreal_pkg::mesh::AnimSeq| frame >= s.start_frame.max(0) as usize && frame < (s.start_frame.max(0) + s.num_frames.max(1)) as usize;
     mesh.seqs
         .iter()
-        .find(|s| frame >= s.start_frame.max(0) as usize && frame < (s.start_frame.max(0) + s.num_frames.max(1)) as usize)
+        .filter(holds)
+        .filter(|s| !s.name.eq_ignore_ascii_case("All"))
+        .min_by_key(|s| (s.start_frame.max(0) as usize != frame, s.num_frames))
+        .or_else(|| mesh.seqs.iter().find(holds))
         .map(|s| s.name.as_str())
 }
 
@@ -834,7 +913,7 @@ pub fn pose_system(
         let dt = std::mem::take(&mut s.skip_dt);
         let (start, frames, f) = crate::actors::current_frame(&a, anim);
         let seq = seq_name(&anim.mesh, start).unwrap_or("BreatheLight");
-        advance(s, seq, start, frames, f, a.clip.is_none(), dt);
+        advance(s, seq, start, frames, f, a.clip.as_ref().is_none_or(|c| c.looping), dt);
         if hurt {
             if let Some(n) = npc.filter(|n| n.state != crate::ai::NpcState::Dead) {
                 apply_hurt(s, &crate::bodyfx::hurt_fracs(&n.hp_body.parts, &n.hp_body.defaults));
@@ -844,8 +923,18 @@ pub fn pose_system(
             crate::skeletal::cloth_pub(s, gt.to_matrix(), dt);
         }
         // Face: lip sync (the mouth shapes), blinks, brows with speech, glances.
+        let has_w = weights.is_some();
+        let mut wmax = 0.0f32;
         if let Some(mut w) = weights {
             face_weights(s, &anim.mesh, face.as_ref(), a.face.talking, dt, w.weights_mut());
+            wmax = w.weights().iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        }
+        if log_on() && tick % 10 == 0 && eye.is_some_and(|c| c.distance(gt.translation()) < 12.0) {
+            let hips: f32 = s.pose.iter().map(|p| p.r.x.abs() + p.r.y.abs() + p.t.y).sum();
+            bevy::log::info!(
+                "SKELPOSE actor {} seq {seq} start {start} frames {frames} f {f:.2} clip {} face {:?} talking {} weights {} max {wmax:.2} posesum {:.4}",
+                s.mesh_actor, a.clip.is_some(), face, a.face.talking, has_w, hips
+            );
         }
     });
     // Bones, hidden parts and lights.
@@ -861,6 +950,21 @@ pub fn pose_system(
         }
         if s.posed {
             write_bones(&s, &mut tfs);
+        }
+        // Re-extract the section meshes (their morph descriptors) for a while after the body appears and whenever
+        // it comes back on screen.
+        let seen_now = s.meshes.iter().any(|m| seen.get(*m).is_ok_and(|v| v.get()));
+        if seen_now && !s.seen_last {
+            s.morph_kick = s.morph_kick.max(4);
+        }
+        s.seen_last = seen_now;
+        if s.morph_kick > 0 {
+            s.morph_kick -= 1;
+            for m in s.meshes.clone() {
+                if let Ok(mut t) = tfs.get_mut(m) {
+                    t.set_changed();
+                }
+            }
         }
         let Some(ma) = lvl.mesh_actors.get(s.mesh_actor) else { continue };
         s.light_in -= dt;
@@ -1177,28 +1281,17 @@ pub fn mirror_skel_system(
         1.0,
         usize::MAX,
         Some(RenderLayers::layer(crate::mirror::BODY_LAYER)),
+        &[],
+        None,
     );
     commands.entity(b.root).insert((s, MirrorSkel));
 }
 
-/// Light a body from the eight strongest Unreal lights that reach `ue` (when what reaches it changed).
+/// Light a body from the sixteen strongest Unreal lights that reach `ue` (when what reaches it changed).
 fn relight(s: &mut SkelBody, lvl: &dx_level::Level, ue: [f32; 3], scale_glow: f32, mats: &mut Assets<ActorMaterial>) {
     let lights = crate::dynlight::lights_at(lvl, ue, 40.0);
-    // Wet Bodies: out in the rain (a zone open to the sky while it rains) soaks in over ~20 s and dries over a
-    // minute; in water, at once.
-    if crate::settings::get("WetBodies") > 0.5 {
-        let p = glam::DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64);
-        let z = lvl.collision.zone_at(p);
-        let rain = crate::weather::density() > 0.5 && z > 0 && lvl.zone_sky.get(z as usize).copied().unwrap_or(false);
-        let water = crate::actors::water_at(lvl, p).is_some();
-        let step = 0.25;
-        s.wet = if water { 1.0 } else if rain { (s.wet + step / 20.0).min(1.0) } else { (s.wet - step / 60.0).max(0.0) };
-    } else {
-        s.wet = 0.0;
-    }
-    let wet_changed = (s.wet - s.wet_shown).abs() > 0.02 || (s.wet == 0.0) != (s.wet_shown == 0.0);
     let sig = crate::dynlight::light_sig(&lights, [0.0; 3], 0) ^ ((scale_glow * 64.0) as u64);
-    if sig == s.light_sig && !wet_changed {
+    if sig == s.light_sig {
         return;
     }
     s.light_sig = sig;
@@ -1211,20 +1304,33 @@ fn relight(s: &mut SkelBody, lvl: &dx_level::Level, ue: [f32; 3], scale_glow: f3
         })
         .collect();
     best.sort_by(|x, y| y.0.total_cmp(&x.0));
-    best.truncate(8);
+    // The rest: an even fill at half strength (a sphere facing a light averages about half of N.L's peak).
+    let mut amb = Vec3::ZERO;
+    for (_, l) in best.iter().skip(16) {
+        let d = Vec3::from(l.pos).distance(Vec3::from(ue));
+        if d < l.radius {
+            amb += Vec3::from(l.color) * (1.0 - d / l.radius) * 0.5;
+        }
+    }
+    best.truncate(16);
     let mut lt = ActorLights { misc: Vec4::new(best.len() as f32, dx_level::lighting::LIGHT_GAIN * scale_glow, 0.0, 0.0), ..default() };
     for (i, (_, l)) in best.iter().enumerate() {
         let bp = Vec3::from(dx_level::ue_to_bevy(l.pos));
         lt.pos[i] = bp.extend(l.radius * dx_level::METERS_PER_UNIT);
         lt.col[i] = Vec3::from(l.color).extend(0.0);
     }
+    lt.amb = amb.extend(0.0);
     lt.wet = Vec4::new(s.wet, 0.0, 0.0, 0.0);
     s.wet_shown = s.wet;
     for h in &s.mats {
         if let Some(mut m) = mats.get_mut(h) {
-            let unlit = m.extension.lights.misc.z;
+            let old = m.extension.lights;
             m.extension.lights = lt;
-            m.extension.lights.misc.z = unlit;
+            // Per-material: unlit, never-wet, the height cut.
+            m.extension.lights.misc.z = old.misc.z;
+            m.extension.lights.wet.y = old.wet.y;
+            m.extension.lights.wet.z = old.wet.z;
+            m.extension.lights.wet.w = old.wet.w;
         }
     }
 }
@@ -1254,15 +1360,46 @@ impl BuildParams<'_, '_> {
 
     /// `build_from_mirror` drawn in the world (and shadows), like the NPCs' bodies.
     pub fn build_from_mirror_world(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity) -> Option<SkelBody> {
-        self.build_mirror(commands, b, body, parent, None)
+        self.build_mirror(commands, b, body, parent, None, &[], None)
+    }
+
+    /// The first-person body: like `build_from_mirror` without the triangles on the `drop` bones or above `cut` of
+    /// the body's standing height.
+    pub fn build_from_mirror_without(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity, layers: RenderLayers, drop: &[&str], cut: f32) -> Option<SkelBody> {
+        self.build_mirror(commands, b, body, parent, Some(layers), drop, Some(cut))
+    }
+
+    /// Draw this body's faces from the front only (the first-person body: from above, the inside of the coat at
+    /// the cut would show; culled, the view goes through the opening to the legs and floor).
+    pub fn cull_back(&mut self, s: &SkelBody) {
+        for h in &s.mats {
+            if let Some(mut m) = self.mats.get_mut(h) {
+                // (The rebuilt sections wind clockwise as Bevy sees them: their outside is the "back" face.)
+                m.base.cull_mode = Some(bevy::render::render_resource::Face::Front);
+                m.base.double_sided = false;
+            }
+        }
+    }
+
+    /// Nothing of this body drawn above world height `y` (None = all of it).
+    pub fn set_cut(&mut self, s: &SkelBody, y: Option<f32>) {
+        for h in &s.mats {
+            if let Some(mut m) = self.mats.get_mut(h) {
+                let (z, w) = y.map_or((0.0, 0.0), |y| (y, 1.0));
+                if m.extension.lights.wet.z != z || m.extension.lights.wet.w != w {
+                    m.extension.lights.wet.z = z;
+                    m.extension.lights.wet.w = w;
+                }
+            }
+        }
     }
 
     /// A rebuilt body under `parent` with the textures JC's mirror body wears (None until its parts exist).
     pub fn build_from_mirror(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity, layers: RenderLayers) -> Option<SkelBody> {
-        self.build_mirror(commands, b, body, parent, Some(layers))
+        self.build_mirror(commands, b, body, parent, Some(layers), &[], None)
     }
 
-    fn build_mirror(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity, layers: Option<RenderLayers>) -> Option<SkelBody> {
+    fn build_mirror(&mut self, commands: &mut Commands, b: &crate::mirror::MirrorBody, body: &'static Body, parent: Entity, layers: Option<RenderLayers>, drop: &[&str], cut: Option<f32>) -> Option<SkelBody> {
         let ch = self.kids.get(b.root).ok()?;
         let mut slot_tex: HashMap<u32, Option<Handle<Image>>> = HashMap::new();
         for c in ch.iter() {
@@ -1276,7 +1413,7 @@ impl BuildParams<'_, '_> {
         if slot_tex.is_empty() {
             return None;
         }
-        Some(build(commands, &mut self.meshes, &mut self.mats, &mut self.ibms, body, parent, &slot_tex, &b.mesh, 1.0, usize::MAX, layers))
+        Some(build(commands, &mut self.meshes, &mut self.mats, &mut self.ibms, body, parent, &slot_tex, &b.mesh, 1.0, usize::MAX, layers, drop, cut))
     }
 }
 

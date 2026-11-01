@@ -20,6 +20,12 @@ pub struct Atlas {
     pub height: u32,
     /// RGBA8, color channels sRGB-encoded.
     pub rgba: Vec<u8>,
+    /// Remastered lighting: the same layout, R / G / B = how much of each of the surface's three strongest
+    /// lights reaches the texel (the baked 1-bit masks, tent-filtered), so a shader can light the surface per pixel
+    /// (normal maps, highlights) by those lights while keeping the bake's shadows.
+    pub mask: Vec<u8>,
+    /// The lights `Batch::light_ids` index.
+    pub lights: Vec<LightInfo>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -41,7 +47,11 @@ pub struct Baked {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
+    mask: Vec<u8>,
     rects: HashMap<usize, Rect>, // surface index -> atlas rect (includes 1px border offset)
+    /// Surface -> its three strongest lights (indices into `table`, -1 = none), in mask channel order.
+    surf_lights: HashMap<usize, [i32; 3]>,
+    table: Vec<LightInfo>,
 }
 
 fn byte(ps: &[props::Property], name: &str) -> Option<u8> {
@@ -133,6 +143,10 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
     }
     let height = (y + shelf_h).max(2).next_power_of_two().max(64);
     let mut rgba = vec![0u8; (atlas_w * height * 4) as usize];
+    let mut mask = vec![0u8; (atlas_w * height * 4) as usize];
+    let mut surf_lights: HashMap<usize, [i32; 3]> = HashMap::new();
+    let mut table: Vec<LightInfo> = Vec::new();
+    let mut table_of: HashMap<i32, i32> = HashMap::new();
     // Reserved full-bright block.
     for yy in 0..2 {
         for xx in 0..4 {
@@ -164,14 +178,19 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
 
         // Light list for this surface (terminated by a null reference).
         let mut infos: Vec<Option<LightInfo>> = Vec::new();
+        let mut refs: Vec<i32> = Vec::new();
         if lm.light_actors >= 0 {
             let mut i = lm.light_actors as usize;
             while i < model.lights.len() && model.lights[i] != 0 {
                 let r = model.lights[i];
                 infos.push(*lights.entry(r).or_insert_with(|| load_light(pkg, r, classes)));
+                refs.push(r);
                 i += 1;
             }
         }
+        // How much each light gives the surface over all its texels (for picking its three strongest).
+        let mut total = vec![0.0f32; infos.len()];
+        let mut vis_tex: Vec<Vec<f32>> = vec![vec![0.0; u_clamp * v_clamp]; infos.len()];
         let stride = (u_clamp + 7) / 8;
         let block = stride * v_clamp;
 
@@ -203,6 +222,7 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
                     if vis <= 0.0 {
                         continue;
                     }
+                    vis_tex[k][ty * u_clamp + tx] = vis;
                     let to = sub(l.pos, p);
                     let dist = dot(to, to).sqrt();
                     if dist >= l.radius {
@@ -210,6 +230,7 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
                     }
                     let ndl = (dot(to, n) / dist.max(1e-6)).abs();
                     let f = (1.0 - dist / l.radius) * ndl * vis;
+                    total[k] += f * l.color[0].max(l.color[1]).max(l.color[2]);
                     for c in 0..3 {
                         sum[c] += l.color[c] * f;
                     }
@@ -222,6 +243,20 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
                 ];
             }
         }
+        // The three strongest lights and their visibility.
+        let mut order: Vec<usize> = (0..infos.len()).filter(|&k| infos[k].is_some() && total[k] > 0.0).collect();
+        order.sort_by(|a, b| total[*b].total_cmp(&total[*a]));
+        order.truncate(3);
+        let mut ids = [-1i32; 3];
+        for (c, &k) in order.iter().enumerate() {
+            let r = refs[k];
+            let id = *table_of.entry(r).or_insert_with(|| {
+                table.push(infos[k].unwrap());
+                table.len() as i32 - 1
+            });
+            ids[c] = id;
+        }
+        surf_lights.insert(si, ids);
         // Copy with a replicated 1-texel border.
         for yy in 0..ah as usize {
             for xx in 0..aw as usize {
@@ -229,10 +264,15 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
                 let sy = yy.saturating_sub(1).min(v_clamp - 1);
                 let o = (((ay as usize + yy) * atlas_w as usize) + ax as usize + xx) * 4;
                 rgba[o..o + 4].copy_from_slice(&tex[sy * u_clamp + sx]);
+                let mut m = [0u8, 0, 0, 255];
+                for (c, &k) in order.iter().enumerate() {
+                    m[c] = (vis_tex[k][sy * u_clamp + sx] * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+                mask[o..o + 4].copy_from_slice(&m);
             }
         }
     }
-    Baked { width: atlas_w, height, rgba, rects }
+    Baked { width: atlas_w, height, rgba, mask, rects, surf_lights, table }
 }
 
 /// All static lights referenced by the level BSP.
@@ -286,7 +326,15 @@ impl Baked {
         [(r.x as f32 + u) / self.width as f32, (r.y as f32 + v) / self.height as f32]
     }
 
+    /// The surface's three strongest lights for remastered lighting, as vertex colour values: index + 1 (0.5 =
+    /// none; never 0, the shader divides the material colour back out by it), alpha 1.
+    pub fn light_ids(&self, si: usize) -> [f32; 4] {
+        let ids = self.surf_lights.get(&si).copied().unwrap_or([-1; 3]);
+        let f = |i: i32| if i < 0 { 0.5 } else { i as f32 + 1.0 };
+        [f(ids[0]), f(ids[1]), f(ids[2]), 1.0]
+    }
+
     pub fn into_atlas(self) -> Atlas {
-        Atlas { width: self.width, height: self.height, rgba: self.rgba }
+        Atlas { width: self.width, height: self.height, rgba: self.rgba, mask: self.mask, lights: self.table }
     }
 }

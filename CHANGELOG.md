@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Remastered lighting (enhancements, on in Modern)
+- Remastered Lighting: every wall and floor relit per pixel by its strongest lamps, with real falloff and shape,
+  keeping the original's baked shadows.
+- Relief Maps: normal and parallax maps - the Parallax Occlusion Mapping addon's (shipped with the release; only its
+  normal / height maps are read, so it sits beside Helios and New Vision), generated ones for brick, stone, wood,
+  tiles, grates and metal elsewhere.
+- Material Highlights: metal, glass, tiles and polished floors catch the light.
+- Glowing Surfaces: light fittings, screens and signs glow past white, with Bloom's halo.
+
 ### Faster
 - About 30 to 47 fps on an RTX 3050 in Modern: real-time shadows render one view per light instead of six (and
   only for lights with someone in them), rain is built on the GPU, water reflections re-render every other frame.
@@ -11,8 +20,8 @@
   blended moves and a face that lip-syncs, blinks and glances. JC's mirror and third-person body too.
 - Ragdolls (Avian physics): the killed and knocked out go limp at once, pushed by the hit and carried by their run.
 - Fluid Blood: droplets that fly and splatter, blood running down walls, pools spreading under the dead, bloodier gibs.
-- Wounds on bodies, hurt poses (hanging arms, limps), coat cloth, wet bodies in the rain.
-- First-person body, diegetic healing (treat the limb you look at with a medkit; elsewhere it treats the head),
+- Wounds on bodies, hurt poses (hanging arms, limps), coat cloth.
+- First-person body (waist and legs, as Half-Life mods show it), diegetic healing (treat the limb you look at with a medkit; elsewhere it treats the head),
   aug glows on JC's body and a healing glow.
 - JC dies as a ragdoll too. Helios repaints and Augmentique outfits (JC, Lay D, the people they dress) carry over to
   the rebuilt bodies; HDTP's people are off while Skeletal Characters is on, so JC keeps his rebuilt body.
@@ -26,6 +35,16 @@
 - Coat tails whipping and flipping: they now ripple, damped and held close to the animation.
 - Rain splashing under the dock roof when the wind slanted the drops in.
 - JC's skeletal, ragdoll and first-person bodies missing with HDTP or Augmentique installed.
+- Rebuilt characters never animated or lip-synced: every sequence lookup found the mesh's "All" sequence, looping
+  moves froze after one pass, and the bodies were packed without their face shapes (Blender writes them as sparse
+  glTF data, which the packer read as zeros). Faces now blink, glance and lip-sync; standing people's faces are
+  re-sent to the GPU so the shapes show.
+- Placed bodies (the one with the pepper spray) stood in a black T-pose: carcass meshes keep their own lying pose.
+- First-person body: no more black outlines or the inside of the coat in view.
+- Rebuilt characters darker than the originals (only 8 lights reached them; now 16 and an even fill for the rest).
+
+### Removed
+- Wet Bodies (everyone came out shiny and smooth).
 
 ## v0.10.0
 

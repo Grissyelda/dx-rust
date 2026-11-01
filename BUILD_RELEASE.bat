@@ -20,7 +20,14 @@ copy /y target\dist-launcher\release\dxlauncher.exe dist\dxlauncher.exe >> relea
 copy /y LICENSE dist\LICENSE.txt >> release_build.log 2>&1
 copy /y README.md dist\README.md >> release_build.log 2>&1
 copy /y THIRD_PARTY.md dist\THIRD_PARTY.md >> release_build.log 2>&1
-rem The release download: dist\dxrust-windows.zip (the two exes and the notices, nothing of the game's).
+rem Relief maps for Remastered Lighting (the Parallax Occlusion Mapping addon's normal / height maps, shipped with
+rem the author's permission): put the addon's "Half Size-Full Depth" contents in relief\ beside this file.
+set RELIEF=
+if exist relief\ (
+  xcopy /e /i /y /q relief dist\relief >> release_build.log 2>&1
+  set RELIEF=,dist\relief
+)
+rem The release download: dist\dxrust-windows.zip (the two exes, the relief maps and the notices, nothing of the game's).
 if exist dist\dxrust-windows.zip del /f /q dist\dxrust-windows.zip
-powershell -NoProfile -Command "Compress-Archive -Path dist\dxview.exe,dist\dxlauncher.exe,dist\LICENSE.txt,dist\README.md,dist\THIRD_PARTY.md -DestinationPath dist\dxrust-windows.zip" >> release_build.log 2>&1
+powershell -NoProfile -Command "Compress-Archive -Path dist\dxview.exe,dist\dxlauncher.exe,dist\LICENSE.txt,dist\README.md,dist\THIRD_PARTY.md%RELIEF% -DestinationPath dist\dxrust-windows.zip" >> release_build.log 2>&1
 echo === BUILD OK %date% %time% === >> release_build.log

@@ -21,6 +21,7 @@ pub mod nav;
 pub mod firetex;
 pub mod skincolor;
 pub mod dds;
+pub mod relief;
 
 pub const METERS_PER_UNIT: f32 = 1.0 / 52.5;
 
@@ -150,6 +151,9 @@ pub struct Batch {
     pub uvs1: Vec<[f32; 2]>,
     /// Per-vertex lighting (linear RGBA) for meshes lit like Unreal actors; empty for lightmapped BSP.
     pub colors: Vec<[f32; 4]>,
+    /// Lightmapped BSP: each vertex's surface's three strongest lights for remastered lighting
+    /// (`lighting::Baked::light_ids`: index + 1 into `Atlas::lights`, 0.5 = none).
+    pub light_ids: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
 }
 
@@ -1105,6 +1109,7 @@ pub fn build_level(
                 uvs: Vec::new(),
                 uvs1: Vec::new(),
                 colors: Vec::new(),
+                light_ids: Vec::new(),
                 indices: Vec::new(),
             });
             batches.len() - 1
@@ -1144,12 +1149,14 @@ pub fn build_level(
             b.normals.push(n);
             b.uvs.push([u, vv]);
             b.uvs1.push(baked.uv1(&model, node.surf as usize, p));
+            b.light_ids.push(baked.light_ids(node.surf as usize));
         }
         if !ok {
             b.positions.truncate(first as usize);
             b.normals.truncate(first as usize);
             b.uvs.truncate(first as usize);
             b.uvs1.truncate(first as usize);
+            b.light_ids.truncate(first as usize);
             continue;
         }
         // Bevy front faces are counter-clockwise around the normal; Unreal's polys mostly run the other way.

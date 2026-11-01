@@ -51,6 +51,10 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   modern one, like the graphics switch in some remasters. Modern turns on every enhancement below at once and puts
   back your own mix the next time; Classic is the game as it shipped.
 - **A modern look (all optional):**
+  - **remastered lighting**: walls and floors relit per pixel by the lamps that reach them, with relief maps
+    (the Parallax Occlusion Mapping addon's normal and height maps, shipped with the release, and generated ones
+    for the rest), highlights on metal, glass and tiles, and glowing lamps, screens and signs - while every shadow
+    the original baked stays;
   - real-time shadows from the map's own lights, ambient occlusion, soft shadows and bloom;
   - rain with splashes, ripples and lightning storms (with the Precipitation mod's sounds), volumetric night
     clouds and rolling fog, light shafts and haze;
@@ -62,7 +66,7 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
     Augmentique outfit) in mirrors, third person and under the view in first person; Helios repaints carry over to
     the rebuilt bodies, and HDTP's people step aside while they are on;
   - **ragdolls** (Avian physics) for the killed and knocked out, and for JC himself, fluid blood (droplets, runs down walls, pools
-    under the dead, bloodier gibs), wound marks, hurt poses and limps, coat tails that ripple as people move, and wet bodies in the rain.
+    under the dead, bloodier gibs), wound marks, hurt poses and limps, and coat tails that ripple as people move.
 - **Modern play (all optional):**
   - Modern Aiming: the aim sways within the accuracy cone (wide when untrained, steady when you master the
     weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns;

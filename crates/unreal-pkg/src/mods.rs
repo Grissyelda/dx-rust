@@ -19,6 +19,10 @@ pub enum ModKind {
     /// DDS override files laid out `<Package>/<Group>/<Name>.dds` (kentie's Direct3D 10 renderer packs: Helios):
     /// the folder is the one holding the package folders (usually the game's own Textures folder).
     DdsTextures,
+    /// Normal / height maps laid out `<Package>/<Group>/<Name>.bump.dds` and `.height.dds` (the DX11 renderer's;
+    /// the Parallax Occlusion Mapping addon): read by dx-level's relief module for remastered lighting, never as
+    /// colour textures.
+    ReliefMaps,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -84,6 +88,13 @@ pub const MODS: &[ModDef] = &[
         help: "Rain (Smoke39's Precipitation, also in GMDX Augmented's System folder): choose its folder",
     },
     ModDef {
+        id: "relief",
+        name: "Parallax Maps",
+        kind: ModKind::ReliefMaps,
+        marker: "",
+        help: "Normal and height maps (the Parallax Occlusion Mapping addon): choose its folder; used by Remastered Lighting",
+    },
+    ModDef {
         id: "gmdx",
         name: "GMDX Perks",
         kind: ModKind::Addon,
@@ -117,6 +128,24 @@ pub fn find_rel(dir: &Path, rel: &str) -> Option<PathBuf> {
 /// The mod's folder: `dir` itself or a folder just inside it (an unpacked zip often adds one) holding the marker.
 /// New Vision's marker is also in the game's own folder, so a folder with System/DeusEx.u isn't New Vision.
 pub fn locate(m: &ModDef, dir: &Path) -> Option<PathBuf> {
+    if m.kind == ModKind::ReliefMaps {
+        // Any folder with .bump.dds files a few levels down (the addon's variants are picked when indexing).
+        fn has_bump(d: &Path, depth: usize) -> bool {
+            let Ok(rd) = std::fs::read_dir(d) else { return false };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if depth < 5 && has_bump(&p, depth + 1) {
+                        return true;
+                    }
+                } else if p.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().ends_with(".bump.dds")) {
+                    return true;
+                }
+            }
+            false
+        }
+        return has_bump(dir, 0).then(|| dir.to_path_buf());
+    }
     if m.kind == ModKind::DdsTextures {
         // The folder holding the package folders: this one, its Textures folder, or one just inside.
         let has = |d: &Path| find_rel(d, m.marker).is_some_and(|p| dir_has_dds(&p));

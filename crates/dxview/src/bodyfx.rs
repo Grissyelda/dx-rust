@@ -2,7 +2,7 @@
 //! - "Wounds On Bodies": a wound mark where a shot went into a rebuilt body, riding the bone it hit.
 //! - "Hurt Poses": hurt people move like it - a wounded arm hangs, a wounded leg stiffens into a limp, a wounded
 //!   trunk hunches (NPCs, and JC's own body in third person / mirrors / first person).
-//! - "First-Person Body": JC's body under the view (no head; arms only while a medkit is in hand), on its own
+//! - "First-Person Body": JC's body under the view (no head or arms: the view model has the arms), on its own
 //!   layer that only the main camera draws.
 //! - "Diegetic Healing": with a medkit in hand, look at the part of your body to treat - an arm, a leg or the
 //!   chest - and use it there; used looking anywhere else, it treats the head. A label under the crosshair says
@@ -19,10 +19,20 @@ use std::sync::Mutex;
 use crate::skeletal::SkelBody;
 
 pub const FP_LAYER: usize = 11;
-/// How far behind the eye JC's first-person body stands (Unreal units).
-const FP_BACK: f32 = 3.0;
-/// And this far lower (Unreal units): the coat's tall collar stays under the eye.
-const FP_DOWN: f32 = 3.0;
+/// How far behind the eye JC's first-person body stands (Unreal units): the view looks down past the chest at the
+/// belt, legs and feet (as Half-Life mods show the body), not into the collar. More when crouched (the crouch
+/// pose leans the chest forward into the eye).
+const FP_BACK: f32 = 5.0;
+const FP_BACK_CROUCH: f32 = 18.0;
+/// And this far lower (Unreal units).
+const FP_DOWN: f32 = 2.0;
+/// The first-person body keeps what lies below this fraction of its standing height (stomach, waist and legs, as
+/// Half-Life mods show the body): the chest and shoulders would only wall in the view. Its faces are drawn from
+/// the front only, so the opening at the cut shows the legs below, not the inside of the coat.
+const FP_KEEP: f32 = 0.6;
+/// The bones whose triangles the first-person body leaves out: head, neck and the arms (the view model's arms are
+/// the arms).
+const FP_DROP: &[&str] = &["DEF-spine.005", "DEF-spine.006", "DEF-upper_arm", "DEF-forearm", "DEF-hand", "DEF-f_", "DEF-thumb"];
 
 fn on(key: &str) -> bool {
     crate::settings::get(key) > 0.5 && crate::skeletal::enabled()
@@ -250,11 +260,12 @@ pub fn fp_body_system(
         // Built from the mirror body's textures once it has them.
         let r = commands.spawn((Transform::default(), Visibility::Inherited, FpBody)).id();
         let layer = if std::env::var_os("DXVIEW_FP_LAYER0").is_some() { 0 } else { FP_LAYER };
-        let made = built.build_from_mirror(&mut commands, b, sb, r, RenderLayers::layer(layer));
+        let made = built.build_from_mirror_without(&mut commands, b, sb, r, RenderLayers::layer(layer), FP_DROP, FP_KEEP);
         if std::env::var_os("DXVIEW_BODYLOG").is_some() {
             println!("FPBODY build {}", made.is_some());
         }
         if let Some(s) = made {
+            built.cull_back(&s);
             commands.entity(r).insert(s);
             st.root = Some(r);
             st.gen = crate::augmentique::generation();
@@ -264,8 +275,13 @@ pub fn fp_body_system(
         return;
     };
     let Ok((_, mut s, mut tf)) = fp.get_mut(root) else { return };
+    // Crouched, the crouch pose folds the knees up round the eye: the body is left out until he stands.
+    let crouching = b.cur.as_ref().is_some_and(|c| c.0.to_ascii_lowercase().contains("crouch"));
     if let Ok(mut v) = vis.get_mut(root) {
-        *v = Visibility::Inherited;
+        let want_v = if crouching { Visibility::Hidden } else { Visibility::Inherited };
+        if *v != want_v {
+            *v = want_v;
+        }
     }
     // Where the mirror body stands, pulled back a little so the view looks down over the chest, not into it.
     if let Ok(mg) = gts.get(b.root) {
@@ -275,8 +291,9 @@ pub fn fp_body_system(
         if std::env::var_os("DXVIEW_BODYLOG").is_some() {
             println!("FPBODY at {:?} fwd {fwd:?} cam {:?}", mt.translation, cam.iter().next().map(|c| c.translation()));
         }
-        // The eye sits where his (hidden) head would; nudged back a touch so the chest isn't in the near plane.
-        tf.translation -= Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero() * (FP_BACK * dx_level::METERS_PER_UNIT);
+        let crouched = b.cur.as_ref().is_some_and(|c| c.0.to_ascii_lowercase().contains("crouch"));
+        let back = if crouched { FP_BACK_CROUCH } else { FP_BACK };
+        tf.translation -= Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero() * (back * dx_level::METERS_PER_UNIT);
         tf.translation.y -= FP_DOWN * dx_level::METERS_PER_UNIT;
     }
     let medkit = weapons.held.as_ref().is_some_and(|h| h.stats.class == "MedKit");
@@ -286,10 +303,9 @@ pub fn fp_body_system(
         if hurt_on() {
             crate::skeletal::apply_hurt(&mut s, &hurt_fracs(&ph.parts, &[100.0; 6]));
         }
-        // No head under the view; the arms only with a medkit in hand (otherwise the view model's are the arms).
-        // (The neck bone too: the coat's tall collar hangs off it and would wall in the view.)
-        let hide: &[&str] = if medkit { &["DEF-spine.004", "DEF-spine.005", "DEF-spine.006"] } else { &["DEF-spine.004", "DEF-spine.005", "DEF-spine.006", "DEF-shoulder", "DEF-upper_arm", "DEF-f_", "DEF-thumb"] };
-        crate::skeletal::write_bones_pub(&s, &mut tfs, hide);
+        // No head or arms under the view (the view model's are the arms).
+        // (The head and arms were left out of this body when it was built: FP_DROP.)
+        crate::skeletal::write_bones_pub(&s, &mut tfs, &[]);
         let ue = dx_level::bevy_to_ue(tf.translation.to_array());
         built.relight(&mut s, &level.0, ue, dt);
     }

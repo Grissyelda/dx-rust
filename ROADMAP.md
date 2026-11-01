@@ -164,8 +164,9 @@ Shadows with contact hardening.
     over their heads. Still to come from GMDX: smarter strafing, melee bashes, NPC grenades, wider alarms.
 39. HD textures and models (done with the HDTP, New Vision and Helios mods - Helios dresses the people, HDTP the
     items - switchable in Settings), PBR and smoother animation.
-40. JC's body visible in first person (done in code, needs Skeletal Characters): look down to see his chest, coat
-    and legs; his head is hidden and his arms show only while a medkit is in hand.
+40. JC's body visible in first person (done in code, needs Skeletal Characters): look down to see his stomach,
+    coat and legs, as Half-Life mods show the body; the head, arms and chest are left out of it (the view model's
+    arms are the arms) and it is hidden while crouched.
 41. Diegetic damage, healing and augs shown on the body (done in code): wound marks that ride the bone they hit,
     hurt poses (a hanging arm, a stiff-legged limp), aug glows where the augs sit, a healing glow and screen pulse,
     and diegetic healing - hold a medkit, look at the limb to treat and use it there (anywhere else treats the head).
@@ -174,34 +175,39 @@ Shadows with contact hardening.
     JC falls the same way when he dies.
     Explosions still gib, now with Fluid Blood: droplets that fly and splatter, blood that runs down walls and
     pools spreading under the dead. Still to come: posable models.
-43. Cloth and wetness (done in code): coat tails ripple and settle around the legs (damped spring bones held within
-    a few degrees of the animation and pushed out of the legs), and people soak through in the rain - darker, with a
-    sheen - and dry off under cover.
+43. Cloth (done in code): coat tails ripple and settle around the legs (damped spring bones held within a few
+    degrees of the animation and pushed out of the legs). Wet bodies in the rain were tried and dropped (everyone
+    came out shiny and smooth).
 44. Computers shown in the world while it keeps running (done: Terminals In The World - the view moves in to the
     monitor, the security terminal unfolds, the original interface shows on the screen and the mouse works on it;
     keypads are pressed button by button with a small display above; move the mouse away to step back).
-45. More NPCs and livelier locations.
 46. **Mod support** (done in code; being tested): the Lay D Denton Project, HDTP, New Vision, Visible
     Attachments, Augmentique (outfits and weapon skins) and GMDX: Augmented Edition (perks, bugfixes and
     quality-of-life options), any number at once from the launcher's Mods page.
-47. No loading screens.
 48. Co-op and deathmatch multiplayer.
-49. **Remastered lighting** (an Enhancement, off by default; the look of the cancelled 2026 remaster's trailer):
-    the baked lightmaps dropped and every level surface lit in real time by the map's own Light actors (the
-    nearest ones with shadows, the rest unshadowed), so lamps light the walls and floors with real falloff and the
-    existing real-time shadows, soft shadows, ambient occlusion and bloom all apply to the lit result. Needs a
-    per-zone ambient term and a global gain tuned by walking the maps, since the editor's light placements were
-    tuned for Unreal's baker, with per-map overrides where a room comes out wrong. The original lightmap renderer
-    stays the default.
-50. **Normal and parallax maps** for the level textures: nobody ships them for Deus Ex, so they are generated from
-    each texture's own colour (height from luminance, filtered into a normal map) with a per-texture allow list
-    (bricks, grates, planks and panels gain relief; textures with painted-in lighting stay flat), feeding the
-    real-time lights above. Hand-made normal maps from the HD mods used where they exist.
-51. **Material table**: roughness, metalness and reflectance per texture group and per weapon / item mesh (metal,
-    glass, wood, skin, cloth), so guns, chrome, wet stone and glass get real specular highlights and reflections
-    from an environment map per zone or screen-space reflections, instead of today's flat, matte materials.
-52. **Emissive surfaces**: every glowing texture group (lamp fixtures, ceiling panels, console screens, signs,
-    alarm lights) marked emissive so it blooms and, with remastered lighting, lights its surroundings itself.
+
+(Items 45, more NPCs and livelier locations, and 47, no loading screens, were cut.)
+49. **Remastered lighting** (done in code; an Enhancement, in the Modern preset): every BSP surface relit per pixel
+    by its three strongest lights, with their real falloff and the angle they strike at, while the bake's shadows
+    stay. The bake already knows, for every lightmap texel, whether each lamp reaches it; the shader takes each of
+    those lights' flat baked term back out of the lightmap and puts it back worked out over the surface's relief
+    normal, with a highlight by the surface's material. Dropping the lightmaps outright, as first planned, let
+    lamps shine through walls: the editor placed its lights for Unreal's baker, which traced their shadows.
+    A global gain and an added-light term are there for tuning; per-zone ambient and per-map overrides are not
+    done yet.
+50. **Normal and parallax maps** (done in code; Relief Maps setting: normal maps, or with parallax): the Parallax
+    Occlusion Mapping addon's normal / height maps for about 1,100 textures (shipped with the release, used from the
+    Parallax Maps mod folder, or from the game's Textures folder where the DX11 renderer reads them; only its
+    `.bump` / `.height` files are read, never its colour replacements, so it works beside Helios and New Vision),
+    and generated maps for the rest (height from luminance) on an allow list: brick, stone, concrete, planks, tiles,
+    grates, metal panels. Signs, screens, lamps, windows and effects stay flat.
+51. **Material table** (done for level surfaces): roughness, highlight strength and metalness by texture name
+    (glass, polished metal, painted metal, tiles and marble, wood, plastic, stone and concrete), so metal, glass and
+    tiles catch the light. Still to come: weapons and items (their light is worked out per vertex on the CPU) and
+    reflections from an environment map or screen-space reflections.
+52. **Emissive surfaces** (done in code; Glowing Surfaces setting): surfaces drawn full bright (light fittings,
+    screens, signs) and textures named as lamps, screens or neon glow past white, so Bloom gives them a halo.
+    Still to come: lighting their surroundings themselves.
 
 Also done: **achievements** - the fifty of Deus Ex Remastered with our own icons, an Achievements screen off the
 Logs screen, an unlock notice in the HUD, kept for the player across saves.

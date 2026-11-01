@@ -41,12 +41,23 @@ pub struct BspShadowParams {
     /// x: Ambient Occlusion's strength on the lightmap (0 = off; the SSAO pass itself always runs, so switching it
     /// never recompiles every material).
     pub q: Vec4,
+    /// Remastered lighting (relight.rs): x 1 = on, y highlight strength, z roughness, w metalness.
+    pub r: Vec4,
+    /// x light gain, y added light (gamma), z emissive strength (named glowing textures), w glow of unlit surfaces.
+    pub s: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct BspShadow {
     #[uniform(100)]
     pub params: BspShadowParams,
+    /// Remastered lighting: how much of each surface's three strongest lights reaches each lightmap texel
+    /// (dx-level lighting::Atlas::mask), and the lights themselves (2 texels each: position + radius, colour).
+    #[texture(101)]
+    #[sampler(102)]
+    pub mask: Option<Handle<Image>>,
+    #[texture(103, sample_type = "float", filterable = false)]
+    pub lights: Option<Handle<Image>>,
 }
 
 impl MaterialExtension for BspShadow {
@@ -69,7 +80,11 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
             params: BspShadowParams {
                 p: Vec4::new(STRENGTH, 1.0 / ENCODE, dx_level::lighting::LIGHT_GAIN, std::env::var("DXVIEW_SHADOW_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)),
                 q: Vec4::new(if crate::postfx::ao_on() { 0.85 } else { 0.0 }, 0.0, 0.0, 0.0),
+                r: Vec4::ZERO,
+                s: Vec4::new(1.0, 0.0, 0.0, 0.0),
             },
+            mask: None,
+            lights: None,
         },
     }
 }
