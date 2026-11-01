@@ -1,5 +1,5 @@
-//! Finding the player's Deus Ex folder when none has been chosen: the usual Steam (every Steam library, Windows and
-//! Linux / Steam Deck, the SD card too), GOG and Heroic install places.
+//! Finding the player's Deus Ex folder when none has been chosen: the usual Steam (every Steam library, Windows,
+//! Linux / Steam Deck and macOS, the SD card too), GOG and Heroic install places.
 
 use std::path::{Path, PathBuf};
 
@@ -55,6 +55,16 @@ pub fn candidates() -> Vec<PathBuf> {
         for d in ["Games/Heroic/Deus Ex GOTY", "Games/Heroic/Deus Ex", "GOG Games/Deus Ex GOTY", "Games/Deus Ex"] {
             v.push(home.join(d));
         }
+        if cfg!(target_os = "macos") {
+            steams.push(home.join("Library/Application Support/Steam"));
+            // Steam for Mac has no Mac version of the game: `download_depot 6910 6911` in its console leaves the
+            // Windows files here.
+            v.push(home.join(
+                "Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS/steamapps/content/app_6910/depot_6911",
+            ));
+            v.push(home.join("Documents/Deus Ex"));
+            v.push("/Applications/Deus Ex".into());
+        }
         // Steam Deck SD cards and other removable drives.
         if let Ok(rd) = std::fs::read_dir("/run/media") {
             for e in rd.flatten() {
@@ -82,4 +92,16 @@ pub fn candidates() -> Vec<PathBuf> {
 /// The first Deus Ex folder found, if any.
 pub fn detect() -> Option<PathBuf> {
     candidates().into_iter().find(|p| is_game_dir(p))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_candidates_cover_the_steam_library_and_the_depot_download() {
+        let c = candidates();
+        assert!(c.iter().any(|p| p.ends_with("Library/Application Support/Steam/steamapps/common/Deus Ex")));
+        assert!(c.iter().any(|p| p.ends_with("steamapps/content/app_6910/depot_6911")));
+    }
 }

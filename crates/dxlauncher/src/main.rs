@@ -214,7 +214,7 @@ impl Launcher {
 
     fn play(&mut self) -> bool {
         if !valid_game(Path::new(&self.game)) {
-            self.status = "That folder has no System\\DeusEx.u - choose the Deus Ex folder.".into();
+            self.status = "That folder has no System/DeusEx.u - choose the Deus Ex folder.".into();
             return false;
         }
         if !self.save() {
@@ -324,7 +324,7 @@ impl Launcher {
             Some(Wid::Play) => "Save these settings and start the game",
             Some(Wid::Save) => "Keep these settings without starting the game",
             Some(Wid::Quit) => "Close the launcher",
-            None if !valid_game(Path::new(&self.game)) => "There is no System\\DeusEx.u in that folder",
+            None if !valid_game(Path::new(&self.game)) => "There is no System/DeusEx.u in that folder",
             None => "",
         }
         .to_string()
@@ -641,9 +641,9 @@ impl Launcher {
                 }
             });
             ui.label(if valid_game(Path::new(&self.game)) {
-                "Found System\\DeusEx.u, but its DeusExUI.u couldn't be read."
+                "Found System/DeusEx.u, but its DeusExUI.u couldn't be read."
             } else {
-                "There is no System\\DeusEx.u in that folder yet."
+                "There is no System/DeusEx.u in that folder yet."
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {

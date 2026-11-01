@@ -680,7 +680,7 @@ fn main() {
     let level = match dx_level::load_level(&PathBuf::from(&root), &map) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("ERROR: {e}\nUsage: dxview.exe [\"C:\\Games\\Deus Ex\"] [map.dx]");
+            eprintln!("ERROR: {e}\nUsage: dxview [\"path to Deus Ex\"] [map.dx]");
             eprintln!("Press Enter to close.");
             let _ = std::io::stdin().read_line(&mut String::new());
             std::process::exit(1);
