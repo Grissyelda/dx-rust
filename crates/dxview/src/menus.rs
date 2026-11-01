@@ -423,6 +423,15 @@ pub fn present_mode(v: f32) -> bevy::window::PresentMode {
     }
 }
 
+/// Settings > Display resolution. macOS sizes windows in points, and the game opens with the saved size in points,
+/// so a pick there is points too: physical pixels would make the window half the size on a Retina display.
+fn set_window_size(window: &mut Window, w: u32, h: u32) {
+    #[cfg(target_os = "macos")]
+    window.resolution.set(w as f32, h as f32);
+    #[cfg(not(target_os = "macos"))]
+    window.resolution.set_physical_resolution(w, h);
+}
+
 /// The Bevy window mode for a DisplayMode setting.
 /// The window mode for a DisplayMode setting. The primary monitor, not "current": at startup there is no window
 /// yet, so winit has no current monitor and Bevy panics ("Unable to get monitor").
@@ -3207,7 +3216,7 @@ pub fn menu_system(
                 window.present_mode = present_mode(v);
             }
             Act::Resolution(w, h) => {
-                window.resolution.set_physical_resolution(w, h);
+                set_window_size(&mut window, w, h);
             }
         }
     }
