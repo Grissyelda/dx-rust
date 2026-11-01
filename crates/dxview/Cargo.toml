@@ -20,7 +20,8 @@ half = "2.7"
 # Gamepads (XInput / Windows.Gaming.Input / evdev) for controller support.
 gilrs = "0.11"
 cpal = "0.15"
-hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
+# macos-shared-device: gilrs reads the same pad, and hidapi otherwise opens it exclusively on macOS.
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
 # Ragdolls (skeletal.rs ragdoll): rigid bodies and joints.
 # The heap (alloc.rs): faster than the system allocators for many small allocations.
 mimalloc = { version = "0.1", default-features = false }
