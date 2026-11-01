@@ -171,8 +171,64 @@ impl bevy::app::Plugin for ProfRenderPlugins {
     fn build(&self, app: &mut bevy::app::App) {
         if std::env::var("DXVIEW_PROF").is_ok() {
             app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+            if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+                use bevy::prelude::IntoScheduleConfigs;
+                render.add_systems(
+                    bevy::render::Render,
+                    draw_count_system.in_set(bevy::render::RenderSystems::Cleanup).before(bevy::render::RenderSystems::PostCleanup),
+                );
+            }
         }
     }
+}
+
+/// Draw calls per render phase, summed over views: multi-draw sets (one indirect call each), batchable bins (one
+/// call each) and unbatchable meshes (one call each). Printed every 300 frames as "PROF draws".
+#[allow(clippy::type_complexity)]
+fn draw_count_system(
+    opaque: Option<bevy::prelude::Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>>>,
+    mask: Option<bevy::prelude::Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::AlphaMask3d>>>,
+    pre: Option<bevy::prelude::Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::prepass::Opaque3dPrepass>>>,
+    pre_mask: Option<bevy::prelude::Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::prepass::AlphaMask3dPrepass>>>,
+    shadow: Option<bevy::prelude::Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::pbr::Shadow>>>,
+    transparent: Option<bevy::prelude::Res<bevy::render::render_phase::ViewSortedRenderPhases<bevy::core_pipeline::core_3d::Transparent3d>>>,
+    mut frame: bevy::prelude::Local<u32>,
+) {
+    *frame += 1;
+    if *frame % 300 != 150 {
+        return;
+    }
+    fn binned<B: bevy::render::render_phase::BinnedPhaseItem>(
+        name: &str,
+        p: &Option<bevy::prelude::Res<bevy::render::render_phase::ViewBinnedRenderPhases<B>>>,
+    ) -> usize {
+        let Some(p) = p else { return 0 };
+        let (mut views, mut multi, mut batch, mut unb) = (0, 0, 0, 0);
+        for ph in p.0.values() {
+            let n = ph.multidrawable_meshes.len() + ph.batchable_meshes.len() + ph.unbatchable_meshes.len();
+            if n == 0 {
+                continue;
+            }
+            views += 1;
+            multi += ph.multidrawable_meshes.len();
+            batch += ph.batchable_meshes.len();
+            unb += ph.unbatchable_meshes.values().map(|u| u.entities.len()).sum::<usize>();
+        }
+        println!("PROF draws {name}: {views} views, {multi} multi-draw sets, {batch} batchable bins, {unb} unbatchable meshes");
+        multi + batch + unb
+    }
+    let mut total = 0;
+    total += binned("opaque", &opaque);
+    total += binned("alpha-mask", &mask);
+    total += binned("prepass", &pre);
+    total += binned("prepass-mask", &pre_mask);
+    total += binned("shadow", &shadow);
+    if let Some(t) = &transparent {
+        let (views, items) = t.0.values().fold((0, 0), |(v, i), ph| (v + (!ph.items.is_empty()) as usize, i + ph.items.len()));
+        println!("PROF draws transparent: {views} views, {items} items (sorted, one call each unless batched)");
+        total += items;
+    }
+    println!("PROF draws total: about {total} draw calls a frame");
 }
 
 pub fn render_plugins() -> ProfRenderPlugins {
@@ -876,5 +932,63 @@ pub fn bounds_report_system(
         );
         *big = (0, 0, Vec::new());
         *acc = (0, 0, 0, Some(now));
+    }
+}
+
+/// With DXVIEW_PROF: every 300 frames, the meshes seen this frame grouped by material type, alpha mode and the
+/// game's own components on them ("PROF census"): what the draw calls are made of.
+pub fn census_system(world: &mut bevy::prelude::World, mut frame: bevy::prelude::Local<u32>) {
+    use bevy::prelude::*;
+    if !ON.load(Ordering::Relaxed) {
+        return;
+    }
+    *frame += 1;
+    if *frame % 300 != 140 {
+        return;
+    }
+    let mut q = world.query::<(Entity, &Mesh3d, &ViewVisibility)>();
+    let ents: Vec<Entity> = q.iter(world).filter(|(_, _, v)| v.get()).map(|(e, _, _)| e).collect();
+    let mut groups: HashMap<String, usize> = HashMap::new();
+    let std_mats = world.resource::<Assets<StandardMaterial>>();
+    let mut alpha = |e: Entity, w: &World| -> String {
+        if let Some(m) = w.get::<MeshMaterial3d<StandardMaterial>>(e) {
+            return format!("Std/{:?}", std_mats.get(&m.0).map(|m| m.alpha_mode));
+        }
+        if let Some(m) = w.get::<MeshMaterial3d<crate::shadowlight::BspMaterial>>(e) {
+            let a = w.resource::<Assets<crate::shadowlight::BspMaterial>>().get(&m.0).map(|m| m.base.alpha_mode);
+            return format!("Bsp/{a:?}");
+        }
+        if let Some(m) = w.get::<MeshMaterial3d<crate::gpuanim::AnimMaterial>>(e) {
+            let a = w.resource::<Assets<crate::gpuanim::AnimMaterial>>().get(&m.0).map(|m| m.base.alpha_mode);
+            return format!("Anim/{a:?}");
+        }
+        "other".to_string()
+    };
+    for e in ents {
+        let a = alpha(e, world);
+        let mut names: Vec<String> = world
+            .inspect_entity(e)
+            .map(|it| {
+                it.filter_map(|c| {
+                    let n = c.name().to_string();
+                    (n.starts_with("dxview::") && !n.contains("MeshMaterial3d")).then(|| n.trim_start_matches("dxview::").to_string())
+                })
+                .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        let mats: Vec<String> = world
+            .inspect_entity(e)
+            .map(|it| it.filter_map(|c| {
+                let n = c.name().to_string();
+                (n.contains("MeshMaterial3d") && !n.contains("StandardMaterial>") && !n.contains("BspShadow") && !n.contains("VertAnim")).then(|| n.rsplit("::").next().unwrap_or("").to_string())
+            }).collect())
+            .unwrap_or_default();
+        *groups.entry(format!("{a} {} [{}]", mats.join(","), names.join(","))).or_insert(0) += 1;
+    }
+    let mut v: Vec<_> = groups.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    for (k, n) in v.iter().take(40) {
+        println!("PROF census {n:5}  {k}");
     }
 }

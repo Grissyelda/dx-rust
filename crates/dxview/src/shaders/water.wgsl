@@ -5,7 +5,7 @@
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
-    mesh_view_bindings::view,
+    mesh_view_bindings::{view, globals},
     mesh_functions,
     view_transformations::{position_world_to_clip, depth_ndc_to_view_z},
 }
@@ -154,7 +154,7 @@ fn rain_rings(p: vec2<f32>, t: f32, amount: f32) -> vec2<f32> {
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    let t = water.t.x;
+    let t = globals.time;
     if (water.m.x > 0.5) {
         return modern_water(in, is_front, t);
     }
@@ -327,7 +327,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         // Full near the eye, flat far away (where a vertex is many waves apart and the far sea meets the map's).
         let de = length(view.world_position.xz - wp.xz);
         let k = 1.0 - smoothstep(90.0, 220.0, de);
-        wp.y += swell_h(wp.xz, water.t.x) * water.far.w * k;
+        wp.y += swell_h(wp.xz, globals.time) * water.far.w * k;
     }
 #endif
     out.world_position = wp;

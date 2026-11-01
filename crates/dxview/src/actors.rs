@@ -689,7 +689,8 @@ pub fn deco_physics(
             let ang = std::f64::consts::TAU * t / 4.0;
             let o = d.orig_rot;
             // Plus riding the water's swell (water.rs): up and down with the surface and tilted with its slope.
-            let (h, pitch, roll) = crate::water::bob(d.body.location, t);
+            // (The water's own clock: the shader's swell runs on Bevy's hour-wrapped globals time.)
+            let (h, pitch, roll) = crate::water::bob(d.body.location, time.elapsed_secs_wrapped_f64());
             bob = h;
             d.rotation = [
                 o[0] + (ang.sin() * 512.0) as i32 + pitch,

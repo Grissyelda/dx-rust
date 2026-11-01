@@ -247,9 +247,10 @@ pub fn skyline_system(
     let t = time.elapsed_secs();
     for (k, (_, h)) in st.beacons.iter().enumerate() {
         let on = ((t * 0.7 + k as f32 * 0.37) % 1.0) < 0.5;
-        if let Some(mut m) = materials.get_mut(h) {
-            let want = if on { Color::srgb(1.0, 0.1, 0.05) } else { Color::srgb(0.12, 0.0, 0.0) };
-            if m.base_color != want {
+        let want = if on { Color::srgb(1.0, 0.1, 0.05) } else { Color::srgb(0.12, 0.0, 0.0) };
+        // (Looked at first: taking a material mutably marks it changed, and a changed material is re-prepared.)
+        if materials.get(h).is_some_and(|m| m.base_color != want) {
+            if let Some(mut m) = materials.get_mut(h) {
                 m.base_color = want;
             }
         }

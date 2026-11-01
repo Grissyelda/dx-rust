@@ -78,7 +78,11 @@ render passes stay on the render thread, unused Bevy plugins are off, the depth 
 and the release build is optimised as one program. On the Ryzen 5 3600 the main thread went from 13.9 to
 7.9 ms a frame and the render thread from about 12 to 9.4 ms; default settings run at 10.2 ms (98 fps, was 72 fps
 before the last fixes). Modern with every option and mod: about 24 ms (41 fps), all of it the render thread (pass
-recording and Bevy's per-view preparation). Next: Bevy's per-view render
+recording and Bevy's per-view preparation). GPU-driven pass: bindless materials for the world and the rebuilt
+characters (multi-draw), GPU culling of the level's surfaces, rain moved by the shader, water and panning textures on
+the GPU's clock, materials no longer rewritten every frame, blob shadows in one mesh: about 1,000 draw calls to 250
+and Modern at about 14 ms (70 fps), Classic 11 ms (92 fps). What's left is mostly Bevy's own per-frame render
+bookkeeping (per-phase bind groups, command recording and submission). Next: Bevy's per-view render
 bookkeeping (bind groups and buffers rebuilt each frame), the weapon view's own pass, and the Update schedule's
 scheduling overhead (about 160 small systems).
 

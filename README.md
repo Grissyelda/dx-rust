@@ -153,18 +153,20 @@ On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder.
 The whole game is implemented. Before 1.0:
 - a full playthrough, with fixes for whatever it finds;
 - tuning by eye (water, a few intro effects);
-- more performance work on the render thread (Modern with every mod runs about 41 fps on an RTX 3050);
+- more performance work on the render thread (Modern with every mod runs about 70 fps on a Ryzen 5 3600 and RTX 3050);
 - Steam Deck tuning;
 - save round-trip tests on every map.
 
 Much of the v2.0 list is already in (the Classic / Modern switch, real-time shadows, weather, modern water,
 third person, Smarter AI, achievements, skeletal characters, ragdolls, fluid blood and remastered lighting with
 relief maps). Still to come: aim and head-turning layered on the skeletal bodies, and multiplayer, among others.
-Every item stays optional. A GPU pass took Modern from about 32 to 47 fps on an RTX 3050, and a CPU pass (for
-slower and many-core processors, where the game's own threads were the limit) took the default settings on a
-Ryzen 5 3600 from 72 to 98 fps, nearly halving the main thread's work. If your frame rate sits at exactly 30, the
-frame is just over VSync's 60 fps budget: try turning off *Vertical Sync* (Settings > Display). On a CPU with many
-cores, also try *Settings > Enhancements > Display: CPU Worker Threads*.
+Every item stays optional. Three performance passes so far: a GPU pass took Modern from about 32 to 47 fps on an
+RTX 3050; a CPU pass (for slower and many-core processors, where the game's own threads were the limit) took the
+default settings on a Ryzen 5 3600 from 72 to 98 fps; and a GPU-driven drawing pass (bindless materials and
+multi-draw, GPU culling, rain and water moved by shaders) cut the draw calls by three quarters and took Modern with
+every mod from 41 to about 70 fps. If your frame rate sits at exactly 30, the frame is just over VSync's 60 fps
+budget: try turning off *Vertical Sync* (Settings > Display). On a CPU with many cores, also try
+*Settings > Enhancements > Display: CPU Worker Threads*.
 
 The full list is in [ROADMAP.md](ROADMAP.md). Bug reports from playthroughs are very welcome: say which map you
 were on and what you did.

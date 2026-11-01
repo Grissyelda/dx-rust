@@ -20,12 +20,51 @@ struct BspShadowParams {
     q: vec4<f32>,
     r: vec4<f32>,
     s: vec4<f32>,
+    u: vec4<f32>,
 }
 
+#ifdef BINDLESS
+// Bindless (shadowlight.rs): the material's slot picks its params and textures out of shared arrays. `bsp` and the
+// texture indices are set once at the top of the fragment shader.
+#import bevy_render::bindless::{bindless_textures_2d, bindless_samplers_filtering}
+#import bevy_pbr::mesh_bindings::mesh
+
+struct BspShadowIndices {
+    params: u32,        // 100
+    mask: u32,          // 101
+    mask_sampler: u32,  // 102
+    lights: u32,        // 103
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var<storage> bsp_indices: array<BspShadowIndices>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var<storage> bsp_params: array<BspShadowParams>;
+var<private> bsp: BspShadowParams;
+var<private> bsp_ix: BspShadowIndices;
+
+fn bsp_load(instance_index: u32) {
+    let slot = mesh[instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    bsp_ix = bsp_indices[slot];
+    bsp = bsp_params[bsp_ix.params];
+}
+fn mask_sample(uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(bindless_textures_2d[bsp_ix.mask], bindless_samplers_filtering[bsp_ix.mask_sampler], uv, 0.0);
+}
+fn lights_load(c: vec2<i32>) -> vec4<f32> {
+    return textureLoad(bindless_textures_2d[bsp_ix.lights], c, 0);
+}
+#else
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> bsp: BspShadowParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var relight_mask: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var relight_mask_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var relight_lights: texture_2d<f32>;
+
+fn bsp_load(instance_index: u32) {}
+fn mask_sample(uv: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(relight_mask, relight_mask_sampler, uv, 0.0);
+}
+fn lights_load(c: vec2<i32>) -> vec4<f32> {
+    return textureLoad(relight_lights, c, 0);
+}
+#endif
 
 // Remastered lighting (relight.rs): the lightmap relit per pixel by the surface's three strongest lights (their ids
 // ride in the vertex colour, their reach per texel in the mask atlas, both from dx-level's bake). Each light's baked
@@ -47,7 +86,7 @@ fn ggx(ndh: f32, rough: f32) -> f32 {
 fn relight(lm: vec3<f32>, wp: vec3<f32>, flat_n: vec3<f32>, mapped_n: vec3<f32>, ids: vec4<f32>, uv_b: vec2<f32>, v: vec3<f32>) -> Relit {
     var s = to_srgb(lm);
     var spec = vec3<f32>(0.0);
-    let vis = textureSampleLevel(relight_mask, relight_mask_sampler, uv_b, 0.0);
+    let vis = mask_sample(uv_b);
     let gain = bsp.p.z;
     for (var c: u32 = 0u; c < 3u; c = c + 1u) {
         let idf = ids[c];
@@ -55,8 +94,8 @@ fn relight(lm: vec3<f32>, wp: vec3<f32>, flat_n: vec3<f32>, mapped_n: vec3<f32>,
             continue;
         }
         let id = i32(round(idf) - 1.0);
-        let lp = textureLoad(relight_lights, vec2<i32>(id * 2, 0), 0);
-        let lc = textureLoad(relight_lights, vec2<i32>(id * 2 + 1, 0), 0).rgb;
+        let lp = lights_load(vec2<i32>(id * 2, 0));
+        let lc = lights_load(vec2<i32>(id * 2 + 1, 0)).rgb;
         let to = lp.xyz - wp;
         let d = length(to);
         if (d >= lp.w || d < 1e-4) {
@@ -171,7 +210,13 @@ fn shadowed_lightmap(lm: vec3<f32>, world_position: vec4<f32>, n: vec3<f32>, fra
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
+    bsp_load(in.instance_index);
+    // Panning textures (PF_AutoUPan / VPan) on the GPU's clock.
+    var vin = in;
+#ifdef VERTEX_UVS_A
+    vin.uv = in.uv + fract(bsp.u.xy * view_bindings::globals.time);
+#endif
+    var pbr_input = pbr_input_from_standard_material(vin, is_front);
 #ifdef VERTEX_COLORS
     // The vertex colour carries remastered lighting's light ids, not a tint: StandardMaterial multiplied the
     // colour by it, so divide it back out (the ids are never 0).

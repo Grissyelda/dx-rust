@@ -225,6 +225,7 @@ pub fn fp_body_system(
     mut built: crate::skeletal::BuildParams,
     time: Res<Time>,
     level: Res<crate::LevelRes>,
+    mirror: Query<&SkelBody, (With<crate::skeletal::MirrorSkel>, Without<FpBody>)>,
 ) {
     let want = fp_on() && !ph.dead;
     FP_SHOWN.store(want, std::sync::atomic::Ordering::Relaxed);
@@ -299,9 +300,16 @@ pub fn fp_body_system(
     let medkit = weapons.held.as_ref().is_some_and(|h| h.stats.class == "MedKit");
     if let Some((seq, start, frames, f, looped)) = b.cur.clone() {
         let dt = time.delta_secs().min(0.1);
-        crate::skeletal::advance_pub(&mut s, &seq, start, frames, f, looped, dt);
-        if hurt_on() {
-            crate::skeletal::apply_hurt(&mut s, &hurt_fracs(&ph.parts, &[100.0; 6]));
+        // The mirror body (posed just before this, same rig, same move) already has this frame's pose: copied, not
+        // sampled and blended a second time.
+        match mirror.get(b.root).ok().filter(|m| m.pose.len() == s.pose.len()) {
+            Some(m) => s.pose.clone_from(&m.pose),
+            None => {
+                crate::skeletal::advance_pub(&mut s, &seq, start, frames, f, looped, dt);
+                if hurt_on() {
+                    crate::skeletal::apply_hurt(&mut s, &hurt_fracs(&ph.parts, &[100.0; 6]));
+                }
+            }
         }
         // No head or arms under the view (the view model's are the arms).
         // (The head and arms were left out of this body when it was built: FP_DROP.)

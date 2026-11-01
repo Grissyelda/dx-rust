@@ -16,10 +16,28 @@ struct ActorLights {
     amb: vec4<f32>,
 }
 
+#ifdef BINDLESS
+// Bindless (skeletal.rs): the material's slot picks its lights out of a shared array, so every body's sections are
+// drawn in a few GPU multi-draw calls.
+#import bevy_pbr::mesh_bindings::mesh
+struct ActorLitIndices {
+    lights: u32,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var<storage> actor_indices: array<ActorLitIndices>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var<storage> actor_lights: array<ActorLights>;
+var<private> lights: ActorLights;
+fn lights_fetch(instance_index: u32) {
+    let slot = mesh[instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    lights = actor_lights[actor_indices[slot].lights];
+}
+#else
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> lights: ActorLights;
+fn lights_fetch(instance_index: u32) {}
+#endif
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    lights_fetch(in.instance_index);
     // The first-person body: nothing above the cut (head, collar, shoulders round the eye).
     if (lights.wet.w > 0.5 && in.world_position.y > lights.wet.z) {
         discard;

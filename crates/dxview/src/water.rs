@@ -134,6 +134,8 @@ pub struct WaterMats {
     rings: [Vec4; RINGS],
     next: usize,
     modern: Option<bool>,
+    /// The global parameters last written (modern, rain, moon).
+    last: Option<[f32; 5]>,
 }
 
 /// Enhancement "Modern Water" (setting ModernWater): reflections, a body colour and see-through depth, detailed
@@ -150,7 +152,11 @@ pub fn water_system(
     level: Res<crate::LevelRes>,
     mut moon: Local<(u64, Vec3)>,
 ) {
-    let t = time.elapsed_secs();
+    // The waves run on the GPU's own clock (Bevy's globals.time, which wraps every hour like this one): the
+    // materials only change when a ring starts or ends or a setting moves, not every frame (each change re-prepares
+    // every water material on the render thread).
+    let t = time.elapsed_secs_wrapped();
+    let mut changed = false;
     if crate::loader::new_map(&mut moon.0) {
         moon.1 = crate::shafts::moon_dir(&level.0).filter(|d| d.y > 0.05).unwrap_or(Vec3::new(0.3, 0.8, 0.5).normalize());
     }
@@ -161,10 +167,12 @@ pub fn water_system(
         let i = wm.next % RINGS;
         wm.rings[i] = Vec4::new(p[0], p[2], t, s);
         wm.next += 1;
+        changed = true;
     }
     for r in wm.rings.iter_mut() {
-        if r.w > 0.0 && t - r.z > 4.0 {
+        if r.w > 0.0 && (t - r.z > 4.0 || t < r.z) {
             r.w = 0.0;
+            changed = true;
         }
     }
     let rings = wm.rings;
@@ -172,6 +180,15 @@ pub fn water_system(
     let switched = wm.modern != Some(modern);
     wm.modern = Some(modern);
     let rain = (crate::weather::density() / 14.0).clamp(0.0, 1.0);
+    let key = [if modern { 1.0 } else { 0.0 }, (rain * 50.0).round() / 50.0, moon_dir.x, moon_dir.y, moon_dir.z];
+    if wm.last != Some(key) {
+        wm.last = Some(key);
+        changed = true;
+    }
+    if !changed && !switched {
+        return;
+    }
+    let rain = key[1];
     for (i, h) in wm.mats.iter().enumerate() {
         if let Some(mut m) = mats.get_mut(h) {
             m.extension.params.t.x = t;

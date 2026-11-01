@@ -33,6 +33,22 @@
     worker pool.
   - Bevy features the game doesn't use (its gamepad polling, animation and picking systems) are switched off.
   - The release build is optimised as one whole program.
+- A GPU-driven drawing pass, so the processor hands the graphics card whole batches instead of one draw at a time.
+  Modern with every option and mod on a Ryzen 5 3600 + RTX 3050: about 1,000 draw calls a frame down to about 250,
+  and 24 ms (41 fps) down to about 14 ms (70 fps); Classic from about 12 ms (82 fps) to 11 ms (92 fps).
+  - The world's surfaces and the rebuilt characters' materials are bindless: hundreds of textures share a few bind
+    groups, so the GPU draws them in a handful of multi-draw calls (it was one draw call per texture, per camera).
+  - The level's surfaces are culled by the GPU (it tests each one against the view before drawing) instead of on the
+    main thread, and stay filed in the render thread's draw lists instead of being re-filed as the camera turns.
+  - Rain falls on the GPU: each drop and splash is written once, and the shader moves it on the GPU's own clock.
+    The CPU spawns a batch five times a second instead of moving 11,000 drops and uploading them every frame.
+  - Water waves and panning textures run on the GPU's clock too; their materials no longer change every frame (each
+    change made the render thread prepare the material again). Character lighting, the clouds and the skyline's
+    beacons only touch their materials when something actually changed.
+  - All the blob shadows under people are one mesh (they were fifty-odd separate transparent draws per camera).
+  - Only the head of a rebuilt character carries its face shapes.
+  - Avian no longer re-propagates every transform in the world before each physics step while no ragdoll is
+    falling, and the first-person body takes its pose from JC's mirror body instead of sampling it a second time.
 
 ### Launcher
 - Mods page: a Parallax Maps row to point the game at the Parallax Occlusion Mapping addon's folder (turn it on or

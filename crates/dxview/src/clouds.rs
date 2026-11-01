@@ -539,12 +539,21 @@ fn update(
             *tf = Transform::default().looking_to(Vec3::new(h.x, -0.45, h.z), Vec3::Y);
         }
     }
+    // Overcast: more cover, thinner gaps, smoother (less fluffy) edges, much darker, faster.
+    let slab_w = dry.slab.w + (0.7 - dry.slab.w) * r;
+    let shape = Vec4::new(dry.shape.x * (1.0 - 0.7 * r), dry.shape.y * (1.0 - 0.7 * r), r, 0.0);
+    let wind = Vec4::new(dry.wind.x * (1.0 + r), dry.wind.y * (1.0 + r), dry.wind.z * (1.0 + r), 1.0 + 0.4 * r);
+    // Only when something moved (a changed material is re-prepared on the render thread).
+    let Some(cur) = mats.get(&h) else { return };
+    let p = &cur.params;
+    if (p.slab.w - slab_w).abs() < 1e-4 && (p.shape - shape).abs().max_element() < 1e-4 && (p.wind - wind).abs().max_element() < 1e-5 && p.flash == flash {
+        return;
+    }
     let Some(mut m) = mats.get_mut(&h) else { return };
     let p = &mut m.params;
-    // Overcast: more cover, thinner gaps, smoother (less fluffy) edges, much darker, faster.
-    p.slab.w = dry.slab.w + (0.7 - dry.slab.w) * r;
-    p.shape = Vec4::new(dry.shape.x * (1.0 - 0.7 * r), dry.shape.y * (1.0 - 0.7 * r), r, 0.0);
-    p.wind = Vec4::new(dry.wind.x * (1.0 + r), dry.wind.y * (1.0 + r), dry.wind.z * (1.0 + r), 1.0 + 0.4 * r);
+    p.slab.w = slab_w;
+    p.shape = shape;
+    p.wind = wind;
     p.flash = flash;
 }
 

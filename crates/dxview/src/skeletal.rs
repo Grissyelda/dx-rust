@@ -364,7 +364,7 @@ fn clip_for<'a>(rig: &'a Rig, seq: &str, female: bool) -> Option<&'a Clip> {
 pub const ACTOR_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("6b1e4f0a-93d2-4c75-8e1f-2a7c5d9b3e41");
 pub type ActorMaterial = ExtendedMaterial<StandardMaterial, ActorLit>;
 
-#[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
 pub struct ActorLights {
     /// xyz: light position (Bevy world), w: radius (Bevy units).
     pub pos: [Vec4; 16],
@@ -380,10 +380,18 @@ pub struct ActorLights {
     pub amb: Vec4,
 }
 
+/// Bindless like StandardMaterial: all bodies' sections share a few bind groups and draw as GPU multi-draws.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[data(100, ActorLights, binding_array(111))]
+#[bindless(index_table(range(100..101), binding(110)))]
 pub struct ActorLit {
-    #[uniform(100)]
     pub lights: ActorLights,
+}
+
+impl<'a> From<&'a ActorLit> for ActorLights {
+    fn from(m: &'a ActorLit) -> Self {
+        m.lights
+    }
 }
 
 impl MaterialExtension for ActorLit {
@@ -647,7 +655,10 @@ fn build(
                 continue;
             }
             let tex = slot_tex.get(&(sec.slot as u32)).cloned().flatten();
-            let mut mesh = build_mesh(sec, nm);
+            // Only sections the face shapes move (the head) carry morph targets: each morphing mesh needs a bind
+            // group of its own on the GPU and can't be drawn in a multi-draw with the rest.
+            let morphs = nm > 0 && sec.morphs.iter().any(|d| d.as_ref().is_some_and(|d| d.iter().any(|p| p[0] != 0.0 || p[1] != 0.0 || p[2] != 0.0)));
+            let mut mesh = build_mesh(sec, if morphs { nm } else { 0 });
             // Left out (the first-person body's head and arms): triangles with a corner mostly on those bones,
             // cut away rather than shrunk (shrinking the bones dragged the shoulders and collar into wings).
             // `cut`: also every triangle with a corner above that fraction of the body's height as it stands in its
@@ -690,7 +701,9 @@ fn build(
                 helios_lids(&mut mesh, sec, body);
             }
             let mh = meshes.add(mesh);
-            first_mesh.get_or_insert(mh.clone());
+            if morphs {
+                first_mesh.get_or_insert(mh.clone());
+            }
             let alpha = match sec.style.as_str() {
                 "MASKED" => AlphaMode::Mask(0.5),
                 "TRANSLUCENT" => AlphaMode::Add,
@@ -730,7 +743,6 @@ fn build(
                     Mesh3d(mh),
                     MeshMaterial3d(mat.clone()),
                     SkinnedMesh { inverse_bindposes: ibm.clone(), joints: joints.clone() },
-                    MeshMorphWeights::Reference(weights_ent),
                     bevy::camera::visibility::DynamicSkinnedMeshBounds,
                     Transform::default(),
                     Visibility::Inherited,
@@ -739,10 +751,13 @@ fn build(
                     ChildOf(e),
                 ))
                 .id();
+            if morphs {
+                commands.entity(me).insert(MeshMorphWeights::Reference(weights_ent));
+            }
             mesh_ents.push(me);
             mat_handles.push(mat);
         }
-        if nm > 0 {
+        if nm > 0 && first_mesh.is_some() {
             if let Ok(w) = MorphWeights::new(vec![0.0; nm], first_mesh) {
                 commands.entity(e).insert(w);
             }
@@ -1323,14 +1338,21 @@ fn relight(s: &mut SkelBody, lvl: &dx_level::Level, ue: [f32; 3], scale_glow: f3
     lt.wet = Vec4::new(s.wet, 0.0, 0.0, 0.0);
     s.wet_shown = s.wet;
     for h in &s.mats {
+        let Some(cur) = mats.get(h) else { continue };
+        let old = cur.extension.lights;
+        let mut new = lt;
+        // Per-material: unlit, never-wet, the height cut.
+        new.misc.z = old.misc.z;
+        new.wet.y = old.wet.y;
+        new.wet.z = old.wet.z;
+        new.wet.w = old.wet.w;
+        // Unchanged light (standing in the same lamps' reach): leave the material alone - a changed one is
+        // re-prepared on the render thread.
+        if new == old {
+            continue;
+        }
         if let Some(mut m) = mats.get_mut(h) {
-            let old = m.extension.lights;
-            m.extension.lights = lt;
-            // Per-material: unlit, never-wet, the height cut.
-            m.extension.lights.misc.z = old.misc.z;
-            m.extension.lights.wet.y = old.wet.y;
-            m.extension.lights.wet.z = old.wet.z;
-            m.extension.lights.wet.w = old.wet.w;
+            m.extension.lights = new;
         }
     }
 }

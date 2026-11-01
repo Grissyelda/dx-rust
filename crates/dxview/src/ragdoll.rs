@@ -83,13 +83,22 @@ impl Plugin for RagdollPlugin {
 /// The physics clock runs only while a ragdoll is falling: with nothing to simulate Avian's step (broad phase,
 /// solver, six substeps) still cost a couple of milliseconds a frame - most of the game, and all of it with
 /// Ragdolls off. Paused, its schedule doesn't run at all.
-fn pause_system(bodies: Query<&RigidBody>, mut time: ResMut<Time<Physics>>) {
+fn pause_system(
+    bodies: Query<&RigidBody>,
+    mut time: ResMut<Time<Physics>>,
+    mut config: ResMut<avian3d::physics_transform::PhysicsTransformConfig>,
+) {
     let pending = DEATHS.lock().is_ok_and(|d| !d.is_empty());
     let live = pending || bodies.iter().any(|b| *b == RigidBody::Dynamic);
     if live && time.is_paused() {
         time.unpause();
     } else if !live && !time.is_paused() {
         time.pause();
+    }
+    // Avian propagates every transform in the world before each physics step, paused or not (half a millisecond of
+    // the main thread for nothing while no ragdoll falls).
+    if config.propagate_before_physics != live {
+        config.propagate_before_physics = live;
     }
 }
 

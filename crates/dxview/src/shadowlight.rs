@@ -45,11 +45,19 @@ pub struct BspShadowParams {
     pub r: Vec4,
     /// x light gain, y added light (gamma), z emissive strength (named glowing textures), w glow of unlit surfaces.
     pub s: Vec4,
+    /// xy: texture panning speed (PF_AutoUPan / VPan, UV per second), done in the shader on the GPU's clock so the
+    /// material never changes after it's made.
+    pub u: Vec4,
 }
 
+/// Bindless (like StandardMaterial and gpuanim's VertAnim): every BSP material lives in a few shared bind groups, so
+/// Bevy draws the world's surfaces as a handful of GPU multi-draw calls instead of one draw call per texture - the
+/// render thread records a fraction of the commands. Without binding arrays (old GPUs) it falls back to one bind
+/// group per material, as before.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[data(100, BspShadowParams, binding_array(111))]
+#[bindless(index_table(range(100..104), binding(110)))]
 pub struct BspShadow {
-    #[uniform(100)]
     pub params: BspShadowParams,
     /// Remastered lighting: how much of each surface's three strongest lights reaches each lightmap texel
     /// (dx-level lighting::Atlas::mask), and the lights themselves (2 texels each: position + radius, colour).
@@ -58,6 +66,12 @@ pub struct BspShadow {
     pub mask: Option<Handle<Image>>,
     #[texture(103, sample_type = "float", filterable = false)]
     pub lights: Option<Handle<Image>>,
+}
+
+impl<'a> From<&'a BspShadow> for BspShadowParams {
+    fn from(m: &'a BspShadow) -> Self {
+        m.params
+    }
 }
 
 impl MaterialExtension for BspShadow {
@@ -82,6 +96,7 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
                 q: Vec4::new(if crate::postfx::ao_on() { 0.85 } else { 0.0 }, 0.0, 0.0, 0.0),
                 r: Vec4::ZERO,
                 s: Vec4::new(1.0, 0.0, 0.0, 0.0),
+                u: Vec4::ZERO,
             },
             mask: None,
             lights: None,

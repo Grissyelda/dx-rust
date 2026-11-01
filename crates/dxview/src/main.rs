@@ -131,6 +131,7 @@ mod alertui;
 mod uicanvas;
 mod weapons;
 mod wisp;
+mod gpudrive;
 
 use actors::{Blockers, Deco, World};
 use dx_level::{bevy_to_ue, ue_to_bevy, Level, SurfaceClass};
@@ -894,7 +895,7 @@ fn main() {
         )
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system))
+        .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system))
         .init_resource::<consys::ConSetup>()
         .init_resource::<triggers::Triggers>()
         .init_resource::<logic::LogicActors>()
@@ -928,6 +929,7 @@ fn main() {
         // the reflection was made from the eyes while the view was from the orbit: it dragged across the water).
         .add_systems(PostUpdate, mirror::mirror_system.after(diegetic::place_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, skyfollow::init_system)
+        .add_systems(Update, gpudrive::gpu_cull_system)
         .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
@@ -1448,11 +1450,11 @@ fn setup(
                             bm.extension.mask = Some(mask.clone());
                             bm.extension.lights = Some(lights.clone());
                         }
-                        let h = bsp_mats.add(bm);
+                        // Panning surfaces scroll in the shader (BspShadowParams.u), so the material never changes.
                         if let Some((_, speed, _)) = scrollers.0.iter().find(|(m, _, w)| m.id() == mat.id() && !*w) {
-                            scrollers.1.push((h.clone(), *speed));
+                            bm.extension.params.u = Vec4::new(speed.x, speed.y, 0.0, 0.0);
                         }
-                        h
+                        bsp_mats.add(bm)
                     })
                     .clone();
                 commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm)))
@@ -2705,17 +2707,25 @@ fn uv_scroll(
     time: Res<Time>,
     scroll: Res<UvScroll>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
+    bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
+    used: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut in_use: Local<(u64, std::collections::HashSet<AssetId<StandardMaterial>>, u32)>,
 ) {
     let _prof = crate::prof::scope("main::uv_scroll");
+    let _ = bsp_mats;
     let t = time.elapsed_secs();
-    for (h, speed) in &scroll.1 {
-        if let Some(mut m) = bsp_mats.get_mut(h) {
-            let off = *speed * t;
-            m.base.uv_transform = bevy::math::Affine2::from_translation(Vec2::new(off.x.fract(), off.y.fract()));
-        }
+    // The level's own surfaces pan in their shader (BspShadowParams.u). These are the plain materials they were
+    // made from: only the ones something still draws are moved (changing a material every frame costs the render
+    // thread a re-prepare of it), looked up again now and then.
+    if loader::new_map(&mut in_use.0) || in_use.2 == 0 {
+        in_use.1 = used.iter().map(|m| m.0.id()).collect();
+        in_use.2 = 120;
     }
+    in_use.2 -= 1;
     for (h, speed, water) in &scroll.0 {
+        if !in_use.1.contains(&h.id()) {
+            continue;
+        }
         if let Some(mut m) = materials.get_mut(h) {
             let mut off = *speed * t;
             if *water {
