@@ -13,6 +13,33 @@ static ADDONS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 static HD_TEX: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 static HD_TEX_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// Whether `exe_dir` is the executable folder of a macOS app bundle (`Name.app/Contents/MacOS`).
+fn in_app_bundle(exe_dir: &Path) -> bool {
+    exe_dir.ends_with("Contents/MacOS")
+        && exe_dir.parent().and_then(Path::parent).and_then(Path::extension).is_some_and(|e| e == "app")
+}
+
+/// The folder for what the game writes (settings, saves, key bindings, logs): beside the executable, so a release
+/// stays one portable folder. A macOS app bundle is signed and can be read-only, so there it's the player's
+/// Application Support folder.
+pub fn data_dir() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+        let support = exe_dir
+            .as_deref()
+            .filter(|d| cfg!(target_os = "macos") && in_app_bundle(d))
+            .and(std::env::var_os("HOME"))
+            .map(|home| PathBuf::from(home).join("Library/Application Support/DX RUST"));
+        if let Some(dir) = support {
+            let _ = std::fs::create_dir_all(&dir);
+            return dir;
+        }
+        exe_dir.unwrap_or_else(|| ".".into())
+    })
+    .clone()
+}
+
 /// The game folder and the overlay folders, highest priority first.
 pub fn set(game_root: &Path, overlays: Vec<PathBuf>) {
     if let Ok(mut g) = STATE.write() {
@@ -225,4 +252,17 @@ pub fn dds_for(path: &str) -> Option<PathBuf> {
         }
     }
     idx.files.get(&key).cloned()
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use super::in_app_bundle;
+    use std::path::Path;
+
+    #[test]
+    fn only_an_app_bundle_counts() {
+        assert!(in_app_bundle(Path::new("/Applications/DX RUST.app/Contents/MacOS")));
+        assert!(!in_app_bundle(Path::new("/Users/jc/Games/dxrust")));
+        assert!(!in_app_bundle(Path::new("/Users/jc/Contents/MacOS")));
+    }
 }

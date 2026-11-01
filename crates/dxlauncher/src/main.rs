@@ -131,7 +131,7 @@ struct Launcher {
 
 impl Launcher {
     fn load() -> Launcher {
-        let dir = exe_dir();
+        let dir = unreal_pkg::paths::data_dir();
         let lk = read_kv(&dir.join("launcher.txt"));
         // DXL_GAME overrides the saved folder (for DXL_DUMP checks).
         let game = std::env::var("DXL_GAME").ok().unwrap_or_else(|| {
@@ -183,7 +183,7 @@ impl Launcher {
     }
 
     fn save(&mut self) -> bool {
-        let dir = exe_dir();
+        let dir = unreal_pkg::paths::data_dir();
         let mut lk = vec![("GamePath".to_string(), self.game.clone())];
         // Keep lines the launcher doesn't edit (DiscordAppId and the like).
         for (k, v) in read_kv(&dir.join("launcher.txt")) {

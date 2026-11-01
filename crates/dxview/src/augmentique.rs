@@ -1016,7 +1016,7 @@ pub fn restore(s: AugSave) {
 }
 
 fn global_file() -> std::path::PathBuf {
-    std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("augmentique.txt"))).unwrap_or_else(|| "augmentique.txt".into())
+    unreal_pkg::paths::data_dir().join("augmentique.txt")
 }
 
 /// Outfits unlocked in finished playthroughs (DeusExPlayer.unlockedOutfits, globalconfig).

@@ -42,8 +42,8 @@ fn hitch_write(text: &str) {
     if LINES.fetch_add(1, Ordering::Relaxed) >= 300 {
         return;
     }
-    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) else { return };
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("hitch.log")) {
+    let path = unreal_pkg::paths::data_dir().join("hitch.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = f.write_all(text.as_bytes());
     }
 }

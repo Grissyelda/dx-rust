@@ -204,10 +204,7 @@ fn path() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("DXVIEW_SETTINGS") {
         return p.into();
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.join("settings.txt")))
-        .unwrap_or_else(|| "settings.txt".into())
+    unreal_pkg::paths::data_dir().join("settings.txt")
 }
 
 fn ensure() {

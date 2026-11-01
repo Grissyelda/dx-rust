@@ -510,9 +510,7 @@ fn install_crash_log() {
     std::panic::set_hook(Box::new(move |info| {
         let msg = format!("dxview crashed: {info}\n{}\n", std::backtrace::Backtrace::force_capture());
         eprintln!("{msg}");
-        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
-            let _ = std::fs::write(dir.join("crash.log"), &msg);
-        }
+        let _ = std::fs::write(unreal_pkg::paths::data_dir().join("crash.log"), &msg);
         prev(info);
     }));
 }
@@ -574,8 +572,7 @@ fn main() {
         .filter(|a| !a.starts_with("--"))
         .cloned()
         .or_else(|| {
-            let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-            std::fs::read_to_string(dir.join("launcher.txt"))
+            std::fs::read_to_string(unreal_pkg::paths::data_dir().join("launcher.txt"))
                 .ok()?
                 .lines()
                 .find_map(|l| l.strip_prefix("GamePath=").map(|v| v.trim().to_string()))
@@ -587,8 +584,8 @@ fn main() {
     // Mods (unreal_pkg::mods): the launcher's Mods page writes Mod.<id>= / ModOn.<id>= lines in launcher.txt (Lay D
     // Denton's older LDDPPath= still counts). Overlays (Lay D Denton) are laid over the game folder, addons searched
     // after it, HD texture packs used texture by texture. DXVIEW_MOD (';'-separated folders) adds overlays for tests.
-    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or_default();
-    let mod_settings = unreal_pkg::mods::from_lines(&unreal_pkg::mods::read_launcher_txt(&exe_dir.join("launcher.txt")));
+    let mod_settings =
+        unreal_pkg::mods::from_lines(&unreal_pkg::mods::read_launcher_txt(&unreal_pkg::paths::data_dir().join("launcher.txt")));
     let mut enabled = unreal_pkg::mods::enabled(&mod_settings);
     // DXVIEW_NO_MODS=1: the launcher's mods are left out (profile runs of the plain game).
     if env_on!("DXVIEW_NO_MODS") {

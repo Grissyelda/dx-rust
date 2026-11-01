@@ -408,12 +408,9 @@ fn unsimple(v: &SimpleValue) -> Value {
 
 // ------------------------------------------------------------------------------------------------ files
 
-/// The save folder beside the exe.
+/// The save folder.
 pub fn dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.join("Save")))
-        .unwrap_or_else(|| PathBuf::from("Save"))
+    unreal_pkg::paths::data_dir().join("Save")
 }
 
 pub fn quick_path() -> PathBuf {
