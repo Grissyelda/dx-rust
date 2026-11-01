@@ -5807,16 +5807,6 @@ struct HitCx<'a> {
 fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco, an: &mut Animated, aff: &mut Afflictions, cx: &mut HitCx) -> bool {
     let HitCx { lvl, pawns, .. } = *cx;
     let (player_center, now) = (cx.player_center, cx.now);
-    let blockers = &mut *cx.blockers;
-    let new_noises = &mut *cx.new_noises;
-    let flags = &mut *cx.flags;
-    let takedowns = &mut *cx.takedowns;
-    let booms = &mut *cx.booms;
-    let weapon_drops = &mut *cx.weapon_drops;
-    let hp = &mut *cx.hp;
-    let gibs = &mut *cx.gibs;
-    let drips = &mut *cx.drips;
-    let attackers = &mut *cx.attackers;
     let snap_of = |b: usize| pawns.iter().find(|p| p.blocker == b);
     let snap_of_hostile = |npc: &Npc, t: Target| -> bool {
         match t {
@@ -5824,7 +5814,7 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
             Target::Pawn(b) => snap_of(b).is_some_and(|p| npc.hates(&p.alliance) || p.alliances.hostile_to(&npc.alliance)),
         }
     };
-        let center = blockers.list[npc.blocker].center;
+        let center = cx.blockers.list[npc.blocker].center;
         for h in list {
             // FilterDamageType overrides: Karkians, Greasels and Grays shrug off gas; Grays also radiation and
             // fire. Animal.ModifyDamage zeroes 'Stunned' (prods don't work on animals).
@@ -5908,7 +5898,7 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
                     || (who != Target::Player && snap_of_hostile(npc, who))
                 {
                     npc.target = Some(who);
-                    npc.last_pos = target_pos(who, player_center, &blockers.list);
+                    npc.last_pos = target_pos(who, player_center, &cx.blockers.list);
                     npc.last_seen = now;
                 }
                 npc.stand_up();
@@ -5965,406 +5955,437 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
                 npc.bleed_rate += (health_before - npc.hp_body.health).max(0.0)
                     / (0.3 * npc.hp_body.max_health.max(1.0));
             }
-            hp.0.insert(npc.blocker, npc.hp_body.health);
-            attackers.0.insert(npc.blocker, h.attacker);
+            cx.hp.0.insert(npc.blocker, npc.hp_body.health);
+            cx.attackers.0.insert(npc.blocker, h.attacker);
             match out {
                 crate::damage::Outcome::Ignored => {}
-                crate::damage::Outcome::Died {
-                    knocked_out,
-                    fall_back,
-                } => {
-                    // MIB / WIB / Anna / Gunther: SpawnCarcass explodes them unless they're stunned (knocked
-                    // out bodies stay): 100 damage over 256, LoudNoise, explosions, scorch, rock and flesh chips.
-                    let self_destruct = crate::pawnclass::explodes_on_death(cls) && !(knocked_out || stunned);
-                    if self_destruct {
-                        crate::sound::play("DeusExSounds.Generic.LargeExplosion1", center, 1.0, 256.0 * 16.0, 1.0);
-                        booms.0.push(crate::explosion::Boom {
-                            pos: center,
-                            damage: 100.0,
-                            radius: 256.0,
-                            damage_type: "Exploded",
-                            from: Some(npc.blocker),
-                            rings: false,
-                            fireball: true,
-                            fx: 0,
-                        });
-                    }
-                    // Robots blow up (Robot.Explode: HurtRadius(0.5 r, 8 r) with r = (radius + height) / 2);
-                    // anyone else killed by an explosion is gibbed (Health < -100).
-                    if npc.hp_body.robot || h.damage_type == "Exploded" || self_destruct {
-                        let r = (npc.params.radius + npc.params.height) / 2.0;
-                        if npc.hp_body.robot {
-                            // Robot.Explode: explosionSound (volume 2) and a large explosion, out to r x 32.
-                            let rr = (r * 32.0) as f32;
-                            if let Some(snd) = crate::sound::prop(
-                                &lvl.actors[npc.actor].props,
-                                "explosionSound",
-                            ) {
-                                crate::sound::play(&snd, center, 2.0, rr, 1.0);
-                            }
-                            crate::sound::play(
-                                if r < 48.0 {
-                                    "DeusExSounds.Generic.LargeExplosion1"
-                                } else {
-                                    "DeusExSounds.Generic.LargeExplosion2"
-                                },
-                                center,
-                                1.0,
-                                rr,
-                                1.0,
-                            );
-                            booms.0.push(crate::explosion::Boom {
-                                pos: center,
-                                damage: (0.5 * r) as f32,
-                                radius: 8.0 * r,
-                                damage_type: "Exploded",
-                                from: None,
-                                rings: false,
-                                fireball: true,
-                                fx: 0,
-                            });
-                        }
-                        gibs.0.push((
-                            center,
-                            npc.params.radius,
-                            npc.params.height,
-                            npc.hp_body.robot,
-                        ));
-                        // GMDX fix (G-Flex / Shifter; setting FixGibLoot): what a gibbed person carried is
-                        // thrown out with the chunks instead of destroyed (not robots or animals).
-                        if crate::settings::get("FixGibLoot") > 0.5 && !npc.hp_body.robot && !npc.animal {
-                            for (k, w) in npc.arsenal.iter().enumerate() {
-                                let a = npc.yaw + k as f64 * 2.4;
-                                weapon_drops.0.push((
-                                    w.class.clone(),
-                                    center + DVec3::new(a.cos(), a.sin(), 0.0) * (npc.params.radius * 0.8),
-                                ));
-                            }
-                            npc.arsenal.clear();
-                            npc.weapon = None;
-                        }
-                        takedowns.log.push(Takedown {
-                            alliance: npc.alliance.clone(),
-                            name: lvl.actors[npc.actor].name.clone(),
-                            class: lvl.actors[npc.actor].class.clone(),
-                            lethal: true,
-                            by_player: h.attacker.is_none(),
-                            damage_type: h.damage_type,
-                        });
-                        crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
-                        if npc.important && !npc.bind_name.is_empty() {
-                            flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
-                        }
-                        npc.state = NpcState::Dead;
-                        npc.weapon_drawn = false;
-                        npc.carried = true; // gone: nothing left to search or carry
-                        npc.searched = true;
-                        blockers.list[npc.blocker].radius = 0.0;
-                        blockers.list[npc.blocker].height = 0.0;
-                        deco.body.physics = imsim_core::body::BodyPhysics::None;
-                        println!(
-                            "PAWN {} {} ({})",
-                            lvl.actors[npc.actor].name,
-                            if npc.hp_body.robot {
-                                "destroyed"
-                            } else {
-                                "gibbed"
-                            },
-                            h.damage_type
-                        );
-                        break;
-                    }
-                    // Animals can't be knocked out: a baton or tranquilizer dart kills them. In water nobody is
-                    // only unconscious (DeusExCarcass: "you will die in water every time").
-                    let in_water = crate::actors::water_at(lvl, me_center_of(&blockers, npc.blocker)).is_some();
-                    let knocked_out = knocked_out && !npc.animal && !in_water;
-                    if in_water && !npc.hp_body.robot {
-                        if let Some(Value::Path(c)) = find(&lvl.actors[npc.actor].props, "CarcassType") {
-                            npc.water_carcass = Some((c.rsplit('.').next().unwrap_or("").to_string(), 1.5));
-                        }
-                    }
-                    npc.state = NpcState::Dead;
-                    npc.knocked_out = knocked_out;
-                    // A rebuilt body goes limp at once (ragdoll.rs), pushed by the blow and carried by its run.
-                    crate::ragdoll::request(crate::ragdoll::Death {
-                        blocker: npc.blocker,
-                        hit: h.hit_loc,
-                        from: h.attacker_pos,
-                        damage: h.damage,
-                        vel: deco.body.velocity,
-                    });
-                    npc.weapon_drawn = false;
-                    // DeusExCarcass.InitFor: the body alerts others only if dead (not unconscious), not a robot.
-                    npc.killer_alliance = match h.attacker {
-                        None => "Player".to_string(),
-                        Some(b) => snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
-                    };
-                    npc.killer_bind = match h.attacker {
-                        None => "JCDenton".to_string(),
-                        Some(b) => snap_of(b).map(|p| p.bind.clone()).unwrap_or_default(),
-                    };
-                    npc.emit_carcass = !knocked_out && !npc.hp_body.robot;
-                    npc.alert = None;
-                    // ScriptedPawn.Died: important characters leave <BindName>_Dead (and _Unconscious if
-                    // knocked out) flags that never expire.
-                    if npc.important && !npc.bind_name.is_empty() {
-                        flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
-                        if knocked_out {
-                            flags
-                                .0
-                                .set_bool(&format!("{}_Unconscious", npc.bind_name), true);
-                        }
-                    }
-                    takedowns.log.push(Takedown {
-                        alliance: npc.alliance.clone(),
-                        name: lvl.actors[npc.actor].name.clone(),
-                        class: lvl.actors[npc.actor].class.clone(),
-                        lethal: !knocked_out,
-                        by_player: h.attacker.is_none(),
-                        damage_type: h.damage_type,
-                    });
-                    crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
-                    blockers.list[npc.blocker].radius = 0.0;
-                    blockers.list[npc.blocker].height = 0.0;
-                    deco.body.physics = imsim_core::body::BodyPhysics::None;
-                    let ma = &lvl.mesh_actors[an.mesh_actor];
-                    if let Some(anim) = &ma.anim {
-                        let name = if npc.sitting {
-                            "DeathFront"
-                        } else if fall_back {
-                            "DeathBack"
-                        } else {
-                            "DeathFront"
-                        };
-                        an.clip = Clip::named(&anim.mesh, name, false);
-                        an.time = 0.0;
-                        // Animal.bPlayDying False (rats, birds...): no death animation; the carcass appears at once.
-                        if an.clip.is_none() {
-                            if let Some(Value::Path(c)) =
-                                find(&lvl.actors[npc.actor].props, "CarcassType")
-                            {
-                                npc.swap_carcass =
-                                    Some(c.rsplit('.').next().unwrap_or("").to_string());
-                            }
-                        }
-                    }
-                    println!(
-                        "PAWN {} {} ({})",
-                        lvl.actors[npc.actor].name,
-                        if knocked_out { "knocked out" } else { "killed" },
-                        h.damage_type
-                    );
-                    // PlayDyingSound: the Die cry, a LoudNoise and a Distress call (friends only answer it if this
-                    // pawn had an enemy it had seen, so a silent takedown from behind stays silent).
-                    if let Some(snd) = crate::sound::prop(&lvl.actors[npc.actor].props, "Die") {
-                        crate::sound::play_owned(
-                            crate::sound::npc_owner(npc.blocker),
-                            crate::sound::slot::PAIN,
-                            &snd,
-                            Some(center),
-                            crate::sound::fprop(
-                                &lvl.actors[npc.actor].props,
-                                "TransientSoundVolume",
-                                1.0,
-                            ),
-                            0.0,
-                            crate::sound::random_pitch(),
-                        );
-                    }
-                    let me = Some(Target::Pawn(npc.blocker));
-                    new_noises.push(Noise {
-                        pos: center,
-                        volume: 1.0,
-                        radius: 800.0,
-                        maker: me,
-                        instigator: me,
-                        kind: NoiseKind::Loud,
-                    });
-                    new_noises.push(Noise {
-                        pos: center,
-                        volume: 1.0,
-                        radius: 800.0,
-                        maker: me,
-                        instigator: me,
-                        kind: NoiseKind::Distress,
-                    });
+                crate::damage::Outcome::Died { knocked_out, fall_back } => {
+                    pawn_died(npc, deco, an, &h, knocked_out, fall_back, stunned, center, cx);
                     break;
                 }
-                crate::damage::Outcome::Hurt { hit, pain, stunned } => {
-                    // TakeDamage: 'Flamed' sets a pawn alight (CatchFire), robots excepted.
-                    if h.damage_type == "Flamed"
-                        && npc.on_fire.is_none()
-                        && npc.burn_period > 0.0
-                        && !npc.hp_body.robot
-                    {
-                        npc.on_fire = Some(0.0);
-                        npc.burn_tick = 0.0;
-                        println!("PAWN {} caught fire", lvl.actors[npc.actor].name);
-                    }
-                    // GMDX Hemorrhage: a player's shuriken (crate::perks) starts the bleed (StartBleed:
-                    // 16 ticks of int(Damage x 0.1)); each BleedEffect tick sprays blood drops.
-                    if crate::perks::take_bleed(npc.blocker, h.damage) {
-                        aff.bleed_counter = 16;
-                        aff.bleed_timer = 0.0;
-                        aff.bleed_damage = (h.damage * 0.1).floor();
-                    }
-                    if h.damage_type == "BleedEffect" && npc.can_bleed {
-                        for i in 0..10u32 {
-                            if (npc.blocker as u32 * 31 + i * 17 + aff.bleed_counter * 7) % 2 == 0 {
-                                drips.0.push(center + DVec3::Z * npc.params.height * 0.3);
-                            }
-                        }
-                    }
-                    if h.damage_type == "Poison" {
-                        // StartPoison: eight more doses, two seconds apart.
-                        aff.poison_counter = 8;
-                        aff.poison_timer = 0.0;
-                        aff.poison_damage = aff.poison_damage.max(h.damage);
-                        aff.poisoner = h.attacker;
-                    }
-                    println!(
-                        "PAWN {} hurt {:?} pain={} stunned={} health={:.0} parts={:?}",
-                        lvl.actors[npc.actor].name,
-                        hit,
-                        pain,
-                        stunned,
-                        npc.hp_body.health,
-                        npc.hp_body.parts
-                    );
-                    // PlayTakeHitSound: HitSound1 up to 30 damage, HitSound2 above, at most every 0.25 s; the cry
-                    // of pain is a Distress call.
-                    {
-                        let props = &lvl.actors[npc.actor].props;
-                        let which = if h.damage <= 30.0 {
-                            "HitSound1"
-                        } else {
-                            "HitSound2"
-                        };
-                        if let Some(snd) = crate::sound::prop(props, which) {
-                            let vol = crate::sound::fprop(props, "TransientSoundVolume", 1.0)
-                                .max(2.0);
-                            crate::sound::play_req(crate::sound::Req {
-                                sound: snd,
-                                pos: Some(center),
-                                volume: vol,
-                                radius: 0.0,
-                                pitch: crate::sound::random_pitch(),
-                                owner: crate::sound::npc_owner(npc.blocker),
-                                slot: crate::sound::slot::PAIN,
-                                no_override: false,
-                                min_gap: 0.25,
-                            });
-                        }
-                    }
-                    let me = Some(Target::Pawn(npc.blocker));
-                    new_noises.push(Noise {
-                        pos: center,
-                        volume: 1.0,
-                        radius: 800.0,
-                        maker: me,
-                        instigator: me,
-                        kind: NoiseKind::Distress,
-                    });
-                    // RubbingEyes: BlockReactions - no ReactToInjury (no new enemy, no fear, no pain animation),
-                    // and TakeDamageBase without bPlayAnim.
-                    if !matches!(npc.state, NpcState::RubbingEyes(_)) {
-                        // ReactToInjury: IncreaseAgitation toward the attacker's alliance (members of the own alliance
-                        // never count), then SetEnemy only succeeds if that alliance is now hostile. Friendly fire just
-                        // hurts.
-                        let (who, alliance) = match h.attacker {
-                            None => (Target::Player, "Player".to_string()),
-                            Some(b) => (
-                                Target::Pawn(b),
-                                snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
-                            ),
-                        };
-                        // ShouldReactToInjuryType: bHate/bFearInjury for direct harm, bHate/bFearIndirectInjury for
-                        // gas, blasts and the like; fear of being hurt is IncreaseFear(instigator, 2.0).
-                        let hate_this = imsim_core::reactions::reacts_to_injury(
-                            h.damage_type,
-                            npc.hate_injury,
-                            npc.hate_indirect_injury,
-                        );
-                        let fear_this = imsim_core::reactions::reacts_to_injury(
-                            h.damage_type,
-                            npc.fear_injury,
-                            npc.fear_indirect_injury,
-                        );
-                        if hate_this {
-                            npc.alliances.provoke(&alliance, None);
-                        }
-                        if fear_this {
-                            npc.fear.increase(2.0, 0.0);
-                        }
-                        let made_enemy = npc.alliances.hostile_to(&alliance)
-                            || (who != Target::Player && snap_of_hostile(npc, who));
-                        if made_enemy {
-                            npc.target = Some(who);
-                            npc.last_pos = target_pos(who, player_center, &blockers.list);
-                            npc.last_seen = now;
-                            npc.route = None;
-                        } else if fear_this && npc.fear.fearful() {
-                            // SetEnemy(instigatedBy, , true); SetNextState('Fleeing'): runs once the hit plays out.
-                            npc.target = Some(who);
-                            npc.last_pos = target_pos(who, player_center, &blockers.list);
-                            npc.last_seen = now;
-                            npc.fear_flee = true;
-                            if !matches!(npc.state, NpcState::Fleeing) {
-                                npc.state = NpcState::Fleeing;
-                                npc.route = None;
-                                npc.flee_dest = None;
-                            }
-                        }
-                        if npc.sitting && (stunned || pain) {
-                            npc.sitting = false;
-                            npc.seat = None;
-                            if let Some(b) = npc.body.as_mut() {
-                                b.physics = Physics::Falling;
-                            }
-                        }
-                        if stunned && !npc.hp_body.robot {
-                            npc.state = NpcState::Stunned(15.0);
-                            npc.weapon_drawn = false;
-                            npc.anim = "";
-                        } else if pain {
-                            if let Some(name) = hit.anim() {
-                                let ma = &lvl.mesh_actors[an.mesh_actor];
-                                if let Some(c) = ma
-                                    .anim
-                                    .as_ref()
-                                    .and_then(|a| Clip::named(&a.mesh, name, false))
-                                {
-                                    let dur =
-                                        (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0) + 0.1;
-                                    an.clip = Some(c);
-                                    npc.anim = name;
-                                    npc.state = NpcState::TakingHit(dur);
-                                    // GMDX Piercing: 1.3 s with a hand-to-hand weapon in the player's hand
-                                    // (Grays and Karkians are slower to flinch there, so they keep 2).
-                                    let tough = matches!(
-                                        lvl.actors[npc.actor].class.as_str(),
-                                        "Gray" | "Karkian" | "KarkianBaby"
-                                    );
-                                    npc.take_hit_timer = crate::perks::flinch_time()
-                                        .filter(|_| !tough)
-                                        .unwrap_or(2.0);
-                                }
-                            }
-                        } else if matches!(npc.state, NpcState::Idle | NpcState::Seeking)
-                            && made_enemy
-                        {
-                            let (t, pos, seen) = (
-                                npc.target.unwrap_or(Target::Player),
-                                npc.last_pos,
-                                npc.last_seen,
-                            );
-                            npc.begin_attack(t, pos, seen);
-                        }
-                    }
-                }
+                crate::damage::Outcome::Hurt { hit, pain, stunned } => pawn_hurt(npc, an, aff, &h, hit, pain, stunned, center, cx),
             }
         }
     npc.state == NpcState::Dead
+}
+
+/// A hit that killed the pawn or knocked it out (ScriptedPawn.Died / SpawnCarcass): self-destructing MIB and robots,
+/// gibbing, the death or knock-out animation, the body, dropped weapons, takedown records and flags.
+#[allow(clippy::too_many_arguments)]
+fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damage::PawnHit, knocked_out: bool, fall_back: bool, stunned: bool, center: DVec3, cx: &mut HitCx) {
+    let HitCx { lvl, pawns, .. } = *cx;
+    let blockers = &mut *cx.blockers;
+    let new_noises = &mut *cx.new_noises;
+    let flags = &mut *cx.flags;
+    let takedowns = &mut *cx.takedowns;
+    let booms = &mut *cx.booms;
+    let weapon_drops = &mut *cx.weapon_drops;
+    let gibs = &mut *cx.gibs;
+    let snap_of = |b: usize| pawns.iter().find(|p| p.blocker == b);
+    let cls = lvl.actors[npc.actor].class.as_str();
+    // MIB / WIB / Anna / Gunther: SpawnCarcass explodes them unless they're stunned (knocked
+    // out bodies stay): 100 damage over 256, LoudNoise, explosions, scorch, rock and flesh chips.
+    let self_destruct = crate::pawnclass::explodes_on_death(cls) && !(knocked_out || stunned);
+    if self_destruct {
+        crate::sound::play("DeusExSounds.Generic.LargeExplosion1", center, 1.0, 256.0 * 16.0, 1.0);
+        booms.0.push(crate::explosion::Boom {
+            pos: center,
+            damage: 100.0,
+            radius: 256.0,
+            damage_type: "Exploded",
+            from: Some(npc.blocker),
+            rings: false,
+            fireball: true,
+            fx: 0,
+        });
+    }
+    // Robots blow up (Robot.Explode: HurtRadius(0.5 r, 8 r) with r = (radius + height) / 2);
+    // anyone else killed by an explosion is gibbed (Health < -100).
+    if npc.hp_body.robot || h.damage_type == "Exploded" || self_destruct {
+        let r = (npc.params.radius + npc.params.height) / 2.0;
+        if npc.hp_body.robot {
+            // Robot.Explode: explosionSound (volume 2) and a large explosion, out to r x 32.
+            let rr = (r * 32.0) as f32;
+            if let Some(snd) = crate::sound::prop(
+                &lvl.actors[npc.actor].props,
+                "explosionSound",
+            ) {
+                crate::sound::play(&snd, center, 2.0, rr, 1.0);
+            }
+            crate::sound::play(
+                if r < 48.0 {
+                    "DeusExSounds.Generic.LargeExplosion1"
+                } else {
+                    "DeusExSounds.Generic.LargeExplosion2"
+                },
+                center,
+                1.0,
+                rr,
+                1.0,
+            );
+            booms.0.push(crate::explosion::Boom {
+                pos: center,
+                damage: (0.5 * r) as f32,
+                radius: 8.0 * r,
+                damage_type: "Exploded",
+                from: None,
+                rings: false,
+                fireball: true,
+                fx: 0,
+            });
+        }
+        gibs.0.push((
+            center,
+            npc.params.radius,
+            npc.params.height,
+            npc.hp_body.robot,
+        ));
+        // GMDX fix (G-Flex / Shifter; setting FixGibLoot): what a gibbed person carried is
+        // thrown out with the chunks instead of destroyed (not robots or animals).
+        if crate::settings::get("FixGibLoot") > 0.5 && !npc.hp_body.robot && !npc.animal {
+            for (k, w) in npc.arsenal.iter().enumerate() {
+                let a = npc.yaw + k as f64 * 2.4;
+                weapon_drops.0.push((
+                    w.class.clone(),
+                    center + DVec3::new(a.cos(), a.sin(), 0.0) * (npc.params.radius * 0.8),
+                ));
+            }
+            npc.arsenal.clear();
+            npc.weapon = None;
+        }
+        takedowns.log.push(Takedown {
+            alliance: npc.alliance.clone(),
+            name: lvl.actors[npc.actor].name.clone(),
+            class: lvl.actors[npc.actor].class.clone(),
+            lethal: true,
+            by_player: h.attacker.is_none(),
+            damage_type: h.damage_type,
+        });
+        crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
+        if npc.important && !npc.bind_name.is_empty() {
+            flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
+        }
+        npc.state = NpcState::Dead;
+        npc.weapon_drawn = false;
+        npc.carried = true; // gone: nothing left to search or carry
+        npc.searched = true;
+        blockers.list[npc.blocker].radius = 0.0;
+        blockers.list[npc.blocker].height = 0.0;
+        deco.body.physics = imsim_core::body::BodyPhysics::None;
+        println!(
+            "PAWN {} {} ({})",
+            lvl.actors[npc.actor].name,
+            if npc.hp_body.robot {
+                "destroyed"
+            } else {
+                "gibbed"
+            },
+            h.damage_type
+        );
+        return;
+    }
+    // Animals can't be knocked out: a baton or tranquilizer dart kills them. In water nobody is
+    // only unconscious (DeusExCarcass: "you will die in water every time").
+    let in_water = crate::actors::water_at(lvl, me_center_of(&blockers, npc.blocker)).is_some();
+    let knocked_out = knocked_out && !npc.animal && !in_water;
+    if in_water && !npc.hp_body.robot {
+        if let Some(Value::Path(c)) = find(&lvl.actors[npc.actor].props, "CarcassType") {
+            npc.water_carcass = Some((c.rsplit('.').next().unwrap_or("").to_string(), 1.5));
+        }
+    }
+    npc.state = NpcState::Dead;
+    npc.knocked_out = knocked_out;
+    // A rebuilt body goes limp at once (ragdoll.rs), pushed by the blow and carried by its run.
+    crate::ragdoll::request(crate::ragdoll::Death {
+        blocker: npc.blocker,
+        hit: h.hit_loc,
+        from: h.attacker_pos,
+        damage: h.damage,
+        vel: deco.body.velocity,
+    });
+    npc.weapon_drawn = false;
+    // DeusExCarcass.InitFor: the body alerts others only if dead (not unconscious), not a robot.
+    npc.killer_alliance = match h.attacker {
+        None => "Player".to_string(),
+        Some(b) => snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
+    };
+    npc.killer_bind = match h.attacker {
+        None => "JCDenton".to_string(),
+        Some(b) => snap_of(b).map(|p| p.bind.clone()).unwrap_or_default(),
+    };
+    npc.emit_carcass = !knocked_out && !npc.hp_body.robot;
+    npc.alert = None;
+    // ScriptedPawn.Died: important characters leave <BindName>_Dead (and _Unconscious if
+    // knocked out) flags that never expire.
+    if npc.important && !npc.bind_name.is_empty() {
+        flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
+        if knocked_out {
+            flags
+                .0
+                .set_bool(&format!("{}_Unconscious", npc.bind_name), true);
+        }
+    }
+    takedowns.log.push(Takedown {
+        alliance: npc.alliance.clone(),
+        name: lvl.actors[npc.actor].name.clone(),
+        class: lvl.actors[npc.actor].class.clone(),
+        lethal: !knocked_out,
+        by_player: h.attacker.is_none(),
+        damage_type: h.damage_type,
+    });
+    crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
+    blockers.list[npc.blocker].radius = 0.0;
+    blockers.list[npc.blocker].height = 0.0;
+    deco.body.physics = imsim_core::body::BodyPhysics::None;
+    let ma = &lvl.mesh_actors[an.mesh_actor];
+    if let Some(anim) = &ma.anim {
+        let name = if npc.sitting {
+            "DeathFront"
+        } else if fall_back {
+            "DeathBack"
+        } else {
+            "DeathFront"
+        };
+        an.clip = Clip::named(&anim.mesh, name, false);
+        an.time = 0.0;
+        // Animal.bPlayDying False (rats, birds...): no death animation; the carcass appears at once.
+        if an.clip.is_none() {
+            if let Some(Value::Path(c)) =
+                find(&lvl.actors[npc.actor].props, "CarcassType")
+            {
+                npc.swap_carcass =
+                    Some(c.rsplit('.').next().unwrap_or("").to_string());
+            }
+        }
+    }
+    println!(
+        "PAWN {} {} ({})",
+        lvl.actors[npc.actor].name,
+        if knocked_out { "knocked out" } else { "killed" },
+        h.damage_type
+    );
+    // PlayDyingSound: the Die cry, a LoudNoise and a Distress call (friends only answer it if this
+    // pawn had an enemy it had seen, so a silent takedown from behind stays silent).
+    if let Some(snd) = crate::sound::prop(&lvl.actors[npc.actor].props, "Die") {
+        crate::sound::play_owned(
+            crate::sound::npc_owner(npc.blocker),
+            crate::sound::slot::PAIN,
+            &snd,
+            Some(center),
+            crate::sound::fprop(
+                &lvl.actors[npc.actor].props,
+                "TransientSoundVolume",
+                1.0,
+            ),
+            0.0,
+            crate::sound::random_pitch(),
+        );
+    }
+    let me = Some(Target::Pawn(npc.blocker));
+    new_noises.push(Noise {
+        pos: center,
+        volume: 1.0,
+        radius: 800.0,
+        maker: me,
+        instigator: me,
+        kind: NoiseKind::Loud,
+    });
+    new_noises.push(Noise {
+        pos: center,
+        volume: 1.0,
+        radius: 800.0,
+        maker: me,
+        instigator: me,
+        kind: NoiseKind::Distress,
+    });
+}
+
+/// A hit the pawn lived through: catching fire, bleeding, poison, the pain / stun reaction and what it makes of who
+/// did it (ReactToInjury).
+#[allow(clippy::too_many_arguments)]
+fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate::damage::PawnHit, hit: crate::damage::HitLoc, pain: bool, stunned: bool, center: DVec3, cx: &mut HitCx) {
+    let HitCx { lvl, pawns, .. } = *cx;
+    let (player_center, now) = (cx.player_center, cx.now);
+    let blockers = &mut *cx.blockers;
+    let new_noises = &mut *cx.new_noises;
+    let drips = &mut *cx.drips;
+    let snap_of = |b: usize| pawns.iter().find(|p| p.blocker == b);
+    let snap_of_hostile = |npc: &Npc, t: Target| -> bool {
+        match t {
+            Target::Player => npc.hates("Player"),
+            Target::Pawn(b) => snap_of(b).is_some_and(|p| npc.hates(&p.alliance) || p.alliances.hostile_to(&npc.alliance)),
+        }
+    };
+    // TakeDamage: 'Flamed' sets a pawn alight (CatchFire), robots excepted.
+    if h.damage_type == "Flamed"
+        && npc.on_fire.is_none()
+        && npc.burn_period > 0.0
+        && !npc.hp_body.robot
+    {
+        npc.on_fire = Some(0.0);
+        npc.burn_tick = 0.0;
+        println!("PAWN {} caught fire", lvl.actors[npc.actor].name);
+    }
+    // GMDX Hemorrhage: a player's shuriken (crate::perks) starts the bleed (StartBleed:
+    // 16 ticks of int(Damage x 0.1)); each BleedEffect tick sprays blood drops.
+    if crate::perks::take_bleed(npc.blocker, h.damage) {
+        aff.bleed_counter = 16;
+        aff.bleed_timer = 0.0;
+        aff.bleed_damage = (h.damage * 0.1).floor();
+    }
+    if h.damage_type == "BleedEffect" && npc.can_bleed {
+        for i in 0..10u32 {
+            if (npc.blocker as u32 * 31 + i * 17 + aff.bleed_counter * 7) % 2 == 0 {
+                drips.0.push(center + DVec3::Z * npc.params.height * 0.3);
+            }
+        }
+    }
+    if h.damage_type == "Poison" {
+        // StartPoison: eight more doses, two seconds apart.
+        aff.poison_counter = 8;
+        aff.poison_timer = 0.0;
+        aff.poison_damage = aff.poison_damage.max(h.damage);
+        aff.poisoner = h.attacker;
+    }
+    println!(
+        "PAWN {} hurt {:?} pain={} stunned={} health={:.0} parts={:?}",
+        lvl.actors[npc.actor].name,
+        hit,
+        pain,
+        stunned,
+        npc.hp_body.health,
+        npc.hp_body.parts
+    );
+    // PlayTakeHitSound: HitSound1 up to 30 damage, HitSound2 above, at most every 0.25 s; the cry
+    // of pain is a Distress call.
+    {
+        let props = &lvl.actors[npc.actor].props;
+        let which = if h.damage <= 30.0 {
+            "HitSound1"
+        } else {
+            "HitSound2"
+        };
+        if let Some(snd) = crate::sound::prop(props, which) {
+            let vol = crate::sound::fprop(props, "TransientSoundVolume", 1.0)
+                .max(2.0);
+            crate::sound::play_req(crate::sound::Req {
+                sound: snd,
+                pos: Some(center),
+                volume: vol,
+                radius: 0.0,
+                pitch: crate::sound::random_pitch(),
+                owner: crate::sound::npc_owner(npc.blocker),
+                slot: crate::sound::slot::PAIN,
+                no_override: false,
+                min_gap: 0.25,
+            });
+        }
+    }
+    let me = Some(Target::Pawn(npc.blocker));
+    new_noises.push(Noise {
+        pos: center,
+        volume: 1.0,
+        radius: 800.0,
+        maker: me,
+        instigator: me,
+        kind: NoiseKind::Distress,
+    });
+    // RubbingEyes: BlockReactions - no ReactToInjury (no new enemy, no fear, no pain animation),
+    // and TakeDamageBase without bPlayAnim.
+    if !matches!(npc.state, NpcState::RubbingEyes(_)) {
+        // ReactToInjury: IncreaseAgitation toward the attacker's alliance (members of the own alliance
+        // never count), then SetEnemy only succeeds if that alliance is now hostile. Friendly fire just
+        // hurts.
+        let (who, alliance) = match h.attacker {
+            None => (Target::Player, "Player".to_string()),
+            Some(b) => (
+                Target::Pawn(b),
+                snap_of(b).map(|p| p.alliance.clone()).unwrap_or_default(),
+            ),
+        };
+        // ShouldReactToInjuryType: bHate/bFearInjury for direct harm, bHate/bFearIndirectInjury for
+        // gas, blasts and the like; fear of being hurt is IncreaseFear(instigator, 2.0).
+        let hate_this = imsim_core::reactions::reacts_to_injury(
+            h.damage_type,
+            npc.hate_injury,
+            npc.hate_indirect_injury,
+        );
+        let fear_this = imsim_core::reactions::reacts_to_injury(
+            h.damage_type,
+            npc.fear_injury,
+            npc.fear_indirect_injury,
+        );
+        if hate_this {
+            npc.alliances.provoke(&alliance, None);
+        }
+        if fear_this {
+            npc.fear.increase(2.0, 0.0);
+        }
+        let made_enemy = npc.alliances.hostile_to(&alliance)
+            || (who != Target::Player && snap_of_hostile(npc, who));
+        if made_enemy {
+            npc.target = Some(who);
+            npc.last_pos = target_pos(who, player_center, &blockers.list);
+            npc.last_seen = now;
+            npc.route = None;
+        } else if fear_this && npc.fear.fearful() {
+            // SetEnemy(instigatedBy, , true); SetNextState('Fleeing'): runs once the hit plays out.
+            npc.target = Some(who);
+            npc.last_pos = target_pos(who, player_center, &blockers.list);
+            npc.last_seen = now;
+            npc.fear_flee = true;
+            if !matches!(npc.state, NpcState::Fleeing) {
+                npc.state = NpcState::Fleeing;
+                npc.route = None;
+                npc.flee_dest = None;
+            }
+        }
+        if npc.sitting && (stunned || pain) {
+            npc.sitting = false;
+            npc.seat = None;
+            if let Some(b) = npc.body.as_mut() {
+                b.physics = Physics::Falling;
+            }
+        }
+        if stunned && !npc.hp_body.robot {
+            npc.state = NpcState::Stunned(15.0);
+            npc.weapon_drawn = false;
+            npc.anim = "";
+        } else if pain {
+            if let Some(name) = hit.anim() {
+                let ma = &lvl.mesh_actors[an.mesh_actor];
+                if let Some(c) = ma
+                    .anim
+                    .as_ref()
+                    .and_then(|a| Clip::named(&a.mesh, name, false))
+                {
+                    let dur =
+                        (c.frames as f32 - 1.0).max(1.0) / c.rate.max(1.0) + 0.1;
+                    an.clip = Some(c);
+                    npc.anim = name;
+                    npc.state = NpcState::TakingHit(dur);
+                    // GMDX Piercing: 1.3 s with a hand-to-hand weapon in the player's hand
+                    // (Grays and Karkians are slower to flinch there, so they keep 2).
+                    let tough = matches!(
+                        lvl.actors[npc.actor].class.as_str(),
+                        "Gray" | "Karkian" | "KarkianBaby"
+                    );
+                    npc.take_hit_timer = crate::perks::flinch_time()
+                        .filter(|_| !tough)
+                        .unwrap_or(2.0);
+                }
+            }
+        } else if matches!(npc.state, NpcState::Idle | NpcState::Seeking)
+            && made_enemy
+        {
+            let (t, pos, seen) = (
+                npc.target.unwrap_or(Target::Player),
+                npc.last_pos,
+                npc.last_seen,
+            );
+            npc.begin_attack(t, pos, seen);
+        }
+    }
 }
 
 /// Health readout, red damage flash, and restart after death.
