@@ -124,6 +124,9 @@ struct Launcher {
     pressed: Option<Wid>,
     tex: Option<egui::TextureHandle>,
     sized: bool,
+    /// Whether a mod folder holds its mod, by (id, path): the check walks folders (the Parallax Maps one walks
+    /// a whole tree of maps), so it's done once, not every frame.
+    found: std::cell::RefCell<std::collections::HashMap<(&'static str, String), bool>>,
 }
 
 impl Launcher {
@@ -159,6 +162,7 @@ impl Launcher {
             pressed: None,
             tex: None,
             sized: false,
+            found: Default::default(),
         };
         l.try_art();
         l
@@ -243,25 +247,40 @@ impl Launcher {
                 self.mods.push(unreal_pkg::mods::ModSetting { id: m.id, path: dir.display().to_string(), on: true });
             }
             None => {
-                rfd::MessageDialog::new()
-                    .set_title(format!("Not {}", m.name))
-                    .set_description(format!(
+                let what = if m.kind == unreal_pkg::mods::ModKind::ReliefMaps {
+                    "That folder doesn't hold any .bump.dds maps. Choose the Parallax Occlusion addon's folder (the one \
+                     holding its Textures or package folders)."
+                        .to_string()
+                } else {
+                    format!(
                         "That folder doesn't hold {} (its {}). Choose the folder you unpacked the mod into.",
                         m.name,
                         m.marker.replace('/', "\\")
-                    ))
+                    )
+                };
+                rfd::MessageDialog::new()
+                    .set_title(format!("Not {}", m.name))
+                    .set_description(what)
                     .set_level(rfd::MessageLevel::Warning)
                     .show();
             }
         }
     }
 
+    fn is_found(&self, i: usize, path: &str) -> bool {
+        let m = &unreal_pkg::mods::MODS[i];
+        *self
+            .found
+            .borrow_mut()
+            .entry((m.id, path.to_string()))
+            .or_insert_with(|| unreal_pkg::mods::locate(m, Path::new(path)).is_some())
+    }
+
     /// What a mod's box shows.
     fn mod_label(&self, i: usize) -> String {
-        let m = &unreal_pkg::mods::MODS[i];
         match self.setting(i) {
             None => "None".into(),
-            Some(s) if unreal_pkg::mods::locate(m, Path::new(&s.path)).is_none() => "Not Found".into(),
+            Some(s) if !self.is_found(i, &s.path) => "Not Found".into(),
             Some(s) if s.on => "On".into(),
             Some(_) => "Off".into(),
         }

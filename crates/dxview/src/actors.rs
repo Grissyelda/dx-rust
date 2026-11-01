@@ -44,8 +44,25 @@ impl CollisionWorld for World<'_> {
             normal: h.normal,
             actor: None,
         };
+        // The box the swept shape covers: anything wholly outside it can't be hit (most cylinders and movers on
+        // the map, for a short trace), so it is skipped before the exact test.
+        let lo = start.min(end) - extent;
+        let hi = start.max(end) + extent;
         if let Some(rts) = self.movers {
+            let ext_len = extent.length();
+            let seg = end - start;
+            let seg_len2 = seg.length_squared();
             for (info, rt) in self.level.movers.iter().zip(rts) {
+                // A mover reaches at most info.reach from its Location, however it's turned.
+                let reach = info.reach + ext_len;
+                let c = rt.location;
+                if c.x + reach < lo.x || c.x - reach > hi.x || c.y + reach < lo.y || c.y - reach > hi.y || c.z + reach < lo.z || c.z - reach > hi.z {
+                    continue;
+                }
+                let t = if seg_len2 > 1e-12 { ((c - start).dot(seg) / seg_len2).clamp(0.0, 1.0) } else { 0.0 };
+                if (start + seg * t - c).length_squared() > reach * reach {
+                    continue;
+                }
                 if let Some(hm) = crate::movers::trace_mover(info, rt, start, end, extent) {
                     if hm.fraction < best.fraction {
                         best = hm;
@@ -56,6 +73,15 @@ impl CollisionWorld for World<'_> {
         for (i, c) in self.blockers.iter().enumerate() {
             // Destroyed decorations and gibbed pawns keep a zero-size cylinder: nothing to hit.
             if Some(i) == self.ignore || c.radius <= 0.0 || c.height <= 0.0 {
+                continue;
+            }
+            if c.center.x + c.radius < lo.x
+                || c.center.x - c.radius > hi.x
+                || c.center.y + c.radius < lo.y
+                || c.center.y - c.radius > hi.y
+                || c.center.z + c.height < lo.z
+                || c.center.z - c.height > hi.z
+            {
                 continue;
             }
             // BlockPlayer stops only the player (whose world carries the push masses): shots, projectiles, sight

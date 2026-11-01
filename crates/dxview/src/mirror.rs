@@ -257,7 +257,7 @@ pub fn spawn_camera(commands: &mut Commands, mirrors: &Mirrors) {
                 Camera {
                     order: -20 + 2 * i as isize + if sky { 0 } else { 1 },
                     is_active: false,
-                    clear_color: if sky { ClearColorConfig::Custom(Color::BLACK) } else { ClearColorConfig::None },
+                    clear_color: if sky || crate::skyfollow::enabled() { ClearColorConfig::Custom(Color::BLACK) } else { ClearColorConfig::None },
                     ..default()
                 },
                 RenderTarget::Image(image.clone().into()),
@@ -272,6 +272,11 @@ pub fn spawn_camera(commands: &mut Commands, mirrors: &Mirrors) {
             ));
             if sky {
                 e.insert((RenderLayers::layer(1), bevy::light::cluster::ClusterConfig::Single));
+            } else if crate::skyfollow::enabled() {
+                // The sky room comes with the world (skyfollow.rs: the copies sit kilometres out, so the few metres
+                // between the eye and its reflection don't show): this camera clears and draws them, and the
+                // slot's sky camera stays off - one whole view less per reflection.
+                e.insert(RenderLayers::from_layers(&[0, BODY_LAYER, crate::skyfollow::LAYER]));
             } else {
                 e.insert(RenderLayers::from_layers(&[0, BODY_LAYER]));
             }
@@ -475,6 +480,10 @@ pub fn mirror_system(
         let fwd = mirror_v(main_tf.forward().as_vec3());
         let up = mirror_v(main_tf.up().as_vec3());
         let look = Transform::from_translation(pos).looking_to(fwd, up);
+        if mc.1 && crate::skyfollow::enabled() {
+            cam.is_active = false;
+            continue;
+        }
         if mc.1 {
             // The sky room: same turn, at its own origin.
             *tf = Transform::from_rotation(look.rotation);

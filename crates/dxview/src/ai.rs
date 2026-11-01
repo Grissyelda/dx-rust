@@ -2934,8 +2934,10 @@ pub fn npc_system(
     if let Ok(mut c) = CLEANERS.lock() {
         c.clear();
     }
+    let mut solid_buf: Vec<Cylinder> = Vec::with_capacity(blockers.list.len() + 8 + lvl.monster_blocks.len());
     for (mut npc, mut deco, mut an, mut tf) in &mut q {
         let npc = &mut *npc;
+        let _a1 = crate::prof::scope("ai/1 setup+damage");
         npc.just_fired = false;
         npc.weapon_timer += dt;
         let state_before = std::mem::discriminant(&npc.state);
@@ -3745,13 +3747,15 @@ pub fn npc_system(
             }
         }
 
+        drop(_a1); let _a2 = crate::prof::scope("ai/2 render check");
         let me = blockers.list[npc.blocker];
         let my_eye = eye_of(&me);
         // LastRenderTime: on screen = inside the view (a cone a little wider than the 90 degree view, so the
         // corners count) and some part of the cylinder not hidden by the world from the camera.
         npc.render_check -= dt;
         if npc.render_check <= 0.0 {
-            npc.render_check = 0.2;
+            // About every 0.2 s, each pawn on a slightly different period so they don't all trace on one frame.
+            npc.render_check = 0.18 + 0.04 * ((npc.blocker as f32 * 0.618_034).fract());
             let eye = _player_eye;
             let fwd = {
                 let f = cam.forward().as_vec3();
@@ -3824,6 +3828,7 @@ pub fn npc_system(
             }
             npc.smart.was_attacking = atk;
         }
+        drop(_a2); let _a3 = crate::prof::scope("ai/3 senses+think");
         // Senses. ReactionLevel climbs while anything is up (UpdateReactionLevel) and the surprise pause on
         // attacking is what it hasn't covered yet; it ebbs over 7 seconds otherwise.
         let stunned_now = matches!(
@@ -4010,6 +4015,7 @@ pub fn npc_system(
             }
         }
 
+        drop(_a3); let _a4 = crate::prof::scope("ai/4 reactions");
         // The reaction callbacks (ScriptedPawn.UpdateReactionCallbacks): which stimuli this state listens for
         // (SetReactions), and what the pawn's bReact / bHate / bFear flags make of each.
         npc.fear.tick(dt);
@@ -4521,6 +4527,7 @@ pub fn npc_system(
             npc.readiness = 0.0;
             npc.target = None;
         }
+        drop(_a4); let _a5 = crate::prof::scope("ai/5 act");
         // Act.
         let mut wish = DVec3::ZERO;
         let mut running = false;
@@ -5682,8 +5689,10 @@ pub fn npc_system(
         let before = body.location;
         if !npc.sitting {
             let steps = ((dt as f64) / (1.0 / 60.0)).ceil().max(1.0) as usize;
-            // Pawns can't walk through the player either.
-            let mut solid = blockers.list.clone();
+            // Pawns can't walk through the player either. (One buffer for every pawn: copied into, not allocated.)
+            let solid = &mut solid_buf;
+            solid.clear();
+            solid.extend_from_slice(&blockers.list);
             if !ph.dead {
                 solid.push(player_cyl);
             }
@@ -5700,7 +5709,7 @@ pub fn npc_system(
             }
             let world = World {
                 level: lvl,
-                blockers: &solid,
+                blockers: &solid[..],
                 ignore: Some(npc.blocker),
                 pushable: None,
                 movers: Some(&mv.rt),

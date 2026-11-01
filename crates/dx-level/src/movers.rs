@@ -22,6 +22,9 @@ pub struct MoverInfo {
     pub parts: Vec<MeshPart>,
     /// Collision in raw brush-local space (add PrePivot after un-rotating a world point).
     pub collision: BspCollision,
+    /// How far any part of the brush reaches from the mover's Location (whatever its rotation): traces that pass
+    /// farther away than this (plus their extent) can't touch it.
+    pub reach: f64,
     pub pre_pivot: [f32; 3],
     pub base_pos: [f32; 3],
     pub base_rot: [i32; 3],
@@ -263,6 +266,16 @@ pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Op
             key_rot[i as usize] = rotv(p, "KeyRot", i).unwrap_or([0; 3]);
         }
         let location = a.location();
+        let reach = model
+            .points
+            .iter()
+            .map(|q| {
+                let d = [q[0] - pre[0], q[1] - pre[1], q[2] - pre[2]];
+                ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) as f64).sqrt()
+            })
+            .fold(0.0f64, f64::max)
+            + 2.0;
+        let reach = if model.points.is_empty() { f64::INFINITY } else { reach };
         out.push(MoverInfo {
             actor: ai,
             name: a.name.clone(),
@@ -270,6 +283,7 @@ pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Op
             event: namev(p, "Event"),
             parts,
             collision: BspCollision::new(&model),
+            reach,
             pre_pivot: pre,
             base_pos: vecv(p, "BasePos", 0).unwrap_or(location),
             base_rot: rotv(p, "BaseRot", 0).unwrap_or([0; 3]),

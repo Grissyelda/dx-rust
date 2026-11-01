@@ -316,14 +316,66 @@ static DECODED: std::sync::LazyLock<Mutex<HashMap<String, Option<Arc<Clip>>>>> =
 static WANT: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static WORKER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
+/// Decoded conversation speech, oldest first, and its size in bytes. Every spoken line used to stay decoded for
+/// the rest of the session (only a map's own sounds were dropped on leaving it): over a playthrough that grew to
+/// hundreds of megabytes. Speech now keeps to SPEECH_BUDGET, dropping the lines heard longest ago that aren't
+/// playing; a line needed again is decoded again (in the background, as conversations prefetch theirs).
+static SPEECH_ORDER: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
+static SPEECH_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// About 25 minutes of speech.
+const SPEECH_BUDGET: usize = 128 << 20;
+
+fn is_speech(path: &str) -> bool {
+    path.len() >= 14 && path[..14].eq_ignore_ascii_case("DeusExConAudio")
+}
+
+fn clip_bytes(c: &Option<Arc<Clip>>) -> usize {
+    c.as_ref().map_or(0, |c| c.data.len() * std::mem::size_of::<f32>())
+}
+
 /// An already-decoded sound (Some(None) = known not to decode).
 pub fn cached(path: &str) -> Option<Option<Arc<Clip>>> {
-    DECODED.lock().ok()?.get(path).cloned()
+    let hit = DECODED.lock().ok()?.get(path).cloned();
+    if hit.is_some() && is_speech(path) {
+        // Heard again: the newest.
+        if let Ok(mut o) = SPEECH_ORDER.lock() {
+            if let Some(i) = o.iter().position(|k| k == path) {
+                if let Some(k) = o.remove(i) {
+                    o.push_back(k);
+                }
+            }
+        }
+    }
+    hit
 }
 
 pub fn remember(path: &str, c: Option<Arc<Clip>>) {
-    if let Ok(mut d) = DECODED.lock() {
-        d.entry(path.to_string()).or_insert(c);
+    let Ok(mut d) = DECODED.lock() else { return };
+    if d.contains_key(path) {
+        return;
+    }
+    let bytes = clip_bytes(&c);
+    d.insert(path.to_string(), c);
+    if !is_speech(path) {
+        return;
+    }
+    let Ok(mut order) = SPEECH_ORDER.lock() else { return };
+    order.push_back(path.to_string());
+    let mut total = SPEECH_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed) + bytes;
+    // Over budget: forget the oldest lines nobody is playing (the mixer holds a clip while it plays).
+    let mut looked = 0;
+    while total > SPEECH_BUDGET && looked < order.len() {
+        let Some(k) = order.pop_front() else { break };
+        let in_use = d.get(&k).and_then(|c| c.as_ref()).is_some_and(|c| Arc::strong_count(c) > 1);
+        if in_use || k == path {
+            order.push_back(k);
+            looked += 1;
+            continue;
+        }
+        if let Some(c) = d.remove(&k) {
+            let b = clip_bytes(&c);
+            total = SPEECH_BYTES.fetch_sub(b, std::sync::atomic::Ordering::Relaxed) - b;
+        }
     }
 }
 

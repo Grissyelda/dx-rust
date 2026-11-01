@@ -67,8 +67,20 @@ Latest pass (measured on an RTX 3050 with every Modern option and all the mods):
 render thread, which drew 29 views a frame - five cameras and 24 shadow-map faces. Real-time shadows now use one
 aimed spot view per light, and only for lights with someone in them, which took the frame from about 30 ms to 21 ms
 (32 to 47 fps). Rain is built on the GPU from a small data texture (it re-uploaded about 2.5 MB of mesh a frame),
-and water reflections redraw every other frame. Next: Bevy's per-material bookkeeping (about 7 ms of the render
-thread) and the weapon view's own pass.
+and water reflections redraw every other frame.
+CPU pass (November 2026, after a report of poor frame rates on a Xeon E5-2680 v4 with an RTX 2070, default settings):
+the GPU was nearly idle; the main thread and the render thread each took 12-14 ms on a Ryzen 5 3600, so slower
+cores fell under 60 fps and VSync halved that to 30. Fixed: collision tests skip what they can't reach (the AI cost a
+third of before), the ragdoll physics sleeps while nothing falls, static meshes (water, the open sea, level surfaces)
+no longer have their bounds recomputed every frame because their materials animate (1.6 million vertices a frame),
+the sky room is drawn by the world camera instead of its own, the worker pool stops at 10 threads on many-core CPUs,
+render passes stay on the render thread, unused Bevy plugins are off, the depth pre-pass waits until Modern Water needs it,
+and the release build is optimised as one program. On the Ryzen 5 3600 the main thread went from 13.9 to
+7.9 ms a frame and the render thread from about 12 to 9.4 ms; default settings run at 10.2 ms (98 fps, was 72 fps
+before the last fixes). Modern with every option and mod: about 24 ms (41 fps), all of it the render thread (pass
+recording and Bevy's per-view preparation). Next: Bevy's per-view render
+bookkeeping (bind groups and buffers rebuilt each frame), the weapon view's own pass, and the Update schedule's
+scheduling overhead (about 160 small systems).
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.

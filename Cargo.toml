@@ -7,10 +7,11 @@ resolver = "2"
 edition = "2021"
 version = "0.1.0"
 
+# The shipped build: whole-program optimisation (fat LTO, one codegen unit) - slower to build, faster to run.
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 16
+lto = "fat"
+codegen-units = 1
 strip = true
 panic = "abort"
 

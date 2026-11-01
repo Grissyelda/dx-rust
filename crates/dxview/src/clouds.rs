@@ -558,6 +558,7 @@ pub fn flash_level() -> f32 {
 /// The sky flashes with the lightning too: the sky room (its camera's exposure) and the photo skyline / skyline
 /// blocks (their unlit colour), which the world light never reached - so only the near ground and the feet of the
 /// buildings used to light up.
+#[allow(clippy::too_many_arguments)]
 pub fn lightning_sky_system(
     mut sky: Query<&mut bevy::camera::Exposure, With<crate::SkyCam>>,
     parts: Query<&MeshMaterial3d<StandardMaterial>, With<crate::skyline::SkylinePart>>,
@@ -565,9 +566,13 @@ pub fn lightning_sky_system(
     mut base: Local<std::collections::HashMap<AssetId<StandardMaterial>, Color>>,
     mut was: Local<f32>,
     mut gen: Local<u64>,
+    sky_copies: Query<&MeshMaterial3d<crate::shadowlight::BspMaterial>, With<crate::skyfollow::SkyCopy>>,
+    mut bsp: ResMut<Assets<crate::shadowlight::BspMaterial>>,
+    mut sky_base: Local<std::collections::HashMap<AssetId<crate::shadowlight::BspMaterial>, Color>>,
 ) {
     if crate::loader::new_map(&mut gen) {
         base.clear();
+        sky_base.clear();
         *was = 0.0;
         FLASH_K.store(0, std::sync::atomic::Ordering::Relaxed);
     }
@@ -578,6 +583,16 @@ pub fn lightning_sky_system(
     *was = k;
     for mut e in &mut sky {
         e.ev100 = -0.263 - (1.0 + 3.0 * k).log2();
+    }
+    // The sky room drawn by the world camera (skyfollow.rs): its materials brighten as the exposure did.
+    for id in crate::skyfollow::sky_materials(&sky_copies) {
+        let Some(m) = bsp.get(id) else { continue };
+        let orig = *sky_base.entry(id).or_insert(m.base.base_color);
+        let c = orig.to_linear();
+        let g = 1.0 + 3.0 * k;
+        if let Some(mut m) = bsp.get_mut(id) {
+            m.base.base_color = Color::LinearRgba(LinearRgba::new(c.red * g, c.green * g, c.blue * g, c.alpha));
+        }
     }
     for h in &parts {
         let id = h.0.id();

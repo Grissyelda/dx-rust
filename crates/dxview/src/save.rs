@@ -918,6 +918,14 @@ fn restore_global(world: &mut World, s: &SaveGame) {
             p.body.velocity = DVec3::ZERO;
             p.body.physics = imsim_core::movement::Physics::Falling;
             if g.player.crouched {
+                // The saved centre is the crouched one (the body is lowered by the height it lost). The player comes
+                // back standing and the forced duck lowers him again on the first frame: put the centre back at
+                // standing height first, or he ends up with his feet under the floor and falls through the world
+                // (GitHub issue #2: quick-load a save made while crouched).
+                let lowered = p.stand_height - 16.0;
+                if !p.crouched && lowered > 0.0 {
+                    p.body.location.z += lowered;
+                }
                 p.force_duck = true;
             }
         }

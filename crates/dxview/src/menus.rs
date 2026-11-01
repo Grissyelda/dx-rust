@@ -426,11 +426,23 @@ pub fn present_mode(v: f32) -> bevy::window::PresentMode {
 /// The Bevy window mode for a DisplayMode setting.
 /// The window mode for a DisplayMode setting. The primary monitor, not "current": at startup there is no window
 /// yet, so winit has no current monitor and Bevy panics ("Unable to get monitor").
+/// On Linux, Wayland has no primary monitor (and no exclusive fullscreen): Bevy's exclusive mode panicked there
+/// ("Unable to get monitor", GitHub issue #4), so both full-screen modes are borderless on the first monitor.
 pub fn window_mode(v: f32) -> WindowMode {
-    match v.round() as i32 {
-        0 => WindowMode::Fullscreen(MonitorSelection::Primary, bevy::window::VideoModeSelection::Current),
-        2 => WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
-        _ => WindowMode::Windowed,
+    #[cfg(target_os = "linux")]
+    {
+        match v.round() as i32 {
+            0 | 2 => WindowMode::BorderlessFullscreen(MonitorSelection::Index(0)),
+            _ => WindowMode::Windowed,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        match v.round() as i32 {
+            0 => WindowMode::Fullscreen(MonitorSelection::Primary, bevy::window::VideoModeSelection::Current),
+            2 => WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
+            _ => WindowMode::Windowed,
+        }
     }
 }
 
@@ -790,6 +802,16 @@ impl Enhance {
             c.value = crate::settings::get("ThirdPersonCamera");
             c.saved = c.value;
             items.push(tag(c, "Gameplay"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "WorkerThreads".into();
+            c.label = "CPU Worker Threads".into();
+            c.help = "How many threads the game spreads its parallel work over. Auto leaves room for the main and render threads and stops at 10: on processors with many cores (workstation Xeons, Threadrippers) more threads only add overhead. Takes effect on the next start.".into();
+            c.kind = ChoiceKind::Enum(crate::threads::STEPS.iter().map(|&n| if n == 0 { "Auto".to_string() } else { n.to_string() }).collect());
+            c.value = crate::threads::step_index(crate::settings::get("WorkerThreads"));
+            c.saved = c.value;
+            items.push(tag(c, "Display"));
         }
         {
             let mut c = debug_mode_choice();

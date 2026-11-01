@@ -14,6 +14,35 @@
 ### Faster
 - About 30 to 47 fps on an RTX 3050 in Modern: real-time shadows render one view per light instead of six (and
   only for lights with someone in them), rain is built on the GPU, water reflections re-render every other frame.
+- A CPU performance pass after a report of poor frame rates on a Xeon E5-2680 v4 with an RTX 2070. The GPU was never
+  the limit: the game's main thread and Bevy's render thread were, so a CPU with slower cores dropped under 60 fps
+  and VSync then halved it to 30. Measured at default settings on a Ryzen 5 3600 with VSync off: the game's main
+  thread went from 13.9 ms of work a frame to 7.9 ms, Bevy's render thread from about 12 ms to 9.4 ms, and the frame
+  from 13.8 ms (72 fps, already with the first two fixes below) to 10.2 ms (98 fps).
+  - Every collision test (AI movement, sight lines, bullets, physics) now skips the cylinders and doors it can't
+    reach before doing any real maths: the AI costs a third of what it did.
+  - The ragdoll physics engine sleeps while no ragdoll is falling (it ran a full step every frame, Ragdolls on or off).
+  - The open sea and the water surfaces were having their bounds recomputed every frame (1.6 million vertices),
+    because their materials animate; level surfaces' bounds are now worked out once.
+  - The sky room is drawn by the world camera (scaled out past the map) instead of a camera of its own: one whole
+    camera's work less on the render thread.
+  - The world camera's depth pre-pass only runs once Modern Water has been on (it's what reads it).
+  - Fewer, better-used threads: on CPUs with many cores (workstation Xeons, Threadrippers, dual-socket boards) the
+    worker pool stops at 10 threads instead of spreading each frame's small jobs over every core; a new setting
+    (Settings > Enhancements > Display: CPU Worker Threads) overrides it. The render passes no longer flood the
+    worker pool.
+  - Bevy features the game doesn't use (its gamepad polling, animation and picking systems) are switched off.
+  - The release build is optimised as one whole program.
+
+### Launcher
+- Mods page: a Parallax Maps row to point the game at the Parallax Occlusion Mapping addon's folder (turn it on or
+  off like the other mods); without it the game looks in the release's relief folder and the game's Textures folder.
+
+### Memory
+- Spoken lines no longer pile up: every line heard stayed decoded for the rest of the session (hundreds of megabytes
+  over a playthrough); speech now keeps to 128 MB, dropping the oldest lines.
+- A map's textures are no longer kept in main memory once they're on the graphics card (tens of megabytes a map,
+  far more with HD texture packs).
 
 ### Bodies (enhancements, on in Modern)
 - Skeletal Characters: the Machine God team's rebuilt human bodies on a real skeleton, in the original skins, with
@@ -27,6 +56,10 @@
   the rebuilt bodies; HDTP's people are off while Skeletal Characters is on, so JC keeps his rebuilt body.
 
 ### Fixed
+- Linux (Wayland): full screen at start-up crashed with "Unable to get monitor" (GitHub #4); full screen is
+  borderless on the first monitor there.
+- Falling through the world after loading a save made while crouched (GitHub #2): the crouched position was lowered
+  a second time on load, putting JC's feet under the floor.
 - Black triangles all over the level with real-time shadows: surfaces outside a shadow light's cone read its
   shadow map anyway.
 - Rebuilt characters that stood frozen, unlit and black (a body missed for one frame stayed unposed); they are now

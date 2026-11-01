@@ -612,10 +612,15 @@ pub fn ocean_system(
     let eye_y = cam.iter().next().map_or(f32::MAX, |t| t.1.translation.y);
     // Modern Water sees how deep the water is from the scene's depth (a depth prepass on the world camera): shallow
     // water shows what's under it, deep water turns to its own colour.
+    // Attached once Modern Water is on now or in the Modern mix Classic / Modern remembers, then kept for the session
+    // (see postfx.rs: taking it off while SSAO was on crashed Bevy, and adding it recompiles every material - the
+    // switch's wipe waits for that). A player who stays in Classic never pays for the extra depth pass.
+    static WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if modern() || crate::settings::get("Modern.ModernWater") > 0.5 {
+        WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     for (e, _, has) in &cam {
-        // Always there (see postfx.rs): taking it off while SSAO was still on crashed Bevy, and adding it
-        // recompiled every material.
-        if !has {
+        if !has && WANTED.load(std::sync::atomic::Ordering::Relaxed) {
             commands.entity(e).insert(bevy::core_pipeline::prepass::DepthPrepass);
         }
     }

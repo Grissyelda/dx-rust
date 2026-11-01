@@ -69,7 +69,27 @@ impl Plugin for RagdollPlugin {
             .insert_resource(Gravity(Vec3::NEG_Y * GRAVITY))
             .init_resource::<RagWorld>()
             .add_systems(Update, (player_body_system.before(start_system), start_system.after(crate::skeletal::pose_system)))
-            .add_systems(PostUpdate, drive_system.before(bevy::transform::TransformSystems::Propagate));
+            .add_systems(PostUpdate, drive_system.before(bevy::transform::TransformSystems::Propagate))
+            .add_systems(First, pause_system);
+        // Avian puts dozens of small systems in FixedPostUpdate. Handed out one by one to worker threads they cost
+        // close to a millisecond a frame in scheduling alone, idle or not; run in order on one thread they're
+        // nearly free, and the solver's own parallel loops still spread over the workers while a body falls.
+        app.edit_schedule(FixedPostUpdate, |s| {
+            s.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+        });
+    }
+}
+
+/// The physics clock runs only while a ragdoll is falling: with nothing to simulate Avian's step (broad phase,
+/// solver, six substeps) still cost a couple of milliseconds a frame - most of the game, and all of it with
+/// Ragdolls off. Paused, its schedule doesn't run at all.
+fn pause_system(bodies: Query<&RigidBody>, mut time: ResMut<Time<Physics>>) {
+    let pending = DEATHS.lock().is_ok_and(|d| !d.is_empty());
+    let live = pending || bodies.iter().any(|b| *b == RigidBody::Dynamic);
+    if live && time.is_paused() {
+        time.unpause();
+    } else if !live && !time.is_paused() {
+        time.pause();
     }
 }
 
