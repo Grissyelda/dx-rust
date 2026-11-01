@@ -255,7 +255,7 @@ fn spots_of(lvl: &dx_level::Level) -> Vec<SpotDef> {
 pub fn moon_dir(lvl: &dx_level::Level) -> Option<Vec3> {
     let o = Vec3::from(lvl.sky_origin?);
     let b = lvl.batches.iter().find(|b| {
-        b.sky && b.texture.is_some_and(|t| lvl.textures[t].name.to_ascii_lowercase().contains("moon"))
+        b.sky && b.texture.is_some_and(|t| crate::util::contains_ci(&lvl.textures[t].name, "moon"))
     })?;
     let c = b.positions.iter().fold(Vec3::ZERO, |a, p| a + Vec3::from(*p)) / b.positions.len().max(1) as f32;
     (c - o).try_normalize()
@@ -547,7 +547,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
         // About a texel every 1.2 m across (at most 40), 12 up.
         let res = UVec3::new(((size.x / 1.2) as u32).clamp(6, 40), 12, ((size.z / 1.2) as u32).clamp(6, 40));
         let tex = fog_image(images, res);
-        if std::env::var_os("DXVIEW_SHAFTLOG").is_some() {
+        if env_on!("DXVIEW_SHAFTLOG") {
             println!("SHAFTS mist at {mid:?} size {size:?}");
         }
         commands.spawn((
@@ -567,7 +567,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
         ));
         n += 1;
     }
-    for s in lvl.ambient_sounds.iter().filter(|s| s.sound.to_ascii_lowercase().ends_with(".bar")) {
+    for s in lvl.ambient_sounds.iter().filter(|s| crate::util::ends_with_ci(&s.sound, ".bar")) {
         let p = Vec3::from(dx_level::ue_to_bevy([s.pos[0] as f32, s.pos[1] as f32, s.pos[2] as f32]));
         let r = (s.radius as f32 * 25.0 * METERS_PER_UNIT).clamp(8.0, 20.0);
         let res = UVec3::new(20, 10, 20);
@@ -589,7 +589,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
         ));
         n += 1;
     }
-    if std::env::var_os("DXVIEW_SHAFTLOG").is_some() {
+    if env_on!("DXVIEW_SHAFTLOG") {
         println!("SHAFTS local fog volumes {n}");
     }
     n

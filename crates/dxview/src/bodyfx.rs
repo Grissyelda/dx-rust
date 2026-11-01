@@ -260,9 +260,9 @@ pub fn fp_body_system(
     let Some(root) = st.root else {
         // Built from the mirror body's textures once it has them.
         let r = commands.spawn((Transform::default(), Visibility::Inherited, FpBody)).id();
-        let layer = if std::env::var_os("DXVIEW_FP_LAYER0").is_some() { 0 } else { FP_LAYER };
+        let layer = if env_on!("DXVIEW_FP_LAYER0") { 0 } else { FP_LAYER };
         let made = built.build_from_mirror_without(&mut commands, b, sb, r, RenderLayers::layer(layer), FP_DROP, FP_KEEP);
-        if std::env::var_os("DXVIEW_BODYLOG").is_some() {
+        if env_on!("DXVIEW_BODYLOG") {
             println!("FPBODY build {}", made.is_some());
         }
         if let Some(s) = made {
@@ -277,7 +277,7 @@ pub fn fp_body_system(
     };
     let Ok((_, mut s, mut tf)) = fp.get_mut(root) else { return };
     // Crouched, the crouch pose folds the knees up round the eye: the body is left out until he stands.
-    let crouching = b.cur.as_ref().is_some_and(|c| c.0.to_ascii_lowercase().contains("crouch"));
+    let crouching = b.cur.as_ref().is_some_and(|c| crate::util::contains_ci(&c.0, "crouch"));
     if let Ok(mut v) = vis.get_mut(root) {
         let want_v = if crouching { Visibility::Hidden } else { Visibility::Inherited };
         if *v != want_v {
@@ -289,10 +289,10 @@ pub fn fp_body_system(
         let mt = mg.compute_transform();
         let fwd = mt.rotation * Vec3::X;
         *tf = mt;
-        if std::env::var_os("DXVIEW_BODYLOG").is_some() {
+        if env_on!("DXVIEW_BODYLOG") {
             println!("FPBODY at {:?} fwd {fwd:?} cam {:?}", mt.translation, cam.iter().next().map(|c| c.translation()));
         }
-        let crouched = b.cur.as_ref().is_some_and(|c| c.0.to_ascii_lowercase().contains("crouch"));
+        let crouched = b.cur.as_ref().is_some_and(|c| crate::util::contains_ci(&c.0, "crouch"));
         let back = if crouched { FP_BACK_CROUCH } else { FP_BACK };
         tf.translation -= Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero() * (back * dx_level::METERS_PER_UNIT);
         tf.translation.y -= FP_DOWN * dx_level::METERS_PER_UNIT;

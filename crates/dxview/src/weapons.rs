@@ -1008,7 +1008,7 @@ struct LogOnDrop(std::time::Instant, String);
 impl Drop for LogOnDrop {
     fn drop(&mut self) {
         let ms = self.0.elapsed().as_secs_f32() * 1000.0;
-        if ms > 50.0 || std::env::var_os("DXVIEW_PROF").is_some() {
+        if ms > 50.0 || env_on!("DXVIEW_PROF") {
             println!("weapons: {} view model built in {ms:.0} ms", self.1);
         }
         crate::prof::hitch_note(&format!("view model {}", self.1), ms as f64);
@@ -1312,7 +1312,7 @@ pub fn select_system(
     // DXVIEW_SELECT=<belt slot>: that belt item in hand once the map is up (screenshots).
     {
         static DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if let Some(slot) = std::env::var("DXVIEW_SELECT").ok().and_then(|v| v.parse::<usize>().ok()) {
+        if let Some(slot) = env_val!("DXVIEW_SELECT").map(str::to_owned).and_then(|v| v.parse::<usize>().ok()) {
             let n = DONE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n == 30 {
                 injected = Some(slot);
@@ -2805,9 +2805,11 @@ pub fn weapon_system(
     // A dynamic light near enough to matter (a lamp across the map used to relight - and re-upload - the view
     // model every frame).
     let eye_now = bevy_to_ue(cam.translation.to_array());
-    let dyn_on = crate::dynlight::current().iter().any(|l| {
-        let d2 = (0..3).map(|k| (l.pos[k] - eye_now[k]).powi(2)).sum::<f32>();
-        d2 < (l.radius + 96.0).powi(2)
+    let dyn_on = crate::dynlight::with_current(|c| {
+        c.iter().any(|l| {
+            let d2 = (0..3).map(|k| (l.pos[k] - eye_now[k]).powi(2)).sum::<f32>();
+            d2 < (l.radius + 96.0).powi(2)
+        })
     });
     if h.relight <= 0.0 || (dyn_on && h.relight <= 0.15) {
         h.relight = 0.2;
@@ -2866,7 +2868,7 @@ pub struct FireTest {
 }
 
 pub fn fire_test_cfg() -> Option<FireTest> {
-    let v = std::env::var("DXVIEW_FIRETEST").ok()?;
+    let v = env_val!("DXVIEW_FIRETEST").map(str::to_owned)?;
     let p: Vec<&str> = v.split(';').collect();
     let f = |i: usize| p.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
     Some(FireTest {
@@ -2877,7 +2879,7 @@ pub fn fire_test_cfg() -> Option<FireTest> {
         out: p.get(6).unwrap_or(&"firetest.png").to_string(),
         t: 0.0,
         fired: 0,
-        next: std::env::var("DXVIEW_FIRETEST_DELAY").ok().and_then(|v| v.parse().ok()).unwrap_or(1.2),
+        next: env_val!("DXVIEW_FIRETEST_DELAY").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(1.2),
         done_frames: 0,
         slot: p.get(7).and_then(|s| s.parse().ok()).unwrap_or(1),
         aim_shot: false,
@@ -3022,6 +3024,9 @@ pub struct FireUse {
     anim: std::collections::HashMap<AssetId<crate::gpuanim::AnimMaterial>, Option<usize>>,
     /// Seconds since each fire texture was last on screen.
     unseen: Vec<f32>,
+    /// This frame: on screen / being simulated (buffers kept between frames).
+    seen: Vec<bool>,
+    active: Vec<bool>,
     /// The fire textures' images, to match materials against (rebuilt when the list changes).
     index: std::collections::HashMap<AssetId<Image>, usize>,
 }
@@ -3061,7 +3066,9 @@ pub fn fire_texture_system(
         u.anim.clear();
         u.unseen = vec![0.0; n];
     }
-    let mut seen = vec![false; n];
+    let mut seen = std::mem::take(&mut u.seen);
+    seen.clear();
+    seen.resize(n, false);
     if n > 0 {
         for (v, m) in &std_q {
             if v.get() {
@@ -3091,6 +3098,7 @@ pub fn fire_texture_system(
     for (t, s) in u.unseen.iter_mut().zip(&seen) {
         *t = if *s { 0.0 } else { *t + dt };
     }
+    u.seen = seen;
     // (Materials made later - a weapon picked up, a copy for a screen effect - are looked up again now and then.)
     if (time.elapsed_secs() * 0.5).fract() < dt * 0.5 {
         u.std.retain(|_, v| v.is_some());
@@ -3101,7 +3109,9 @@ pub fn fire_texture_system(
     }
     let steps = ((*acc / RATE) as u32).min(4);
     *acc -= steps as f32 * RATE;
-    let active: Vec<bool> = u.unseen.iter().map(|t| *t < 0.5).collect();
+    u.active.clear();
+    u.active.extend(u.unseen.iter().map(|t| *t < 0.5));
+    let active = &u.active;
     // The textures simulate independently, so they step on all cores; each frame's pixels go into a buffer that
     // is then swapped with the image's own (no allocation or copy per texture per step).
     bufs.resize_with(n, Vec::new);
@@ -3122,7 +3132,7 @@ pub fn fire_texture_system(
             });
         }
     });
-    for (((_, h), out), &on) in assets.fire.iter().zip(bufs.iter_mut()).zip(&active) {
+    for (((_, h), out), &on) in assets.fire.iter().zip(bufs.iter_mut()).zip(active.iter()) {
         if !on {
             continue;
         }
@@ -3554,7 +3564,7 @@ pub fn prewarm_view_models_system(
     // A few frames in (a cut scene has started by then) and only where JC can actually draw a weapon.
     *frames = frames.saturating_add(1);
     let m = level.0.name.to_ascii_lowercase();
-    if std::env::var_os("DXVIEW_NO_PREWARM").is_some()
+    if env_on!("DXVIEW_NO_PREWARM")
         || *frames < 20
         || crate::menus::intro_map()
         || crate::cinematic::active()
@@ -3597,7 +3607,7 @@ pub fn prewarm_view_models_system(
         .id();
     commands.entity(*root).add_child(warm);
     let _ = build_held(stats, &d, None, &mut assets, &mut images, &mut meshes, &mut materials, &mut commands, warm, true);
-    if std::env::var_os("DXVIEW_PROF").is_some() {
+    if env_on!("DXVIEW_PROF") {
         println!("prewarm: {class} in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
     }
     *cur = Some((warm, 0));

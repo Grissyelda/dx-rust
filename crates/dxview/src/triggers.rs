@@ -674,14 +674,21 @@ fn untouch(t: &mut Trig, by_player: bool, flags: &mut imsim_core::flags::FlagBas
 
 /// ClassIsChildOf(Other.Class, ClassProximityType) for a pawn or its body: Carcass / DeusExCarcass take any body,
 /// <Class>Carcass that pawn's body, Pawn / ScriptedPawn any living pawn, else the class itself.
-fn class_prox_matches(prox: &str, cls: &str, dead: bool) -> bool {
-    let p = prox.to_ascii_lowercase();
+fn class_prox_matches(p: &str, cls: &str, dead: bool) -> bool {
+    let is = |a: &str| p.eq_ignore_ascii_case(a);
     if dead {
-        p == "carcass" || p == "deusexcarcass" || p.eq_ignore_ascii_case(&format!("{cls}carcass"))
+        // <Class>Carcass, compared in two halves (no joined string).
+        is("carcass")
+            || is("deusexcarcass")
+            || (p.len() == cls.len() + 7
+                && p.is_char_boundary(cls.len())
+                && p[..cls.len()].eq_ignore_ascii_case(cls)
+                && p[cls.len()..].eq_ignore_ascii_case("carcass"))
     } else {
-        p == "pawn" || p == "scriptedpawn" || p.eq_ignore_ascii_case(cls)
+        is("pawn") || is("scriptedpawn") || is(cls)
     }
 }
+
 
 /// Trigger.IsRelevant for the player (or a pawn).
 fn relevant(t: &Trig, by_player: bool) -> bool {
@@ -691,7 +698,7 @@ fn relevant(t: &Trig, by_player: bool) -> bool {
     match t.trigger_type {
         0 => by_player,
         1 | 3 => true,
-        2 => !by_player || t.class_prox.to_ascii_lowercase().contains("player"),
+        2 => !by_player || crate::util::contains_ci(&t.class_prox, "player"),
         _ => false,
     }
 }
@@ -889,6 +896,9 @@ fn from_front(t: &Trig, c: DVec3) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Actor index standing for a MoverCollider keypoint in the touch list.
+const COLLIDER: usize = usize::MAX;
+
 pub fn trigger_system(
     time: Res<Time>,
     level: Res<LevelRes>,
@@ -899,6 +909,7 @@ pub fn trigger_system(
     npcs: Query<(&Npc, &crate::actors::Deco, Option<&Visibility>)>,
     blockers: Res<crate::actors::Blockers>,
     mut events: ResMut<crate::devices::GameEvents>,
+    mut pawn_buf: Local<Vec<(DVec3, f64, f64, usize, bool)>>,
 ) {
     let _prof = crate::prof::scope("triggers::trigger_system");
     let tr = &mut *trig;
@@ -982,34 +993,29 @@ pub fn trigger_system(
     let alive = !ph.dead;
     // (centre, radius, half height, class, dead): living pawns by their cylinders; bodies (Carcass) lying in the
     // world (not while carried) as a low cylinder where they lie.
-    let pawns: Vec<(DVec3, f64, f64, String, bool)> = npcs
-        .iter()
-        .filter_map(|(n, d, vis)| {
-            let cls = level.0.actors[n.actor].class.clone();
-            if n.state == crate::ai::NpcState::Dead {
-                if matches!(vis, Some(Visibility::Hidden)) {
-                    return None;
-                }
-                return Some((d.body.location, 40.0, 10.0, cls, true));
+    // (A buffer kept between frames; the class is borrowed from the level, not copied.)
+    let pawns = &mut *pawn_buf;
+    pawns.clear();
+    pawns.extend(npcs.iter().filter_map(|(n, d, vis)| {
+        if n.state == crate::ai::NpcState::Dead {
+            if matches!(vis, Some(Visibility::Hidden)) {
+                return None;
             }
-            let c = blockers.list.get(n.blocker)?;
-            Some((c.center, c.radius, c.height, cls, false))
-        })
-        .chain(
-            // Keypoints riding movers (MoverCollider) for class-proximity triggers.
-            crate::movers::COLLIDERS
-                .lock()
-                .map(|c| c.clone())
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| (p, 1.0, 1.0, "MoverCollider".to_string(), false)),
-        )
-        .collect();
-    if std::env::var("DXVIEW_TRIGLOG").is_ok() {
+            return Some((d.body.location, 40.0, 10.0, n.actor, true));
+        }
+        let c = blockers.list.get(n.blocker)?;
+        Some((c.center, c.radius, c.height, n.actor, false))
+    }));
+    // Keypoints riding movers (MoverCollider) for class-proximity triggers.
+    if let Ok(c) = crate::movers::COLLIDERS.lock() {
+        pawns.extend(c.iter().map(|p| (*p, 1.0, 1.0, COLLIDER, false)));
+    }
+    let class_of = |a: usize| -> &str { if a == COLLIDER { "MoverCollider" } else { &level.0.actors[a].class } };
+    if env_on!("DXVIEW_TRIGLOG") {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 { println!("T{now:.1} "); println!("COLL {:?}", pawns.iter().filter(|p| p.3 == "MoverCollider").map(|p| p.0).collect::<Vec<_>>()); }
+        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 { println!("T{now:.1} "); println!("COLL {:?}", pawns.iter().filter(|p| p.3 == COLLIDER).map(|p| p.0).collect::<Vec<_>>()); }
         for t in tr.list.iter().filter(|t| t.class == "DirectionalTrigger") {
-            for (c, ..) in pawns.iter().filter(|p| p.3 == "MoverCollider") {
+            for (c, ..) in pawns.iter().filter(|p| p.3 == COLLIDER) {
                 if (t.pos - *c).length() < 150.0 {
                     println!("TRIG {} prox={} active={} collide={} d={:.0} dz={:.0} r={} h={} dir={:?}", t.event, t.class_prox, t.active, t.collide, (t.pos - *c).truncate().length(), t.pos.z - c.z, t.radius, t.height, t.dir);
                 }
@@ -1028,11 +1034,11 @@ pub fn trigger_system(
         // standing in it, so the body still touches it when he's there too).
         let player_in = alive
             && overlaps(t, pc, pr, phh)
-            && (t.trigger_type != 2 || t.class_prox.to_ascii_lowercase().contains("player"));
+            && (t.trigger_type != 2 || crate::util::contains_ci(&t.class_prox, "player"));
         let pawn_hit = match t.trigger_type {
             1 | 3 => pawns.iter().find(|(c, r, h, _, dead)| !dead && overlaps(t, *c, *r, *h)),
-            2 if !t.class_prox.is_empty() => pawns.iter().find(|(c, r, h, cls, dead)| {
-                class_prox_matches(&t.class_prox, cls, *dead) && overlaps(t, *c, *r, *h)
+            2 if !t.class_prox.is_empty() => pawns.iter().find(|(c, r, h, a, dead)| {
+                class_prox_matches(&t.class_prox, class_of(*a), *dead) && overlaps(t, *c, *r, *h)
             }),
             _ => None,
         };

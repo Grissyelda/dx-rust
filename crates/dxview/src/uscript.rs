@@ -638,10 +638,6 @@ impl Script {
         }
     }
 
-    pub fn has(&self, name: &str) -> bool {
-        self.funcs.contains_key(&name.to_ascii_lowercase())
-    }
-
     /// Call a function: the host's native, else the script's own (unknown ones do nothing).
     pub fn call(&self, host: &mut dyn Host, name: &str, args: &[V]) -> V {
         let l = name.to_ascii_lowercase();

@@ -239,5 +239,3 @@ pub fn warren_system(
 pub fn device_sparks(pos: DVec3) {
     sparks(pos, None, pos);
 }
-
-pub fn reset_level() {}

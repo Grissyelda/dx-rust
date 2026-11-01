@@ -8,7 +8,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 static ON: AtomicBool = AtomicBool::new(false);
-static STATS: Mutex<Option<HashMap<&'static str, (f64, u32, f64)>>> = Mutex::new(None);
+/// Per scope: total ms, calls, worst ms, allocations (alloc.rs counts them while profiling).
+static STATS: Mutex<Option<HashMap<&'static str, (f64, u32, f64, u64)>>> = Mutex::new(None);
 /// Always on (DXVIEW_NO_HITCHLOG turns it off): this frame's scope times, so a frame that takes over 400 ms is
 /// written to hitch.log beside the exe with what it spent its time on.
 static HITCH: AtomicBool = AtomicBool::new(true);
@@ -20,8 +21,11 @@ pub fn init() {
     if let Ok(mut p) = PROCESS_START.lock() {
         *p = Some(Instant::now());
     }
-    ON.store(std::env::var("DXVIEW_PROF").is_ok(), Ordering::Relaxed);
-    HITCH.store(std::env::var_os("DXVIEW_NO_HITCHLOG").is_none(), Ordering::Relaxed);
+    ON.store(env_on!("DXVIEW_PROF"), Ordering::Relaxed);
+    if ON.load(Ordering::Relaxed) {
+        crate::alloc::enable();
+    }
+    HITCH.store(!env_on!("DXVIEW_NO_HITCHLOG"), Ordering::Relaxed);
 }
 
 /// Note a slow piece of work outside the per-frame scopes (a level load, a view model build) in hitch.log.
@@ -44,7 +48,7 @@ fn hitch_write(text: &str) {
     }
 }
 
-pub struct Scope(&'static str, Instant);
+pub struct Scope(&'static str, Instant, u64);
 
 impl Drop for Scope {
     fn drop(&mut self) {
@@ -57,11 +61,13 @@ impl Drop for Scope {
         if !ON.load(Ordering::Relaxed) {
             return;
         }
+        let allocs = crate::alloc::thread_count().saturating_sub(self.2);
         if let Ok(mut g) = STATS.lock() {
-            let e = g.get_or_insert_with(HashMap::new).entry(self.0).or_insert((0.0, 0, 0.0));
+            let e = g.get_or_insert_with(HashMap::new).entry(self.0).or_insert((0.0, 0, 0.0, 0));
             e.0 += ms;
             e.1 += 1;
             e.2 = e.2.max(ms);
+            e.3 += allocs;
         }
     }
 }
@@ -73,7 +79,7 @@ pub fn on() -> bool {
 }
 
 pub fn scope(name: &'static str) -> Option<Scope> {
-    (ON.load(Ordering::Relaxed) || HITCH.load(Ordering::Relaxed)).then(|| Scope(name, Instant::now()))
+    (ON.load(Ordering::Relaxed) || HITCH.load(Ordering::Relaxed)).then(|| Scope(name, Instant::now(), crate::alloc::thread_count()))
 }
 
 #[derive(Default)]
@@ -138,11 +144,29 @@ pub fn prof_report_system(
         "PROF frames {n}: avg {avg:.2} ms ({:.0} fps), p99 {p99:.2}, worst {worst:.2}, >25ms {spikes}\n",
         1000.0 / avg.max(0.001)
     );
+    // Heap allocations, every thread (alloc.rs).
+    static LAST_ALLOC: Mutex<(u64, u64)> = Mutex::new((0, 0));
+    if crate::alloc::counting() {
+        let (a, b) = crate::alloc::totals();
+        if let Ok(mut l) = LAST_ALLOC.lock() {
+            out.push_str(&format!(
+                "PROF allocs: {:.0} allocations a frame ({:.0} KB)\n",
+                (a - l.0) as f64 / n as f64,
+                (b - l.1) as f64 / n as f64 / 1024.0
+            ));
+            *l = (a, b);
+        }
+    }
     if let Ok(mut g) = STATS.lock() {
-        let mut v: Vec<(&'static str, (f64, u32, f64))> = g.take().unwrap_or_default().into_iter().collect();
+        let mut v: Vec<(&'static str, (f64, u32, f64, u64))> = g.take().unwrap_or_default().into_iter().collect();
         v.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
-        for (k, (tot, cnt, max)) in v.iter().take(30) {
-            out.push_str(&format!("PROF   {k:<36} {:7.3} ms/frame  max {max:7.2}  calls {cnt}\n", tot / n as f64));
+        for (k, (tot, cnt, max, al)) in v.iter().take(30) {
+            out.push_str(&format!("PROF   {k:<36} {:7.3} ms/frame  max {max:7.2}  calls {cnt}  allocs/frame {:.0}\n", tot / n as f64, *al as f64 / n as f64));
+        }
+        // The systems that allocate most (whatever their time).
+        v.sort_by(|a, b| b.1 .3.cmp(&a.1 .3));
+        for (k, (_, _, _, al)) in v.iter().take(15).filter(|x| x.1 .3 > 0) {
+            out.push_str(&format!("PROF   alloc {k:<36} {:.1} allocations a frame\n", *al as f64 / n as f64));
         }
     }
     // RenderDiagnosticsPlugin: CPU and GPU time of each render pass.
@@ -169,7 +193,7 @@ pub struct ProfRenderPlugins;
 
 impl bevy::app::Plugin for ProfRenderPlugins {
     fn build(&self, app: &mut bevy::app::App) {
-        if std::env::var("DXVIEW_PROF").is_ok() {
+        if env_on!("DXVIEW_PROF") {
             app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
             if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
                 use bevy::prelude::IntoScheduleConfigs;
@@ -253,7 +277,7 @@ static RMARK: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn add(name: &'static str, ms: f64) {
     if let Ok(mut g) = STATS.lock() {
-        let e = g.get_or_insert_with(HashMap::new).entry(name).or_insert((0.0, 0, 0.0));
+        let e = g.get_or_insert_with(HashMap::new).entry(name).or_insert((0.0, 0, 0.0, 0));
         e.0 += ms;
         e.1 += 1;
         e.2 = e.2.max(ms);
@@ -309,7 +333,7 @@ pub struct ProfPhasePlugin;
 
 impl bevy::app::Plugin for ProfPhasePlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        if std::env::var("DXVIEW_PROF").is_err() {
+        if !env_on!("DXVIEW_PROF") {
             return;
         }
         use bevy::app::{Last, MainScheduleOrder, PostUpdate, Update};
@@ -503,7 +527,7 @@ pub fn prof_ab_system(
     mut win: bevy::prelude::Query<&mut bevy::prelude::Window>,
     mut phase: bevy::prelude::Local<i32>,
 ) {
-    if std::env::var("DXVIEW_PROF_AB").is_err() {
+    if !env_on!("DXVIEW_PROF_AB") {
         return;
     }
     let t = time.elapsed_secs();
@@ -545,7 +569,7 @@ pub fn prof_features_system(
     mut st: bevy::prelude::Local<(i32, f32, f32, u32, Vec<(String, f32)>, f32)>,
     mut exit: bevy::prelude::MessageWriter<bevy::prelude::AppExit>,
 ) {
-    if std::env::var("DXVIEW_PROF_FEATURES").is_err() {
+    if !env_on!("DXVIEW_PROF_FEATURES") {
         return;
     }
     let (phase, t_in, sum, n, saved, base) = &mut *st;
@@ -610,7 +634,8 @@ static SPANS: Mutex<Option<HashMap<String, (f64, u64)>>> = Mutex::new(None);
 /// Exclusive time (the span's own work, minus spans nested inside it on the same thread) by (thread kind, name):
 /// a system waiting on a parallel loop runs other systems' tasks meanwhile, so inclusive times overlap and add up
 /// to more than the frame. Thread kinds: main, render, worker.
-static EXCL: Mutex<Option<HashMap<(&'static str, String), f64>>> = Mutex::new(None);
+/// (exclusive ms, exclusive heap allocations) - alloc.rs counts them while profiling.
+static EXCL: Mutex<Option<HashMap<(&'static str, String), (f64, u64)>>> = Mutex::new(None);
 
 /// DXVIEW_PROF_TIMELINE=1: one frame's spans on every thread, in order (0 off, 1 armed - starts with the next
 /// frame, 2 capturing, 3 captured - printed by the next report).
@@ -622,8 +647,9 @@ static TL_NEXT_TID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 
 thread_local! {
     static TID: u32 = TL_NEXT_TID.fetch_add(1, Ordering::Relaxed);
-    /// Open spans on this thread: time spent in spans nested inside each.
-    static NEST: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Open spans on this thread: time and allocations in spans nested inside each (and the profiler's own
+    /// bookkeeping, kept out of the counts), and the thread's allocation count when the span started.
+    static NEST: std::cell::RefCell<Vec<(f64, u64, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The render thread is unnamed: it's the one that enters Bevy's "render thread" span.
     static KIND: std::cell::Cell<&'static str> = std::cell::Cell::new(match std::thread::current().name() {
         Some("main") => "main",
@@ -665,13 +691,16 @@ struct SpanTotals;
 
 impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for SpanTotals {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
+        let a0 = crate::alloc::thread_count();
         let mut name = attrs.metadata().name().to_string();
         attrs.record(&mut NameVisitor(&mut name));
         if let Some(s) = ctx.span(id) {
             s.extensions_mut().insert(SpanName(name));
         }
+        overhead(a0);
     }
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
+        let a0 = crate::alloc::thread_count();
         if let Some(s) = ctx.span(id) {
             if s.extensions().get::<SpanName>().is_some_and(|n| n.0 == "render thread") {
                 KIND.with(|k| k.set("render"));
@@ -688,17 +717,20 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for SpanTotals {
             }
             s.extensions_mut().replace(SpanStart(Instant::now()));
         }
-        NEST.with(|n| n.borrow_mut().push(0.0));
+        overhead(a0);
+        NEST.with(|n| n.borrow_mut().push((0.0, 0, crate::alloc::thread_count())));
     }
     fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
-        let nested = NEST.with(|n| n.borrow_mut().pop()).unwrap_or(0.0);
+        let a_end = crate::alloc::thread_count();
+        let (nested, nested_a, a_start) = NEST.with(|n| n.borrow_mut().pop()).unwrap_or((0.0, 0, a_end));
+        let own_allocs = a_end.saturating_sub(a_start).saturating_sub(nested_a);
         let Some(s) = ctx.span(id) else { return };
         let ext = s.extensions();
         let (Some(st), Some(n)) = (ext.get::<SpanStart>(), ext.get::<SpanName>()) else { return };
         let ms = st.0.elapsed().as_secs_f64() * 1000.0;
         NEST.with(|v| {
             if let Some(parent) = v.borrow_mut().last_mut() {
-                *parent += ms;
+                parent.0 += ms;
             }
         });
         let kind = KIND.with(|k| k.get());
@@ -718,24 +750,44 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for SpanTotals {
             }
         }
         if let Ok(mut g) = EXCL.lock() {
-            *g.get_or_insert_with(HashMap::new).entry((kind, n.0.clone())).or_insert(0.0) += (ms - nested).max(0.0);
+            let e = g.get_or_insert_with(HashMap::new).entry((kind, n.0.clone())).or_insert((0.0, 0));
+            e.0 += (ms - nested).max(0.0);
+            e.1 += own_allocs;
         }
         if let Ok(mut g) = SPANS.lock() {
             let e = g.get_or_insert_with(HashMap::new).entry(n.0.clone()).or_insert((0.0, 0));
             e.0 += ms;
             e.1 += 1;
         }
+        drop(ext);
+        // The whole span (its own allocations, its children's and this bookkeeping) is nested time for its parent.
+        let total = crate::alloc::thread_count().saturating_sub(a_start);
+        NEST.with(|v| {
+            if let Some(parent) = v.borrow_mut().last_mut() {
+                parent.1 += total;
+            }
+        });
     }
+}
+
+/// The profiler's own allocations in a span callback count as nested for the open span (left out of its count).
+fn overhead(a0: u64) {
+    let d = crate::alloc::thread_count().saturating_sub(a0);
+    NEST.with(|v| {
+        if let Some(parent) = v.borrow_mut().last_mut() {
+            parent.1 += d;
+        }
+    });
 }
 
 /// LogPlugin::custom_layer: the span totals layer when profiling (it only sees spans with the `spans` feature).
 pub fn span_layer(_app: &mut bevy::app::App) -> Option<bevy::log::BoxedLayer> {
-    std::env::var("DXVIEW_PROF").is_ok().then(|| Box::new(SpanTotals) as bevy::log::BoxedLayer)
+    env_on!("DXVIEW_PROF").then(|| Box::new(SpanTotals) as bevy::log::BoxedLayer)
 }
 
 /// Print a captured frame timeline (DXVIEW_PROF_TIMELINE) and arm the next capture: the 2nd and 4th reports.
 fn timeline_report(reports: u32) {
-    if std::env::var_os("DXVIEW_PROF_TIMELINE").is_none() {
+    if !env_on!("DXVIEW_PROF_TIMELINE") {
         return;
     }
     if TL_STATE.load(Ordering::Relaxed) == 3 {
@@ -768,17 +820,25 @@ pub fn dump_spans(frames: usize) {
     drop(g);
     // Exclusive time per thread kind: what each thread really spent on what.
     let Ok(mut g) = EXCL.lock() else { return };
-    let all: Vec<((&'static str, String), f64)> = g.take().unwrap_or_default().into_iter().collect();
+    let all: Vec<((&'static str, String), (f64, u64))> = g.take().unwrap_or_default().into_iter().collect();
     let f = frames.max(1) as f64;
     for kind in ["main", "render", "worker"] {
-        let mut v: Vec<&((&'static str, String), f64)> = all.iter().filter(|e| e.0 .0 == kind).collect();
-        v.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let sum: f64 = v.iter().map(|e| e.1).sum();
-        println!("PROF excl {kind}: {:.3} ms/frame in spans", sum / f);
+        let mut v: Vec<&((&'static str, String), (f64, u64))> = all.iter().filter(|e| e.0 .0 == kind).collect();
+        v.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+        let sum: f64 = v.iter().map(|e| e.1 .0).sum();
+        let sum_a: u64 = v.iter().map(|e| e.1 .1).sum();
+        println!("PROF excl {kind}: {:.3} ms/frame in spans, {:.0} allocations a frame", sum / f, sum_a as f64 / f);
         for e in v.iter().take(if kind == "worker" { 25 } else { 45 }) {
             let k: String = e.0 .1.chars().take(90).collect();
-            println!("PROF excl {kind} {:7.3} ms/frame  {k}", e.1 / f);
+            println!("PROF excl {kind} {:7.3} ms/frame  {:7.0} allocs  {k}", e.1 .0 / f, e.1 .1 as f64 / f);
         }
+    }
+    // Who allocates most, every thread.
+    let mut v: Vec<&((&'static str, String), (f64, u64))> = all.iter().collect();
+    v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    for e in v.iter().take(40) {
+        let k: String = e.0 .1.chars().take(90).collect();
+        println!("PROF excl-alloc {:<6} {:8.0} allocs/frame  {k}", e.0 .0, e.1 .1 as f64 / f);
     }
 }
 
@@ -801,7 +861,7 @@ pub fn mesh_owner_system(
     deco_names: bevy::prelude::Query<&crate::actors::Deco>,
     mut acc: bevy::prelude::Local<(HashMap<String, u32>, u32, Option<Instant>)>,
 ) {
-    if std::env::var_os("DXVIEW_MESHLOG").is_none() {
+    if !env_on!("DXVIEW_MESHLOG") {
         ev.clear();
         return;
     }
@@ -950,7 +1010,7 @@ pub fn census_system(world: &mut bevy::prelude::World, mut frame: bevy::prelude:
     let ents: Vec<Entity> = q.iter(world).filter(|(_, _, v)| v.get()).map(|(e, _, _)| e).collect();
     let mut groups: HashMap<String, usize> = HashMap::new();
     let std_mats = world.resource::<Assets<StandardMaterial>>();
-    let mut alpha = |e: Entity, w: &World| -> String {
+    let alpha = |e: Entity, w: &World| -> String {
         if let Some(m) = w.get::<MeshMaterial3d<StandardMaterial>>(e) {
             return format!("Std/{:?}", std_mats.get(&m.0).map(|m| m.alpha_mode));
         }

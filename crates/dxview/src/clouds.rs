@@ -382,7 +382,7 @@ pub fn clouds_system(
         .map(|b| b.positions.iter().map(|p| p[1]).fold(f32::MIN, f32::max))
         .fold(f32::MIN, f32::max)
         .max(bmin.y);
-    st.next_strike = if std::env::var_os("DXVIEW_BOLT").is_some() { 1.0 } else { 8.0 };
+    st.next_strike = if env_on!("DXVIEW_BOLT") { 1.0 } else { 8.0 };
     commands.spawn((
         DirectionalLight { illuminance: 0.0, shadow_maps_enabled: false, color: Color::srgb(0.8, 0.86, 1.0), ..default() },
         Transform::default().looking_to(Vec3::new(0.2, -1.0, 0.1), Vec3::Z),
@@ -433,7 +433,7 @@ fn update(
     let (eye, fwd) = cam.iter().next().map_or((Vec3::ZERO, Vec3::NEG_Z), |t| (t.translation, t.forward().as_vec3()));
     // Lightning: a strike every 6..30 s in heavy rain, rarer in light rain, none when dry.
     // DXVIEW_BOLT=1: a ground strike straight ahead every 3 s (screenshots).
-    let forced = std::env::var_os("DXVIEW_BOLT").is_some();
+    let forced = env_on!("DXVIEW_BOLT");
     let mut flash = Vec4::ZERO;
     let mut light = 0.0;
     if r > 0.3 || forced {
@@ -500,7 +500,7 @@ fn update(
     if let Some(s) = st.strike.as_mut() {
         s.t += dt;
         // DXVIEW_FLASH_HOLD=1: (test shots) the flash held at full for the strike's 2 s.
-        let lv = if std::env::var_os("DXVIEW_FLASH_HOLD").is_some() { 1.0 } else { strike_level(s) };
+        let lv = if env_on!("DXVIEW_FLASH_HOLD") { 1.0 } else { strike_level(s) };
         flash = Vec4::new(s.at.x, 650.0, s.at.z, lv * 6.0);
         light = if s.bolt.is_some() { lv * 1.5 } else { lv };
         if let Some((_, mat)) = s.bolt.as_ref() {

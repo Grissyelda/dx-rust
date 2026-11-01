@@ -102,11 +102,11 @@ pub fn sync(yaw: f32, pitch: f32) -> Option<(f32, f32)> {
         s.orbit_yaw = yaw;
         s.orbit_pitch = pitch.clamp(-1.3, 1.2);
         s.idle = 0.0;
-        if std::env::var_os("DXVIEW_BODYLOG").is_some() {
+        if env_on!("DXVIEW_BODYLOG") {
             println!("ORBIT start yaw {:.2} pitch {:.2} gen {gen}", yaw, pitch);
         }
         // DXVIEW_ORBIT="yaw_deg,pitch_deg": (test shots) the orbit turned that far from behind JC.
-        if let Some((a, b)) = std::env::var("DXVIEW_ORBIT").ok().and_then(|v| {
+        if let Some((a, b)) = env_val!("DXVIEW_ORBIT").map(str::to_owned).and_then(|v| {
             let (a, b) = v.split_once(',')?;
             Some((a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?))
         }) {
@@ -205,7 +205,7 @@ pub fn toggle_system(
         }
         if !enabled() {
             st.active = false;
-        } else if std::env::var_os("DXVIEW_THIRD").is_some() && st.eye.is_none() && st.dist == 0.0 {
+        } else if env_on!("DXVIEW_THIRD") && st.eye.is_none() && st.dist == 0.0 {
             // DXVIEW_THIRD=1: start in third person (screenshots).
             st.active = true;
         }

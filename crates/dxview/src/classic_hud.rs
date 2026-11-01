@@ -63,7 +63,7 @@ impl HudLayer {
 
 /// The gamma the menus and HUD are drawn with (same as the 3D view).
 pub fn ui_gamma() -> f32 {
-    std::env::var("DXVIEW_GAMMA").ok().and_then(|v| v.parse().ok()).unwrap_or_else(crate::settings::gamma)
+    env_val!("DXVIEW_GAMMA").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or_else(crate::settings::gamma)
 }
 
 /// Brightness changes reach every UI layer.
@@ -537,7 +537,7 @@ fn blank_image(w: u32, h: u32) -> Image {
 
 /// The weapon in hand, as the ammo display and belt see it.
 #[derive(Clone, Default)]
-struct HeldView {
+pub struct HeldView {
     class: String,
     ammo_class: Option<String>,
     reload_count: u32,
@@ -551,7 +551,7 @@ struct HeldView {
 
 /// What the HUD shows this frame, gathered from the game state.
 #[derive(Default)]
-struct Snapshot {
+pub struct Snapshot {
     parts: [i32; 6],
     energy: f32,
     breath: Option<f32>,
@@ -593,7 +593,7 @@ pub fn classic_hud_system(
         )>,
         ResMut<Assets<HudLayer>>,
     ),
-    mut swim_clock: Local<f32>,
+    (mut swim_clock, mut snap_keep): (Local<f32>, Local<Snapshot>),
     (mut msg, charged): (
         ResMut<crate::movers::HudMessage>,
         Res<crate::charged::ActiveCharged>,
@@ -608,7 +608,7 @@ pub fn classic_hud_system(
         window.physical_width() as i32 / s,
         window.physical_height() as i32 / s,
     );
-    let to_logical = |v: i32| v as f32 * s as f32 / window.scale_factor();
+    let _to_logical = |v: i32| v as f32 * s as f32 / window.scale_factor();
 
     if hud.true_north.is_none() {
         let n = level
@@ -628,57 +628,78 @@ pub fn classic_hud_system(
         *swim_clock += dt;
     }
     let p = &ph.parts;
-    let snap = Snapshot {
-        parts: [P_HEAD, P_TORSO, P_ARM_L, P_ARM_R, P_LEG_L, P_LEG_R]
-            .map(|i| p[i].max(0.0).round() as i32),
-        energy: ph.energy,
-        breath: ph.breath,
-        swim_time: *swim_clock,
-        yaw,
-        dead: ph.dead,
-        held: weapons.held.as_ref().map(|h| HeldView {
-            class: h.stats.class.clone(),
-            ammo_class: h.stats.ammo_class.clone(),
-            reload_count: h.stats.reload_count,
-            loaded: *clips.0.get(&h.stats.class).unwrap_or(&0) as i32,
-            reloading: h.state == WState::Reloading,
-            can_track: h.stats.can_track,
-            item: h.stats.item || h.stats.class == "POVCorpse",
-        }),
-        pending: weapons.pending,
-        loaded_ammo: weapons.loaded_ammo.clone(),
-        lock_text: lock.0 .0.clone(),
-        lock_color: {
-            let c = lock.1 .0.to_srgba();
-            [
-                (c.red * 255.0) as u8,
-                (c.green * 255.0) as u8,
-                (c.blue * 255.0) as u8,
-            ]
-        },
-        // bHUDShowAllAugs: every installed aug that can be toggled, lit while on.
-        augs: {
-            let g = crate::abilities::lock();
-            let mut v: Vec<(i32, String, bool)> = g
-                .as_ref()
-                .map(|a| {
-                    a.augs
-                        .list
-                        .iter()
-                        .filter(|x| x.has && !x.def.always_active)
-                        .map(|x| (x.hotkey, x.def.small_icon.clone(), x.active))
-                        .collect()
-                })
-                .unwrap_or_default();
-            v.sort_by_key(|x| x.0);
-            v
-        },
-        items: charged
-            .0
-            .iter()
-            .map(|c| (c.class.clone(), (c.charge / c.max.max(1.0)).clamp(0.0, 1.0)))
-            .collect(),
+    // The snapshot the windows draw from: kept between frames and updated in place (strings and lists copied only
+    // when they changed, so a steady HUD allocates nothing).
+    let snap = &mut *snap_keep;
+    snap.parts = [P_HEAD, P_TORSO, P_ARM_L, P_ARM_R, P_LEG_L, P_LEG_R].map(|i| p[i].max(0.0).round() as i32);
+    snap.energy = ph.energy;
+    snap.breath = ph.breath;
+    snap.swim_time = *swim_clock;
+    snap.yaw = yaw;
+    snap.dead = ph.dead;
+    match weapons.held.as_ref() {
+        Some(h) => {
+            let v = snap.held.get_or_insert_with(HeldView::default);
+            if v.class != h.stats.class {
+                v.class.clone_from(&h.stats.class);
+            }
+            if v.ammo_class != h.stats.ammo_class {
+                v.ammo_class.clone_from(&h.stats.ammo_class);
+            }
+            v.reload_count = h.stats.reload_count;
+            v.loaded = *clips.0.get(&h.stats.class).unwrap_or(&0) as i32;
+            v.reloading = h.state == WState::Reloading;
+            v.can_track = h.stats.can_track;
+            v.item = h.stats.item || h.stats.class == "POVCorpse";
+        }
+        None => snap.held = None,
+    }
+    snap.pending = weapons.pending;
+    if snap.loaded_ammo != weapons.loaded_ammo {
+        snap.loaded_ammo.clone_from(&weapons.loaded_ammo);
+    }
+    if snap.lock_text != lock.0 .0 {
+        snap.lock_text.clone_from(&lock.0 .0);
+    }
+    snap.lock_color = {
+        let c = lock.1 .0.to_srgba();
+        [(c.red * 255.0) as u8, (c.green * 255.0) as u8, (c.blue * 255.0) as u8]
     };
+    // bHUDShowAllAugs: every installed aug that can be toggled, lit while on (by hotkey).
+    {
+        let g = crate::abilities::lock();
+        let mut n = 0;
+        if let Some(a) = g.as_ref() {
+            for x in a.augs.list.iter().filter(|x| x.has && !x.def.always_active) {
+                if n == snap.augs.len() {
+                    snap.augs.push((0, String::new(), false));
+                }
+                let e = &mut snap.augs[n];
+                e.0 = x.hotkey;
+                if e.1 != x.def.small_icon {
+                    e.1.clone_from(&x.def.small_icon);
+                }
+                e.2 = x.active;
+                n += 1;
+            }
+        }
+        snap.augs.truncate(n);
+        snap.augs.sort_by_key(|x| x.0);
+    }
+    snap.items.truncate(charged.0.len());
+    for (k, c) in charged.0.iter().enumerate() {
+        let f = (c.charge / c.max.max(1.0)).clamp(0.0, 1.0);
+        match snap.items.get_mut(k) {
+            Some(e) => {
+                if e.0 != c.class {
+                    e.0.clone_from(&c.class);
+                }
+                e.1 = f;
+            }
+            None => snap.items.push((c.class.clone(), f)),
+        }
+    }
+    let snap = &*snap;
 
     // Player messages (ClientMessage) go to the message log; the death prompt and keypad entry line stay where
     // they are. A message is new when its text changes or its timer is set again.
@@ -689,7 +710,10 @@ pub fn classic_hud_system(
             msg.time_left = 0.0;
         }
     }
-    hud.seen_msg = (msg.text.clone(), msg.time_left);
+    if hud.seen_msg.0 != msg.text {
+        hud.seen_msg.0.clone_from(&msg.text);
+    }
+    hud.seen_msg.1 = msg.time_left;
     for m in MESSAGES
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
@@ -947,23 +971,22 @@ pub fn classic_hud_system(
         // Windows that only change with what they show are redrawn only when that changes.
         let key: Option<u64> = match w {
             Win::Belt => {
-                let mut ammo: Vec<_> = snap.loaded_ammo.iter().collect();
-                ammo.sort();
-                Some(hkey(&(
-                    format!("{:?}", inv.0.belt),
-                    inv.0
-                        .belt
-                        .iter()
-                        .flatten()
-                        .map(|&i| format!("{:?}", inv.0.items.get(i)))
-                        .collect::<Vec<_>>(),
-                    snap.held
-                        .as_ref()
-                        .map(|h| (h.class.clone(), h.ammo_class.clone(), h.loaded)),
-                    snap.pending,
-                    format!("{ammo:?}{:?}", inv.0.ammo),
-                    (ww, wh, s),
-                )))
+                // Hashed field by field (no formatted copies of the items).
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                inv.0.belt.hash(&mut h);
+                for &i in inv.0.belt.iter().flatten() {
+                    if let Some(it) = inv.0.items.get(i) {
+                        (&it.def.class, &it.def.name, &it.def.belt_name, &it.def.icon, it.count, it.uid).hash(&mut h);
+                    }
+                }
+                snap.held.as_ref().map(|v| (&v.class, &v.ammo_class, v.loaded)).hash(&mut h);
+                snap.pending.hash(&mut h);
+                // The loaded-ammo map in any order.
+                snap.loaded_ammo.iter().fold(0u64, |a, kv| a ^ hkey(&kv)).hash(&mut h);
+                inv.0.ammo.hash(&mut h);
+                (ww, wh, s).hash(&mut h);
+                Some(h.finish())
             }
             Win::ConCursor => Some(hkey(&(ww, wh, s))),
             // The hit display only changes with its colours and bars.
@@ -981,14 +1004,16 @@ pub fn classic_hud_system(
             }
             // The compass only changes when the tick strip moves a pixel.
             Win::Compass => Some(hkey(&(compass_positions(snap.yaw, hud.true_north.unwrap_or(0)), (ww, wh, s)))),
-            Win::Active => Some(hkey(&(
-                format!("{:?}", snap.augs),
-                snap.items
-                    .iter()
-                    .map(|(c, f)| (c.clone(), (f * 1000.0) as i32))
-                    .collect::<Vec<_>>(),
-                (ww, wh, s),
-            ))),
+            Win::Active => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                snap.augs.hash(&mut h);
+                for (c, f) in &snap.items {
+                    (c, (f * 1000.0) as i32).hash(&mut h);
+                }
+                (ww, wh, s).hash(&mut h);
+                Some(h.finish())
+            }
             _ => None,
         };
         // A settings change (theme, translucency, borders) redraws everything.

@@ -14,7 +14,7 @@ use std::collections::HashSet;
 
 fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("DXVIEW_CPU_CULL").is_none())
+    *ON.get_or_init(|| !env_on!("DXVIEW_CPU_CULL"))
 }
 
 /// Once per map: the level's BSP surfaces are culled on the GPU.

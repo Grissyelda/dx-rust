@@ -52,22 +52,6 @@ fn path() -> std::path::PathBuf {
         .unwrap_or_else(|| "session.txt".into())
 }
 
-pub fn encode(ng: &NewGame) -> String {
-    let mut s = format!(
-        "name={}\nskin={}\ndifficulty={}\npoints_avail={}\npoints_total={}\n",
-        ng.name.replace('\n', " "),
-        ng.skin,
-        ng.difficulty,
-        ng.points_avail,
-        ng.points_total
-    );
-    for (c, l) in &ng.skills {
-        s.push_str(&format!("skill={c},{l}\n"));
-    }
-    s.push_str(&format!("female={}\nretro_morpheus={}\nmale_interactions={}\n", ng.female as u8, ng.retro_morpheus as u8, ng.male_interactions as u8));
-    s
-}
-
 pub fn decode(t: &str) -> NewGame {
     let mut ng = NewGame::default();
     for line in t.lines() {
@@ -110,6 +94,12 @@ pub fn session() -> Option<NewGame> {
     SESSION.read().ok().and_then(|s| s.clone())
 }
 
+/// Read the session in place (no copy of its strings).
+pub fn with_session<R>(f: impl FnOnce(&NewGame) -> R) -> Option<R> {
+    load();
+    SESSION.read().ok().and_then(|s| s.as_ref().map(f))
+}
+
 /// The character of a loaded save (save.rs), in place of session.txt.
 pub fn set_session(ng: NewGame) {
     load();
@@ -149,7 +139,7 @@ pub fn lddp() -> bool {
 
 /// Playing the female JC (LDDP's LDDPJCIsFemale).
 pub fn female() -> bool {
-    lddp() && session().is_some_and(|s| s.female)
+    lddp() && with_session(|s| s.female).unwrap_or(false)
 }
 
 /// LDDP's flags, set on every arrival (JCDentonMale.TravelPostAccept), all never expiring.
@@ -159,12 +149,12 @@ pub fn lddp_flags() -> [(&'static str, bool); 3] {
 }
 
 pub fn combat_difficulty() -> f32 {
-    session().map_or(1.5, |s| s.difficulty)
+    with_session(|s| s.difficulty).unwrap_or(1.5)
 }
 
 /// DeusExPlayer.PlayerSkin: the portrait picked on the new-game screen (0..4).
 pub fn skin() -> u8 {
-    session().map_or(0, |s| s.skin.min(4))
+    with_session(|s| s.skin.min(4)).unwrap_or(0)
 }
 
 /// JCDentonTex0 / 4 / 5 / 6 / 7 (JCDentonMale.TravelPostAccept); PaulDentonTex likewise.
@@ -198,11 +188,22 @@ pub fn female_skins() -> [String; 8] {
 
 /// JC's third-person mesh: GM_Trench, or GFM_Trench for Lay D Denton.
 pub fn jc_mesh() -> String {
-    // Augmentique: the outfit's body.
-    if let Some(m) = crate::augmentique::player_mesh() {
-        return m;
+    // Asked every frame (mirror / first-person bodies): worked out again only when what it depends on changes.
+    static CACHE: std::sync::Mutex<Option<((u64, bool, u64), String)>> = std::sync::Mutex::new(None);
+    let key = (crate::augmentique::generation(), female(), unreal_pkg::classes::override_generation());
+    if let Ok(g) = CACHE.lock() {
+        if let Some((k, m)) = g.as_ref() {
+            if *k == key {
+                return m.clone();
+            }
+        }
     }
-    jc_base_mesh()
+    // Augmentique: the outfit's body.
+    let m = crate::augmentique::player_mesh().unwrap_or_else(jc_base_mesh);
+    if let Ok(mut g) = CACHE.lock() {
+        *g = Some((key, m.clone()));
+    }
+    m
 }
 
 /// JC's mesh without an Augmentique outfit.
@@ -211,12 +212,8 @@ pub fn jc_base_mesh() -> String {
         return "DeusExCharacters.GFM_Trench".into();
     }
     // HDTP's JC (its HD characters switch on): the "hdtp" class layer has his mesh.
-    for (c, n, _, v) in unreal_pkg::classes::override_layer("hdtp") {
-        if c.eq_ignore_ascii_case("JCDentonMale") && n.eq_ignore_ascii_case("Mesh") {
-            if let unreal_pkg::props::Value::Path(m) = v {
-                return m;
-            }
-        }
+    if let Some(unreal_pkg::props::Value::Path(m)) = unreal_pkg::classes::override_value("hdtp", "JCDentonMale", "Mesh") {
+        return m;
     }
     "DeusExCharacters.GM_Trench".into()
 }
@@ -312,7 +309,7 @@ pub fn skin_overrides(map: &str) -> Vec<(String, String, u32, unreal_pkg::props:
     v.push(("JCDouble".into(), "CarcassType".into(), 0, Value::Path("FemJC.JCDentonFemaleCarcass".into())));
     // DentonClone.SetSkin, in the intro (Area 51's clones stay men): her tube, on GFM_TShirtPants in the
     // Land pose, turned a quarter.
-    if map.to_ascii_lowercase().starts_with("00_intro") {
+    if crate::util::starts_with_ci(&map, "00_intro") {
         let c = "DentonClone";
         let tubes = [
             "FemJC.JCDentonFemaleTex0Tube",
@@ -381,21 +378,6 @@ pub fn portrait(speaker: &str) -> String {
 
 pub fn player_name() -> String {
     session().map_or_else(|| "JC Denton".into(), |s| s.name)
-}
-
-/// Start a fresh game on `map` with these choices (closes this copy).
-pub fn start(root: &std::path::Path, map: &str, ng: &NewGame) {
-    let _ = std::fs::write(path(), encode(ng));
-    relaunch(root, map);
-}
-
-/// Start a fresh copy of the game on `map`.
-pub fn relaunch(root: &std::path::Path, map: &str) {
-    if let Ok(exe) = std::env::current_exe() {
-        if std::process::Command::new(exe).arg(root).arg(map).spawn().is_ok() {
-            std::process::exit(0);
-        }
-    }
 }
 
 #[cfg(test)]

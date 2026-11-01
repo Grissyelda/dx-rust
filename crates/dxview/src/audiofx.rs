@@ -129,10 +129,6 @@ pub fn update_duck(talking: bool, dt: f32) -> f32 {
     *d
 }
 
-pub fn duck() -> f32 {
-    DUCK.lock().map(|d| *d).unwrap_or(1.0)
-}
-
 #[derive(Default)]
 pub struct Scape {
     next: f32,

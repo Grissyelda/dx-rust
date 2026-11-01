@@ -64,7 +64,7 @@ pub fn spawn_coronas(
     let mut cache: std::collections::HashMap<(String, [u32; 3]), Handle<Image>> =
         std::collections::HashMap::new();
     for (i, c) in level.coronas.iter().enumerate() {
-        if std::env::var_os("DXVIEW_CORONALOG").is_some() {
+        if env_on!("DXVIEW_CORONALOG") {
             println!("CORONA {i} at bevy {:?} scale {} tex {}", ue_to_bevy(c.pos), c.draw_scale, c.texture);
         }
         let key = (c.texture.clone(), c.color.map(|v| (v * 1000.0) as u32));

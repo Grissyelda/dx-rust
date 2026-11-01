@@ -92,7 +92,7 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
         base,
         extension: BspShadow {
             params: BspShadowParams {
-                p: Vec4::new(STRENGTH, 1.0 / ENCODE, dx_level::lighting::LIGHT_GAIN, std::env::var("DXVIEW_SHADOW_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)),
+                p: Vec4::new(STRENGTH, 1.0 / ENCODE, dx_level::lighting::LIGHT_GAIN, env_val!("DXVIEW_SHADOW_DEBUG").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(0.0)),
                 q: Vec4::new(if crate::postfx::ao_on() { 0.85 } else { 0.0 }, 0.0, 0.0, 0.0),
                 r: Vec4::ZERO,
                 s: Vec4::new(1.0, 0.0, 0.0, 0.0),
@@ -166,7 +166,7 @@ pub const SHADOW_MARK: f32 = 0.0201;
 pub fn setup_shadow_lights(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
     commands.insert_resource(ShadowLights::default());
     // DXVIEW_SHADOW_CUBE="x,y,z" (Bevy metres): a plain test cube that casts.
-    if let Some(p) = std::env::var("DXVIEW_SHADOW_CUBE").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<_>>()) {
+    if let Some(p) = env_val!("DXVIEW_SHADOW_CUBE").map(str::to_owned).map(|v| v.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<_>>()) {
         if p.len() == 3 {
             commands.spawn((
                 Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
@@ -303,7 +303,7 @@ pub fn shadow_light_system(
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-            if std::env::var_os("DXVIEW_SHADOWLOG").is_some() {
+            if env_on!("DXVIEW_SHADOWLOG") {
                 eprintln!(
                     "SHADOW candidates {:?}",
                     scored.iter().take(6).map(|(s, i)| (*i, *s, lvl.lights[*i].pos, lvl.lights[*i].radius)).collect::<Vec<_>>()
@@ -338,7 +338,7 @@ pub fn shadow_light_system(
             s.weight = 0.0;
         }
     }
-    let gain = std::env::var("DXVIEW_SHADOW_GAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0f32);
+    let gain = env_val!("DXVIEW_SHADOW_GAIN").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(1.0f32);
     for (sl, mut pl, mut tf, mut vis) in &mut lights {
         let s = st.slots[sl.slot];
         let aim = s.light.and_then(|i| st.aim.get(&i).copied());
@@ -422,7 +422,7 @@ pub fn tag_casters_system(
             None
         };
         let casts = matches!(alpha, Some(AlphaMode::Opaque) | Some(AlphaMode::Mask(_))) && !holds_light && !too_big;
-        if std::env::var_os("DXVIEW_SHADOWLOG").is_some() {
+        if env_on!("DXVIEW_SHADOWLOG") {
             eprintln!("SHADOW tag {e:?} alpha {alpha:?} size {size:.1} at {:?} casts {casts} anim {} aabb {:?}", gt.translation(), anim_parts.contains(e), aabb);
         }
         let mut ec = commands.entity(e);

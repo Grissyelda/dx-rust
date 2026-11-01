@@ -59,12 +59,6 @@ pub struct Takedown {
 }
 
 impl Takedowns {
-    pub fn count(&self, lethal: bool, by_player: bool) -> usize {
-        self.log
-            .iter()
-            .filter(|t| t.lethal == lethal && t.by_player == by_player)
-            .count()
-    }
 }
 
 /// Debug god mode (spawn menu): the player takes no damage at all.
@@ -170,7 +164,7 @@ impl PlayerHealth {
     pub fn damage(&mut self, dmg: f32, damage_type: &str, offset: DVec3) {
         // DXVIEW_GOD=1: god mode from the start (test runs).
         static ENV_GOD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if self.dead || GOD_MODE.load(std::sync::atomic::Ordering::Relaxed) || *ENV_GOD.get_or_init(|| std::env::var("DXVIEW_GOD").is_ok()) {
+        if self.dead || GOD_MODE.load(std::sync::atomic::Ordering::Relaxed) || *ENV_GOD.get_or_init(|| env_on!("DXVIEW_GOD")) {
             return;
         }
         self.damage_icons.push((damage_type.to_string(), offset));
@@ -456,11 +450,6 @@ impl PlayerHealth {
         (k, false)
     }
 
-    /// CalculateAccuracy penalties from wounded arms and head.
-    pub fn accuracy_penalty(&self) -> f32 {
-        self.accuracy_penalty_with(false)
-    }
-
     /// With `best_arm` (GMDX Ambidextrous perk, pistols) only the healthier arm counts.
     pub fn accuracy_penalty_with(&self, best_arm: bool) -> f32 {
         let p = &self.parts;
@@ -631,7 +620,77 @@ pub struct DoorWait {
     pub encroaches: bool,
 }
 
+/// Damage over time on a pawn, apart from the rest of its state: ScriptedPawn.UpdatePoison (`poison_counter` more
+/// doses of PoisonEffect every 2 s) and GMDX's UpdateBleed (Hemorrhage: `bleed_counter` more BleedEffect ticks of
+/// `bleed_damage`, one a second). Started by npc_system's damage handling, ticked by `afflictions_system`.
+#[derive(Component, Default, Clone, Debug)]
+pub struct Afflictions {
+    pub poison_counter: u32,
+    pub poison_timer: f32,
+    pub poison_damage: f32,
+    pub poisoner: Option<usize>,
+    pub bleed_counter: u32,
+    pub bleed_timer: f32,
+    pub bleed_damage: f32,
+}
+
+impl Afflictions {
+    /// One frame: the doses that fall due, as hits on the pawn (`at` is its centre).
+    pub fn tick(&mut self, dt: f32, blocker: usize, at: DVec3, out: &mut Vec<crate::damage::PawnHit>) {
+        if self.poison_counter > 0 {
+            self.poison_timer += dt;
+            if self.poison_timer >= 2.0 {
+                self.poison_timer = 0.0;
+                self.poison_counter -= 1;
+                out.push(crate::damage::PawnHit {
+                    blocker,
+                    damage: self.poison_damage,
+                    damage_type: "PoisonEffect",
+                    hit_loc: at,
+                    attacker: self.poisoner,
+                    attacker_pos: at,
+                });
+            }
+        }
+        if self.bleed_counter > 0 {
+            self.bleed_timer += dt;
+            if self.bleed_timer >= 1.0 {
+                self.bleed_timer = 0.0;
+                self.bleed_counter -= 1;
+                if self.bleed_damage > 0.0 {
+                    out.push(crate::damage::PawnHit {
+                        blocker,
+                        damage: self.bleed_damage,
+                        damage_type: "BleedEffect",
+                        hit_loc: at,
+                        attacker: None,
+                        attacker_pos: at,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Poison and bleeding doses on living pawns in the world, queued as hits for npc_system (which runs after).
+pub fn afflictions_system(
+    time: Res<Time>,
+    blockers: Res<crate::actors::Blockers>,
+    mut q: Query<(&Npc, &mut Afflictions), Without<OutOfWorld>>,
+    mut hits: ResMut<crate::damage::PawnHits>,
+) {
+    let dt = time.delta_secs();
+    for (npc, mut aff) in &mut q {
+        if npc.state == NpcState::Dead || npc.body.is_none() || (aff.poison_counter == 0 && aff.bleed_counter == 0) {
+            continue;
+        }
+        let Some(c) = blockers.list.get(npc.blocker) else { continue };
+        aff.tick(dt, npc.blocker, c.center, &mut hits.0);
+    }
+}
+
 #[derive(Component)]
+#[require(Afflictions)]
 pub struct Npc {
     pub actor: usize,
     pub blocker: usize,
@@ -848,15 +907,6 @@ pub struct Npc {
     pub seek_level: i32,
     /// Ammo carried for the weapon (InitialInventory), which picks the projectile for dart guns.
     pub ammo: Option<String>,
-    /// ScriptedPawn poison: `poison_counter` more doses of PoisonEffect every 2 s.
-    pub poison_counter: u32,
-    pub poison_timer: f32,
-    pub poison_damage: f32,
-    pub poisoner: Option<usize>,
-    /// GMDX Hemorrhage (StartBleed): `bleed_counter` more BleedEffect ticks of `bleed_damage`, one a second.
-    pub bleed_counter: u32,
-    pub bleed_timer: f32,
-    pub bleed_damage: f32,
     /// This body is in the player's hands (POVCorpse).
     pub carried: bool,
     /// Robot.EMPHitPoints.
@@ -921,12 +971,12 @@ fn flag(p: &[Property], n: &str) -> bool {
     matches!(find(p, n), Some(Value::Bool(true)))
 }
 /// An actor's Tag (the class name when the map doesn't set one).
-pub fn actor_tag(a: &dx_level::actors::ActorInfo) -> String {
-    let t = name_of(&a.props, "Tag");
-    if t.is_empty() {
-        a.class.clone()
-    } else {
-        t
+/// The actor's Tag (its class when it has none), borrowed from the level.
+pub fn actor_tag(a: &dx_level::actors::ActorInfo) -> &str {
+    match find(&a.props, "Tag") {
+        Some(Value::Name(s)) if s != "None" && !s.is_empty() => s,
+        Some(Value::Str(s)) if !s.is_empty() => s,
+        _ => &a.class,
     }
 }
 
@@ -1201,13 +1251,6 @@ impl Npc {
             seek: None,
             seek_level: 0,
             ammo: None,
-            poison_counter: 0,
-            poison_timer: 0.0,
-            poison_damage: 0.0,
-            poisoner: None,
-            bleed_counter: 0,
-            bleed_timer: 0.0,
-            bleed_damage: 0.0,
             carried: false,
             emp_hp: fv(p, "EMPHitPoints", 0.0),
             arsenal: Vec::new(),
@@ -1777,10 +1820,6 @@ pub fn world_req(r: WorldReq) {
     if let Ok(mut q) = WORLD.lock() {
         q.push(r);
     }
-}
-
-fn sel_matches(sel: &Sel, class: &str, bind: &str) -> bool {
-    sel_matches_tag(sel, class, bind, "")
 }
 
 fn sel_matches_tag(sel: &Sel, class: &str, bind: &str, tag: &str) -> bool {
@@ -2773,6 +2812,35 @@ fn sit_down(level: &dx_level::Level, npc: &mut Npc, deco: &mut Deco, p: &[Proper
     npc.sitting = true;
 }
 
+/// One pawn as the others see it this frame (npc_system's snapshot for target selection and distress calls).
+#[derive(Default)]
+struct Snap {
+    blocker: usize,
+    alliance: String,
+    dead: bool,
+    target: Option<Target>,
+    last_seen: f32,
+    enemy_timeout: f32,
+    alliances: imsim_core::alliance::AllianceTable,
+    pos: DVec3,
+    emit_carcass: bool,
+    /// Any body (dead or unconscious, not a robot) - for the Bodies Raise Alarms enhancement.
+    any_body: bool,
+    killer_alliance: String,
+    on_ground: bool,
+    vel: DVec3,
+    height: f64,
+    bind: String,
+}
+
+/// npc_system's working buffers, kept between frames so a frame allocates nothing once they're warm.
+#[derive(Default)]
+pub struct NpcScratch {
+    snaps: Vec<Snap>,
+    solid: Vec<Cylinder>,
+    heard: Vec<Noise>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn npc_system(
     time: Res<Time>,
@@ -2786,7 +2854,7 @@ pub fn npc_system(
     _hud: Res<HudMessage>,
     mut assets: ResMut<RuntimeAssets>,
     cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>, Without<Npc>)>,
-    mut q: Query<(&mut Npc, &mut Deco, &mut Animated, &mut Transform), Without<OutOfWorld>>,
+    mut q: Query<(&mut Npc, &mut Deco, &mut Animated, &mut Transform, &mut Afflictions), Without<OutOfWorld>>,
     walk_test: Option<Res<crate::WalkTest>>,
     mut test_clock: Local<f32>,
     (
@@ -2808,22 +2876,26 @@ pub fn npc_system(
         ResMut<crate::effects::BloodFx>,
         ResMut<crate::effects::BloodDrips>,
     ),
-    (mut booms, mut gibs, mut weapon_drops, mut alarms, mut flags, mut takedowns): (
+    (mut booms, mut gibs, mut weapon_drops, mut alarms, mut flags, mut takedowns, mut scratch): (
         ResMut<crate::explosion::Explosions>,
         ResMut<crate::effects::Gibs>,
         ResMut<WeaponDrops>,
         ResMut<crate::alarms::Alarms>,
         ResMut<GameFlags>,
         ResMut<Takedowns>,
+        Local<NpcScratch>,
     ),
 ) {
     let _prof = crate::prof::scope("ai::npc_system");
+    let NpcScratch { snaps, solid: solid_buf, heard: heard_buf } = &mut *scratch;
     let danger: Vec<(DVec3, f64, Option<usize>)> = crate::grenades::DANGER
         .lock()
         .map(|d| d.clone())
         .unwrap_or_default();
     // Everything heard since last frame (footsteps, shots, landings, cries); pawns add their own for next frame.
-    let mut heard: Vec<Noise> = noises.0.drain(..).collect();
+    let mut heard: Vec<Noise> = std::mem::take(heard_buf);
+    heard.clear();
+    heard.append(&mut noises.0);
     heard.extend(crate::smartai::take_noises());
     let disturbances = crate::smartai::take_disturbances();
     let stim = crate::reactions::take();
@@ -2863,47 +2935,35 @@ pub fn npc_system(
         height: player.params.height,
         actor: usize::MAX,
     };
-    let pose = std::env::var("DXVIEW_POSE").ok();
+    let pose = env_val!("DXVIEW_POSE").map(str::to_owned);
 
-    // Snapshot of pawns for target selection and distress calls.
-    struct Snap {
-        blocker: usize,
-        alliance: String,
-        dead: bool,
-        target: Option<Target>,
-        last_seen: f32,
-        enemy_timeout: f32,
-        alliances: imsim_core::alliance::AllianceTable,
-        pos: DVec3,
-        emit_carcass: bool,
-        /// Any body (dead or unconscious, not a robot) - for the Bodies Raise Alarms enhancement.
-        any_body: bool,
-        killer_alliance: String,
-        on_ground: bool,
-        vel: DVec3,
-        height: f64,
-        bind: String,
+    // Snapshot of pawns for target selection and distress calls: kept between frames and copied into in place
+    // (clone_from reuses every string and table), so it costs no allocations once warm.
+    let mut count = 0;
+    for (n, d, ..) in q.iter() {
+        if snaps.len() <= count {
+            snaps.push(Snap::default());
+        }
+        let s = &mut snaps[count];
+        count += 1;
+        s.blocker = n.blocker;
+        s.alliance.clone_from(&n.alliance);
+        s.dead = n.state == NpcState::Dead;
+        s.target = n.target;
+        s.last_seen = n.last_seen;
+        s.enemy_timeout = n.enemy_timeout;
+        s.alliances.clone_from(&n.alliances);
+        s.pos = d.body.location;
+        s.emit_carcass = n.emit_carcass && !n.carried;
+        s.any_body = n.state == NpcState::Dead && !n.carried && !n.hp_body.robot && !n.animal;
+        s.killer_alliance.clone_from(&n.killer_alliance);
+        s.on_ground = d.body.physics != imsim_core::body::BodyPhysics::Falling;
+        s.vel = d.body.velocity;
+        s.height = d.body.height;
+        s.bind.clone_from(&n.bind_name);
     }
-    let pawns: Vec<Snap> = q
-        .iter()
-        .map(|(n, d, _, _)| Snap {
-            blocker: n.blocker,
-            alliance: n.alliance.clone(),
-            dead: n.state == NpcState::Dead,
-            target: n.target,
-            last_seen: n.last_seen,
-            enemy_timeout: n.enemy_timeout,
-            alliances: n.alliances.clone(),
-            pos: d.body.location,
-            emit_carcass: n.emit_carcass && !n.carried,
-            any_body: n.state == NpcState::Dead && !n.carried && !n.hp_body.robot && !n.animal,
-            killer_alliance: n.killer_alliance.clone(),
-            on_ground: d.body.physics != imsim_core::body::BodyPhysics::Falling,
-            vel: d.body.velocity,
-            height: d.body.height,
-            bind: n.bind_name.clone(),
-        })
-        .collect();
+    snaps.truncate(count);
+    let pawns: &[Snap] = snaps;
     let snap_of = |b: usize| pawns.iter().find(|p| p.blocker == b);
     // GetPawnAllianceType == Hostile: either side hostile to the other's alliance.
     let snap_of_hostile = |npc: &Npc, t: Target| -> bool {
@@ -2914,16 +2974,18 @@ pub fn npc_system(
         }
     };
 
-    let ai_log = walk_test.is_some() || std::env::var("DXVIEW_AILOG").is_ok();
+    let ai_log = walk_test.is_some() || env_on!("DXVIEW_AILOG");
     // Orders wait while their pawn is in a conversation (ConvOrders, applied when it ends).
     let pawn_orders = crate::triggers::take_orders();
-    let busy_tags: std::collections::HashSet<String> = q
-        .iter()
-        .filter(|(n, _, _, _)| {
-            n.state != NpcState::Dead && crate::consys::conversing(n.blocker).is_some()
-        })
-        .map(|(n, _, _, _)| actor_tag(&lvl.actors[n.actor]).to_ascii_lowercase())
-        .collect();
+    // (Only worked out on a frame with orders to hand out.)
+    let busy_tags: std::collections::HashSet<String> = if pawn_orders.is_empty() {
+        Default::default()
+    } else {
+        q.iter()
+            .filter(|(n, ..)| n.state != NpcState::Dead && crate::consys::conversing(n.blocker).is_some())
+            .map(|(n, ..)| actor_tag(&lvl.actors[n.actor]).to_ascii_lowercase())
+            .collect()
+    };
     crate::triggers::defer_orders(
         pawn_orders
             .iter()
@@ -2934,9 +2996,10 @@ pub fn npc_system(
     if let Ok(mut c) = CLEANERS.lock() {
         c.clear();
     }
-    let mut solid_buf: Vec<Cylinder> = Vec::with_capacity(blockers.list.len() + 8 + lvl.monster_blocks.len());
-    for (mut npc, mut deco, mut an, mut tf) in &mut q {
+    solid_buf.clear();
+    for (mut npc, mut deco, mut an, mut tf, mut aff) in &mut q {
         let npc = &mut *npc;
+        let aff = &mut *aff;
         let _a1 = crate::prof::scope("ai/1 setup+damage");
         npc.just_fired = false;
         npc.weapon_timer += dt;
@@ -3016,7 +3079,7 @@ pub fn npc_system(
                     tag,
                     orders,
                     orders_tag,
-                } if tag.eq_ignore_ascii_case(&my_tag)
+                } if tag.eq_ignore_ascii_case(my_tag)
                     && !busy_tags.contains(&my_tag.to_ascii_lowercase()) =>
                 {
                     npc.set_orders(lvl, orders, orders_tag, player_center, now);
@@ -3163,42 +3226,6 @@ pub fn npc_system(
                     ph.damage(5.0, "Burned", DVec3::ZERO);
                 }
                 ph.on_fire = if t + dt >= 30.0 { None } else { Some(t + dt) };
-            }
-        }
-        // UpdatePoison.
-        if npc.poison_counter > 0 {
-            npc.poison_timer += dt;
-            if npc.poison_timer >= 2.0 {
-                npc.poison_timer = 0.0;
-                npc.poison_counter -= 1;
-                let c = blockers.list[npc.blocker].center;
-                new_hits.push(crate::damage::PawnHit {
-                    blocker: npc.blocker,
-                    damage: npc.poison_damage,
-                    damage_type: "PoisonEffect",
-                    hit_loc: c,
-                    attacker: npc.poisoner,
-                    attacker_pos: c,
-                });
-            }
-        }
-        // GMDX UpdateBleed: a BleedEffect tick every second, with a spray of blood drops.
-        if npc.bleed_counter > 0 {
-            npc.bleed_timer += dt;
-            if npc.bleed_timer >= 1.0 {
-                npc.bleed_timer = 0.0;
-                npc.bleed_counter -= 1;
-                let c = blockers.list[npc.blocker].center;
-                if npc.bleed_damage > 0.0 {
-                    new_hits.push(crate::damage::PawnHit {
-                        blocker: npc.blocker,
-                        damage: npc.bleed_damage,
-                        damage_type: "BleedEffect",
-                        hit_loc: c,
-                        attacker: None,
-                        attacker_pos: c,
-                    });
-                }
             }
         }
         if let Some(list) = hits_by.remove(&npc.blocker) {
@@ -3582,23 +3609,23 @@ pub fn npc_system(
                         // GMDX Hemorrhage: a player's shuriken (crate::perks) starts the bleed (StartBleed:
                         // 16 ticks of int(Damage x 0.1)); each BleedEffect tick sprays blood drops.
                         if crate::perks::take_bleed(npc.blocker, h.damage) {
-                            npc.bleed_counter = 16;
-                            npc.bleed_timer = 0.0;
-                            npc.bleed_damage = (h.damage * 0.1).floor();
+                            aff.bleed_counter = 16;
+                            aff.bleed_timer = 0.0;
+                            aff.bleed_damage = (h.damage * 0.1).floor();
                         }
                         if h.damage_type == "BleedEffect" && npc.can_bleed {
                             for i in 0..10u32 {
-                                if (npc.blocker as u32 * 31 + i * 17 + npc.bleed_counter * 7) % 2 == 0 {
+                                if (npc.blocker as u32 * 31 + i * 17 + aff.bleed_counter * 7) % 2 == 0 {
                                     drips.0.push(center + DVec3::Z * npc.params.height * 0.3);
                                 }
                             }
                         }
                         if h.damage_type == "Poison" {
                             // StartPoison: eight more doses, two seconds apart.
-                            npc.poison_counter = 8;
-                            npc.poison_timer = 0.0;
-                            npc.poison_damage = npc.poison_damage.max(h.damage);
-                            npc.poisoner = h.attacker;
+                            aff.poison_counter = 8;
+                            aff.poison_timer = 0.0;
+                            aff.poison_damage = aff.poison_damage.max(h.damage);
+                            aff.poisoner = h.attacker;
                         }
                         println!(
                             "PAWN {} hurt {:?} pain={} stunned={} health={:.0} parts={:?}",
@@ -3816,7 +3843,7 @@ pub fn npc_system(
 
         // Smarter AI: GMDX's perception by difficulty and our alert level; a fresh attack on the player starts the
         // fire react time and calls the others over.
-        let npc_class = lvl.actors[npc.actor].class.clone();
+        let npc_class: &str = &lvl.actors[npc.actor].class;
         crate::smartai::tune(npc, &npc_class, dt);
         {
             let atk = matches!(npc.state, NpcState::Attacking | NpcState::Surprised(_)) && npc.target == Some(Target::Player);
@@ -4402,7 +4429,7 @@ pub fn npc_system(
                     fear = Some((player_center, player.body.velocity));
                 }
                 if fear.is_none() {
-                    for p in &pawns {
+                    for p in pawns {
                         if p.blocker == npc.blocker
                             || p.dead
                             || p.alliance == npc.alliance
@@ -5690,7 +5717,7 @@ pub fn npc_system(
         if !npc.sitting {
             let steps = ((dt as f64) / (1.0 / 60.0)).ceil().max(1.0) as usize;
             // Pawns can't walk through the player either. (One buffer for every pawn: copied into, not allocated.)
-            let solid = &mut solid_buf;
+            let solid = &mut *solid_buf;
             solid.clear();
             solid.extend_from_slice(&blockers.list);
             if !ph.dead {
@@ -5789,7 +5816,7 @@ pub fn npc_system(
                     }
                     if npc.door.is_some() {
                         npc.stall = 0.0;
-                        if std::env::var("DXVIEW_DOORLOG").is_ok() {
+                        if env_on!("DXVIEW_DOORLOG") {
                             println!("DOOR {} opens {} (locked {})", lvl.actors[npc.actor].name, lvl.movers[i].name, rt.locked);
                         }
                     }
@@ -6016,6 +6043,7 @@ pub fn npc_system(
     }
     pawn_hits.0.extend(new_hits);
     noises.0.extend(new_noises);
+    *heard_buf = heard;
 }
 
 /// Health readout, red damage flash, and restart after death.
@@ -6097,7 +6125,7 @@ pub fn player_health_ui(
             crate::save::load(&root, &last);
             return;
         }
-        if std::env::var("DXVIEW_SOFT_RESTART").is_err() {
+        if !env_on!("DXVIEW_SOFT_RESTART") {
             let map = level.0.name.clone();
             crate::loader::request(&map, crate::loader::Goal::Restart);
             return;
@@ -6423,7 +6451,7 @@ pub fn npc_weapon_models(
             hm.relight = 0.5;
             let at = dx_level::bevy_to_ue(tf.translation.to_array());
             let d2 = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
-            let dyn_near = crate::dynlight::current().iter().any(|l| d2(l.pos, at) < (l.radius + 96.0).powi(2));
+            let dyn_near = crate::dynlight::with_current(|c| c.iter().any(|l| d2(l.pos, at) < (l.radius + 96.0).powi(2)));
             let stale = match hm.lit_at {
                 None => true,
                 Some((p, was_dyn)) => dyn_near || was_dyn || d2(p, at) > 8.0 * 8.0,
@@ -6432,18 +6460,19 @@ pub fn npc_weapon_models(
                 continue;
             }
             hm.lit_at = Some((at, dyn_near));
-            let lit_by = crate::dynlight::lights_at(&level.0, at, 24.0);
-            let sig = crate::dynlight::light_sig(&lit_by, at, 0);
-            if hm.lit_sig == Some(sig) {
-                continue;
-            }
-            hm.lit_sig = Some(sig);
-            for (pi, h) in hm.handles.iter().enumerate() {
-                if let Some(mut m) = meshes.get_mut(h) {
-                    let c = dx_level::actors::light_part(&hm.parts[pi], at, [0, 0, 0], 1.0, &lit_by);
-                    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, c);
+            crate::dynlight::with_lights_at(&level.0, at, 24.0, |lit_by| {
+                let sig = crate::dynlight::light_sig(lit_by, at, 0);
+                if hm.lit_sig == Some(sig) {
+                    return;
                 }
-            }
+                hm.lit_sig = Some(sig);
+                for (pi, h) in hm.handles.iter().enumerate() {
+                    if let Some(mut m) = meshes.get_mut(h) {
+                        let c = dx_level::actors::light_part(&hm.parts[pi], at, [0, 0, 0], 1.0, lit_by);
+                        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, c);
+                    }
+                }
+            });
         }
     }
 }
@@ -6780,5 +6809,43 @@ pub fn reset_level() {
     }
     if let Ok(mut v) = TAKEN.lock() {
         v.clear();
+    }
+}
+
+#[cfg(test)]
+mod affliction_tests {
+    use super::Afflictions;
+    use glam::DVec3;
+
+    #[test]
+    fn poison_doses_every_two_seconds() {
+        // StartPoison: eight doses, two seconds apart, each PoisonEffect for the dart's damage, from the poisoner.
+        let mut a = Afflictions { poison_counter: 8, poison_damage: 5.0, poisoner: Some(3), ..Default::default() };
+        let mut out = Vec::new();
+        for _ in 0..(20 * 60) {
+            a.tick(1.0 / 60.0, 7, DVec3::ZERO, &mut out);
+        }
+        assert_eq!(out.len(), 8);
+        assert!(out.iter().all(|h| h.damage_type == "PoisonEffect" && h.damage == 5.0 && h.attacker == Some(3) && h.blocker == 7));
+        assert_eq!(a.poison_counter, 0);
+    }
+
+    #[test]
+    fn bleed_ticks_every_second() {
+        // GMDX StartBleed: 16 BleedEffect ticks a second apart; no damage tick when the bleed damage rounds to 0.
+        let mut a = Afflictions { bleed_counter: 16, bleed_damage: 2.0, ..Default::default() };
+        let mut out = Vec::new();
+        for _ in 0..(20 * 60) {
+            a.tick(1.0 / 60.0, 1, DVec3::ZERO, &mut out);
+        }
+        assert_eq!(out.len(), 16);
+        assert!(out.iter().all(|h| h.damage_type == "BleedEffect" && h.attacker.is_none()));
+        let mut b = Afflictions { bleed_counter: 4, bleed_damage: 0.0, ..Default::default() };
+        out.clear();
+        for _ in 0..(6 * 60) {
+            b.tick(1.0 / 60.0, 1, DVec3::ZERO, &mut out);
+        }
+        assert!(out.is_empty());
+        assert_eq!(b.bleed_counter, 0);
     }
 }

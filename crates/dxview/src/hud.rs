@@ -82,12 +82,6 @@ pub fn set_filter(images: &mut Assets<Image>, img: &Handle<Image>, render: i32, 
     }
 }
 
-pub fn screen_scale(win: &Window, w: i32, h: i32) -> i32 {
-    let (pw, ph) = (win.physical_width() as i32, win.physical_height() as i32);
-    let fit = (pw / w).min(ph / h).max(1);
-    (fit + crate::settings::hud_scale_step()).clamp(1, fit)
-}
-
 #[derive(Component)]
 pub struct Bracket {
     index: usize,
@@ -284,7 +278,7 @@ pub fn crosshair_system(
             rt.breakable.unwrap_or(matches!(find(p, "bBreakable"), Some(unreal_pkg::props::Value::Bool(true))))
         }
     });
-    if std::env::var("DXVIEW_AIMLOG").is_ok() {
+    if env_on!("DXVIEW_AIMLOG") {
         let any = crate::movers::mover_on_line(&level.0, &mv.rt, eye, eye + dir * 8000.0);
         println!("AIM hit {:.1} actor {:?} mover {:?} target {:?}", hit.fraction * 8000.0, hit.actor, any.map(|(i, f)| (i, f * 8000.0)), mover_target.map(|m| m.0));
     }

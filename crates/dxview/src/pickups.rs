@@ -219,7 +219,7 @@ pub fn frob_system(
         Query<&mut Visibility, With<crate::ai::Npc>>,
         ResMut<movers::Picking>,
     ),
-    (blockers, mut hacking, mut events, mut info, root_dir, mut ph): (
+    (blockers, mut hacking, mut events, mut info, root_dir, _ph): (
         Res<crate::actors::Blockers>,
         ResMut<crate::devices::Hacking>,
         ResMut<crate::devices::GameEvents>,

@@ -61,7 +61,10 @@ pub struct PlayerLight {
 /// and undocumented; this is calibrated by play-testing (env DXVIEW_VIS_GAIN scales it, default 1).
 pub fn light_at(level: &Level, pos: DVec3) -> f32 {
     let gain = vis_gain();
-    let dynamic = crate::dynlight::current();
+    crate::dynlight::with_current_copy(|dynamic| light_sum(level, pos, gain, dynamic))
+}
+
+fn light_sum(level: &Level, pos: DVec3, gain: f32, dynamic: &[dx_level::lighting::LightInfo]) -> f32 {
     let mut sum = 0.0f32;
     for l in level.lights.iter().chain(dynamic.iter()) {
         let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);

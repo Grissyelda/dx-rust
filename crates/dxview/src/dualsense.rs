@@ -124,7 +124,7 @@ fn set_out(f: impl FnOnce(&mut DsOut)) {
 
 /// Startup: the HID thread (it waits for a pad and reconnects by itself).
 pub fn setup() {
-    if STARTED.swap(true, Ordering::Relaxed) || std::env::var("DXVIEW_NO_HID").is_ok() {
+    if STARTED.swap(true, Ordering::Relaxed) || env_on!("DXVIEW_NO_HID") {
         return;
     }
     let _ = std::thread::Builder::new().name("dualsense".into()).spawn(hid_thread);

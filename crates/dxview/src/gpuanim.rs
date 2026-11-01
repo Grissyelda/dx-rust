@@ -162,7 +162,7 @@ impl GpuAnim {
         }
         let v = (pi, base, fv as u32, lo, hi);
         self.keyed.insert(key, v);
-        if std::env::var_os("DXVIEW_GPUANIM_LOG").is_some() {
+        if env_on!("DXVIEW_GPUANIM_LOG") {
             let total: usize = self.pages.iter().map(|p| p.len).sum();
             println!("GPUANIM +{need} texels: {total} in {} page(s), {} meshes", self.pages.len(), self.keyed.len());
         }
@@ -217,7 +217,7 @@ pub fn gpuanim_setup(
     if new.is_empty() {
         return;
     }
-    let cpu_only = std::env::var("DXVIEW_CPU_ANIM").is_ok();
+    let cpu_only = env_on!("DXVIEW_CPU_ANIM");
     let mut todo = Vec::new();
     for (e, a, children) in &new {
         let ma = &level.0.mesh_actors[a.mesh_actor];

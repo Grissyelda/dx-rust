@@ -22,6 +22,8 @@ gilrs = "0.11"
 cpal = "0.15"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
 # Ragdolls (skeletal.rs ragdoll): rigid bodies and joints.
+# The heap (alloc.rs): faster than the system allocators for many small allocations.
+mimalloc = { version = "0.1", default-features = false }
 avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "parallel", "xpbd_joints"] }
 
 [features]

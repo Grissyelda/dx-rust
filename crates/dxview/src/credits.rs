@@ -479,9 +479,9 @@ pub fn credits_system(
     let Some(win) = windows.iter().next() else { return };
     // Developer aids: DXVIEW_CREDITS=1 rolls the credits at start, DXVIEW_QUOTES=1 the quotes (to look at them).
     static DEV: std::sync::Once = std::sync::Once::new();
-    if std::env::var("DXVIEW_CREDITS").is_ok() {
+    if env_on!("DXVIEW_CREDITS") {
         DEV.call_once(show_from_menu);
-    } else if std::env::var("DXVIEW_QUOTES").is_ok() {
+    } else if env_on!("DXVIEW_QUOTES") {
         DEV.call_once(show_quotes);
     }
     let want = if SHOW_QUOTES.swap(false, Ordering::Relaxed) {
@@ -761,7 +761,7 @@ pub fn credits_system(
         sc.overlay_drawn = busy;
     }
     let kk = sc.scale as f32 / win.scale_factor();
-    if std::env::var("DXVIEW_CREDITS").is_ok() {
+    if env_on!("DXVIEW_CREDITS") {
         println!("CREDITS y={} t={:.1} dt={:.3}", sc.y, time.elapsed_secs(), time.delta_secs());
     }
     let screen_h = win.physical_height() as i32 / sc.scale.max(1);

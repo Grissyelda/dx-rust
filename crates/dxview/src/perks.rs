@@ -425,15 +425,6 @@ pub fn restore(v: &[String]) {
     }
 }
 
-/// Spawn menu / cheats: every perk (PerkSystem.AddAll).
-pub fn add_all() {
-    if let Ok(mut o) = OWNED.lock() {
-        for p in list() {
-            o.insert(p.class);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

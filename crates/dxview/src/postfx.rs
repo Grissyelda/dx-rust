@@ -56,7 +56,7 @@ pub fn postfx_system(
     if wanted {
         ATTACHED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    let ssao = ATTACHED.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os("DXVIEW_AO_NOSSAO").is_none();
+    let ssao = ATTACHED.load(std::sync::atomic::Ordering::Relaxed) && !env_on!("DXVIEW_AO_NOSSAO");
     for (e, has) in &world {
         if ssao && !has {
             commands.entity(e).insert(ScreenSpaceAmbientOcclusion {

@@ -97,10 +97,6 @@ pub struct LogicActors {
 }
 
 impl LogicActors {
-    pub fn reset(&mut self) {
-        self.list.clear();
-        self.built = false;
-    }
 }
 
 fn build(level: &dx_level::Level) -> Vec<Logic> {

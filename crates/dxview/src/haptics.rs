@@ -56,7 +56,7 @@ fn with(f: impl FnOnce(&mut Synth)) {
 }
 
 pub fn setup() {
-    if STARTED.swap(true, Ordering::Relaxed) || std::env::var("DXVIEW_NO_HID").is_ok() {
+    if STARTED.swap(true, Ordering::Relaxed) || env_on!("DXVIEW_NO_HID") {
         return;
     }
     let _ = std::thread::Builder::new().name("dualsense-audio".into()).spawn(audio_thread);

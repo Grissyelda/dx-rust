@@ -779,10 +779,6 @@ pub fn hit_line(start: DVec3, end: DVec3, damage: f32, damage_type: &'static str
     }
 }
 
-pub fn blast(pos: DVec3, radius: f64, damage: f32, damage_type: &'static str) {
-    blast_ring(pos, radius, damage, damage_type, 0.0);
-}
-
 /// One ring of a staggered blast whose whole Damage is `full` (GMDX's HurtRadiusGMDX mover fix uses it).
 pub fn blast_ring(pos: DVec3, radius: f64, damage: f32, damage_type: &'static str, full: f32) {
     if let Ok(mut q) = BLASTS.lock() {

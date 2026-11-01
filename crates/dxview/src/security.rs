@@ -164,12 +164,6 @@ fn rotator(v: DVec3) -> (f64, f64) {
     )
 }
 
-/// Vector(Rotator(pitch, yaw)).
-fn dir(pitch: f64, yaw: f64) -> DVec3 {
-    let (p, y) = (pitch / URU * std::f64::consts::TAU, yaw / URU * std::f64::consts::TAU);
-    DVec3::new(p.cos() * y.cos(), p.cos() * y.sin(), p.sin())
-}
-
 /// The shortest signed difference a - b on the 65536 circle.
 fn wrap(d: f64) -> f64 {
     let mut d = d % URU;
@@ -476,10 +470,6 @@ impl Security {
         }
     }
 
-    fn rand(&mut self) -> f64 {
-        self.seed = self.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (self.seed >> 11) as f64 / (1u64 << 53) as f64
-    }
 }
 
 fn rnd(seed: &mut u64) -> f64 {
@@ -952,7 +942,7 @@ pub fn security_system(
             }
         }
         let on = t.active && !t.disabled;
-        if std::env::var("DXVIEW_TURRETLOG").is_ok() && t.gun_pos.distance(me) < 2000.0 {
+        if env_on!("DXVIEW_TURRETLOG") && t.gun_pos.distance(me) < 2000.0 {
             let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(&movers.rt) };
             let tr = w.trace(t.gun_pos, me, DVec3::ZERO);
             println!(
@@ -1490,7 +1480,7 @@ fn fire(
         kind: crate::stealth::NoiseKind::Loud,
     });
     t.flash_t = 0.1;
-    if std::env::var("DXVIEW_TURRETLOG").is_ok() {
+    if env_on!("DXVIEW_TURRETLOG") {
         println!("TURRET fire at {:.0?} player_hit={} frac={:.3}", at, player_hit, f);
     }
     // A tracer half the time (when the shot goes more than 250 units).
@@ -1959,7 +1949,6 @@ pub mod control {
         }
     }
 
-    pub fn noop(_: &mut Security) {}
 }
 
 #[cfg(test)]

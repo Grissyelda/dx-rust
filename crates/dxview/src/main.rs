@@ -13,11 +13,16 @@ use bevy::{
     render::view::screenshot::{save_to_disk, Screenshot},
     window::{CursorGrabMode, CursorOptions},
 };
+#[macro_use]
+mod env;
+mod queue;
+mod util;
 mod abilities;
 mod weather;
 mod shadowlight;
 mod relight;
 mod threads;
+mod alloc;
 mod skyfollow;
 mod glow;
 mod vision;
@@ -233,7 +238,7 @@ struct ShotCfg {
 }
 
 fn shot_cfg() -> Option<ShotCfg> {
-    let v = std::env::var("DXVIEW_SHOT").ok()?;
+    let v = env_val!("DXVIEW_SHOT").map(str::to_owned)?;
     let mut views = Vec::new();
     for one in v.split('|') {
         let p: Vec<&str> = one.split(';').collect();
@@ -268,7 +273,7 @@ pub struct WalkTest {
 }
 
 fn walk_test_cfg() -> Option<WalkTest> {
-    let v = std::env::var("DXVIEW_WALKTEST").ok()?;
+    let v = env_val!("DXVIEW_WALKTEST").map(str::to_owned)?;
     let p: Vec<&str> = v.split(';').collect();
     let f = |i: usize| p.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
     Some(WalkTest {
@@ -370,7 +375,7 @@ pub struct DoorTest {
 }
 
 fn door_test_cfg() -> Option<DoorTest> {
-    let v = std::env::var("DXVIEW_DOORTEST").ok()?;
+    let v = env_val!("DXVIEW_DOORTEST").map(str::to_owned)?;
     let p: Vec<&str> = v.split(';').collect();
     let f = |i: usize| p.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
     Some(DoorTest {
@@ -481,7 +486,7 @@ fn timed_shot_system(
     mut exit: MessageWriter<AppExit>,
 ) {
     let cfg = cfg.get_or_insert_with(|| {
-        let v = std::env::var("DXVIEW_SHOT_TIMES").ok()?;
+        let v = env_val!("DXVIEW_SHOT_TIMES").map(str::to_owned)?;
         let (dir, ts) = v.split_once(';')?;
         Some((dir.to_string(), ts.split(',').filter_map(|t| t.trim().parse().ok()).collect()))
     });
@@ -561,7 +566,7 @@ fn main() {
     prof::init();
     // DXT1 textures go to the GPU compressed (desktop GPUs and the Steam Deck take BC formats; checked again once
     // the render device exists). DXVIEW_NO_BC1 decodes them as before.
-    dx_level::set_bc1_supported(std::env::var_os("DXVIEW_NO_BC1").is_none());
+    dx_level::set_bc1_supported(!env_on!("DXVIEW_NO_BC1"));
     let args: Vec<String> = std::env::args().collect();
     // The game folder: the first argument, else the launcher's choice (launcher.txt beside the exe), else the default.
     let root = args
@@ -586,7 +591,7 @@ fn main() {
     let mod_settings = unreal_pkg::mods::from_lines(&unreal_pkg::mods::read_launcher_txt(&exe_dir.join("launcher.txt")));
     let mut enabled = unreal_pkg::mods::enabled(&mod_settings);
     // DXVIEW_NO_MODS=1: the launcher's mods are left out (profile runs of the plain game).
-    if std::env::var_os("DXVIEW_NO_MODS").is_some() {
+    if env_on!("DXVIEW_NO_MODS") {
         enabled.clear();
     }
     // DXVIEW_MODS="id=folder;id=folder": mods for test runs.
@@ -659,7 +664,7 @@ fn main() {
         .unwrap_or_else(|| {
             // No map named: boot to the logo map and its main menu, like the original (DXVIEW_SKIP_MENU=1 goes
             // straight to Liberty Island as before).
-            if std::env::var("DXVIEW_SKIP_MENU").is_ok() || travel::session().is_some() {
+            if env_on!("DXVIEW_SKIP_MENU") || travel::session().is_some() {
                 "01_NYC_UNATCOIsland.dx".to_string()
             } else {
                 "DX.dx".to_string()
@@ -783,6 +788,7 @@ fn main() {
             Update,
             (
                 ai::attach_npcs,
+                ai::afflictions_system.after(ai::attach_npcs).before(ai::npc_system),
                 ai::npc_system.after(fly).after(ai::attach_npcs),
                 ai::player_health_ui,
                 ai::npc_weapon_models
@@ -1474,7 +1480,7 @@ fn setup(
                 e.insert(skyline::SkyPanel);
             }
         }
-        if let Some(h) = lightmap_handle.as_ref().filter(|_| std::env::var_os("DXVIEW_NO_LIGHTMAP").is_none()) {
+        if let Some(h) = lightmap_handle.as_ref().filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
             e.insert(Lightmap {
                 image: h.clone(),
                 uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
@@ -1515,7 +1521,7 @@ fn setup(
             bevy::light::NotShadowReceiver,
             bevy::light::NotShadowCaster,
         ));
-        if let Some(h) = lightmap_handle.as_ref().filter(|_| std::env::var_os("DXVIEW_NO_LIGHTMAP").is_none()) {
+        if let Some(h) = lightmap_handle.as_ref().filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
             e.insert(Lightmap { image: h.clone(), uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0), bicubic_sampling: false });
         }
         if let Some(a) = ocean_bounds {
@@ -1860,7 +1866,7 @@ fn fly(
             cam.yaw = (-wt.yaw_deg - 90.0).to_radians();
             cam.pitch = wt.pitch_deg.to_radians();
             // DXVIEW_WALKTEST_SELECT=<belt slot>: hold that belt item during the test.
-            if let Some(slot) = std::env::var("DXVIEW_WALKTEST_SELECT").ok().and_then(|v| v.parse().ok()) {
+            if let Some(slot) = env_val!("DXVIEW_WALKTEST_SELECT").map(str::to_owned).and_then(|v| v.parse().ok()) {
                 scripted.select = Some(slot);
             }
         }
@@ -2058,7 +2064,7 @@ fn fly(
                         (c.x * b.normal[0] + c.y * b.normal[1] + c.z * b.normal[2] - b.dist).abs();
                     db.partial_cmp(&da).unwrap()
                 });
-            if std::env::var("DXVIEW_LADDERLOG").is_ok() {
+            if env_on!("DXVIEW_LADDERLOG") {
                 println!(
                     "LADDER touch={} phys={:?} loc={:.1?} wish={:.2?}",
                     ladder.is_some(),
@@ -2667,7 +2673,7 @@ fn overlay_update(
         *on = !*on;
     }
     // The corner readout is a Debug Mode feature (Settings > Enhancements).
-    let debug = crate::settings::debug_mode() || std::env::var("DXVIEW_SHOT").is_ok();
+    let debug = crate::settings::debug_mode() || env_on!("DXVIEW_SHOT");
     *text.1 = if *on && debug && !inventory_screen::screen_open() && !consys::third_person() && !cinematic::active() {
         Visibility::Inherited
     } else {

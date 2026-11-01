@@ -50,6 +50,24 @@
   - Avian no longer re-propagates every transform in the world before each physics step while no ragdoll is
     falling, and the first-person body takes its pose from JC's mirror body instead of sampling it a second time.
 
+- A code-health and allocation pass. The game now uses mimalloc (a fast multi-threaded allocator) and profile
+  runs count heap allocations per frame and per system. The game's own systems made about 6,000 allocations a frame
+  with HDTP installed (a few hundred without); the worst offenders were real waste and are gone:
+  - JC's body mesh was worked out every frame by the mirror and first-person bodies, each time copying HDTP's whole
+    class-override list (thousands of entries) - about 5,400 allocations and a lot of copying a frame. It's now
+    cached and looked up in place.
+  - The NPC update rebuilt its snapshot of every pawn (names, alliances) every frame: it's now one buffer kept
+    between frames and updated in place; IsA class checks, actor tags, the session (difficulty, skin) and lowercase
+    name tests no longer make copies of strings.
+  - Triggers, the HUD (it hashed formatted text of the whole item belt every frame), achievements, sound (held
+    loops), dynamic lights, fire textures, conversations, impacts and blood no longer rebuild lists, hash sets or
+    class defaults every frame; cross-system queues reuse their buffers.
+  - Character animation looks up its clip only when the sequence changes (it built two or three strings per body
+    per frame), and the weapon frame and coat cloth reuse their bone matrices and cached bone indices.
+  - Poison and bleeding moved out of the NPC update into their own component and system (with tests), a first step
+    in splitting up the NPC component.
+  - Unused code removed and compiler warnings down from 65 to 19.
+
 ### Launcher
 - Mods page: a Parallax Maps row to point the game at the Parallax Occlusion Mapping addon's folder (turn it on or
   off like the other mods); without it the game looks in the release's relief folder and the game's Textures folder.

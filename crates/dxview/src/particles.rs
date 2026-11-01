@@ -445,7 +445,7 @@ pub fn particle_system(
                 }
             }
         }
-        if std::env::var("DXVIEW_PARTLOG").is_ok() && g.spewing {
+        if env_on!("DXVIEW_PARTLOG") && g.spewing {
             println!("PART {} at {:.0},{:.0},{:.0} n={} tex={} size={}", if g.faucet.is_some() { "faucet" } else { &g.tag }, g.pos.x, g.pos.y, g.pos.z, g.parts.len(), g.tex, g.size);
         }
         // UpdateParticles.

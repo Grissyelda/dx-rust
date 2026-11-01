@@ -597,7 +597,7 @@ pub fn weather_system(
     st.seed = seed;
     drop(_p1);
     let _p3 = crate::prof::scope("weather::build");
-    if std::env::var_os("DXVIEW_RAINLOG").is_some() {
+    if env_on!("DXVIEW_RAINLOG") {
         eprintln!("RAIN density {:.1} new drops {} new splashes {} height {:.0}", st.density, new_drops.len(), new_splashes.len(), st.height);
     }
     // Only a batch frame writes the data images (a re-uploaded image is a new GPU texture, so the materials are

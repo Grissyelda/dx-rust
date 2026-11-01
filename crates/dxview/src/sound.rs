@@ -31,9 +31,7 @@ pub mod slot {
     pub const MISC: u8 = 1;
     pub const PAIN: u8 = 2;
     pub const INTERACT: u8 = 3;
-    pub const AMBIENT: u8 = 4;
     pub const TALK: u8 = 5;
-    pub const INTERFACE: u8 = 6;
 }
 
 /// Owner ids for slot bookkeeping.
@@ -65,7 +63,7 @@ pub struct Req {
 
 struct Hold {
     key: u64,
-    sound: String,
+    sound: &'static str,
     pos: Option<DVec3>,
     volume: f32,
     radius: f32,
@@ -135,7 +133,7 @@ pub fn play(sound: &str, pos: DVec3, volume: f32, radius: f32, pitch: f32) {
 /// The music's gain for the Music Volume setting: a loudness curve (squared) rather than a straight line, so the
 /// low steps really are quiet (setting 1 of 10 was still loud), with the default (6) a little under the old level.
 fn music_gain() -> f32 {
-    let base = std::env::var("DXVIEW_MUSIC_VOL").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.8);
+    let base = env_val!("DXVIEW_MUSIC_VOL").map(str::to_owned).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.8);
     let v = crate::settings::music_volume().clamp(0.0, 1.0);
     base * 0.7 * (v / 0.6).powi(2)
 }
@@ -201,7 +199,8 @@ pub fn hold(key: u64, sound: &str, pos: Option<DVec3>, volume: f32, radius: f32,
     if let Ok(mut h) = HOLDS.lock() {
         h.push(Hold {
             key,
-            sound: sound.into(),
+            // Interned: held sounds are queued every frame.
+            sound: crate::util::intern(sound),
             pos,
             volume,
             radius,
@@ -584,7 +583,7 @@ pub struct SoundState {
     bank: SoundBank,
     playing: Vec<Playing>,
     slots: HashMap<(u64, u8), (VoiceId, f32)>,
-    held: HashMap<u64, (VoiceId, String)>,
+    held: HashMap<u64, (VoiceId, &'static str)>,
     song: Option<imsim_audio::Song>,
     default_section: u8,
     mode: MusicMode,
@@ -725,6 +724,15 @@ fn ue(v: Vec3) -> DVec3 {
     DVec3::new(v.x as f64, v.z as f64, v.y as f64)
 }
 
+#[derive(Default)]
+pub struct SoundScratch {
+    holds: Vec<Hold>,
+    keep: std::collections::HashSet<u64>,
+    updates: Vec<(imsim_audio::VoiceId, f32, f32, f32)>,
+    fx_updates: Vec<(imsim_audio::VoiceId, f32, f32)>,
+    gone: Vec<u64>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn sound_system(
     time: Res<Time>,
@@ -735,6 +743,7 @@ pub fn sound_system(
     cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>)>,
     npcs: Query<&Npc>,
     blockers: Res<crate::actors::Blockers>,
+    mut scratch: Local<SoundScratch>,
 ) {
     let _prof = crate::prof::scope("sound::sound_system");
     // Settings > Sound volumes (live while the slider moves). Defaults 204 / 153 give the old levels.
@@ -793,7 +802,7 @@ pub fn sound_system(
     let reverb_on = crate::audiofx::reverb_on();
     let lvl0 = &level.0;
     // (gain multiplier, filter, reverb send) for a voice.
-    let mut fx = |occl: &mut crate::audiofx::Occluder, pos: Option<DVec3>, talk: bool| -> (f32, f32, f32) {
+    let fx = |occl: &mut crate::audiofx::Occluder, pos: Option<DVec3>, talk: bool| -> (f32, f32, f32) {
         let duck = if talk { 1.0 } else { duck_k };
         let send = if !reverb_on { 0.0 } else if pos.is_some() { 1.0 } else { 0.35 };
         match pos {
@@ -958,15 +967,14 @@ pub fn sound_system(
     }
 
     // Looping sounds held this frame: start new ones, update the rest, stop what was let go.
-    let holds: Vec<Hold> = HOLDS
-        .lock()
-        .map(|mut q| std::mem::take(&mut *q))
-        .unwrap_or_default();
-    let mut keep: HashMap<u64, ()> = HashMap::new();
-    let mut updates = Vec::new();
-    let mut fx_updates = Vec::new();
-    for h in holds {
-        if keep.insert(h.key, ()).is_some() {
+    // (Buffers kept between frames.)
+    let SoundScratch { holds, keep, updates, fx_updates, gone } = &mut *scratch;
+    crate::queue::swap_out(&HOLDS, holds);
+    keep.clear();
+    updates.clear();
+    fx_updates.clear();
+    for h in holds.drain(..) {
+        if !keep.insert(h.key) {
             continue;
         }
         let (gain, pan) = place(h.pos, h.radius);
@@ -981,7 +989,7 @@ pub fn sound_system(
                 if let Some((id, _)) = other {
                     st.audio.stop(*id);
                 }
-                if let Some(clip) = st.bank.clip(&h.sound) {
+                if let Some(clip) = st.bank.clip(h.sound) {
                     let id = st.audio.play(
                         clip,
                         VoiceParams {
@@ -993,20 +1001,16 @@ pub fn sound_system(
                             reverb,
                         },
                     );
-                    st.held.insert(h.key, (id, h.sound.clone()));
+                    st.held.insert(h.key, (id, h.sound));
                 } else {
                     st.held.remove(&h.key);
                 }
             }
         }
     }
-    let gone: Vec<u64> = st
-        .held
-        .keys()
-        .filter(|k| !keep.contains_key(k))
-        .copied()
-        .collect();
-    for k in gone {
+    gone.clear();
+    gone.extend(st.held.keys().filter(|k| !keep.contains(k)).copied());
+    for k in gone.drain(..) {
         if let Some((id, _)) = st.held.remove(&k) {
             st.audio.stop(id);
         }
@@ -1023,9 +1027,9 @@ pub fn sound_system(
         fx_updates.push((p.id, filter, reverb));
     }
     st.playing = playing;
-    st.audio.set_many(&updates);
+    st.audio.set_many(updates);
     if occl_on || reverb_on || hq {
-        st.audio.set_fx_many(&fx_updates);
+        st.audio.set_fx_many(fx_updates);
     }
     st.slots
         .retain(|_, (id, t)| now - *t < 10.0 || audio.is_playing(*id));

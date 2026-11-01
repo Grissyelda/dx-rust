@@ -341,7 +341,7 @@ pub fn wipe_system(
         Phase::Idle => {
             // DXVIEW_REMASTER_AT=secs: (test shots) switch once at that time.
             // DXVIEW_REMASTER_AT="secs,secs,...": (tests) switch at those game times.
-            let auto = std::env::var("DXVIEW_REMASTER_AT").ok().is_some_and(|v| {
+            let auto = env_val!("DXVIEW_REMASTER_AT").map(str::to_owned).is_some_and(|v| {
                 static DONE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
                 let times: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 let i = DONE.load(std::sync::atomic::Ordering::Relaxed);
@@ -356,7 +356,7 @@ pub fn wipe_system(
                 && !crate::inventory_screen::screen_open()
                 && !crate::computers::open()
                 && !crate::credits::open();
-            if auto && std::env::var_os("DXVIEW_REMASTER_NOWIPE").is_some() {
+            if auto && env_on!("DXVIEW_REMASTER_NOWIPE") {
                 eprintln!("REMASTER switch (no wipe)");
                 let _ = switch(!is_modern());
                 return;

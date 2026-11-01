@@ -85,7 +85,7 @@ pub struct RenderSchedulesPlugin;
 
 impl bevy::app::Plugin for RenderSchedulesPlugin {
     fn build(&self, app: &mut bevy::app::App) {
-        if std::env::var_os("DXVIEW_MT_RENDER_GRAPH").is_some() {
+        if env_on!("DXVIEW_MT_RENDER_GRAPH") {
             return;
         }
         let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) else { return };

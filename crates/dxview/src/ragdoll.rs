@@ -403,7 +403,7 @@ pub fn start_system(
         let mut order: Vec<usize> = (0..count).filter(|n| !in_rider(*n)).collect();
         order.extend((0..count).filter(|n| in_rider(*n)));
         s.ragdoll = true;
-        if std::env::var_os("DXVIEW_RAGLOG").is_some() {
+        if env_on!("DXVIEW_RAGLOG") {
             println!("RAGDOLL start blocker {} hit part {near} kick {kick:.1} run {run:?} hips {:?}", d.blocker, segs[0].0);
         }
         commands.entity(e).insert(Ragdoll { bodies, joints, driven, blocker: d.blocker, order, anchors, life: 0.0, still: 0.0 });
@@ -455,7 +455,7 @@ pub fn drive_system(
         }
         r.life += dt;
         r.still = if fastest < STILL_SPEED { r.still + dt } else { 0.0 };
-        if std::env::var_os("DXVIEW_RAGLOG").is_some() && (r.life * 4.0).floor() != ((r.life - dt) * 4.0).floor() {
+        if env_on!("DXVIEW_RAGLOG") && (r.life * 4.0).floor() != ((r.life - dt) * 4.0).floor() {
             let sep = r
                 .anchors
                 .iter()
@@ -504,7 +504,7 @@ pub fn player_body_system(
     }
     // Developer aid: DXVIEW_DIE_AT=<secs> kills JC that long into the run (ragdoll tests).
     if !ph.dead {
-        if let Some(at) = std::env::var("DXVIEW_DIE_AT").ok().and_then(|v| v.parse::<f32>().ok()) {
+        if let Some(at) = env_val!("DXVIEW_DIE_AT").map(str::to_owned).and_then(|v| v.parse::<f32>().ok()) {
             if time.elapsed_secs() > at && time.elapsed_secs() - time.delta_secs() <= at {
                 ph.damage(1000.0, "Shot", DVec3::ZERO);
             }

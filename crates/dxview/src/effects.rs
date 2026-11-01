@@ -189,8 +189,9 @@ pub fn blood_system(
         }
     }
     // Drips from the wounded: a BloodDrop thrown at VRand * 100 from mid-body.
-    let dd = assets.classes.defaults("BloodDrop");
-    for at in std::mem::take(&mut drips.0) {
+    // (Class defaults are a fresh list: only looked up when there are drips.)
+    let dd = if drips.0.is_empty() { Vec::new() } else { assets.classes.defaults("BloodDrop") };
+    for at in drips.0.drain(..) {
         let v =
             DVec3::new(rnd() * 2.0 - 1.0, rnd() * 2.0 - 1.0, rnd() * 2.0 - 1.0).normalize_or_zero();
         let loose = Loose {
@@ -529,7 +530,7 @@ pub fn burn_fx_system(
         ((*seed >> 33) as f32) / (1u64 << 31) as f32
     };
     let quad = meshes.add(Rectangle::new(1.0, 1.0));
-    let mut spawn_particle = |commands: &mut Commands,
+    let spawn_particle = |commands: &mut Commands,
                               assets: &mut RuntimeAssets,
                               images: &mut Assets<Image>,
                               materials: &mut Assets<StandardMaterial>,

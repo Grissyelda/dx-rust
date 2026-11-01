@@ -84,7 +84,7 @@ fn start_prefetch(root: std::path::PathBuf, map: &str) {
     let (tx, rx) = std::sync::mpsc::channel();
     // Load by the name as written (file names are case-sensitive off Windows).
     let mut mm = map.split('#').next().unwrap_or(map).trim().to_string();
-    if !mm.to_ascii_lowercase().ends_with(".dx") {
+    if !crate::util::ends_with_ci(&mm, ".dx") {
         mm.push_str(".dx");
     }
     let _ = std::thread::Builder::new().name("level-prefetch".into()).spawn(move || {
@@ -126,7 +126,7 @@ fn prefetch_tick(world: &mut World) {
             }
         }
     }
-    if std::env::var("DXVIEW_NO_PREFETCH").is_ok() || crate::menus::intro_map() {
+    if env_on!("DXVIEW_NO_PREFETCH") || crate::menus::intro_map() {
         return;
     }
     let Some(level) = world.get_resource::<crate::LevelRes>() else { return };
@@ -172,7 +172,7 @@ fn prefetch_tick(world: &mut World) {
 /// Go to `map` (file name; ".dx" added if missing).
 pub fn request(map: &str, goal: Goal) {
     let mut m = map.to_string();
-    if !m.to_ascii_lowercase().ends_with(".dx") {
+    if !crate::util::ends_with_ci(&m, ".dx") {
         m.push_str(".dx");
     }
     println!("loader: going to {m}");
@@ -289,7 +289,7 @@ pub fn loader_system(world: &mut World) {
             let r = dx_level::load_level(&root, &m).map(|l| (l, crate::player_params(&root)));
             crate::prof::hitch_note(&format!("level load {m}"), t0.elapsed().as_secs_f64() * 1000.0);
             // Developer aid: DXVIEW_LOAD_DELAY=<secs> holds the loading screen up longer (to look at it).
-            if let Some(d) = std::env::var("DXVIEW_LOAD_DELAY").ok().and_then(|v| v.parse::<f32>().ok()) {
+            if let Some(d) = env_val!("DXVIEW_LOAD_DELAY").map(str::to_owned).and_then(|v| v.parse::<f32>().ok()) {
                 std::thread::sleep(std::time::Duration::from_secs_f32(d));
             }
             let _ = tx.send(r);
@@ -629,7 +629,7 @@ fn dev_goto(world: &mut World) {
         Some("event") => {
             world.resource_mut::<crate::devices::GameEvents>().0.push((map.to_string(), true));
             *SHOT_AT.lock().unwrap() = Some((now + std::time::Duration::from_secs_f32(
-                std::env::var("DXVIEW_GOTO_SHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
+                env_val!("DXVIEW_GOTO_SHOT_DELAY").map(str::to_owned).and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
             return;
         }
         // "secs;;throwbody": the nearest living pawn dies on the spot and is thrown from the player's hands as a
@@ -696,7 +696,7 @@ fn dev_goto(world: &mut World) {
                 println!("GOTO frob {map} ({class})");
             }
             *SHOT_AT.lock().unwrap() = Some((now + std::time::Duration::from_secs_f32(
-                std::env::var("DXVIEW_GOTO_SHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
+                env_val!("DXVIEW_GOTO_SHOT_DELAY").map(str::to_owned).and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
             return;
         }
         // "secs;<FlagName>;flag": set a game flag (mission script tests).
@@ -713,7 +713,7 @@ fn dev_goto(world: &mut World) {
             let root = world.resource::<crate::pickups::GameRoot>().0.clone();
             crate::save::load(&root, std::path::Path::new(map));
             *SHOT_AT.lock().unwrap() = Some((now + std::time::Duration::from_secs_f32(
-                std::env::var("DXVIEW_GOTO_SHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
+                env_val!("DXVIEW_GOTO_SHOT_DELAY").map(str::to_owned).and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
             return;
         }
         _ => {}
@@ -726,6 +726,6 @@ fn dev_goto(world: &mut World) {
         _ => Goal::NewGame(NewGame::default()),
     };
     request(map, goal);
-    let delay = std::env::var("DXVIEW_GOTO_SHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(6.0f32);
+    let delay = env_val!("DXVIEW_GOTO_SHOT_DELAY").map(str::to_owned).and_then(|d| d.parse().ok()).unwrap_or(6.0f32);
     *SHOT_AT.lock().unwrap() = Some((now + std::time::Duration::from_secs_f32(delay), i + 1));
 }

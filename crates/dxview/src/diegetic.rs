@@ -417,23 +417,23 @@ pub fn diegetic_system(
                 }
             }
             // Dev aid: DXVIEW_DG_MOUSE="u,v" holds the mouse there on the screen.
-            if let Some(uv) = std::env::var("DXVIEW_DG_MOUSE").ok().and_then(|v| {
+            if let Some(uv) = env_val!("DXVIEW_DG_MOUSE").map(str::to_owned).and_then(|v| {
                 let p: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
                 (p.len() == 2).then(|| (p[0], p[1]))
             }) {
                 s.mouse_uv = Some(uv);
             }
             // Dev aid: DXVIEW_DG_LEAVE=<secs> takes the mouse off the screen after that long.
-            if std::env::var("DXVIEW_DG_LEAVE").ok().and_then(|v| v.parse::<f32>().ok()).is_some_and(|t| s.t > t) {
+            if env_val!("DXVIEW_DG_LEAVE").map(str::to_owned).and_then(|v| v.parse::<f32>().ok()).is_some_and(|t| s.t > t) {
                 s.mouse_uv = None;
             }
-            if s.mouse_uv.is_some() || (window.cursor_position().is_none() && std::env::var_os("DXVIEW_DG_LEAVE").is_none()) {
+            if s.mouse_uv.is_some() || (window.cursor_position().is_none() && !env_on!("DXVIEW_DG_LEAVE")) {
                 s.out = 0.0;
             } else {
                 s.out += dt;
                 if s.out >= 1.0 {
                     s.out = 0.0;
-                    if std::env::var_os("DXVIEW_DGLOG").is_some() {
+                    if env_on!("DXVIEW_DGLOG") {
                         println!("DG leave {:?}", s.kind);
                     }
                     // Only computers close when the mouse wanders off; a keypad stays up until Escape (pad B /
@@ -700,7 +700,7 @@ pub fn place_system(
     let pos = bevy(c + r.n * dist);
     let up = (bevy(c + r.up) - bevy(c)).normalize();
     let target = Transform::from_translation(pos).looking_at(bevy(c), up);
-    if std::env::var_os("DXVIEW_DGLOG").is_some() {
+    if env_on!("DXVIEW_DGLOG") {
         println!("DG {:?} {:?} rect c={:?} n={:?} up={:?} right={:?} w={:.1} h={:.1} dist={dist:.1} k={k:.2} eye={:?}", s.kind, s.phase, r.c, r.n, r.up, r.right, r.w, r.h, eye_tf.translation);
     }
     tf.translation = eye_tf.translation.lerp(target.translation, k);

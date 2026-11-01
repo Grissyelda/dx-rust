@@ -14,7 +14,6 @@ use crate::uicanvas::{color_scaled, wrap, Canvas, HAlign, Rgb, Style, VAlign};
 use crate::weapons::RuntimeAssets;
 use unreal_pkg::props::{Property, Value};
 
-pub const SCREEN_INVENTORY: usize = 0;
 pub const SCREEN_HEALTH: usize = 1;
 pub const SCREEN_AUGS: usize = 2;
 pub const SCREEN_SKILLS: usize = 3;
@@ -3115,7 +3114,7 @@ fn edit_note_keys(ui: &mut PersonaUi, inp: &Input, f: &Fonts) {
     for (k, t) in &inp.typed {
         ed.blink = 0.0;
         let sel = ed.anchor.filter(|a| *a != ed.cursor).map(|a| (a.min(ed.cursor), a.max(ed.cursor)));
-        let mut delete_sel = |chars: &mut Vec<char>, ed: &mut NoteEdit| -> bool {
+        let delete_sel = |chars: &mut Vec<char>, ed: &mut NoteEdit| -> bool {
             if let Some((a, b)) = sel {
                 chars.drain(a..b);
                 ed.cursor = a;

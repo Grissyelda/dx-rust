@@ -402,12 +402,6 @@ pub fn set_bindings(map: Vec<Option<PadBtn>>) {
     *BINDS.lock().unwrap() = Some(map);
 }
 
-/// The pad action bound to a button (the first one).
-pub fn action_of(b: PadBtn) -> PadAction {
-    let map = bindings();
-    PAD_ACTIONS.iter().zip(&map).find(|(_, m)| **m == Some(b)).map(|(a, _)| a.1.clone()).unwrap_or(PadAction::None)
-}
-
 /// The button bound to a pad action (for prompts), by action name.
 pub fn button_for(name: &str) -> Option<PadBtn> {
     let map = bindings();

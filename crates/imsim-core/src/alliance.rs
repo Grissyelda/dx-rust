@@ -15,7 +15,7 @@ pub enum Attitude {
     Friendly,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AllyEntry {
     pub name: String,
     pub level: f32,
@@ -23,10 +23,23 @@ pub struct AllyEntry {
     pub permanent: bool,
 }
 
+// clone_from reuses the name's buffer: per-frame snapshots of every pawn's table copy without allocating.
+impl Clone for AllyEntry {
+    fn clone(&self) -> Self {
+        AllyEntry { name: self.name.clone(), level: self.level, agitation: self.agitation, permanent: self.permanent }
+    }
+    fn clone_from(&mut self, o: &Self) {
+        self.name.clone_from(&o.name);
+        self.level = o.level;
+        self.agitation = o.agitation;
+        self.permanent = o.permanent;
+    }
+}
+
 /// Deus Ex keeps 16 entries; a 17th pushes the oldest out.
 const MAX_ENTRIES: usize = 16;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AllianceTable {
     /// The character's own alliance (ScriptedPawn.Alliance).
     pub own: String,
@@ -38,6 +51,36 @@ pub struct AllianceTable {
     pub sustain_time: f32,
     pub decay_rate: f32,
     pub max_provocations: i32,
+}
+
+impl Default for AllianceTable {
+    fn default() -> Self {
+        AllianceTable::new("", std::iter::empty())
+    }
+}
+
+impl Clone for AllianceTable {
+    fn clone(&self) -> Self {
+        AllianceTable {
+            own: self.own.clone(),
+            entries: self.entries.clone(),
+            sustain_timer: self.sustain_timer,
+            check_timer: self.check_timer,
+            sustain_time: self.sustain_time,
+            decay_rate: self.decay_rate,
+            max_provocations: self.max_provocations,
+        }
+    }
+    /// Reuses this table's buffers (Vec::clone_from goes through AllyEntry::clone_from).
+    fn clone_from(&mut self, o: &Self) {
+        self.own.clone_from(&o.own);
+        self.entries.clone_from(&o.entries);
+        self.sustain_timer = o.sustain_timer;
+        self.check_timer = o.check_timer;
+        self.sustain_time = o.sustain_time;
+        self.decay_rate = o.decay_rate;
+        self.max_provocations = o.max_provocations;
+    }
 }
 
 impl AllianceTable {

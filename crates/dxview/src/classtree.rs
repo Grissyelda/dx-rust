@@ -29,14 +29,17 @@ pub fn register_level(classes: &mut unreal_pkg::classes::ClassDb, level: &dx_lev
     }
 }
 
-/// IsA: `class` is `base` or derives from it. Unknown classes only match themselves.
+/// IsA: `class` is `base` or derives from it. Unknown classes only match themselves. Called per pawn per frame:
+/// the lookup lower-cases into a stack buffer (util::with_lower), nothing is allocated.
 pub fn is_a(class: &str, base: &str) -> bool {
     if class.eq_ignore_ascii_case(base) {
         return true;
     }
-    let b = base.to_ascii_lowercase();
     TREE.read()
         .ok()
-        .and_then(|t| t.as_ref().and_then(|m| m.get(&class.to_ascii_lowercase()).map(|c| c.iter().any(|x| *x == b))))
+        .and_then(|t| {
+            let m = t.as_ref()?;
+            crate::util::with_lower(class, |key| m.get(key).map(|c| c.iter().any(|x| x.eq_ignore_ascii_case(base))))
+        })
         .unwrap_or(false)
 }

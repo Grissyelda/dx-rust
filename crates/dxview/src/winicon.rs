@@ -3,8 +3,6 @@
 //! SendMessage: this system runs on a worker thread while the window's thread waits for the frame, so a SendMessage
 //! (which waits for the window thread to answer) deadlocks the game at startup.
 
-use bevy::prelude::*;
-use bevy::window::{PrimaryWindow, RawHandleWrapper};
 
 #[cfg(windows)]
 pub fn window_icon_system(windows: Query<&RawHandleWrapper, With<PrimaryWindow>>, mut done: Local<bool>) {

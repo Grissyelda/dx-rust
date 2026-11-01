@@ -502,7 +502,7 @@ fn ctx<'a>(
             });
         } else if !n.carried && !n.hp_body.robot {
             // The body: a placed carcass is its own class, a pawn leaves its CarcassType.
-            let class = if a.class.to_ascii_lowercase().ends_with("carcass") {
+            let class = if crate::util::ends_with_ci(&a.class, "carcass") {
                 a.class.clone()
             } else {
                 let p = &a.props;

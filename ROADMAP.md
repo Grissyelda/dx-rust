@@ -82,9 +82,13 @@ recording and Bevy's per-view preparation). GPU-driven pass: bindless materials 
 characters (multi-draw), GPU culling of the level's surfaces, rain moved by the shader, water and panning textures on
 the GPU's clock, materials no longer rewritten every frame, blob shadows in one mesh: about 1,000 draw calls to 250
 and Modern at about 14 ms (70 fps), Classic 11 ms (92 fps). What's left is mostly Bevy's own per-frame render
-bookkeeping (per-phase bind groups, command recording and submission). Next: Bevy's per-view render
-bookkeeping (bind groups and buffers rebuilt each frame), the weapon view's own pass, and the Update schedule's
-scheduling overhead (about 160 small systems).
+bookkeeping (per-phase bind groups, command recording and submission). Allocation and code-health pass:
+mimalloc, per-system allocation counts in profile runs, and the game's own per-frame allocations cut from thousands to a few hundred at most
+(JC's mesh lookup was copying HDTP's whole override list twice a frame; snapshots, queues, HUD keys and string tests
+now reuse buffers or borrow). Next: Bevy's per-view render bookkeeping (bind groups and buffers rebuilt each frame),
+the weapon view's own pass, the Update schedule's scheduling overhead (about 160 small systems), and splitting the
+NPC component and its update into smaller components and systems (poison and bleeding are out; perception,
+reactions, combat, orders and movement are next).
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.

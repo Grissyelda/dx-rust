@@ -413,7 +413,7 @@ pub fn fx_system(
         st.soft_mesh = Some(sm);
     }
     // DXVIEW_FXTEST=1: impacts on whatever the camera looks at, by surface, and an explosion now and then.
-    if std::env::var_os("DXVIEW_FXTEST").is_some() && on() {
+    if env_on!("DXVIEW_FXTEST") && on() {
         let e = dx_level::bevy_to_ue(cam.translation.to_array());
         let e = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
         let f = cam.forward().as_vec3();

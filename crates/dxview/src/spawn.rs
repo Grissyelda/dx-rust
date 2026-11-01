@@ -33,11 +33,6 @@ pub struct SpawnReq {
 
 static QUEUE: Mutex<Vec<SpawnReq>> = Mutex::new(Vec::new());
 
-/// Ask for a pawn of `class` standing at `pos` (collision centre).
-pub fn pawn(class: &str, pos: DVec3, yaw: i32) {
-    pawn_with(class, pos, yaw, Vec::new());
-}
-
 /// As `pawn`, with property overrides on top of the class defaults.
 pub fn pawn_with(class: &str, pos: DVec3, yaw: i32, props: Vec<Property>) {
     request(SpawnReq {

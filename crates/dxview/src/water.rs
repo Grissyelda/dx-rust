@@ -229,12 +229,12 @@ pub fn material(base: StandardMaterial, opaque: bool, placeholder: Handle<Image>
                 t: Vec4::new(
                     0.0,
                     0.035,
-                    std::env::var("DXVIEW_WATER_GAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
+                    env_val!("DXVIEW_WATER_GAIN").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(1.0),
                     0.03,
                 ),
-                far: Vec4::new(30.0, 120.0, std::env::var("DXVIEW_WATER_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0), 0.0),
+                far: Vec4::new(30.0, 120.0, env_val!("DXVIEW_WATER_DEBUG").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(0.0), 0.0),
                 rings: [Vec4::ZERO; RINGS],
-                m: Vec4::new(0.0, 0.0, 0.0, std::env::var("DXVIEW_WATER_BEND").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03)),
+                m: Vec4::new(0.0, 0.0, 0.0, env_val!("DXVIEW_WATER_BEND").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(0.03)),
                 // Night harbour water: dark blue-green, a fair way see-through looking straight down.
                 tint: Vec4::new(0.006, 0.026, 0.040, 0.45),
                 moon: Vec4::new(0.3, 0.8, 0.5, 1.0),

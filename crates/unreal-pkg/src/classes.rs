@@ -352,7 +352,15 @@ fn layer_rank(layer: &str) -> usize {
     ["travel", "visibleattachments", "hdtp", "augmentique"].iter().position(|l| *l == layer).unwrap_or(99)
 }
 
+static OVERRIDE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bumped whenever an override layer is set (callers cache what they read from the layers by it).
+pub fn override_generation() -> u64 {
+    OVERRIDE_GEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn set_override_layer(layer: &str, list: Vec<(String, String, u32, Value)>) {
+    OVERRIDE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut o) = OVERRIDES.write() {
         o.retain(|(l, _)| l != layer);
         o.push((layer.to_string(), list));
@@ -361,6 +369,15 @@ pub fn set_override_layer(layer: &str, list: Vec<(String, String, u32, Value)>) 
 }
 
 /// The values a layer sets (for code that needs to know what a mod changed).
+/// One property override in a layer (case-insensitive class / property names), cloned out without copying the layer.
+pub fn override_value(layer: &str, class: &str, name: &str) -> Option<Value> {
+    let o = OVERRIDES.read().ok()?;
+    let (_, list) = o.iter().find(|(l, _)| l == layer)?;
+    list.iter()
+        .find(|(c, n, ..)| c.eq_ignore_ascii_case(class) && n.eq_ignore_ascii_case(name))
+        .map(|(.., v)| v.clone())
+}
+
 pub fn override_layer(layer: &str) -> Vec<(String, String, u32, Value)> {
     OVERRIDES.read().ok().and_then(|o| o.iter().find(|(l, _)| l == layer).map(|(_, v)| v.clone())).unwrap_or_default()
 }

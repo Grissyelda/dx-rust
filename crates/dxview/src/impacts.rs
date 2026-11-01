@@ -263,7 +263,7 @@ pub fn impacts_system(
         });
     }
 
-    let mut spark_at = |commands: &mut Commands,
+    let spark_at = |commands: &mut Commands,
                         assets: &mut RuntimeAssets,
                         images: &mut Assets<Image>,
                         meshes: &mut Assets<Mesh>,
@@ -283,7 +283,8 @@ pub fn impacts_system(
 
     let hits: Vec<WallHit> = WALL_HITS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     let persistent = crate::settings::get("PersistentDebris") > 0.5;
-    let rock = assets.classes.defaults("Rockchip");
+    // (Only looked up on a frame with hits: class defaults are a fresh list.)
+    let rock = if hits.is_empty() { Vec::new() } else { assets.classes.defaults("Rockchip") };
     let rock_meshes: Vec<String> = rock
         .iter()
         .filter(|p| p.name.eq_ignore_ascii_case("Fragments"))
@@ -375,7 +376,7 @@ pub fn impacts_system(
                     hole = None;
                 } else {
                     let glass = crate::sound::prop(props, "FragmentClass")
-                        .is_some_and(|f| f.to_ascii_lowercase().ends_with("glassfragment"));
+                        .is_some_and(|f| crate::util::ends_with_ci(&f, "glassfragment"));
                     hole = Some(if glass {
                         (if rnd() < 0.5 { "DeusExItems.Skins.FlatFXTex29" } else { "DeusExItems.Skins.FlatFXTex30" }, 0.1)
                     } else {

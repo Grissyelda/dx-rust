@@ -104,7 +104,7 @@ pub fn sightable(h: &crate::weapons::Held) -> bool {
         && st.class.starts_with("Weapon")
         // No sights to look down: the riot prod, the shoulder-fired launchers, thrown weapons.
         && !NO_SIGHTS.iter().any(|c| st.class.eq_ignore_ascii_case(c))
-        && st.ammo_class.as_deref().is_some_and(|a| !a.to_ascii_lowercase().contains("ammonone"))
+        && st.ammo_class.as_deref().is_some_and(|a| !crate::util::contains_ci(&a, "ammonone"))
 }
 
 /// The sway's reach (TraceFire spread units) for the current accuracy (lower is better): DeusExWeapon's own
@@ -148,7 +148,7 @@ pub fn aim_mode_system(
     let held = weapons.held.as_ref().filter(|h| sightable(h));
     let want = held.is_some()
         && zoom.0.is_none()
-        && (keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || std::env::var_os("DXVIEW_FORCE_ADS").is_some())
+        && (keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || env_on!("DXVIEW_FORCE_ADS"))
         && !crate::inventory_screen::screen_open()
         && !crate::consys::third_person();
     if held.is_none() {

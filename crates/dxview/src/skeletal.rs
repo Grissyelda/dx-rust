@@ -286,7 +286,7 @@ fn is_mask(name: &str) -> bool {
 
 fn log_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("DXVIEW_SKELLOG").is_some())
+    *ON.get_or_init(|| env_on!("DXVIEW_SKELLOG"))
 }
 
 pub fn enabled() -> bool {
@@ -437,6 +437,13 @@ pub struct SkelBody {
     skip_dt: f32,
     fade: f32,
     shown_seq: Option<(usize, bool)>,
+    /// The clip for `shown_seq` (looked up by name only when the sequence changes).
+    clip: Option<&'static Clip>,
+    /// Posed this frame: on screen last frame, near the eye or never posed (pose_system).
+    pose_now: bool,
+    /// Scratch for node globals (weapon frame, cloth) and the body joint -> rig node map (made on first use).
+    gmat: Vec<Mat4>,
+    joint_node: Vec<Option<usize>>,
     /// Glancing and blinking on their own (outside conversations too).
     blink_in: f32,
     blink_t: Option<f32>,
@@ -558,7 +565,7 @@ pub fn spawn_system(
         let Some(body) = body_for(&name) else { continue };
         let ma = &lvl.mesh_actors[a.mesh_actor];
         let Some(anim) = &ma.anim else { continue };
-        let rig = &rigs()[body.female as usize];
+        let _rig = &rigs()[body.female as usize];
         // Textures by MultiSkins slot, from the vertex parts' materials.
         let mut slot_tex: HashMap<u32, Option<Handle<Image>>> = HashMap::new();
         for c in kids.iter() {
@@ -780,6 +787,10 @@ fn build(
             skip_dt: 0.0,
             fade: 0.0,
             shown_seq: None,
+            clip: None,
+            pose_now: true,
+            gmat: Vec::new(),
+            joint_node: Vec::new(),
             blink_in: 1.0 + crate::sound::frand() * 4.0,
             blink_t: None,
             glance_in: 2.0 + crate::sound::frand() * 4.0,
@@ -802,7 +813,6 @@ fn build(
 /// Pose `s` for original sequence `seq` (starting at mesh frame `start`, `frames` long) at frame `f`, cross-fading
 /// from the pose on screen when the sequence changes; then the weapon frame.
 fn advance(s: &mut SkelBody, seq: &str, start: usize, frames: usize, f: f32, looped: bool, dt: f32) {
-    let clip = clip_for(s.rig, seq, s.body.female).or_else(|| clip_for(s.rig, "BreatheLight", s.body.female));
     let key = (start, looped);
     if s.shown_seq != Some(key) {
         if s.shown_seq.is_some() {
@@ -810,7 +820,10 @@ fn advance(s: &mut SkelBody, seq: &str, start: usize, frames: usize, f: f32, loo
             s.fade = FADE;
         }
         s.shown_seq = Some(key);
+        let rig: &'static Rig = s.rig;
+        s.clip = clip_for(rig, seq, s.body.female).or_else(|| clip_for(rig, "BreatheLight", s.body.female));
     }
+    let clip = s.clip;
     let mut pose = std::mem::take(&mut s.scratch);
     pose.resize(s.rig.rest.len(), s.rig.rest[0]);
     if let Some(c) = clip {
@@ -884,22 +897,21 @@ pub fn pose_system(
     let eye = cam.iter().next().map(|t| t.translation());
     // Which bodies to pose: any of their sections on screen last frame, or near the eye (the skinned bounds lag a
     // frame behind the pose and a body culled on stale bounds must not freeze for good), or never posed yet.
-    let on_screen: std::collections::HashSet<Entity> = q
-        .iter()
-        .filter(|(_, s, _, gt, ..)| {
-            s.shown_seq.is_none()
-                || eye.is_none_or(|c| c.distance_squared(gt.translation()) < 45.0 * 45.0)
-                || s.meshes.iter().any(|m| seen.get(*m).is_ok_and(|v| v.get()))
-        })
-        .map(|(e, ..)| e)
-        .collect();
+    for (_, mut s, _, gt, ..) in &mut q {
+        let want = s.shown_seq.is_none()
+            || eye.is_none_or(|c| c.distance_squared(gt.translation()) < 45.0 * 45.0)
+            || s.meshes.iter().any(|m| seen.get(*m).is_ok_and(|v| v.get()));
+        if s.pose_now != want {
+            s.pose_now = want;
+        }
+    }
     if log_on() && tick % 120 == 0 {
         for (e, s, a, gt, ..) in q.iter() {
             let seen_any = s.meshes.iter().any(|m| seen.get(*m).is_ok_and(|v| v.get()));
             let d = eye.map_or(-1.0, |c| c.distance(gt.translation()));
             bevy::log::info!(
                 "SKEL {:?} actor {} seq {:?} t {:.2} seen {} near {:.1} m posed {} ragdoll {} lights {:.2}",
-                e, s.mesh_actor, s.shown_seq, a.time, seen_any, d, on_screen.contains(&e), s.ragdoll, s.light_in
+                e, s.mesh_actor, s.shown_seq, a.time, seen_any, d, s.pose_now, s.ragdoll, s.light_in
             );
         }
     }
@@ -916,7 +928,7 @@ pub fn pose_system(
         let Some(anim) = &ma.anim else { return };
         // The vertex parts are hidden, so `actors::animate` only advances the clocks; the face runs here.
         let face = crate::actors::update_face(&mut a.face, &anim.mesh, dt);
-        if !on_screen.contains(&e) {
+        if !s.pose_now {
             return;
         }
         // Far off (over ~30 m), a new pose every third frame.
@@ -975,8 +987,8 @@ pub fn pose_system(
         s.seen_last = seen_now;
         if s.morph_kick > 0 {
             s.morph_kick -= 1;
-            for m in s.meshes.clone() {
-                if let Ok(mut t) = tfs.get_mut(m) {
+            for m in &s.meshes {
+                if let Ok(mut t) = tfs.get_mut(*m) {
                     t.set_changed();
                 }
             }
@@ -987,32 +999,37 @@ pub fn pose_system(
             continue;
         }
         // Off screen too (slower): a body walking into view is never drawn unlit.
-        s.light_in = if on_screen.contains(&e) { 0.15 } else { 1.0 };
+        s.light_in = if s.pose_now { 0.15 } else { 1.0 };
         let ue = dx_level::bevy_to_ue(gt.translation().to_array());
         relight(&mut s, lvl, ue, ma.scale_glow, &mut mats);
     }
 }
 
 /// Node globals (glTF space) from the local pose.
-fn globals(rig: &Rig, pose: &[Trs]) -> Vec<Mat4> {
-    let mut g: Vec<Mat4> = Vec::with_capacity(pose.len());
+fn globals(rig: &Rig, pose: &[Trs], g: &mut Vec<Mat4>) {
+    g.clear();
     for (i, p) in pose.iter().enumerate() {
         let m = p.mat();
-        g.push(match rig.parent[i] {
+        let v = match rig.parent[i] {
             Some(pi) => g[pi] * m,
             None => m,
-        });
+        };
+        g.push(v);
     }
-    g
 }
 
-fn weapon_frame(s: &SkelBody) -> Option<[[f32; 3]; 4]> {
-    let sec = s.body.sections.iter().find(|x| x.style == "WEAPONTRI")?;
+fn weapon_frame(s: &mut SkelBody) -> Option<[[f32; 3]; 4]> {
+    let body: &'static Body = s.body;
+    let sec = body.sections.iter().find(|x| x.style == "WEAPONTRI")?;
     if sec.indices.len() < 3 {
         return None;
     }
-    let g = globals(s.rig, &s.pose);
-    let joint_node: Vec<Option<usize>> = s.body.joint_names.iter().map(|j| s.rig.names.iter().position(|n| n == j)).collect();
+    if s.joint_node.len() != body.joint_names.len() {
+        s.joint_node = body.joint_names.iter().map(|j| s.rig.names.iter().position(|n| n == j)).collect();
+    }
+    let mut g = std::mem::take(&mut s.gmat);
+    globals(s.rig, &s.pose, &mut g);
+    let joint_node = &s.joint_node;
     let skin = |v: usize| -> Vec3 {
         let p = Vec3::from(sec.positions[v]).extend(1.0);
         let mut o = Vec4::ZERO;
@@ -1029,6 +1046,7 @@ fn weapon_frame(s: &SkelBody) -> Option<[[f32; 3]; 4]> {
         s.to_ue.transform_point3(o.truncate())
     };
     let (v0, v1, v2) = (skin(sec.indices[0] as usize), skin(sec.indices[1] as usize), skin(sec.indices[2] as usize));
+    s.gmat = g;
     // The same frame AnimMesh::weapon_coords builds from the original's special face.
     let x = (v1 - v0).normalize_or_zero();
     let y = (v0 - v2).cross(x).normalize_or_zero();
@@ -1090,7 +1108,7 @@ fn face_weights(s: &mut SkelBody, mesh: &dx_level::actors::AnimMesh, face: Optio
         }
         return;
     }
-    let mut set = |name: &str, v: f32, w: &mut [f32]| {
+    let set = |name: &str, v: f32, w: &mut [f32]| {
         if let Some(i) = idx(name) {
             if let Some(x) = w.get_mut(i) {
                 *x = (*x + v).clamp(-1.0, 1.0);
@@ -1304,8 +1322,11 @@ pub fn mirror_skel_system(
 
 /// Light a body from the sixteen strongest Unreal lights that reach `ue` (when what reaches it changed).
 fn relight(s: &mut SkelBody, lvl: &dx_level::Level, ue: [f32; 3], scale_glow: f32, mats: &mut Assets<ActorMaterial>) {
-    let lights = crate::dynlight::lights_at(lvl, ue, 40.0);
-    let sig = crate::dynlight::light_sig(&lights, [0.0; 3], 0) ^ ((scale_glow * 64.0) as u64);
+    crate::dynlight::with_lights_at(lvl, ue, 40.0, |lights| relight_from(s, lights, ue, scale_glow, mats));
+}
+
+fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: [f32; 3], scale_glow: f32, mats: &mut Assets<ActorMaterial>) {
+    let sig = crate::dynlight::light_sig(lights, [0.0; 3], 0) ^ ((scale_glow * 64.0) as u64);
     if sig == s.light_sig {
         return;
     }
@@ -1478,7 +1499,7 @@ fn relaxed(rig: &Rig, female: bool) -> &'static [Trs] {
 pub fn apply_hurt(s: &mut SkelBody, frac: &[f32; 6]) {
     let rel = relaxed(s.rig, s.body.female);
     let names = &s.rig.names;
-    let mut blend = |bones: &[&str], w: f32, pose: &mut Vec<Trs>| {
+    let blend = |bones: &[&str], w: f32, pose: &mut Vec<Trs>| {
         if w <= 0.0 {
             return;
         }
@@ -1541,17 +1562,11 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
     let rig = s.rig;
     let world = pawn * s.root_local;
     let inv = world.inverse();
-    let mut g: Vec<Mat4> = Vec::with_capacity(s.pose.len());
-    for (i, p) in s.pose.iter().enumerate() {
-        let m = p.mat();
-        g.push(rig.parent[i].map_or(m, |q| g[q] * m));
-    }
-    // The legs, as capsules in world space.
-    let at = |name: &str, g: &[Mat4]| rig.names.iter().position(|n| n == name).map(|i| world.transform_point3(g[i].w_axis.truncate()));
-    let legs: Vec<(Vec3, Vec3)> = [("DEF-thigh.L", "DEF-shin.L"), ("DEF-shin.L", "DEF-foot.L"), ("DEF-thigh.R", "DEF-shin.R"), ("DEF-shin.R", "DEF-foot.R")]
-        .iter()
-        .filter_map(|(a, b)| Some((at(a, &g)?, at(b, &g)?)))
-        .collect();
+    let mut g = std::mem::take(&mut s.gmat);
+    globals(rig, &s.pose, &mut g);
+    // The legs, as capsules in world space (bone indices looked up once per rig).
+    let at = |i: Option<usize>| i.map(|i| world.transform_point3(g[i].w_axis.truncate()));
+    let legs: [Option<(Vec3, Vec3)>; 4] = leg_bones(rig).map(|(a, b)| Some((at(a)?, at(b)?)));
     let leg_r = 0.1 * world.x_axis.truncate().length();
     let fresh = s.cloth_tail.len() != bones.len();
     if fresh {
@@ -1586,7 +1601,7 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         // Hold the length.
         next = head_w + (next - head_w).normalize_or(target_w - head_w) * len_w;
         // Out of the legs.
-        for (a, b) in &legs {
+        for (a, b) in legs.iter().flatten() {
             let ab = *b - *a;
             let t = ((next - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
             let c = *a + ab * t;
@@ -1619,6 +1634,20 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         let (ls, lr, lt) = local.to_scale_rotation_translation();
         s.pose[i] = Trs { t: lt, r: lr, s: ls };
     }
+    s.gmat = g;
+}
+
+/// The leg segments the coat is kept out of (thigh -> shin, shin -> foot, both sides), as rig node indices.
+fn leg_bones(rig: &Rig) -> [(Option<usize>, Option<usize>); 4] {
+    static C: OnceLock<[[(Option<usize>, Option<usize>); 4]; 2]> = OnceLock::new();
+    let both = C.get_or_init(|| {
+        rigs().each_ref().map(|r| {
+            let at = |name: &str| r.names.iter().position(|n| n == name);
+            [("DEF-thigh.L", "DEF-shin.L"), ("DEF-shin.L", "DEF-foot.L"), ("DEF-thigh.R", "DEF-shin.R"), ("DEF-shin.R", "DEF-foot.R")]
+                .map(|(a, b)| (at(a), at(b)))
+        })
+    });
+    if std::ptr::eq(rig, &rigs()[1]) { both[1] } else { both[0] }
 }
 
 pub fn cloth_on() -> bool {

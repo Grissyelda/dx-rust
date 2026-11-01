@@ -247,11 +247,6 @@ impl Ctx<'_> {
             q.push((tag.to_string(), true));
         }
     }
-    fn untrigger(&self, tag: &str) {
-        if let Ok(mut q) = crate::movers::EVENTS_OUT.lock() {
-            q.push((tag.to_string(), false));
-        }
-    }
     fn hide(&self, sel: ActorSel, hidden: bool) {
         crate::scriptworld::push(ActorReq::Hide(sel, hidden));
     }

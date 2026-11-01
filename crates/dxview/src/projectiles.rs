@@ -298,7 +298,7 @@ pub fn launch_system(
                 // Fire-texture sprites (the flamethrower's flame_b) are drawn as a soft round fireball: the texture is
                 // faded out towards its edges so the quad never reads as a square.
                 let img = if find(&d, "cloudRadius").is_none()
-                    && !tex.to_ascii_lowercase().ends_with("flame_b")
+                    && !crate::util::ends_with_ci(&tex, "flame_b")
                 {
                     round_fire_image(&mut assets, &mut images, &tex)
                 } else {

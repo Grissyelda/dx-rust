@@ -298,7 +298,7 @@ impl Cine {
         self.running.retain(|r| r.i != i);
         let pt = self.points[i].clone();
         let start = (self.loc, self.rot, self.fov);
-        if std::env::var("DXVIEW_CAMLOG").is_ok() {
+        if env_on!("DXVIEW_CAMLOG") {
             println!("CAMLOG wake seq {} cmd {:?} value {} smooth {} loc {:.0?} rot {:.0?} fov {:.1}", pt.seq, pt.cmd, pt.value, pt.smooth, self.loc, self.rot, self.fov);
         }
         let mut end = start;

@@ -597,7 +597,7 @@ pub fn init(root: &std::path::Path) {
     }
     let t0 = std::time::Instant::now();
     let mut db = unreal_pkg::classes::ClassDb::open(&sys);
-    if std::env::var("DXVIEW_AUGLOG").is_ok() {
+    if env_on!("DXVIEW_AUGLOG") {
         println!("augmentique: ClassDb {:.1} s", t0.elapsed().as_secs_f32());
     }
     let Some(src) = db.script_text("OutfitManager") else {
@@ -671,6 +671,7 @@ pub fn init(root: &std::path::Path) {
     if let Ok(mut d) = DATA.write() {
         *d = Some(data);
     }
+    bump();
     // Outfits found in GMDX Augmented's maps (else all are open).
     let gmdx_maps = unreal_pkg::mods::active("gmdx").and_then(|d| unreal_pkg::mods::find_rel(&d, "Maps"));
     // Without GMDX's maps: our own boxes in the original maps (setting OutfitBoxes), else all open.
@@ -686,7 +687,7 @@ pub fn init(root: &std::path::Path) {
         init_own_boxes(&mut db, root);
     }
     // Dev aids: DXVIEW_AUGLOG lists the outfits; DXVIEW_OUTFIT=<id> wears one from the start.
-    if std::env::var("DXVIEW_AUGLOG").is_ok() {
+    if env_on!("DXVIEW_AUGLOG") {
         if let Ok(g) = DATA.read() {
             for (i, o) in g.as_ref().unwrap().outfits.iter().enumerate() {
                 let grp = &g.as_ref().unwrap().groups[o.group];
@@ -792,7 +793,7 @@ fn spawner_actors(map: &str) -> Vec<(String, String, Vec<Property>)> {
             set("Skin", Value::Path(t.clone()));
             set("Texture", Value::Path(t));
         }
-        if std::env::var("DXVIEW_AUGLOG").is_ok() {
+        if env_on!("DXVIEW_AUGLOG") {
             println!("AUG spawner {map} {} {class} at {:?}", e.name, find(&props, "Location"));
         }
         out.push((class, format!("AugSpawner_{}", e.name), props));
@@ -959,7 +960,7 @@ fn own_box_actors(map: &str) -> Vec<(String, String, Vec<Property>)> {
         set("ItemName", Value::Str(pickup_name));
         let tag = format!("AugBox_{id}");
         set("Tag", Value::Name(tag.clone()));
-        if std::env::var("DXVIEW_AUGLOG").is_ok() {
+        if env_on!("DXVIEW_AUGLOG") {
             println!("AUG own box {map} {id} at {at:?}");
         }
         out.push(("OutfitSpawner2".to_string(), tag, props));
@@ -969,7 +970,7 @@ fn own_box_actors(map: &str) -> Vec<(String, String, Vec<Property>)> {
 
 /// An outfit box (frob it to unlock the outfit).
 pub fn is_spawner(class: &str) -> bool {
-    class.to_ascii_lowercase().starts_with("outfitspawner")
+    crate::util::starts_with_ci(&class, "outfitspawner")
 }
 
 /// OutfitManager.SpawnerPickup: the message, the box's pickup sound; the caller removes the box.
@@ -1095,7 +1096,7 @@ fn worn() -> Option<(usize, usize, Vec<usize>)> {
 }
 
 fn hdtp_jc() -> bool {
-    unreal_pkg::classes::override_layer("hdtp").iter().any(|(c, n, ..)| c.eq_ignore_ascii_case("JCDentonMale") && n.eq_ignore_ascii_case("Mesh"))
+    unreal_pkg::classes::override_value("hdtp", "JCDentonMale", "Mesh").is_some()
 }
 
 /// Outfit.ApplyOutfitToActor: (mesh, carcass mesh, Texture, MultiSkins).
@@ -1377,7 +1378,7 @@ fn npc_hook(map: &str, class: &str, name: &str, props: &mut Vec<Property>) {
     let Some(d) = g.as_ref() else { return };
     // HDTP people keep their own look (ScriptedPawn.IsHDTP).
     if let Some(Value::Path(m)) = find(props, "Mesh") {
-        if m.to_ascii_lowercase().starts_with("hdtp") {
+        if crate::util::starts_with_ci(&m, "hdtp") {
             return;
         }
     }
@@ -1386,7 +1387,7 @@ fn npc_hook(map: &str, class: &str, name: &str, props: &mut Vec<Property>) {
         Some(Value::Str(s)) | Some(Value::Name(s)) => s.clone(),
         _ => String::new(),
     };
-    let is_carcass = class.to_ascii_lowercase().ends_with("carcass");
+    let is_carcass = crate::util::ends_with_ci(&class, "carcass");
     let seed = state(|s| s.seed);
     let mut textures: [Option<String>; 9] = Default::default();
     let mut unique = false;
@@ -1427,7 +1428,7 @@ fn npc_hook(map: &str, class: &str, name: &str, props: &mut Vec<Property>) {
     if !any || (unique && level < 2) {
         return;
     }
-    if std::env::var("DXVIEW_AUGLOG").is_ok() {
+    if env_on!("DXVIEW_AUGLOG") {
         println!("AUG npc {map} {name} ({class}) {:?}", textures);
     }
     for (k, t) in textures.iter().enumerate() {
@@ -1472,7 +1473,7 @@ pub fn apply_weapon_skin(props: &mut Vec<Property>, class: &str, skin: &str, fir
         return;
     }
     if let Some(Value::Path(m)) = find(props, if first { "PlayerViewMesh" } else { "Mesh" }) {
-        if m.to_ascii_lowercase().starts_with("hdtpitems.") {
+        if crate::util::starts_with_ci(&m, "hdtpitems.") {
             return;
         }
     }

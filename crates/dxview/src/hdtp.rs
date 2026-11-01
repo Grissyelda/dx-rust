@@ -439,10 +439,6 @@ struct Data {
 
 static DATA: RwLock<Option<Data>> = RwLock::new(None);
 
-pub fn active() -> bool {
-    unreal_pkg::mods::active("hdtp").is_some()
-}
-
 fn models_on() -> bool {
     crate::settings::get("HDModels") > 0.5
 }

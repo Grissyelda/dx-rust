@@ -209,7 +209,7 @@ pub fn choice(con: &str, text: &str) {
     if con.eq_ignore_ascii_case("ClubMercedesConvo1") && text.trim().eq_ignore_ascii_case("Sure.") {
         unlock("sure");
     }
-    if con.eq_ignore_ascii_case("M11MeetGunther") && text.to_ascii_lowercase().contains("laputan machine") {
+    if con.eq_ignore_ascii_case("M11MeetGunther") && crate::util::contains_ci(&text, "laputan machine") {
         unlock("notmachine");
     }
 }
@@ -426,9 +426,11 @@ pub fn achievements_system(
             if a.augs.list.iter().filter(|g| g.boosted).count() >= 3 {
                 add_progress("atomheart", 3);
             }
-            let now: HashSet<String> = a.augs.list.iter().filter(|g| g.active).map(|g| g.def.class.clone()).collect();
-            if now.contains("AugPower") {
-                let newly = now.iter().filter(|c| c.as_str() != "AugPower" && !st.active.contains(*c)).count() as u32;
+            // The running augs, compared with last frame's in place (rebuilt only when they change).
+            let on = || a.augs.list.iter().filter(|g| g.active).map(|g| g.def.class.as_str());
+            let power = on().any(|c| c == "AugPower");
+            if power {
+                let newly = on().filter(|c| *c != "AugPower" && !st.active.contains(*c)).count() as u32;
                 // (The ones already on when it came on don't count; it's activations while it runs.)
                 if st.active.contains("AugPower") {
                     st.power_count += newly;
@@ -439,7 +441,10 @@ pub fn achievements_system(
             } else {
                 st.power_count = 0;
             }
-            st.active = now;
+            if on().count() != st.active.len() || on().any(|c| !st.active.contains(c)) {
+                st.active.clear();
+                st.active.extend(on().map(str::to_owned));
+            }
         }
     }
     // ---- pawns: sneaking past, going on alert behind a wall, eating bodies
@@ -447,11 +452,13 @@ pub fn achievements_system(
     let eye = me + DVec3::new(0.0, 0.0, player.params.height * 0.8);
     let run_silent = crate::abilities::aug_active("AugStealth");
     let vision = crate::abilities::aug_active("AugVision") && crate::abilities::aug_level("AugVision").unwrap_or(0) >= 2;
-    let animals: Vec<DVec3> = npcs
-        .iter()
-        .filter(|(_, n)| n.state != NpcState::Dead && ["Karkian", "Greasel"].iter().any(|c| crate::classtree::is_a(&lvl.actors[n.actor].class, c) || lvl.actors[n.actor].class.starts_with(c)))
-        .filter_map(|(_, n)| blockers.list.get(n.blocker).map(|c| c.center))
-        .collect();
+    // Living Karkians / Greasels near a point (only asked when a carried body is dropped).
+    let animal_near = |at: DVec3| {
+        npcs.iter()
+            .filter(|(_, n)| n.state != NpcState::Dead && ["Karkian", "Greasel"].iter().any(|c| crate::classtree::is_a(&lvl.actors[n.actor].class, c) || lvl.actors[n.actor].class.starts_with(c)))
+            .filter_map(|(_, n)| blockers.list.get(n.blocker).map(|c| c.center))
+            .any(|a| a.distance(at) < 220.0)
+    };
     for (e, n) in &npcs {
         let alerted = matches!(n.state, NpcState::Seeking | NpcState::Attacking | NpcState::Surprised(_)) && (n.target == Some(Target::Player) || n.state == NpcState::Seeking);
         let was = st.states.insert(e, alerted).unwrap_or(alerted);
@@ -459,7 +466,7 @@ pub fn achievements_system(
             // A body the player carried, dropped by a Karkian or Greasel.
             if st.carried.contains(&e) && weapons.corpse != Some(e) {
                 if let Some(at) = n.body.as_ref().map(|b| b.location) {
-                    if animals.iter().any(|a| a.distance(at) < 220.0) {
+                    if animal_near(at) {
                         unlock("wildlife");
                     }
                 }

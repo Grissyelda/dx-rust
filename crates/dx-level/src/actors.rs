@@ -630,6 +630,13 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
 /// to the actor when lighting it, so actors go dark in shadow): rays to the top, middle and bottom of its
 /// collision cylinder against the level.
 pub fn shadowed_lights(col: &crate::collision::BspCollision, lights: &[LightInfo], center: [f32; 3], half_height: f32) -> Vec<LightInfo> {
+    let mut v = Vec::new();
+    shadowed_lights_into(col, lights, center, half_height, &mut v);
+    v
+}
+
+/// `shadowed_lights`, appended to `out` (no list of its own).
+pub fn shadowed_lights_into(col: &crate::collision::BspCollision, lights: &[LightInfo], center: [f32; 3], half_height: f32, out: &mut Vec<LightInfo>) {
     let c = glam::DVec3::new(center[0] as f64, center[1] as f64, center[2] as f64);
     let h = half_height.max(4.0) as f64;
     let samples = [c + glam::DVec3::new(0.0, 0.0, 0.8 * h), c, c - glam::DVec3::new(0.0, 0.0, 0.6 * h)];
@@ -654,7 +661,7 @@ pub fn shadowed_lights(col: &crate::collision::BspCollision, lights: &[LightInfo
             let k = seen as f32 / samples.len() as f32;
             Some(LightInfo { pos: l.pos, color: [l.color[0] * k, l.color[1] * k, l.color[2] * k], radius: l.radius })
         })
-        .collect()
+        .for_each(|l| out.push(l));
 }
 
 /// Unreal rotator to a rotation in Bevy space (Y up), as a column-major 3x3 matrix (x, y, z axes).

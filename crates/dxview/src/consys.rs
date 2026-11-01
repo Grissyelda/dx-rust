@@ -2323,52 +2323,11 @@ impl ConState {
     }
 }
 
-/// Length of a WAV payload in seconds (data bytes over the byte rate).
-fn wav_seconds(b: &[u8]) -> Option<f32> {
-    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
-        // MP3 (conversation speech): decode it.
-        return imsim_audio::decode(b).map(|c| c.duration());
-    }
-    let mut i = 12;
-    let mut byte_rate = 0u32;
-    let mut block_align = 0u16;
-    let mut channels = 1u16;
-    let mut sample_rate = 0u32;
-    let mut fmt_tag = 1u16;
-    while i + 8 <= b.len() {
-        let id = &b[i..i + 4];
-        let len = u32::from_le_bytes(b[i + 4..i + 8].try_into().ok()?) as usize;
-        let body = &b[i + 8..(i + 8 + len).min(b.len())];
-        if id == b"fmt " && body.len() >= 16 {
-            fmt_tag = u16::from_le_bytes([body[0], body[1]]);
-            channels = u16::from_le_bytes([body[2], body[3]]);
-            sample_rate = u32::from_le_bytes(body[4..8].try_into().ok()?);
-            byte_rate = u32::from_le_bytes(body[8..12].try_into().ok()?);
-            block_align = u16::from_le_bytes([body[12], body[13]]);
-        } else if id == b"data" {
-            if fmt_tag == 2 || fmt_tag == 0x11 {
-                // ADPCM: count frames from the block layout.
-                if let Some(c) = imsim_audio::decode_wav(b) {
-                    return Some(c.duration());
-                }
-            }
-            let _ = (channels, block_align);
-            if byte_rate > 0 {
-                return Some(len as f32 / byte_rate as f32);
-            }
-            if sample_rate > 0 {
-                return Some(len as f32 / sample_rate as f32);
-            }
-        }
-        i += 8 + len + (len & 1);
-    }
-    None
-}
-
 /// Actors the player can see this frame (CanActorSeePlayer), filled by the update.
 static SIGHT: Mutex<Vec<Who>> = Mutex::new(Vec::new());
 /// Inventory classes the player carries (for CheckObject), refreshed each frame.
 static HAS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static HAS_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Credits added by conversations, applied to the inventory by the update.
 static CREDITS: Mutex<i32> = Mutex::new(0);
 /// Infolinks finished this frame (their _Played flag is set by the update, which holds the flags).
@@ -2660,8 +2619,8 @@ pub fn consys_system(
         }
     }
     // Line of sight from the eye to each actor with conversations near enough to matter.
-    {
-        let mut seen = Vec::new();
+    if let Ok(mut seen) = SIGHT.lock() {
+        seen.clear();
         for (w, a) in &st.actors {
             if *w == Who::Player || a.pos.distance(eye_pos) > 1200.0 {
                 continue;
@@ -2670,15 +2629,27 @@ pub fn consys_system(
                 seen.push(*w);
             }
         }
-        *SIGHT.lock().unwrap() = seen;
     }
-    *HAS.lock().unwrap() = inv
-        .0
-        .items
-        .iter()
-        .map(|i| i.def.class.clone())
-        .chain(inv.0.ammo.iter().filter(|a| a.1 > 0).map(|a| a.0.clone()))
-        .collect();
+    // What the player carries (conditions on items): rebuilt only when that changed (a hash of it, no copies).
+    let has_sig = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for i in &inv.0.items {
+            i.def.class.hash(&mut h);
+        }
+        for a in inv.0.ammo.iter().filter(|a| a.1 > 0) {
+            a.0.hash(&mut h);
+        }
+        h.finish()
+    };
+    if HAS_SIG.swap(has_sig, std::sync::atomic::Ordering::Relaxed) != has_sig {
+        if let Ok(mut has) = HAS.lock() {
+            has.clear();
+            has.extend(
+                inv.0.items.iter().map(|i| i.def.class.clone()).chain(inv.0.ammo.iter().filter(|a| a.1 > 0).map(|a| a.0.clone())),
+            );
+        }
+    }
 
     let fl = &mut flags.0;
 
@@ -2715,7 +2686,7 @@ pub fn consys_system(
             .filter(|(w, a)| {
                 **w != Who::Player
                     && a.alive
-                    && st.owners.contains_key(&fold(&a.bind))
+                    && crate::util::with_lower(&a.bind, |k| st.owners.contains_key(k))
                     && a.pos.distance(me) < 600.0
             })
             .map(|(w, _)| *w)
@@ -3290,7 +3261,7 @@ mod tests {
     use super::*;
 
     fn state() -> Option<ConState> {
-        let root = std::env::var("CON_GAME").ok()?;
+        let root = env_val!("CON_GAME").map(str::to_owned)?;
         let sys = std::path::Path::new(&root).join("System");
         let db = ConDb::load(&sys)?;
         let mut classes = unreal_pkg::classes::ClassDb::open(&sys);
@@ -3504,6 +3475,7 @@ pub fn reset_level() {
     if let Ok(mut v) = HAS.lock() {
         v.clear();
     }
+    HAS_SIG.store(0, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut v) = PLAYED.lock() {
         v.clear();
     }

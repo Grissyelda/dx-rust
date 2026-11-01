@@ -53,8 +53,6 @@ impl Spec {
 
 /// DeusExWeapon.MuzzleFlashLight: MuzzleFlash (hue 28, saturation 160, brightness 255, radius 3, 0.1 s).
 pub const MUZZLE_FLASH: Spec = Spec::new(28, 160, 255, 3.0);
-/// Fireball (the flamethrower's flame): hue 16, saturation 32, brightness 200, radius 2.
-pub const FIREBALL: Spec = Spec::new(16, 32, 200, 2.0);
 /// A lit flare: hue 16, saturation 96, brightness 255, radius 8 (LE_TorchWaver).
 pub const FLARE: Spec = Spec::new(16, 96, 255, 8.0);
 
@@ -191,35 +189,53 @@ static SHADOW_CACHE: Mutex<Option<HashMap<(i32, i32, i32, i32), std::sync::Arc<V
 /// The lights that reach an actor at `center` (half height `half_h`), as Unreal lights actors: static lights that
 /// can see it (cached per spot), plus the dynamic lights on now that can see it.
 pub fn lights_at(level: &dx_level::Level, center: [f32; 3], half_h: f32) -> Vec<LightInfo> {
+    let mut v = Vec::new();
+    lights_at_into(level, center, half_h, &mut v);
+    v
+}
+
+/// Run `f` on `lights_at`'s answer held in a per-thread buffer (no allocation once warm).
+pub fn with_lights_at<R>(level: &dx_level::Level, center: [f32; 3], half_h: f32, f: impl FnOnce(&[LightInfo]) -> R) -> R {
+    thread_local! {
+        static BUF: std::cell::RefCell<Vec<LightInfo>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    BUF.with(|b| {
+        let Ok(mut b) = b.try_borrow_mut() else { return f(&lights_at(level, center, half_h)) };
+        lights_at_into(level, center, half_h, &mut b);
+        f(&b)
+    })
+}
+
+/// `lights_at` into a caller's buffer (cleared first).
+pub fn lights_at_into(level: &dx_level::Level, center: [f32; 3], half_h: f32, v: &mut Vec<LightInfo>) {
+    v.clear();
     let key = (
         (center[0] / 32.0).floor() as i32,
         (center[1] / 32.0).floor() as i32,
         (center[2] / 32.0).floor() as i32,
         (half_h / 16.0).round() as i32,
     );
-    let statics = {
+    {
         let mut g = SHADOW_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let map = g.get_or_insert_with(HashMap::new);
         if map.len() > 200_000 {
             map.clear();
         }
-        map.entry(key)
-            .or_insert_with(|| {
-                // The middle of the cell, so every actor in it gets the same answer.
-                let c = [(key.0 as f32 + 0.5) * 32.0, (key.1 as f32 + 0.5) * 32.0, (key.2 as f32 + 0.5) * 32.0];
-                std::sync::Arc::new(dx_level::actors::shadowed_lights(&level.collision, &level.lights, c, half_h))
-            })
-            .clone()
-    };
-    let cur = current();
-    let mut v: Vec<LightInfo> = statics.as_ref().clone();
-    if !cur.is_empty() {
-        v.extend(dx_level::actors::shadowed_lights(&level.collision, &cur, center, half_h));
+        let statics = map.entry(key).or_insert_with(|| {
+            // The middle of the cell, so every actor in it gets the same answer.
+            let c = [(key.0 as f32 + 0.5) * 32.0, (key.1 as f32 + 0.5) * 32.0, (key.2 as f32 + 0.5) * 32.0];
+            std::sync::Arc::new(dx_level::actors::shadowed_lights(&level.collision, &level.lights, c, half_h))
+        });
+        v.extend_from_slice(statics);
     }
+    with_current_copy(|cur| {
+        if !cur.is_empty() {
+            dx_level::actors::shadowed_lights_into(&level.collision, cur, center, half_h, v);
+        }
+    });
     if let Some(l) = flash_spot_on(level, center) {
         v.push(l);
     }
-    v
 }
 
 /// The Flashlight Cone's light on a vertex-lit mesh: the cone from the eye, as a light just in front of the mesh
@@ -292,6 +308,30 @@ pub fn current() -> Vec<LightInfo> {
     CURRENT.lock().map(|c| c.clone()).unwrap_or_default()
 }
 
+/// Run `f` on a copy of this frame's dynamic lights held in a per-thread buffer (no allocation once warm, and the
+/// list isn't kept locked while `f` traces).
+pub fn with_current_copy<R>(f: impl FnOnce(&[LightInfo]) -> R) -> R {
+    thread_local! {
+        static BUF: std::cell::RefCell<Vec<LightInfo>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    BUF.with(|b| {
+        // A nested call on this thread (should not happen) falls back to a fresh copy.
+        let Ok(mut b) = b.try_borrow_mut() else { return f(&current()) };
+        b.clear();
+        with_current(|c| b.extend_from_slice(c));
+        f(&b)
+    })
+}
+
+/// This frame's dynamic lights, read in place (no copy). `f` must not call back into this module's light lookups
+/// (`lights_at`, `current`): the list is locked while it runs.
+pub fn with_current<R>(f: impl FnOnce(&[LightInfo]) -> R) -> R {
+    match CURRENT.lock() {
+        Ok(c) => f(&c),
+        Err(_) => f(&[]),
+    }
+}
+
 #[derive(Component)]
 pub struct DynLightSlot;
 
@@ -349,6 +389,14 @@ fn rand(seed: &mut u32) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[derive(Default)]
+pub struct DynScratch {
+    active: Vec<(LightInfo, Spec)>,
+    held: Vec<(u64, DVec3, Spec, f32)>,
+    seen: HashSet<u64>,
+    keys: HashMap<u64, [f32; 3]>,
+}
+
 pub fn dynlight_system(
     time: Res<Time>,
     level: Res<LevelRes>,
@@ -356,6 +404,7 @@ pub fn dynlight_system(
     blockers: Res<crate::actors::Blockers>,
     cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>, Without<DynLightSlot>)>,
     mut slots: Query<(&mut PointLight, &mut Transform, &mut Visibility), With<DynLightSlot>>,
+    mut scratch: Local<DynScratch>,
 ) {
     let _prof = crate::prof::scope("dynlight::dynlight_system");
     let dt = time.delta_secs();
@@ -470,18 +519,14 @@ pub fn dynlight_system(
     }
 
     // Everything on this frame.
-    let mut active: Vec<(LightInfo, Spec)> = st
-        .transients
-        .iter()
-        .map(|t| (t.spec.info(t.pos, 1.0), t.spec))
-        .collect();
-    let held: Vec<(u64, DVec3, Spec, f32)> = HELD
-        .lock()
-        .map(|mut h| std::mem::take(&mut *h))
-        .unwrap_or_default();
-    let mut seen = HashSet::new();
-    let mut active_keys: HashMap<u64, [f32; 3]> = HashMap::new();
-    for (key, pos, spec, flicker) in held {
+    // (Buffers kept between frames.)
+    let DynScratch { active, held, seen, keys: active_keys } = &mut *scratch;
+    active.clear();
+    active.extend(st.transients.iter().map(|t| (t.spec.info(t.pos, 1.0), t.spec)));
+    crate::queue::swap_out(&HELD, held);
+    seen.clear();
+    active_keys.clear();
+    for (key, pos, spec, flicker) in held.drain(..) {
         if !seen.insert(key) {
             continue;
         }
@@ -505,7 +550,8 @@ pub fn dynlight_system(
     let beam_key = crate::sound::key_of("aug-light-beam");
     let beam_pos = active_keys.get(&beam_key).copied();
     if let Ok(mut c) = CURRENT.lock() {
-        *c = active.iter().filter(|(l, _)| beam_pos.is_none_or(|b| l.pos != b)).map(|(l, _)| *l).collect();
+        c.clear();
+        c.extend(active.iter().filter(|(l, _)| beam_pos.is_none_or(|b| l.pos != b)).map(|(l, _)| *l));
         if let Ok(x) = CPU_ONLY.lock() {
             c.extend(x.iter().copied());
         }
@@ -698,7 +744,7 @@ pub fn aug_light_system(
         let gain = st.as_ref().map_or(1.0, |s| s.gain);
         // (capped: aimed at the sky, the light needed to reach "the spot" 1024 units off blew out everything near)
         let d = (dist.clamp(64.0, 256.0) / 64.0) as f32;
-        let intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * gain * d * d * 5.0 * std::env::var("DXVIEW_CONE_GAIN").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
+        let intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * gain * d * d * 5.0 * env_val!("DXVIEW_CONE_GAIN").map(str::to_owned).and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         let c = hsv_white(32, 140);
         let right = cam.right().as_vec3();
         // Just off the eye (a little right and down, so shadows show as thin edges): from the shoulder, the pool's
@@ -711,7 +757,7 @@ pub fn aug_light_system(
         }
         match cone.iter_mut().next() {
             Some((mut sl, mut t, mut vis)) => {
-                if std::env::var_os("DXVIEW_CONELOG").is_some() {
+                if env_on!("DXVIEW_CONELOG") {
                     println!("CONE dist {dist:.0} intensity {intensity:.0} at {:?}", tf.translation);
                 }
                 sl.intensity = intensity;
@@ -727,7 +773,7 @@ pub fn aug_light_system(
                         range: 2048.0 * dx_level::METERS_PER_UNIT,
                         inner_angle: 0.04,
                         outer_angle: 0.48,
-                        shadow_maps_enabled: std::env::var_os("DXVIEW_CONE_NOSHADOW").is_none(),
+                        shadow_maps_enabled: !env_on!("DXVIEW_CONE_NOSHADOW"),
                         // Grazing walls lit from almost the eye: the default biases left acne (black lines, a
                         // dark wedge, speckles) on them.
                         shadow_depth_bias: 0.12,
@@ -817,7 +863,7 @@ pub fn brightness_key_system(
     let g = crate::settings::generation();
     if g != *gen {
         *gen = g;
-        if std::env::var("DXVIEW_GAMMA").is_err() {
+        if !env_on!("DXVIEW_GAMMA") {
             for mut b in &mut q {
                 b.gamma = crate::settings::gamma();
             }

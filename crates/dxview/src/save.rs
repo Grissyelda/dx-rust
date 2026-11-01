@@ -521,11 +521,6 @@ pub fn request(path: PathBuf, description: &str) {
     }
 }
 
-/// The message from the last save, once.
-pub fn take_message() -> Option<String> {
-    LAST.lock().ok().and_then(|mut m| m.take())
-}
-
 /// Start the game again from a save (a fresh copy of the exe on the saved map).
 /// Load a saved game: its map is built in place (loader.rs) and the save put back on it.
 pub fn load(_root: &Path, path: &Path) {
@@ -1025,7 +1020,7 @@ fn restore_level(world: &mut World, s: &SaveGame) {
 
 /// The map's own state (a save's level part, or the state a visited map was left in).
 fn restore_level_part(world: &mut World, s: &SaveGame, l: &LevelSave) {
-    let g = &s.global;
+    let _g = &s.global;
     let placed = PLACED.load(Ordering::Relaxed);
     if l.placed != placed {
         eprintln!("save: the map has {placed} actors, the save expects {} (different map version?)", l.placed);
@@ -1303,7 +1298,7 @@ pub fn save_last_system(world: &mut World) {
     }
     // Developer aid: DXVIEW_SAVETEST=<seconds> saves to Save/SaveTest.ron after that long (with its snapshot) and
     // exits two seconds later.
-    if let Some(secs) = std::env::var("DXVIEW_SAVETEST").ok().and_then(|v| v.parse::<f64>().ok()) {
+    if let Some(secs) = env_val!("DXVIEW_SAVETEST").map(str::to_owned).and_then(|v| v.parse::<f64>().ok()) {
         static ASKED: AtomicBool = AtomicBool::new(false);
         let elapsed = SESSION_START.lock().ok().and_then(|s| *s).map_or(0.0, |s| s.elapsed().as_secs_f64());
         if elapsed > secs && !restoring() && !ASKED.swap(true, Ordering::Relaxed) {

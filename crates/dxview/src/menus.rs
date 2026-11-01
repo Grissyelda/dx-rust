@@ -1364,7 +1364,7 @@ fn cut_rows(f: &mut Frame, rows: &[usize]) {
 
 /// Ours: the Enhancements screen - Controller Bindings, the gamepad options (ROADMAP Phase 0.1 / 0.2), Debug Mode.
 fn enhancement_choices() -> Vec<Choice> {
-    let e = |key: &str, label: &str, help: &str, values: &[&str]| {
+    let _e = |key: &str, label: &str, help: &str, values: &[&str]| {
         let v = crate::settings::get(key);
         Choice {
             key: key.into(),
@@ -2368,7 +2368,7 @@ pub fn menu_system(
         }
         st.cursor = Some(layer(&mut commands, &mut images, &mut layers, 70));
         // DX.dx: the camera flies the IntroCam path from Position 1 (TravelPostAccept).
-        if mission == -2 && std::env::var("DXVIEW_SHOT").is_err() {
+        if mission == -2 && !env_on!("DXVIEW_SHOT") {
             let pts = crate::interp::path(&level.0, "IntroCam");
             if let Some(first) = crate::interp::at_position(&pts, 1) {
                 let it = crate::interp::Interp::start(&pts, first);
@@ -2600,7 +2600,7 @@ pub fn menu_system(
     // ---- input
     let hover = st.hits.iter().rev().find(|(_, r, _)| inside(mouse, *r)).map(|h| (h.0, h.2));
     let hover_w = hover.map(|h| h.0);
-    if std::env::var("DXVIEW_SNAPLOG").is_ok() {
+    if env_on!("DXVIEW_SNAPLOG") {
         eprintln!("SNAP mouse {mouse:?} hover {hover:?} hits {:?}", st.hits.iter().map(|h| (h.0, h.1)).collect::<Vec<_>>());
     }
     let shift = binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight);
@@ -3347,7 +3347,7 @@ fn set_scroll(win: &mut Win, id: u8, v: i32) {
 }
 
 /// A message box answer (BoxOptionSelected in the window that opened it).
-fn box_answer(st: &mut Menus, top: usize, yes: bool, hud: &mut ClassicHud, assets: &mut RuntimeAssets, acts: &mut Vec<Act>) {
+fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _assets: &mut RuntimeAssets, acts: &mut Vec<Act>) {
     let Body::Msg(m) = &st.stack[top].body else { return };
     let purpose = m.purpose;
     crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);

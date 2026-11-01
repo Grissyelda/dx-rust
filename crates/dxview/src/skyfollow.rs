@@ -39,7 +39,7 @@ pub struct SkyCopy(pub Entity);
 
 pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("DXVIEW_SKYCAM").is_none())
+    *ON.get_or_init(|| !env_on!("DXVIEW_SKYCAM"))
 }
 
 /// The scale and reach for a level: the nearest sky face ends up past the map, the skyline ring and the clouds.

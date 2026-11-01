@@ -292,9 +292,6 @@ pub fn object_names() -> bool {
 pub fn auto_reload() -> bool {
     enabled("WeaponAutoReload")
 }
-pub fn low_gore() -> bool {
-    get("GoreLevel") < 0.5
-}
 pub fn subtitles() -> bool {
     on("Subtitles")
 }
@@ -345,9 +342,6 @@ pub fn sound_volume() -> f32 {
 }
 pub fn speech_volume() -> f32 {
     get("SpeechVolume") / 255.0
-}
-pub fn reverse_stereo() -> bool {
-    on("ReverseStereo")
 }
 /// Renderer gamma for the Brightness slider (0..1, default 0.5 = 1.15).
 pub fn gamma() -> f32 {
