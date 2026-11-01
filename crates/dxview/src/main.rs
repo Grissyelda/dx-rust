@@ -897,6 +897,7 @@ fn main() {
             (gamepad::poll_system, keybinds::remap_system).chain().after(bevy::input::InputSystems),
         )
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
+        .add_plugins(PlatformPlugin)
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
         .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system))
         .init_resource::<consys::ConSetup>()
@@ -1809,6 +1810,37 @@ fn cursor_grab(
     if key.just_pressed(KeyCode::Escape) && !menus::open() {
         cursor.visible = true;
         cursor.grab_mode = CursorGrabMode::None;
+    }
+}
+
+/// What only one platform needs.
+struct PlatformPlugin;
+
+impl Plugin for PlatformPlugin {
+    #[allow(unused_variables)]
+    fn build(&self, app: &mut App) {
+        #[cfg(target_os = "macos")]
+        app.add_systems(Update, release_cursor_without_focus.after(cursor_grab));
+    }
+}
+
+/// A locked cursor on macOS holds the mouse for the whole system, and neither winit nor Bevy lets go when the window
+/// loses focus: without this, Cmd-Tab leaves the player with a mouse that doesn't move in the other app.
+#[cfg(target_os = "macos")]
+fn release_cursor_without_focus(
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    mut cursor: Single<&mut CursorOptions>,
+    mut was_locked: Local<bool>,
+) {
+    for e in focus.read() {
+        if !e.focused && cursor.grab_mode == CursorGrabMode::Locked {
+            *was_locked = true;
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+        } else if e.focused && std::mem::take(&mut *was_locked) {
+            cursor.grab_mode = CursorGrabMode::Locked;
+            cursor.visible = false;
+        }
     }
 }
 
