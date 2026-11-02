@@ -134,7 +134,7 @@ pub fn drug_system(
         if let Some(mut img) = images.get_mut(&h) {
             if let Some(data) = img.data.as_mut() {
                 render_wet(&fx, t, data);
-                if std::env::var("DXVIEW_FX").map_or(false, |v| v.contains("dump")) {
+                if env_val!("DXVIEW_FX").is_some_and(|v| v.contains("dump")) {
                     let _ = std::fs::write("/tmp/drunk.raw", &data[..]);
                 }
             }

@@ -137,6 +137,7 @@ mod uicanvas;
 mod weapons;
 mod wisp;
 mod gpudrive;
+mod scope;
 
 use actors::{Blockers, Deco, World};
 use dx_level::{bevy_to_ue, ue_to_bevy, Level, SurfaceClass};
@@ -936,6 +937,8 @@ fn main() {
         .add_systems(PostUpdate, mirror::mirror_system.after(diegetic::place_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, skyfollow::init_system)
         .add_systems(Update, gpudrive::gpu_cull_system)
+        .add_systems(PostUpdate, scope::scope_system.after(mirror::mirror_system).before(gpudrive::refile_system).before(bevy::transform::TransformSystems::Propagate))
+        .add_systems(PostUpdate, gpudrive::refile_system.after(skyfollow::follow_system).after(mirror::mirror_system).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
         .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
@@ -1320,6 +1323,10 @@ fn setup(
     > = Default::default();
     let mut scrollers = UvScroll::default();
 
+    // The water sheets, split fine enough to move with the swell (Modern Water's waves), with T-junctions mended
+    // across all of them (water::tessellate_sheets).
+    let water_batches: Vec<&dx_level::Batch> = level.batches.iter().filter(|b| b.class == SurfaceClass::Water && !b.sky).collect();
+    let mut water_sheets = water::tessellate_sheets(&water_batches, 2.0).into_iter();
     for b in &level.batches {
         let mat = cache
             .entry((
@@ -1377,7 +1384,7 @@ fn setup(
         );
         if b.class == SurfaceClass::Water && !b.sky {
             // Fine enough for the surface to move with the swell (Modern Water's waves).
-            let (p, n, u, u1, i) = water::tessellate(&b.positions, &b.normals, &b.uvs, &b.uvs1, &b.indices, 2.0);
+            let (p, n, u, u1, i) = water_sheets.next().unwrap_or_default();
             sheet_pts.extend_from_slice(&p);
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n);
@@ -1403,7 +1410,7 @@ fn setup(
         // the mesh changed): water's materials and the scrolling textures' change every frame, so it walked every
         // vertex of those meshes every frame (1.6 million with the open sea - 3 ms of the main thread). Their
         // bounds are worked out once here instead (water with room for its waves).
-        let fixed_bounds = static_bounds(&mesh, if b.class == SurfaceClass::Water { 1.5 } else { 0.0 });
+        let fixed_bounds = static_bounds(&mesh, if b.class == SurfaceClass::Water { 2.5 } else { 0.0 });
         let mut e = match b.mirror {
             // Water: the WetTexture source picture rippled by the water shader (water.rs).
             _ if b.class == SurfaceClass::Water && !b.sky => {
@@ -1492,7 +1499,14 @@ fn setup(
     if relight::relief_level() > 0 {
         println!("relight: {} textures with relief maps ({} ms)", relief_mats.len(), relief_t0.elapsed().as_millis());
     }
-    if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches, &sheet_pts) {
+    // The map's edge walls in Bevy space: where the open sea may run on.
+    let edge_walls: Vec<[Vec3; 3]> = level
+        .batches
+        .iter()
+        .filter(|b| !b.sky && b.texture.is_some_and(|t| level.textures[t].name.eq_ignore_ascii_case("CoreTexMisc.Marker_sky")))
+        .flat_map(|b| b.indices.chunks_exact(3).map(move |t| [t[0], t[1], t[2]].map(|i| Vec3::from(b.positions[i as usize]))))
+        .collect();
+    if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches, &sheet_pts, &edge_walls) {
         if let (Some(bevy::mesh::VertexAttributeValues::Float32x3(p)), Some(Indices::U32(i))) = (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices()) {
             let y = p.first().map_or(0.0, |v| v[1]);
             let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
@@ -1511,7 +1525,7 @@ fn setup(
                 be.insert(a);
             }
         }
-        let ocean_bounds = static_bounds(&mesh, 1.5);
+        let ocean_bounds = static_bounds(&mesh, 2.5);
         let mut e = commands.spawn((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(mat),

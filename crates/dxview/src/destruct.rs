@@ -324,7 +324,7 @@ pub fn deco_damage_system(
         }
     }
     // Developer aid: DXVIEW_DEBUG_DECOHIT="ActorName" hits that decoration for 100 after about two seconds.
-    if let Ok(name) = std::env::var("DXVIEW_DEBUG_DECOHIT") {
+    if let Some(name) = env_val!("DXVIEW_DEBUG_DECOHIT") {
         *debug_frames += 1;
         if *debug_frames == 120 {
             if let Some((b, _)) = blockers

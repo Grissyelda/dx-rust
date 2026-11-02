@@ -209,6 +209,9 @@ pub struct Level {
     /// Per BSP zone: open to the sky (it has fake-backdrop faces looking into the sky room; the sky room itself
     /// excluded) - where weather falls.
     pub zone_sky: Vec<bool>,
+    /// Total area (Unreal units squared) of the faces looking into the sky room: large on outdoor maps, small where
+    /// the sky only shows through a few windows.
+    pub sky_area: f32,
     /// AI path network (NavigationPoints + ReachSpecs).
     pub nav: nav::NavGraph,
     /// Blocking actor cylinders (decorations, pawns), Unreal units.
@@ -854,6 +857,7 @@ pub fn build_level(
         })
         .collect();
     let mut zone_sky: Vec<bool> = vec![false; model.zone_actors.len().max(1)];
+    let mut sky_area = 0.0f32;
     let zone_water: Vec<Option<f32>> = model
         .zone_actors
         .iter()
@@ -984,6 +988,15 @@ pub fn build_level(
             continue;
         }
         if surf.poly_flags & pf::FAKE_BACKDROP != 0 {
+            // How much sky the map shows (fan area of the face): a whole sky overhead outdoors, a few window panes
+            // indoors.
+            let pts: Vec<glam::Vec3> = (0..node.num_vertices as usize)
+                .filter_map(|k| model.vertices.get(node.vert_pool as usize + k).and_then(|v| model.points.get(v.vertex as usize)))
+                .map(|q| glam::Vec3::new(q[0], q[1], q[2]))
+                .collect();
+            for k in 1..pts.len().saturating_sub(1) {
+                sky_area += 0.5 * (pts[k] - pts[0]).cross(pts[k + 1] - pts[0]).length();
+            }
             for z in node.zone {
                 if z > 0 && !sky_zones.contains(&(z as usize)) {
                     if let Some(f) = zone_sky.get_mut(z as usize) {
@@ -1274,6 +1287,7 @@ pub fn build_level(
         nav,
         zone_water,
         zone_sky,
+        sky_area,
         lights,
         actors: actor_list,
         sky_origin: sky_loc.map(ue_to_bevy),

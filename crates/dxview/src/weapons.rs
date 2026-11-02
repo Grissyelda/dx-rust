@@ -454,6 +454,56 @@ pub struct Held {
     /// Visible Attachments / HDTP: what the view model was built showing (rebuilt when a mod is fitted, the laser
     /// toggled, the ammo changed or the clip ran dry); None for meshes neither mod has.
     pub vis: Option<String>,
+    /// Modern Aiming's sights on an original (not HDTP) view model: the barrel's tip in the model's own space (Unreal
+    /// view axes, units, scaled), from the muzzle-flash section or the mesh's front. Down the sights the model is
+    /// moved so this lies just under the middle of the view. None for HDTP models, whose sights sit on the model's
+    /// own centre line (the original placement, raised, lines them up).
+    pub sight: Option<[f32; 3]>,
+    /// The view model's vertex positions as last drawn, per part (camera space), and a tween from such a pose into
+    /// the current sequence (positions, seconds so far).
+    pub shown: Vec<Vec<[f32; 3]>>,
+    pub tween: Option<(Vec<Vec<[f32; 3]>>, f32)>,
+}
+
+/// Seconds a view model takes to ease into a new sequence.
+const VIEW_TWEEN: f32 = 0.1;
+
+/// How far under the line of sight (units) an original view model's barrel sits down the sights.
+const SIGHT_DROP: f32 = 1.7;
+
+/// See `Held::sight`.
+fn sight_point(am: &AnimMesh, parts: &[MeshPart], muzzle_slot: Option<u32>, scale: f32, hdtp: bool) -> Option<[f32; 3]> {
+    if hdtp {
+        return None;
+    }
+    // The resting pose: Still, else the idle, else the first sequence that isn't the whole mesh.
+    let seq = ["Still", "Idle1", "Idle"]
+        .iter()
+        .find_map(|n| am.seqs.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
+        .or_else(|| am.seqs.iter().find(|s| !s.name.eq_ignore_ascii_case("All")))?;
+    let (start, frames) = (seq.start_frame.max(0) as usize, seq.num_frames.max(1) as usize);
+    let at = |v: u32| {
+        let p = am.sample(start, frames, 0.0, v as usize);
+        Vec3::new(p[0] * scale, p[1] * scale, p[2] * scale)
+    };
+    let flash = match muzzle_slot {
+        Some(slot) => parts.iter().position(|p| p.slots.contains(&slot)),
+        None => parts.iter().position(|p| p.class == SurfaceClass::Translucent && p.unlit),
+    };
+    let pts: Vec<Vec3> = match flash {
+        Some(i) => parts[i].vert_ids.iter().map(|&v| at(v)).collect(),
+        None => {
+            // No muzzle flash (crossbow, plasma, flamethrower): the front 6% of the mesh.
+            let all: Vec<Vec3> = parts.iter().filter(|p| p.class != SurfaceClass::Translucent).flat_map(|p| p.vert_ids.iter().map(|&v| at(v))).collect();
+            let (lo, hi) = all.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.x), a.1.max(p.x)));
+            all.into_iter().filter(|p| p.x >= hi - (hi - lo) * 0.06).collect()
+        }
+    };
+    if pts.is_empty() {
+        return None;
+    }
+    let c = pts.iter().fold(Vec3::ZERO, |a, p| a + *p) / pts.len() as f32;
+    Some(c.to_array())
 }
 
 impl Held {
@@ -676,8 +726,9 @@ pub fn fov_system(
     windows: Query<&Window>,
     zoom: Res<Zoom>,
     ph: Res<crate::ai::PlayerHealth>,
+    weapons: Res<Weapons>,
     mut n: Local<u32>,
-    mut cams: Query<(&mut Projection, Has<ViewModelCam>), (With<Camera3d>, Without<crate::computers::FeedCam>)>,
+    mut cams: Query<(&mut Projection, Has<ViewModelCam>), (With<Camera3d>, Without<crate::computers::FeedCam>, Without<crate::scope::ScopeCam>)>,
 ) {
     let _prof = crate::prof::scope("weapons::fov_system");
     let Some(w) = windows.iter().next() else {
@@ -685,7 +736,11 @@ pub fn fov_system(
     };
     let aspect = (w.width() / w.height().max(1.0)).max(0.1);
     let world_fov = crate::cinematic::fov()
-        .unwrap_or_else(|| crate::aimmode::fov(crate::drug::drug_fov(&ph, zoom.0.unwrap_or(DEFAULT_FOV), &mut n)));
+        .unwrap_or_else(|| {
+            // Through the diegetic scope only the lens is zoomed (scope.rs); the world view keeps a sights' narrowing.
+            let z = if crate::scope::active(&zoom, &weapons) { Some(DEFAULT_FOV * 0.82) } else { zoom.0 };
+            crate::aimmode::fov(crate::drug::drug_fov(&ph, z.unwrap_or(DEFAULT_FOV), &mut n))
+        });
     for (mut p, is_vm) in &mut cams {
         let fov = if is_vm { DEFAULT_FOV } else { world_fov };
         let vfov = 2.0 * ((fov.to_radians() / 2.0).tan() / aspect).atan();
@@ -1127,11 +1182,16 @@ fn build_held(
             mm.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
         }
     }
+    let hdtp_mesh = crate::hdtp::is_view_mesh(&stats.class, &stats.view_mesh);
+    let sight = sight_point(&am, &parts, muzzle_slot, stats.view_scale, hdtp_mesh);
     // DeusExWeapon BringUp: Owner.PlaySound(SelectSound, SLOT_None,,, 1024).
     if let Some(snd) = stats.snd.select.as_ref().filter(|_| !quiet) {
         crate::sound::play_player(snd, stats.snd.volume, 1024.0);
     }
     Some(Held {
+        sight,
+        shown: Vec::new(),
+        tween: None,
         last_pose: None,
         stats,
         mesh: am,
@@ -1188,7 +1248,7 @@ pub fn visattach_refit_system(
             }
         }
     }
-    let lasing_dev = std::env::var("DXVIEW_WEAPON_MODS").is_ok_and(|v| v.contains("lasing"));
+    let lasing_dev = env_val!("DXVIEW_WEAPON_MODS").is_some_and(|v| v.contains("lasing"));
     let w = &mut *weapons;
     if lasing_dev {
         if let Some(h) = w.held.as_mut() {
@@ -1267,6 +1327,8 @@ pub fn visattach_refit_system(
     h.parts = parts;
     h.handles = handles;
     h.last_pose = None;
+    h.shown.clear();
+    h.tween = None;
     h.relight = 0.0;
     h.vis = Some(key);
 }
@@ -1756,9 +1818,15 @@ pub fn weapon_system(
     let ads = crate::aimmode::ads();
     if ads > 0.0 {
         let e = ads * ads * (3.0 - 2.0 * ads);
-        off[0] += (off[0] * 0.85 - off[0]) * e;
-        off[1] += (0.0 - off[1]) * e;
-        off[2] += (off[2] * 0.5 + 1.5 - off[2]) * e;
+        // HDTP models carry their sights on the centre line; an original model is moved so its barrel's tip lies
+        // just under the middle of the view (Held::sight).
+        let to = match h.sight {
+            Some(m) => [off[0] * 0.9, -m[1], -m[2] - SIGHT_DROP],
+            None => [off[0] * 0.85, 0.0, off[2] * 0.5 + 1.5],
+        };
+        for k in 0..3 {
+            off[k] += (to[k] - off[k]) * e;
+        }
     }
     root.translation = Vec3::from(view_to_cam(off));
     root.rotation = Quat::IDENTITY;
@@ -2250,9 +2318,15 @@ pub fn weapon_system(
                 Some(h.stats.scope_fov)
             };
         }
+        // DXVIEW_FORCE_SCOPE=1: look through the scope whenever the weapon is ready (screenshots).
+        if env_on!("DXVIEW_FORCE_SCOPE") && h.state == WState::Idle && zoom.0.is_none() {
+            zoom.0 = Some(h.stats.scope_fov);
+        }
         if !matches!(h.state, WState::Idle | WState::Firing) {
             zoom.0 = None;
         }
+        // Looking through the scope (the original's picture, or the diegetic lens: its tube rings the glass) the
+        // weapon itself is out of sight.
         root.scale = if zoom.0.is_some() {
             Vec3::ZERO
         } else {
@@ -2766,38 +2840,56 @@ pub fn weapon_system(
         }
     }
 
-    // Animate the view model (only when the pose changed since the last write).
+    // Animate the view model (only when the pose changed since the last write). A new sequence (or a one-shot one
+    // started again: the next shot, swing or fidget) eases in from the pose on screen over TWEEN seconds, as the
+    // original's TweenAnim / blended PlayAnim did, instead of snapping to its first frame.
     let f = h.clip.frame();
     let f_used = if h.clip.looping { f } else { f.min(h.clip.frames as f32 - 1.001) };
     let pose = (h.clip.start, h.clip.frames, (f_used * 1000.0) as u32);
-    let pose_changed = h.last_pose != Some(pose);
-    h.last_pose = Some(pose);
-    for (pi, hm) in h.handles.iter().enumerate().filter(|_| pose_changed) {
-        let part = &h.parts[pi];
-        if let Some(mut m) = meshes.get_mut(hm) {
-            let pos: Vec<[f32; 3]> = part
-                .vert_ids
-                .iter()
-                .map(|&v| {
-                    let p = h.mesh.sample(
-                        h.clip.start,
-                        h.clip.frames,
-                        if h.clip.looping {
-                            f
-                        } else {
-                            f.min(h.clip.frames as f32 - 1.001)
-                        },
-                        v as usize,
-                    );
-                    view_to_cam([
-                        p[0] * h.stats.view_scale,
-                        p[1] * h.stats.view_scale,
-                        p[2] * h.stats.view_scale,
-                    ])
-                })
-                .collect();
-            m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    if let Some(last) = h.last_pose {
+        let restarted = !h.clip.looping && pose.2 + 500 < last.2;
+        if (last.0, last.1) != (pose.0, pose.1) || restarted {
+            if h.shown.len() == h.parts.len() {
+                h.tween = Some((std::mem::take(&mut h.shown), 0.0));
+            }
         }
+    }
+    let mut tween_k = None;
+    if let Some((_, t)) = h.tween.as_mut() {
+        *t += dt;
+        let x = (*t / VIEW_TWEEN).min(1.0);
+        tween_k = Some(x * x * (3.0 - 2.0 * x));
+        if x >= 1.0 {
+            h.tween = None;
+        }
+    }
+    let pose_changed = h.last_pose != Some(pose) || tween_k.is_some();
+    h.last_pose = Some(pose);
+    if pose_changed {
+        let mut shown = std::mem::take(&mut h.shown);
+        shown.resize(h.parts.len(), Vec::new());
+        for (pi, hm) in h.handles.iter().enumerate() {
+            let part = &h.parts[pi];
+            let out = &mut shown[pi];
+            out.clear();
+            out.extend(part.vert_ids.iter().map(|&v| {
+                let p = h.mesh.sample(h.clip.start, h.clip.frames, f_used, v as usize);
+                view_to_cam([p[0] * h.stats.view_scale, p[1] * h.stats.view_scale, p[2] * h.stats.view_scale])
+            }));
+            if let (Some(k), Some((from, _))) = (tween_k, h.tween.as_ref()) {
+                if let Some(a) = from.get(pi).filter(|a| a.len() == out.len()) {
+                    for (o, a) in out.iter_mut().zip(a) {
+                        for c in 0..3 {
+                            o[c] = a[c] + (o[c] - a[c]) * k;
+                        }
+                    }
+                }
+            }
+            if let Some(mut m) = meshes.get_mut(hm) {
+                m.insert_attribute(Mesh::ATTRIBUTE_POSITION, out.clone());
+            }
+        }
+        h.shown = shown;
     }
     // Light the weapon from the static lights around the player a few times a second (every frame while a
     // dynamic light such as a muzzle flash or the flashlight is on).

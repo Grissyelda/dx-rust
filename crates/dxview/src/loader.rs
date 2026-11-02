@@ -659,6 +659,15 @@ fn dev_goto(world: &mut World) {
             }
             return;
         }
+        // "secs;x,y,z;tp": the player is moved there (trigger tests).
+        Some("tp") => {
+            let v: Vec<f64> = map.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if v.len() == 3 {
+                world.resource_mut::<crate::Player>().body.location = glam::DVec3::new(v[0], v[1], v[2]);
+                println!("GOTO teleported to {v:?}");
+            }
+            return;
+        }
         // "secs;x,y,z,nx,ny,nz;place": the player sticks a LAM to the wall there (grenade tests).
         Some("place") => {
             let v: Vec<f64> = map.split(',').filter_map(|x| x.trim().parse().ok()).collect();

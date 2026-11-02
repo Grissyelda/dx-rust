@@ -135,7 +135,7 @@ pub fn fixture_system(
         .map(|mut f| std::mem::take(&mut *f))
         .unwrap_or_default();
     // Developer aid: DXVIEW_DEBUG_FIXTURE="ActorName" uses that fixture once, two seconds in.
-    if let Ok(name) = std::env::var("DXVIEW_DEBUG_FIXTURE") {
+    if let Some(name) = env_val!("DXVIEW_DEBUG_FIXTURE") {
         static T: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
         if let Ok(mut t) = T.lock() {
             let before = *t;

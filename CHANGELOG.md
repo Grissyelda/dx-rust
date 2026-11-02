@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Playtest fixes (November 1)
+- Paul runs to you on the dock again: when re-planning his way he kept picking the nearest path point even when it
+  was behind him, so he ran back and forth; and a straight line through the dock's row of BlockMonsters (which stop
+  every pawn but the player) counted as clear, so he ran on the spot against it. Pawns now take the path point that
+  leads toward where they're going, and never plan a straight line through a BlockMonsters.
+- Water reflections no longer show trees and people through walls: a reflection camera switched off and on again
+  lost the level's walls (they're culled on the GPU and Bevy only hands them to a camera once). The level's surfaces
+  are now handed to every camera again whenever one comes on, and water reflects every frame.
+- Stormy water: in rain the sea gets a long storm swell, rougher short waves and whitecaps, and the surface moves up
+  to three and a half times as far; water sheets no longer open cracks where two of the map's water surfaces meet
+  (seams are mended across all of them, and the dark backing sits deeper, under a storm's troughs).
+- The open sea only goes where the map's edge is open water, and only on maps that have sea; the 3D skyline is only
+  built from the map's own skyline photos (no stand-in towers elsewhere); maps that only see the sky through windows
+  get no volumetric clouds.
+- First-person body: stands further back and higher, keeps the chest, and is drawn from the outside only, so the
+  opening at the cut is out of view when you look down.
+- Aim down the sights now lines up on the original weapon models too (the barrel's tip is put under the crosshair);
+  HDTP models keep their own alignment.
+- Diegetic Scope (Settings > Enhancements, on in Modern): looking through a rifle scope is a live lens in front of
+  the eye with a reticle and the scope's tube, the world still around it, instead of a black screen.
+- Smoother animation: the first-person weapon eases into each new animation (a swing, a shot, a fidget) instead of
+  snapping to it, and the rebuilt characters blend between moves over a quarter of a second.
+- Rain no longer hitches when you walk into new ground or climb into a new height band: where drops land is worked
+  out a few hundred spots at a time.
+- A frame-time log for hitches: frames much slower than the running average are written to hitch.log with the
+  slowest parts of that frame.
+- The AI code: a pawn's shot is now a few plain functions (start, ammo, one traced slug), and door handling, orders
+  and animal startles left the per-pawn loop.
+
 ### Remastered lighting (enhancements, on in Modern)
 - Remastered Lighting: every wall and floor relit per pixel by its strongest lamps, with real falloff and shape,
   keeping the original's baked shadows.

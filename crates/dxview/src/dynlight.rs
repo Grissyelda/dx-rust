@@ -367,8 +367,7 @@ pub fn setup_dynlights(mut commands: Commands) {
                 .id(),
         );
     }
-    let gain = std::env::var("DXVIEW_DYNLIGHT_GAIN")
-        .ok()
+    let gain = env_val!("DXVIEW_DYNLIGHT_GAIN")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1.0);
     commands.insert_resource(DynLights {

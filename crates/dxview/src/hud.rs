@@ -321,6 +321,7 @@ pub fn crosshair_system(
     // Brackets only for ranged weapons with a target in range. Looking through a rifle scope they always show,
     // sized by the accuracy that drives the scope's sway, so they close in as the aim steadies.
     let scoped = zoomed
+        && !crate::scope::diegetic()
         && weapons.held.as_ref().map_or(false, |h| {
             h.stats.has_scope && h.stats.class != "Binoculars"
         });
@@ -519,7 +520,7 @@ pub fn scope_overlay_system(
     };
     let held = weapons.held.as_ref();
     let binocs = zoom.0.is_some() && held.map_or(false, |h| h.stats.class == "Binoculars");
-    let scope = zoom.0.is_some() && !binocs && held.map_or(false, |h| h.stats.has_scope);
+    let scope = zoom.0.is_some() && !binocs && held.map_or(false, |h| h.stats.has_scope) && !crate::scope::diegetic();
     let s = ui_scale(win);
     let px = s / win.scale_factor();
     let (w, h) = (

@@ -56,7 +56,7 @@ const UE_PER_BLENDER: f32 = 53.0;
 /// Frames per second of the baked clips (the original sequences' frames, one per tenth of a second).
 const CLIP_FPS: f32 = 10.0;
 /// Cross-fade between sequences, seconds.
-const FADE: f32 = 0.15;
+const FADE: f32 = 0.25;
 
 struct Reader<'a> {
     b: &'a [u8],
@@ -1417,8 +1417,9 @@ impl BuildParams<'_, '_> {
     pub fn cull_back(&mut self, s: &SkelBody) {
         for h in &s.mats {
             if let Some(mut m) = self.mats.get_mut(h) {
-                // (The rebuilt sections wind clockwise as Bevy sees them: their outside is the "back" face.)
-                m.base.cull_mode = Some(bevy::render::render_resource::Face::Front);
+                // Their outside is the front face: culling Front (as before) drew only the inside, so looking down
+                // showed the black inside of the coat.
+                m.base.cull_mode = Some(bevy::render::render_resource::Face::Back);
                 m.base.double_sided = false;
             }
         }

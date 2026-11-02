@@ -132,6 +132,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("ModernWater", 0.0),
     ("RealtimeShadows", 0.0),
     ("ModernAim", 0.0),
+    ("DiegeticScope", 0.0),
     ("EnhancedFX", 0.0),
     ("SkeletalCharacters", 0.0),
     ("Ragdolls", 0.0),

@@ -102,6 +102,7 @@ fn swell_grad_lod(p: vec2<f32>, t: f32, fp: f32) -> vec2<f32> {
     g += wave(p, t, 4.10, 1.8, 0.65, 0.18).yz / (1.0 + pow(fp * 4.0 / 1.8, 2.0));
     g += wave(p, t, 2.75, 0.95, 0.45, 0.10).yz / (1.0 + pow(fp * 4.0 / 0.95, 2.0));
     g += wave(p, t, 5.30, 0.55, 0.38, 0.06).yz / (1.0 + pow(fp * 4.0 / 0.55, 2.0));
+    g += storm_wave(p, t).yz / (1.0 + pow(fp * 4.0 / 31.0, 2.0));
     return g;
 }
 
@@ -213,7 +214,11 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // Far off, the swell's slopes only alias into dark bands (a "plaid" towards the horizon): the far water
     // calms to a smooth mirror of the sky.
     let calm = mix(0.12, 1.0, 1.0 / (1.0 + (d_eye / 40.0) * (d_eye / 40.0)));
-    let g = swell_grad_lod(p, t, fp) * 0.18 * calm + (detail_lod(p, t, fp) + rain_rings(p, t, water.m.z)) * fine;
+    // The swell's slopes at the height the vertices move by (far.w metres per unit, more in a storm, when the wind
+    // also roughens the short waves).
+    let storm = water.m.z;
+    let g = swell_grad_lod(p, t, fp) * max(water.far.w, 0.16) * 1.12 * calm
+        + (detail_lod(p, t, fp) * (1.0 + storm * 1.6) + rain_rings(p, t, water.m.z)) * fine;
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     let up = select(-1.0, 1.0, pbr_input.world_normal.y >= 0.0);
     let n = normalize(vec3<f32>(-g.x, up, -g.y));
@@ -263,7 +268,9 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     let n1 = vnoise(p * 1.7 + vec2<f32>(t * 0.21, t * 0.13));
     let n2 = vnoise(p * 5.3 - vec2<f32>(t * 0.37, t * 0.29));
     let streaks = n1 * 0.65 + n2 * 0.35;
-    var foam = smoothstep(0.5, 0.9, crest + (streaks - 0.5) * 0.55) * smoothstep(0.4, 0.8, streaks);
+    // Whitecaps: a storm breaks far more of the crests.
+    let cap_lo = 0.5 - water.m.z * 0.3;
+    var foam = smoothstep(cap_lo, cap_lo + 0.4, crest + (streaks - 0.5) * 0.55) * smoothstep(0.4 - water.m.z * 0.25, 0.8, streaks);
     foam *= 1.0 / (1.0 + d_eye * d_eye * 0.0006);
     let foam_col = max(light * 0.12, vec3<f32>(0.03, 0.035, 0.04)) + vec3<f32>(0.015);
     col = mix(col, foam_col, clamp(foam, 0.0, 1.0) * 0.4);
@@ -294,7 +301,12 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
 // Only the long swell (>= water::DISPLACE_MIN_LEN) moves the vertices: the mesh is 2 m, and the 6 m and shorter
 // waves came out as facets.
 fn swell_h(p: vec2<f32>, t: f32) -> f32 {
-    return wave(p, t, 0.90, 17.0, 2.1, 0.85).x;
+    return wave(p, t, 0.90, 17.0, 2.1, 0.85).x + storm_wave(p, t).x;
+}
+
+// A storm's long swell (water::STORM_WAVE; water.m.z = how hard it rains, 0..1): rolls in with the weather.
+fn storm_wave(p: vec2<f32>, t: f32) -> vec3<f32> {
+    return wave(p, t, 0.55, 31.0, 3.4, 1.1) * water.m.z;
 }
 
 struct Vertex {

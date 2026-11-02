@@ -74,6 +74,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("Mantling", 1.0),
     ("MeleeArc", 1.0),
     ("ModernAim", 1.0),
+    ("DiegeticScope", 1.0),
     ("NPCFiniteAmmo", 1.0),
     ("NotesAutofill", 1.0),
     ("SmartBinoculars", 1.0),

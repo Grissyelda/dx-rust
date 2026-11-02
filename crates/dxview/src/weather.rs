@@ -114,6 +114,10 @@ pub struct WeatherState {
     /// ceiling (collision or a drawn roof), its normal, and the water surface if it lands in water. One straight
     /// trace down per cell instead of one per drop.
     landing: std::collections::HashMap<(i32, i32, i32), Land>,
+    /// New landing cells worked out in this batch (at most LAND_BUDGET: walking into new ground, or up into a new
+    /// height band, traced thousands at once - a hitch every few steps in a storm; drops over cells not yet known
+    /// wait for a later batch).
+    land_new: u32,
     /// The drawn level's roofs (built once per map).
     roofs: Option<Roofs>,
     /// GPU rain (see weather_system): when each drop / splashlet slot frees up, the next slot to fill, when the next
@@ -436,6 +440,7 @@ pub fn weather_system(
     if now >= st.batch_at {
         let t_batch = st.batch_at.max(now);
         st.batch_at = t_batch + BATCH;
+        st.land_new = 0;
         if st.drop_end.len() != MAX_DROPS {
             st.drop_end = vec![0.0; MAX_DROPS];
             st.splash_end = vec![0.0; MAX_SPLASHES];
@@ -507,7 +512,7 @@ pub fn weather_system(
             let end = pos + vel * life;
             let lkey = ((pos.x / 16.0).floor() as i32, (pos.y / 16.0).floor() as i32, key.2);
             let ws = &mut *st;
-            let land = land_cell(ws, lvl, lkey, top, me.z);
+            let Some(land) = land_cell(ws, lvl, lkey, top, me.z) else { continue };
             // Starting below where this cell's rain lands (inside, under the roof): it never fell from the sky.
             if land.z > pos.z - 1.0 {
                 continue;
@@ -522,7 +527,8 @@ pub fn weather_system(
                 if k2 == lkey {
                     break;
                 }
-                land = land_cell(ws, lvl, k2, top, me.z);
+                let Some(l2) = land_cell(ws, lvl, k2, top, me.z) else { break };
+                land = l2;
                 if land.z > pos.z - 1.0 {
                     break;
                 }
@@ -786,10 +792,14 @@ pub fn setup_rain_shader(mut shaders: ResMut<Assets<Shader>>) {
 
 /// Where rain coming down a 16-unit cell lands: straight down from the cell's ceiling `top` (the collision, a drawn
 /// roof over it, water on the way down), cached per cell.
-fn land_cell(ws: &mut WeatherState, lvl: &dx_level::Level, lkey: (i32, i32, i32), top: f64, me_z: f64) -> Land {
+fn land_cell(ws: &mut WeatherState, lvl: &dx_level::Level, lkey: (i32, i32, i32), top: f64, me_z: f64) -> Option<Land> {
     if let Some(l) = ws.landing.get(&lkey) {
-        return *l;
+        return Some(*l);
     }
+    if ws.land_new >= LAND_BUDGET {
+        return None;
+    }
+    ws.land_new += 1;
     let me = DVec3::new(0.0, 0.0, me_z);
     let land = (|| {
             // Straight down from the cell's ceiling (wind slant is small against the fall).
@@ -824,5 +834,8 @@ fn land_cell(ws: &mut WeatherState, lvl: &dx_level::Level, lkey: (i32, i32, i32)
             Land { z, n, water }
         })();
     ws.landing.insert(lkey, land);
-    land
+    Some(land)
 }
+
+/// New landing cells a batch may trace (see WeatherState::land_new).
+const LAND_BUDGET: u32 = 160;

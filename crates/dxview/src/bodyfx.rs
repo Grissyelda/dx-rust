@@ -19,17 +19,16 @@ use std::sync::Mutex;
 use crate::skeletal::SkelBody;
 
 pub const FP_LAYER: usize = 11;
-/// How far behind the eye JC's first-person body stands (Unreal units): the view looks down past the chest at the
-/// belt, legs and feet (as Half-Life mods show the body), not into the collar. More when crouched (the crouch
-/// pose leans the chest forward into the eye).
-const FP_BACK: f32 = 5.0;
+/// How far behind the eye JC's first-person body stands (Unreal units): the cut under the collar stays behind and
+/// below the view even looking straight down, while the chest, belt, legs and feet show (as Half-Life MMod shows
+/// the body). More when crouched (the crouch pose leans the chest forward into the eye).
+const FP_BACK: f32 = 12.0;
 const FP_BACK_CROUCH: f32 = 18.0;
-/// And this far lower (Unreal units).
-const FP_DOWN: f32 = 2.0;
-/// The first-person body keeps what lies below this fraction of its standing height (stomach, waist and legs, as
-/// Half-Life mods show the body): the chest and shoulders would only wall in the view. Its faces are drawn from
-/// the front only, so the opening at the cut shows the legs below, not the inside of the coat.
-const FP_KEEP: f32 = 0.6;
+/// And this far lower (Unreal units; negative = higher): raised so the cut sits close under the eye.
+const FP_DOWN: f32 = -3.0;
+/// The first-person body keeps what lies below this fraction of its standing height (chest down: just under the
+/// collar). Its faces are drawn from the front only, so whatever of the opening is seen shows no inside of the coat.
+const FP_KEEP: f32 = 0.82;
 /// The bones whose triangles the first-person body leaves out: head, neck and the arms (the view model's arms are
 /// the arms).
 const FP_DROP: &[&str] = &["DEF-spine.005", "DEF-spine.006", "DEF-upper_arm", "DEF-forearm", "DEF-hand", "DEF-f_", "DEF-thumb"];
