@@ -378,6 +378,23 @@ pub fn player_name() -> String {
 }
 
 #[cfg(test)]
+fn encode(ng: &NewGame) -> String {
+    let mut s = format!(
+        "name={}\nskin={}\ndifficulty={}\npoints_avail={}\npoints_total={}\n",
+        ng.name.replace('\n', " "),
+        ng.skin,
+        ng.difficulty,
+        ng.points_avail,
+        ng.points_total
+    );
+    for (c, l) in &ng.skills {
+        s.push_str(&format!("skill={c},{l}\n"));
+    }
+    s.push_str(&format!("female={}\nretro_morpheus={}\nmale_interactions={}\n", ng.female as u8, ng.retro_morpheus as u8, ng.male_interactions as u8));
+    s
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

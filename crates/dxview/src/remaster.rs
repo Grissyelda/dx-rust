@@ -65,6 +65,9 @@ pub const PRESET: &[(&str, f32)] = &[
     ("SmarterAI", 1.0),
     ("DiegeticScreens", 1.0),
     ("AlertIndicators", 1.0),
+    ("HudFade", 1.0),
+    ("Grass", 2.0),
+    ("Trees", 1.0),
     ("BulletPenetration", 1.0),
     ("CarryCover", 1.0),
     ("DTSEnergy", 1.0),
@@ -74,6 +77,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("Mantling", 1.0),
     ("MeleeArc", 1.0),
     ("ModernAim", 1.0),
+    ("DiegeticScope", 1.0),
     ("NPCFiniteAmmo", 1.0),
     ("NotesAutofill", 1.0),
     ("SmartBinoculars", 1.0),
@@ -267,6 +271,11 @@ impl Plugin for RemasterPlugin {
 /// Pipelines the renderer is still compiling (a switch can need new ones for every material: a depth / normal
 /// prepass, MSAA off, new materials). The frozen frame stays up until they're ready, so nothing pops in.
 static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Render pipelines still compiling (last render frame).
+pub fn pipelines_waiting() -> usize {
+    WAITING.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn count_waiting(cache: Res<bevy::render::render_resource::PipelineCache>) {
     WAITING.store(cache.waiting_pipelines().count(), std::sync::atomic::Ordering::Relaxed);

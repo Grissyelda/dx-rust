@@ -675,7 +675,7 @@ impl Enhance {
             ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo, reload every clip and switch weapons (or to melee) when they run dry, as the original scripts say."),
             ("FloorConsumables", "Gameplay", "Use Consumables From The Floor", "With no room in your inventory, a medkit, bioelectric cell, food or drink you pick up is used on the spot."),
             ("LadderGrab", "Gameplay", "Grab Ladders", "Use takes hold of a ladder and Jump lets go; on it, forward and back climb up and down."),
-            ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab types a keypad code, logins are filled in."),
+            ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab (pad: Y) types a keypad code or fills in a login."),
             ("DialogueHotkeys", "Interface", "Dialogue Hotkeys", "Number the first four conversation choices; keys 1-4 pick them."),
             ("InventorySort", "Interface", "Inventory Auto-Sort", "A Sort button on the inventory screen packs the items neatly, weapons first."),
             ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish, many more blood splats stay, and blood, bullet holes and casings are still there when you come back to a map or load a save."),
@@ -683,6 +683,7 @@ impl Enhance {
             ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord."),
             ("BodyAlarms", "AI", "Bodies Raise Alarms", "Guards who find a friend's body - dead or unconscious - run for the nearest alarm and then search the spot; with no alarm about they shout and others come to look."),
             ("SmarterAI", "AI", "Smarter AI", "GMDX's AI work plus our stealth: guards see better by difficulty and may open fire at once when they spot or hear you close by, wait a moment before shooting after losing you, lay down suppressive fire where you vanished, miss more against a moving target; cameras see farther and tell guards where you are. Ours: true darkness hides you beyond arm's reach, guards that searched in vain stay on edge, call each other over, and notice lights going out and doors opening."),
+            ("HudFade", "Interface", "Combat HUD", "Out of combat the crosshair and the status displays (health, compass, ammo, belt, active augs) fade away; they come back at once in a fight, when you aim down the sights or at an enemy, fire, get hurt, are badly hurt or change weapons."),
             ("AlertIndicators", "AI", "Alert Indicators", "A small marker over a hostile guard's head: an eye filling as they grow suspicious, a question mark while they search, an exclamation mark in a fight."),
             ("ThrownNoise", "AI", "Thrown Objects Make Noise", "Anything you throw is heard where it lands or bounces - further for heavy things - and armed guards in earshot go to look. Good for distractions."),
             ("SurfaceFootsteps", "AI", "Footsteps Louder On Hard Floors", "Carpet and grass muffle your steps, metal and water give you away; guards hear you by what you walk on."),
@@ -716,6 +717,7 @@ impl Enhance {
             ("RoomReverb", "Sound", "Room Reverb", "An echo shaped by where you are: long in big halls, short in corridors, faint outdoors, dull underwater."),
             ("Soundscape", "Sound", "Soundscape", "Far-off life around the open-air maps - dogs, gulls by the water, gusts of wind (more in the rain) - now and then, quietly, from the game's own sounds."),
             ("RestrictedCombatMusic", "Sound", "Combat Music Needs Two Attackers", "The combat music only starts when at least two enemies are fighting you, so one far-off guard doesn't set it off (GMDX)."),
+            ("DiegeticScope", "Gameplay", "Diegetic Scope", "A zoomed rifle scope is a live lens in front of the eye instead of a black screen with a picture: the world stays in view around it, the reticle sits in the glass, and an untrained eye watches the picture wander under it."),
             ("ModernAim", "Gameplay", "Modern Aiming", "Shots go where your sights drift instead of scattering at random, and the crosshair follows that point; the accuracy brackets always show. Hold the scope key (Z or LT) with a weapon that has no scope to aim down the sights: steadier, a little zoom, walking pace."),
             ("SkeletalCharacters", "Visuals", "Skeletal Characters", "People get rebuilt bodies on a real skeleton (by the Machine God team): smooth joints and blending between moves, a face that lip-syncs, blinks and glances around. They keep the skins the original gives them. Characters the HD mods replace stay as they are."),
             ("Ragdolls", "Gameplay", "Ragdolls", "With Skeletal Characters on, people go limp the moment they're killed or knocked out, thrown by the hit and carried by how they were moving, and fall against whatever is around them. Explosions still blow them apart."),
@@ -819,6 +821,35 @@ impl Enhance {
             c.help = "How many threads the game spreads its parallel work over. Auto leaves room for the main and render threads and stops at 10: on processors with many cores (workstation Xeons, Threadrippers) more threads only add overhead. Takes effect on the next start.".into();
             c.kind = ChoiceKind::Enum(crate::threads::STEPS.iter().map(|&n| if n == 0 { "Auto".to_string() } else { n.to_string() }).collect());
             c.value = crate::threads::step_index(crate::settings::get("WorkerThreads"));
+            c.saved = c.value;
+            items.push(tag(c, "Display"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "Grass".into();
+            items.push(tag({
+                let mut t = debug_mode_choice();
+                t.key = "Trees".into();
+                t.label = "Grown Trees".into();
+                t.help = "The parks' flat card trees and bushes are replaced with grown ones: real branches and bark, clusters of leaves, swaying in the wind and casting shadows. Same size and place as the originals.".into();
+                t.value = crate::settings::get("Trees");
+                t.saved = t.value;
+                t
+            }, "Visuals"));
+            c.label = "3D Grass".into();
+            c.help = "Blades of grass grow out of the lawns, lit like the ground they stand on, swaying in the wind and pushed aside by whoever walks through them. Low: fewer blades and a shorter reach.".into();
+            c.kind = ChoiceKind::Enum(vec!["Off".into(), "Low".into(), "High".into()]);
+            c.value = crate::settings::get("Grass");
+            c.saved = c.value;
+            items.push(tag(c, "Visuals"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "Upscaling".into();
+            c.label = "Upscaling".into();
+            c.help = "Native AA smooths edges with temporal antialiasing at full resolution. Quality, Balanced, Performance and Ultra Performance draw the world at 1/1.5, 1/1.7, 1/2 or 1/3 the window's size and upscale it with an edge-aware filter (AMD FSR 1) and sharpening - more frames on slower graphics cards. The weapon, HUD and menus always stay at full resolution.".into();
+            c.kind = ChoiceKind::Enum(crate::upscale::NAMES.iter().map(|s| s.to_string()).collect());
+            c.value = crate::settings::get("Upscaling");
             c.saved = c.value;
             items.push(tag(c, "Display"));
         }
@@ -1087,6 +1118,12 @@ pub fn open_keypad(blocker: usize, valid: String, instant: bool) {
 /// The keypad in use (its blocker), its code so far and the result showing (diegetic.rs).
 static KEYPAD_NOW: std::sync::Mutex<Option<(usize, String, Option<bool>, usize)>> = std::sync::Mutex::new(None);
 static KEYPAD_PRESSES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// The open keypad's code is in the notes (Codes From Notes): its "Tab / Y: code from notes" hint is wanted.
+pub fn keypad_noted() -> bool {
+    KEYPAD_NOTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+static KEYPAD_NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn keypad_blocker() -> Option<usize> {
     KEYPAD_NOW.lock().ok().and_then(|k| k.as_ref().map(|k| k.0))
@@ -2481,7 +2518,7 @@ pub fn menu_system(
         st.stack.push(Win { f, body: Body::Keypad(k), pos: None, focus: None, hides_below: true, drop: None });
     }
     // The pad's Y on a keypad: the code from the notes (gamepad.rs).
-    if crate::gamepad::PAD_NOTES.swap(false, std::sync::atomic::Ordering::Relaxed) {
+    if crate::gamepad::PAD_NOTES.load(std::sync::atomic::Ordering::Relaxed) {
         if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
             if k.noted && k.wait.is_none() {
                 keypad_from_notes(k);
@@ -2515,6 +2552,8 @@ pub fn menu_system(
             Some(Body::Keypad(k)) => Some((k.blocker, k.input.clone(), k.wait.map(|w| w.1), k.valid.chars().count())),
             _ => None,
         };
+        let noted = matches!(st.stack.last().map(|w| &w.body), Some(Body::Keypad(k)) if k.noted && k.wait.is_none() && k.input != k.valid);
+        KEYPAD_NOTED.store(noted, std::sync::atomic::Ordering::Relaxed);
     }
     // DeusExPlayer.QuickSave / QuickLoad (ConfirmQuickLoad asks first).
     if st.stack.is_empty() && st.intro.is_none() && !others && !others_before {

@@ -56,7 +56,7 @@ const UE_PER_BLENDER: f32 = 53.0;
 /// Frames per second of the baked clips (the original sequences' frames, one per tenth of a second).
 const CLIP_FPS: f32 = 10.0;
 /// Cross-fade between sequences, seconds.
-const FADE: f32 = 0.15;
+const FADE: f32 = 0.25;
 
 struct Reader<'a> {
     b: &'a [u8],
@@ -372,8 +372,8 @@ pub struct ActorLights {
     pub col: [Vec4; 16],
     /// x: lights in use, y: LIGHT_GAIN x ScaleGlow, z: 1 = unlit, w: 1 = lit from both sides.
     pub misc: Vec4,
-    /// x, y: unused (the Wet Bodies enhancement is gone), z: world height above which nothing is drawn, w: 1 = that
-    /// cut is on.
+    /// x: how far the eyelids are closed (0..1: the lid vertices' picture slides to UV_1, see lid_uvs), y: unused,
+    /// z: world height above which nothing is drawn, w: 1 = that cut is on.
     pub wet: Vec4,
     /// rgb: the lights past the sixteen strongest, summed as an even fill (the vertex-lit meshes add up every
     /// light; leaving them out drew the rebuilt people darker).
@@ -454,15 +454,24 @@ pub struct SkelBody {
     light_sig: u64,
     /// The weapon frame (origin, X, Y, Z) in the original mesh's space, as `AnimMesh::weapon_coords` gives it.
     pub weapon: Option<[[f32; 3]; 4]>,
+    /// The turn that takes this body's weapon frame onto the original mesh's (worked out once, see weapon_fix).
+    weapon_turn: Option<Mat3>,
     /// A ragdoll (ragdoll.rs) has the bones: no more posing.
     pub ragdoll: bool,
-    /// How wet (rain, water): 0..1, eased; and what the materials hold.
-    pub wet: f32,
-    wet_shown: f32,
+    /// The sections (by `mats` index) whose eyelids blink by sliding their picture (lid_uvs), and the blink last
+    /// written to their materials.
+    lid_mats: Vec<usize>,
+    blink_shown: f32,
     /// The rig node -> pawn transform (the root's local Transform), and the coat's simulated bone tails (world).
     root_local: Mat4,
     cloth_tail: Vec<Vec3>,
     cloth_prev: Vec<Vec3>,
+    /// The coat's heads and animated tails last frame (world; the substeps move between those and this frame's),
+    /// the time not yet simulated and the cloth's own clock (wind gusts).
+    cloth_head: Vec<Vec3>,
+    cloth_goal: Vec<Vec3>,
+    cloth_acc: f32,
+    cloth_clock: f32,
     /// From glTF space (the rig's) to the actor's local Unreal space (before DrawScale).
     to_ue: Mat4,
 }
@@ -652,6 +661,7 @@ fn build(
         let nm = body.morphs.len();
         let mut mesh_ents = Vec::new();
         let mut mat_handles = Vec::new();
+        let mut lid_mats = Vec::new();
         let mut first_mesh: Option<Handle<Mesh>> = None;
         for sec in &body.sections {
             if sec.style == "WEAPONTRI" {
@@ -704,9 +714,7 @@ fn build(
                 }
                 mesh.insert_indices(bevy::mesh::Indices::U16(kept));
             }
-            if dx_level::actors::LID_FIX.load(std::sync::atomic::Ordering::Relaxed) {
-                helios_lids(&mut mesh, sec, body);
-            }
+            let lids = morphs && lid_uvs(&mut mesh, sec, body);
             let mh = meshes.add(mesh);
             if morphs {
                 first_mesh.get_or_insert(mh.clone());
@@ -758,10 +766,16 @@ fn build(
                     ChildOf(e),
                 ))
                 .id();
+            if layers.is_none() && matches!(alpha, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+                commands.entity(me).insert(crate::shadowlight::Casts);
+            }
             if morphs {
                 commands.entity(me).insert(MeshMorphWeights::Reference(weights_ent));
             }
             mesh_ents.push(me);
+            if lids {
+                lid_mats.push(mat_handles.len());
+            }
             mat_handles.push(mat);
         }
         if nm > 0 && first_mesh.is_some() {
@@ -800,11 +814,16 @@ fn build(
             light_sig: 0,
             weapon: None,
             ragdoll: false,
-            wet: 0.0,
-            wet_shown: 0.0,
+            lid_mats,
+            blink_shown: 0.0,
+            weapon_turn: None,
             root_local: root_tf.to_matrix(),
             cloth_tail: Vec::new(),
             cloth_prev: Vec::new(),
+            cloth_head: Vec::new(),
+            cloth_goal: Vec::new(),
+            cloth_acc: 0.0,
+            cloth_clock: 0.0,
             to_ue,
         }
     }
@@ -917,7 +936,7 @@ pub fn pose_system(
     }
     // Poses, faces and weapon frames, in parallel.
     let hurt = crate::bodyfx::hurt_on();
-    let cloth = cloth_on();
+    let cloth_wanted = cloth_on();
     q.par_iter_mut().for_each(|(e, mut s, mut a, gt, weights, npc)| {
         let s = &mut *s;
         s.posed = false;
@@ -941,13 +960,19 @@ pub fn pose_system(
         let (start, frames, f) = crate::actors::current_frame(&a, anim);
         let seq = seq_name(&anim.mesh, start).unwrap_or("BreatheLight");
         advance(s, seq, start, frames, f, a.clip.as_ref().is_none_or(|c| c.looping), dt);
+        weapon_fix(s, &anim.mesh, start, frames, f);
         if hurt {
             if let Some(n) = npc.filter(|n| n.state != crate::ai::NpcState::Dead) {
                 apply_hurt(s, &crate::bodyfx::hurt_fracs(&n.hp_body.parts, &n.hp_body.defaults));
             }
         }
-        if cloth {
-            crate::skeletal::cloth_pub(s, gt.to_matrix(), dt);
+        if cloth_wanted {
+            // Not while seated: the coat pressed into the chair jittered against it.
+            if seq.starts_with("Sit") || npc.is_some_and(|n| n.seat.is_some()) {
+                cloth_rest(s);
+            } else {
+                cloth(s, gt.to_matrix(), dt);
+            }
         }
         // Face: lip sync (the mouth shapes), blinks, brows with speech, glances.
         let has_w = weights.is_some();
@@ -977,6 +1002,16 @@ pub fn pose_system(
         }
         if s.posed {
             write_bones(&s, &mut tfs);
+        }
+        if !s.lid_mats.is_empty() {
+            let blink = s
+                .body
+                .morphs
+                .iter()
+                .position(|m| m.eq_ignore_ascii_case("Blink"))
+                .and_then(|i| _w.as_ref().and_then(|w| w.weights().get(i).copied()))
+                .unwrap_or(0.0);
+            set_blink(&mut s, blink, &mut mats);
         }
         // Re-extract the section meshes (their morph descriptors) for a while after the body appears and whenever
         // it comes back on screen.
@@ -1055,16 +1090,65 @@ fn weapon_frame(s: &mut SkelBody) -> Option<[[f32; 3]; 4]> {
     Some([o.to_array(), x.to_array(), y.to_array(), z.to_array()])
 }
 
-/// Helios repaints the eyes larger, up into the strip of the face picture the eyelids sample, so a closing lid
-/// would show a painted eye. With Helios dressing the people, every vertex the Blink shape moves takes the picture
-/// coordinates of the nearest still vertex above it (the skin of the crease): the lids close as skin, as they do on
-/// the original faces with the original art.
-fn helios_lids(mesh: &mut Mesh, sec: &Section, body: &Body) {
-    let Some(k) = body.morphs.iter().position(|m| m.eq_ignore_ascii_case("Blink")) else { return };
-    let Some(Some(d)) = sec.morphs.get(k) else { return };
+/// Per rebuilt body (by its address): the weapon frame's turn once some pawn measured it.
+static BODY_WEAPON_TURN: std::sync::Mutex<Option<HashMap<usize, Mat3>>> = std::sync::Mutex::new(None);
+
+/// The weapon frame from the rebuilt body's weapon triangle doesn't always sit like the original mesh's special face
+/// (the remodelled triangle can face the other way: JC and some NPCs held their guns upside down). The first time a
+/// body is posed, its frame is compared with the original mesh's at the same frame; the nearest whole-axis turn
+/// between them (identity when they already agree) is kept and applied to every frame after.
+fn weapon_fix(s: &mut SkelBody, mesh: &dx_level::actors::AnimMesh, start: usize, frames: usize, f: f32) {
+    let Some(w) = s.weapon else { return };
+    let axes = |w: &[[f32; 3]; 4]| Mat3::from_cols(Vec3::from(w[1]), Vec3::from(w[2]), Vec3::from(w[3]));
+    if s.weapon_turn.is_none() {
+        let key = s.body as *const Body as usize;
+        let Some(v) = mesh.weapon_coords(start, frames, f) else { return };
+        let r = axes(&v) * axes(&w).transpose();
+        // Snap to a signed permutation (the triangle's axes swapped / flipped).
+        let snap = |x: f32| if x > 0.5 { 1.0 } else if x < -0.5 { -1.0 } else { 0.0 };
+        let q = Mat3::from_cols(
+            Vec3::new(snap(r.x_axis.x), snap(r.x_axis.y), snap(r.x_axis.z)),
+            Vec3::new(snap(r.y_axis.x), snap(r.y_axis.y), snap(r.y_axis.z)),
+            Vec3::new(snap(r.z_axis.x), snap(r.z_axis.y), snap(r.z_axis.z)),
+        );
+        let ok = (q.determinant() - 1.0).abs() < 1e-3
+            && (q * q.transpose()).abs_diff_eq(Mat3::IDENTITY, 1e-3)
+            // Close to it (within ~30 degrees): the two poses agree well enough to tell.
+            && r.abs_diff_eq(q, 0.45);
+        // The turn belongs to the rebuilt body, not the pawn: a pawn caught in a pose that differs too much from the
+        // original's takes what another pawn on the same body measured (or tries again next frame).
+        let mut guard = BODY_WEAPON_TURN.lock().ok();
+        let known = guard.as_mut().map(|g| g.get_or_insert_with(HashMap::new));
+        if ok {
+            s.weapon_turn = Some(q);
+            if let Some(k) = known {
+                k.entry(key).or_insert(q);
+            }
+        } else if let Some(t) = known.and_then(|k| k.get(&key).copied()) {
+            s.weapon_turn = Some(t);
+        }
+        if log_on() {
+            bevy::log::info!("SKELWEAPON actor {} turn {:?} (measured {ok}, raw {:?})", s.mesh_actor, s.weapon_turn, r);
+        }
+    }
+    if let Some(t) = s.weapon_turn.filter(|t| *t != Mat3::IDENTITY) {
+        let n = t * axes(&w);
+        s.weapon = Some([w[0], n.x_axis.to_array(), n.y_axis.to_array(), n.z_axis.to_array()]);
+    }
+}
+
+/// Blinking: the Blink shape pulls the upper lid down over the eye, stretching whatever the face picture holds
+/// between the brow and the lid's edge - on some faces (Paul's, Helios's larger painted eyes) that strip is part of
+/// the eye, so a closing lid showed a stretched eyeball. Every vertex the Blink shape moves gets a second set of picture
+/// coordinates (UV_1) = those of the nearest still vertex above it (the skin of the crease), and actor_lit.wgsl slides
+/// the lid's picture toward them as the blink closes (ActorLights.wet.x): the lids close as skin and the open eye is
+/// untouched. False when the section has no lids.
+fn lid_uvs(mesh: &mut Mesh, sec: &Section, body: &Body) -> bool {
+    let Some(k) = body.morphs.iter().position(|m| m.eq_ignore_ascii_case("Blink")) else { return false };
+    let Some(Some(d)) = sec.morphs.get(k) else { return false };
     let moving: Vec<bool> = d.iter().map(|v| v[0].abs() + v[1].abs() + v[2].abs() > 1e-4).collect();
     if !moving.iter().any(|m| *m) {
-        return;
+        return false;
     }
     let mut uvs = sec.uvs.clone();
     for (v, &m) in moving.iter().enumerate() {
@@ -1079,7 +1163,22 @@ fn helios_lids(mesh: &mut Mesh, sec: &Section, body: &Body) {
             uvs[v] = sec.uvs[u];
         }
     }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uvs);
+    true
+}
+
+/// The blink (the Blink shape's weight) on the lid sections' materials, when it changed enough to show.
+fn set_blink(s: &mut SkelBody, blink: f32, mats: &mut Assets<ActorMaterial>) {
+    let blink = blink.clamp(0.0, 1.0);
+    if (blink - s.blink_shown).abs() < 0.02 && !(blink == 0.0 && s.blink_shown != 0.0) {
+        return;
+    }
+    s.blink_shown = blink;
+    for &i in &s.lid_mats {
+        if let Some(mut m) = s.mats.get(i).and_then(|h| mats.get_mut(h)) {
+            m.extension.lights.wet.x = blink;
+        }
+    }
 }
 
 /// DXVIEW_FACETEST="MouthA:1,Blink:0.5": hold these face shapes on every rebuilt body (screenshots).
@@ -1247,11 +1346,16 @@ pub fn mirror_skel_system(
         MIRROR_ON.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some((seq, start, frames, f, looped)) = b.cur.clone() {
             advance(&mut s, &seq, start, frames, f, looped, dt);
+            weapon_fix(&mut s, &b.mesh, start, frames, f);
             if crate::bodyfx::hurt_on() {
                 apply_hurt(&mut s, &crate::bodyfx::hurt_fracs(&ph.parts, &[100.0; 6]));
             }
             if cloth_on() {
-                cloth(&mut s, gt.to_matrix(), dt);
+                if seq.starts_with("Sit") {
+                    cloth_rest(&mut s);
+                } else {
+                    cloth(&mut s, gt.to_matrix(), dt);
+                }
             }
             write_bones(&s, &mut tfs);
             if let Ok(mut g) = MIRROR_WEAPON.lock() {
@@ -1349,6 +1453,8 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
         }
     }
     best.truncate(16);
+    // The zone's ambient light, as every actor's light starts from it.
+    amb += Vec3::from(dx_level::actors::zone_ambient_at(ue));
     let mut lt = ActorLights { misc: Vec4::new(best.len() as f32, dx_level::lighting::LIGHT_GAIN * scale_glow, 0.0, 0.0), ..default() };
     for (i, (_, l)) in best.iter().enumerate() {
         let bp = Vec3::from(dx_level::ue_to_bevy(l.pos));
@@ -1356,14 +1462,13 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
         lt.col[i] = Vec3::from(l.color).extend(0.0);
     }
     lt.amb = amb.extend(0.0);
-    lt.wet = Vec4::new(s.wet, 0.0, 0.0, 0.0);
-    s.wet_shown = s.wet;
     for h in &s.mats {
         let Some(cur) = mats.get(h) else { continue };
         let old = cur.extension.lights;
         let mut new = lt;
-        // Per-material: unlit, never-wet, the height cut.
+        // Per-material: unlit, the blink, the height cut.
         new.misc.z = old.misc.z;
+        new.wet.x = old.wet.x;
         new.wet.y = old.wet.y;
         new.wet.z = old.wet.z;
         new.wet.w = old.wet.w;
@@ -1417,8 +1522,9 @@ impl BuildParams<'_, '_> {
     pub fn cull_back(&mut self, s: &SkelBody) {
         for h in &s.mats {
             if let Some(mut m) = self.mats.get_mut(h) {
-                // (The rebuilt sections wind clockwise as Bevy sees them: their outside is the "back" face.)
-                m.base.cull_mode = Some(bevy::render::render_resource::Face::Front);
+                // Their outside is the front face: culling Front (as before) drew only the inside, so looking down
+                // showed the black inside of the coat.
+                m.base.cull_mode = Some(bevy::render::render_resource::Face::Back);
                 m.base.double_sided = false;
             }
         }
@@ -1551,10 +1657,19 @@ fn coat_bones(rig: &Rig) -> &'static [(usize, f32)] {
     &both[std::ptr::eq(rig, &rigs()[1]) as usize]
 }
 
-/// Cloth (enhancement "Coat Cloth"): each coat bone's tail is a Verlet point pulled toward where the animation
-/// puts it, swinging with the body's motion, held to the bone's length and pushed out of the legs; the bone turns
-/// to point at it. `pawn` = the pawn entity's world transform.
+/// Cloth (enhancement "Coat Cloth"): each coat bone's tail is a point in world space on a damped spring toward
+/// where the animation puts it, so the coat trails the body's motion and settles back; held to the bone's length,
+/// pushed out of the legs, softly limited in how far it swings, with a light gust of wind; the bone turns to point at
+/// it. Simulated in fixed 1/120 s substeps with the animated targets moving smoothly between frames (a body posed
+/// every third frame, or a frame hitch, no longer jolts it). `pawn` = the pawn entity's world transform.
 fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
+    const STEP: f32 = 1.0 / 120.0;
+    /// Spring toward the animated pose (rad/s natural frequency ~ 2 pi x 2.6 Hz) and its damping per second.
+    const K: f32 = 270.0;
+    const DAMP: f32 = 7.0;
+    /// Past SOFT the swing is pulled back harder; HARD it never passes (radians off the animated direction).
+    const SOFT: f32 = 0.3;
+    const HARD: f32 = 0.75;
     let bones = coat_bones(s.rig);
     if bones.is_empty() || dt <= 0.0 {
         return;
@@ -1572,9 +1687,20 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
     if fresh {
         s.cloth_tail = vec![Vec3::ZERO; bones.len()];
         s.cloth_prev = vec![Vec3::ZERO; bones.len()];
+        s.cloth_head = vec![Vec3::ZERO; bones.len()];
+        s.cloth_goal = vec![Vec3::ZERO; bones.len()];
+        s.cloth_acc = 0.0;
     }
     let scale = world.x_axis.truncate().length();
-    let gravity = Vec3::NEG_Y * (950.0 / 52.5) * 0.15;
+    let gravity = Vec3::NEG_Y * (950.0 / 52.5) * 0.5;
+    // Substeps this frame (the rest carries over).
+    s.cloth_acc = (s.cloth_acc + dt.min(0.1)).min(0.1);
+    let n = (s.cloth_acc / STEP).floor() as usize;
+    s.cloth_acc -= n as f32 * STEP;
+    s.cloth_clock += dt;
+    let clock = s.cloth_clock;
+    let decay = (1.0 - DAMP * STEP).max(0.0);
+    let spring = K * STEP * STEP;
     for (k, &(i, len)) in bones.iter().enumerate() {
         let parent = rig.parent[i].map_or(Mat4::IDENTITY, |p| g[p]);
         let anim = parent * s.pose[i].mat();
@@ -1583,48 +1709,58 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         let head_w = world.transform_point3(head_r);
         let target_w = world.transform_point3(head_r + dir_r * len);
         let len_w = len * scale;
-        let mut tail = s.cloth_tail[k];
-        let prev = s.cloth_prev[k];
-        if fresh || tail.distance(target_w) > len_w * 4.0 + 1.0 {
+        let jumped = s.cloth_tail[k].distance(target_w) > len_w * 4.0 + 1.0;
+        if fresh || jumped {
             // First frame, or a jump (teleport, respawn): start where the animation is.
             s.cloth_tail[k] = target_w;
             s.cloth_prev[k] = target_w;
+            s.cloth_head[k] = head_w;
+            s.cloth_goal[k] = target_w;
             g[i] = anim;
             continue;
         }
-        // A subtle ripple: well damped, pulled firmly back to the animated pose (per 60 Hz step, so a body posed
-        // every 3rd frame far away moves alike), and never more than a few degrees off it (below).
-        let steps = (dt * 60.0).clamp(0.25, 4.0);
-        let vel = (tail - prev) * 0.72f32.powf(steps);
-        let pull = 1.0 - (1.0 - 0.4f32).powf(steps);
-        let mut next = tail + vel + (target_w - tail) * pull + gravity * dt * dt;
-        // Hold the length.
-        next = head_w + (next - head_w).normalize_or(target_w - head_w) * len_w;
-        // Out of the legs.
-        for (a, b) in legs.iter().flatten() {
-            let ab = *b - *a;
-            let t = ((next - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
-            let c = *a + ab * t;
-            let d = next - c;
-            if d.length() < leg_r {
-                next = c + d.normalize_or(Vec3::Z) * leg_r;
+        let (head0, goal0) = (s.cloth_head[k], s.cloth_goal[k]);
+        // A gentle gust across the coat (each bone a little out of step), mostly sideways to the body.
+        let side = world.z_axis.truncate().normalize_or(Vec3::X);
+        let ph = k as f32 * 0.7;
+        let gust = (clock * 1.3 + ph).sin() * 0.5 + (clock * 2.9 + ph * 1.7).sin() * 0.25;
+        let wind = side * gust * 2.5 + Vec3::Y * (clock * 2.1 + ph).sin() * 0.6;
+        let mut tail = s.cloth_tail[k];
+        let mut prev = s.cloth_prev[k];
+        for j in 0..n {
+            let u = (j + 1) as f32 / n as f32;
+            let head = head0.lerp(head_w, u);
+            let goal = goal0.lerp(target_w, u);
+            let vel = (tail - prev) * decay;
+            let mut next = tail + vel + (goal - tail) * spring + (gravity + wind) * STEP * STEP;
+            // Hold the length.
+            next = head + (next - head).normalize_or(goal - head) * len_w;
+            // Out of the legs.
+            for (a, b) in legs.iter().flatten() {
+                let ab = *b - *a;
+                let t = ((next - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                let c = *a + ab * t;
+                let d = next - c;
+                if d.length() < leg_r {
+                    next = c + d.normalize_or(Vec3::Z) * leg_r;
+                }
             }
+            // A soft limit on the swing: past SOFT half the excess is taken back each step, never past HARD.
+            let a_dir = (goal - head).normalize_or(Vec3::NEG_Y);
+            let n_dir = (next - head).normalize_or(a_dir);
+            let ang = a_dir.angle_between(n_dir);
+            if ang > SOFT {
+                let keep = (SOFT + (ang - SOFT) * 0.5).min(HARD);
+                let axis = a_dir.cross(n_dir).normalize_or(Vec3::X);
+                next = head + Quat::from_axis_angle(axis, keep) * a_dir * len_w;
+            }
+            prev = tail;
+            tail = next;
         }
-        next = head_w + (next - head_w).normalize_or(target_w - head_w) * len_w;
-        // At most MAX_SWING off the animated direction (each bone of a chain from its parent's), so a fast turn or
-        // a stop never flips the coat over.
-        const MAX_SWING: f32 = 0.17;
-        let a_dir = (target_w - head_w).normalize_or(Vec3::NEG_Y);
-        let n_dir = (next - head_w).normalize_or(a_dir);
-        let ang = a_dir.angle_between(n_dir);
-        if ang > MAX_SWING {
-            let q = Quat::from_rotation_arc(a_dir, n_dir);
-            let (axis, _) = q.to_axis_angle();
-            next = head_w + Quat::from_axis_angle(axis, MAX_SWING) * a_dir * len_w;
-        }
-        tail = next;
-        s.cloth_prev[k] = s.cloth_tail[k];
         s.cloth_tail[k] = tail;
+        s.cloth_prev[k] = prev;
+        s.cloth_head[k] = head_w;
+        s.cloth_goal[k] = target_w;
         // Turn the bone toward its tail (in rig space).
         let want = (inv.transform_point3(tail) - head_r).normalize_or(dir_r);
         let (sc, rot, tr) = anim.to_scale_rotation_translation();
@@ -1635,6 +1771,11 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         s.pose[i] = Trs { t: lt, r: lr, s: ls };
     }
     s.gmat = g;
+}
+
+/// The coat hangs as animated (sitting: the chair would fight it) and starts afresh when it moves again.
+fn cloth_rest(s: &mut SkelBody) {
+    s.cloth_tail.clear();
 }
 
 /// The leg segments the coat is kept out of (thigh -> shin, shin -> foot, both sides), as rig node indices.
@@ -1654,6 +1795,3 @@ pub fn cloth_on() -> bool {
     crate::settings::get("CoatCloth") > 0.5
 }
 
-pub fn cloth_pub(s: &mut SkelBody, pawn: Mat4, dt: f32) {
-    cloth(s, pawn, dt);
-}

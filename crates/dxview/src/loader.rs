@@ -352,6 +352,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
         });
     }
     let carry = matches!(goal, Goal::Travel(_)).then(|| crate::save::capture_travel(world));
+    dx_level::actors::set_zone_ambient(level.collision.zone_tree(), level.zone_ambient.clone());
     // Arriving at a tagged actor (Teleporter URL "map#tag"): it stands in for the PlayerStart.
     if let Goal::Travel(Some(tag)) = &goal {
         let hit = level.actors.iter().find(|a| {
@@ -499,10 +500,11 @@ pub fn loading_screen_system(
     mut images: ResMut<Assets<Image>>,
     mut layers: ResMut<Assets<crate::classic_hud::HudLayer>>,
     windows: Query<&Window>,
-    mut shown: Local<bool>,
+    mut shown: Local<u8>,
     mut font: Local<Option<Option<std::sync::Arc<crate::uicanvas::UiFont>>>>,
 ) {
-    let want = busy();
+    // 0 = nothing, 1 = loading (the old map's last frame stays up), 2 = settling (black, the new map hidden).
+    let want: u8 = if busy() { 1 } else if settling() { 2 } else { 0 };
     if want == *shown {
         return;
     }
@@ -510,13 +512,59 @@ pub fn loading_screen_system(
     for e in &q {
         commands.entity(e).despawn();
     }
-    if !want {
+    if want == 0 {
         return;
+    }
+    if want == 2 {
+        commands.spawn((
+            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+            BackgroundColor(Color::BLACK),
+            GlobalZIndex(999),
+            Pickable::IGNORE,
+            LoadingScreen,
+        ));
     }
     let Some(assets) = assets.as_mut() else { return };
     let Some(win) = windows.iter().next() else { return };
     if let Some(e) = spawn_loading_words(&mut commands, assets, &mut images, &mut layers, win, &mut *font, 1000) {
         commands.entity(e).insert(LoadingScreen);
+    }
+}
+
+/// After a map is put in place it stays behind the loading screen (black, "LOADING", game time paused, cut scenes
+/// held) until its render pipelines have compiled and its textures are up: without this the intro's first room
+/// popped in surface by surface. Ends after 6 calm frames (and at least 0.35 s), or 6 s at most.
+static SETTLE: Mutex<Option<(std::time::Instant, u32)>> = Mutex::new(None);
+
+pub fn settling() -> bool {
+    SETTLE.lock().map(|s| s.is_some()).unwrap_or(false)
+}
+
+pub fn settle_system(mut seen: Local<u64>, mut paused_by_us: Local<bool>, mut time: ResMut<Time<Virtual>>) {
+    if generation() != *seen {
+        *seen = generation();
+        if !env_on!("DXVIEW_NO_SETTLE") {
+            if let Ok(mut s) = SETTLE.lock() {
+                *s = Some((std::time::Instant::now(), 0));
+            }
+        }
+    }
+    let mut g = SETTLE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((t0, calm)) = g.as_mut() {
+        *calm = if crate::remaster::pipelines_waiting() == 0 { *calm + 1 } else { 0 };
+        let age = t0.elapsed().as_secs_f32();
+        if (*calm >= 6 && age >= 0.35) || age >= 6.0 || busy() {
+            *g = None;
+        }
+    }
+    let on = g.is_some();
+    drop(g);
+    if on && !time.is_paused() {
+        time.pause();
+        *paused_by_us = true;
+    } else if !on && *paused_by_us {
+        *paused_by_us = false;
+        time.unpause();
     }
 }
 
@@ -656,6 +704,15 @@ fn dev_goto(world: &mut World) {
                 world.resource_mut::<crate::weapons::CorpseDrops>().0.push((e, ploc + glam::DVec3::new(15.0, 0.0, 40.0), vel));
                 *crate::actors::BODY_LOG.lock().unwrap() = Some(name.clone());
                 println!("GOTO threw {name}");
+            }
+            return;
+        }
+        // "secs;x,y,z;tp": the player is moved there (trigger tests).
+        Some("tp") => {
+            let v: Vec<f64> = map.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if v.len() == 3 {
+                world.resource_mut::<crate::Player>().body.location = glam::DVec3::new(v[0], v[1], v[2]);
+                println!("GOTO teleported to {v:?}");
             }
             return;
         }

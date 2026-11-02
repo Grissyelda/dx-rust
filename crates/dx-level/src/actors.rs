@@ -585,6 +585,43 @@ pub fn load_mesh(classes: &ClassDb, full: &str) -> Option<(LodMesh, String)> {
 
 /// Unreal-style actor lighting for one part placed at `location`/`rotation`: per-vertex distance falloff
 /// and facing from static lights, no shadows. Returns linear RGBA vertex colors.
+/// The level's zone ambient light for actors (ZoneInfo AmbientBrightness / Hue / Saturation, the LevelInfo's for
+/// zone 0): every actor's vertex light starts from its zone's ambient colour, as the engine's does. Set when a level
+/// is built.
+static ZONE_AMBIENT: std::sync::RwLock<Option<(crate::collision::ZoneTree, Vec<[f32; 3]>)>> = std::sync::RwLock::new(None);
+
+thread_local! {
+    /// While a level is being built (possibly in the background, beside the level being played) its own table.
+    static BUILDING_AMBIENT: std::cell::RefCell<Option<(crate::collision::ZoneTree, Vec<[f32; 3]>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The table for the level in play (dxview calls this when a level is put in place).
+pub fn set_zone_ambient(tree: crate::collision::ZoneTree, table: Vec<[f32; 3]>) {
+    if let Ok(mut g) = ZONE_AMBIENT.write() {
+        // Nothing to add on a level without ambient light: skip the lookups.
+        *g = table.iter().any(|c| c.iter().any(|&v| v > 0.0)).then_some((tree, table));
+    }
+}
+
+/// The table for the level this thread is building (None when done).
+pub fn set_building_ambient(t: Option<(crate::collision::ZoneTree, Vec<[f32; 3]>)>) {
+    BUILDING_AMBIENT.with(|b| *b.borrow_mut() = t.filter(|(_, table)| table.iter().any(|c| c.iter().any(|&v| v > 0.0))));
+}
+
+/// The ambient light (linear, before the light gain) at a point.
+pub fn zone_ambient_at(p: [f32; 3]) -> [f32; 3] {
+    let pt = glam::DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+    let look = |t: &(crate::collision::ZoneTree, Vec<[f32; 3]>)| {
+        let z = t.0.zone_at(pt).max(0) as usize;
+        t.1.get(z).or(t.1.first()).copied().unwrap_or([0.0; 3])
+    };
+    if let Some(c) = BUILDING_AMBIENT.with(|b| b.borrow().as_ref().map(look)) {
+        return c;
+    }
+    let Ok(g) = ZONE_AMBIENT.read() else { return [0.0; 3] };
+    g.as_ref().map(look).unwrap_or([0.0; 3])
+}
+
 pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale_glow: f32, lights: &[LightInfo]) -> Vec<[f32; 4]> {
     if part.unlit {
         return vec![[1.0, 1.0, 1.0, 1.0]; part.positions.len()];
@@ -597,6 +634,7 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
             d < l.radius + 512.0
         })
         .collect();
+    let amb = zone_ambient_at(location);
     part.positions
         .iter()
         .zip(&part.normals)
@@ -604,7 +642,7 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
             let r = apply(&axes, *lp);
             let pt = [location[0] + r[0], location[1] + r[1], location[2] + r[2]];
             let n = apply(&axes, *ln);
-            let mut c = [0.0f32; 3];
+            let mut c = amb;
             for l in &near {
                 let to = [l.pos[0] - pt[0], l.pos[1] - pt[1], l.pos[2] - pt[2]];
                 let d = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();

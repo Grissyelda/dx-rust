@@ -680,6 +680,13 @@ pub fn build_layer() {
 
 /// HDTP's first-person skins for a weapon in hand (None when HDTP isn't drawing it): (slot, texture or "None"),
 /// and the muzzle-flash slot.
+/// The view mesh is HDTP's model for this weapon class (HDTP models on).
+pub fn is_view_mesh(class: &str, view_mesh: &str) -> bool {
+    let Ok(g) = DATA.read() else { return false };
+    let Some(data) = g.as_ref() else { return false };
+    models_on() && data.view_mesh.get(&class.to_ascii_lowercase()).is_some_and(|m| m.eq_ignore_ascii_case(view_mesh))
+}
+
 pub fn view_skins(class: &str, view_mesh: &str, st: &WeaponState) -> Option<(Vec<(u32, String)>, Option<u32>)> {
     let g = DATA.read().ok()?;
     let data = g.as_ref()?;

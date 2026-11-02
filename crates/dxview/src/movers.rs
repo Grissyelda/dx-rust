@@ -491,7 +491,7 @@ pub fn tick_movers(
                 tf.rotation = bevy_rotation(rt.rotation);
             }
         }
-        if let Ok(f) = std::env::var("DXVIEW_MOVERLOG") {
+        if let Some(f) = env_val!("DXVIEW_MOVERLOG") {
             if info.tag.eq_ignore_ascii_case(&f) || info.name.eq_ignore_ascii_case(&f) || level.actors[info.actor].class.eq_ignore_ascii_case(&f) {
                 let l = movers.rt[i].location;
                 println!("MOVER {} {:.0},{:.0},{:.0} key {} interp {}", info.name, l.x, l.y, l.z, movers.rt[i].key_num, movers.rt[i].interpolating);

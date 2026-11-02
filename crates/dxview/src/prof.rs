@@ -89,6 +89,9 @@ pub struct ProfState {
     since: f64,
     hitch_last: Option<Instant>,
     started: Option<Instant>,
+    /// Running average frame time (ms) and the last stutter line written.
+    avg: f64,
+    stutter_at: Option<Instant>,
 }
 
 pub fn prof_report_system(
@@ -108,7 +111,26 @@ pub fn prof_report_system(
         if let Some(l) = st.hitch_last {
             let ms = (now - l).as_secs_f64() * 1000.0;
             let mut f = FRAME.lock().map(|mut f| std::mem::take(&mut *f)).unwrap_or_default();
-            if ms > 400.0 && (now - start).as_secs_f64() > 10.0 {
+            // Stutters: frames well over the running average (2.5x and at least 40 ms) in play, one line per
+            // half second at most - what made the frame long, so moving about can be traced.
+            let settled = (now - start).as_secs_f64() > 10.0;
+            let stutter = settled
+                && ms <= 400.0
+                && st.avg > 0.0
+                && ms > (st.avg * 2.5).max(40.0)
+                && st.stutter_at.is_none_or(|t| (now - t).as_secs_f64() > 0.5);
+            st.avg = if st.avg == 0.0 { ms } else { st.avg * 0.95 + ms.min(200.0) * 0.05 };
+            if stutter {
+                st.stutter_at = Some(now);
+                f.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let mut text = format!("stutter {ms:.0} ms (avg {:.1}) at {:.1} s:", st.avg, (now - start).as_secs_f64());
+                for (k, v) in f.iter().take(6) {
+                    text.push_str(&format!(" {k} {v:.1}"));
+                }
+                text.push('\n');
+                hitch_write(&text);
+            }
+            if ms > 400.0 && settled {
                 f.sort_by(|a, b| b.1.total_cmp(&a.1));
                 let mut text = format!("frame {ms:.0} ms at {:.1} s:", (now - start).as_secs_f64());
                 for (k, v) in f.iter().take(8) {

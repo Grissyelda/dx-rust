@@ -60,10 +60,31 @@ impl UiFont {
     }
     /// Width of a string in UI units (glyph cells already carry their spacing).
     pub fn width(&self, s: &str) -> i32 {
-        s.chars()
-            .filter_map(|c| self.font.glyph(c))
-            .map(|g| g.1.w)
-            .sum()
+        s.chars().map(|c| self.char_width(c)).sum()
+    }
+
+    /// Width of a run of characters (an edit field's text) without building a string.
+    pub fn chars_width(&self, t: &[char]) -> i32 {
+        t.iter().map(|&c| self.char_width(c)).sum()
+    }
+
+    /// Width of one character (0 for one the font lacks).
+    pub fn char_width(&self, c: char) -> i32 {
+        self.font.glyph(c).map_or(0, |g| g.1.w)
+    }
+
+    /// The caret position for a click `rel` UI units into `text`: before the first character whose middle is past it.
+    pub fn caret_at(&self, text: &[char], rel: i32) -> usize {
+        let mut x = 0;
+        for (i, &c) in text.iter().enumerate() {
+            let w = self.char_width(c);
+            // The old test, rel < (width to i inclusive + width to i) / 2, is the character's middle.
+            if rel < (2 * x + w) / 2 {
+                return i;
+            }
+            x += w;
+        }
+        text.len()
     }
 }
 

@@ -142,6 +142,9 @@ fn mip_image(w: u32, h: u32, mips: &[Vec<u8>]) -> Image {
 
 /// Put a level texture's relief maps on its material (normal map; with parallax, the depth map). Returns whether
 /// it got a normal map (its meshes then need tangents).
+/// How deep relief maps look (Unreal units).
+const RELIEF_DEPTH: f32 = 2.5;
+
 pub fn apply_relief(m: &mut StandardMaterial, t: &dx_level::TextureImage, images: &mut Assets<Image>) -> bool {
     let lvl = relief_level();
     if lvl == 0 {
@@ -152,9 +155,12 @@ pub fn apply_relief(m: &mut StandardMaterial, t: &dx_level::TextureImage, images
     if lvl >= 2 {
         if let Some(d) = r.depth.as_ref() {
             m.depth_map = Some(images.add(mip_image(r.width, r.height, d)));
-            m.parallax_depth_scale = 0.035;
-            m.max_parallax_layer_count = 16.0;
-            m.parallax_mapping_method = bevy::pbr::ParallaxMappingMethod::Relief { max_steps: 4 };
+            // Bevy's depth is in texture coordinates, and a BSP texture repeats once per its size in Unreal units
+            // (a texel a unit): a fixed 0.035 was 9 units deep on a 256 wall and 36 on a 1024 one - the bricks slid
+            // and smeared as you moved. RELIEF_DEPTH units deep on every texture, as the addon's renderer shows it.
+            m.parallax_depth_scale = (RELIEF_DEPTH / t.width.max(16) as f32).clamp(0.001, 0.02);
+            m.max_parallax_layer_count = 24.0;
+            m.parallax_mapping_method = bevy::pbr::ParallaxMappingMethod::Relief { max_steps: 5 };
         }
     }
     true

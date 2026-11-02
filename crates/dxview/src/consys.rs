@@ -1915,9 +1915,12 @@ impl ConState {
                             512.0 + p.initial_radius as f32
                         };
                         let mut at = if sw == Some(Who::Player) { None } else { pos };
-                        // bForcePlay: heard through the player when the speaker is over 400 units away.
+                        // bForcePlay: heard through the player when the speaker is over 400 units away. Ours: always
+                        // through the player in a cut scene - from the speaker, Sound Occlusion muffled Bob Page's
+                        // line behind the clone tank's glass in the intro.
                         let mut owner = owner;
-                        if p.forced && at.is_some_and(|q| q.distance(player_pos) > 400.0) {
+                        let _ = player_pos;
+                        if p.forced && at.is_some() {
                             at = None;
                             owner = crate::sound::PLAYER;
                         }

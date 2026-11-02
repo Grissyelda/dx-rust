@@ -177,7 +177,7 @@ pub fn aim_dir(level: &dx_level::Level, eye: DVec3, fw: DVec3) -> DVec3 {
 pub fn camera_layers() -> RenderLayers {
     let mut l = vec![0, crate::mirror::LAYER, crate::weather::RAIN_LAYER, crate::skyfollow::LAYER];
     if crate::shadowlight::level() > 0 {
-        l.push(crate::shadowlight::SHADOW_LAYER);
+        l.extend_from_slice(&crate::shadowlight::SLOT_LAYERS);
     }
     if active() {
         l.push(crate::mirror::BODY_LAYER);
@@ -255,12 +255,6 @@ pub fn place_system(
     }
     st.side += (st.side_want - st.side).clamp(-dt * 4.0, dt * 4.0);
     let aiming = keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft);
-    let want = match (free_cam, aiming) {
-        (_, true) => 55.0,
-        (true, false) => 135.0,
-        (false, false) => 105.0,
-    };
-    st.dist = if st.dist <= 0.0 { want } else { st.dist + (want - st.dist) * (dt * 8.0).min(1.0) };
     let eye_t = **cam;
     let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64);
     // The free camera looks along its own orbit; the shoulder camera along JC's view.
@@ -270,6 +264,15 @@ pub fn place_system(
         eye_t.rotation
     };
     let fw = conv(rot * Vec3::NEG_Z);
+    // Aiming pulls the camera in over the shoulder - less so looking down, where backing off along the view lifts it
+    // straight over his head and he filled the screen.
+    let down = (-fw.z).max(0.0) as f32;
+    let want = match (free_cam, aiming) {
+        (_, true) => 55.0 + 60.0 * down,
+        (true, false) => 135.0,
+        (false, false) => 105.0,
+    };
+    st.dist = if st.dist <= 0.0 { want } else { st.dist + (want - st.dist) * (dt * 8.0).min(1.0) };
     let rt = conv(rot * Vec3::X);
     let e = bevy_to_ue(eye_t.translation.to_array());
     let eye = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);

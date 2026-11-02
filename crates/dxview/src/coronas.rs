@@ -145,6 +145,9 @@ pub fn corona_system(
     mut map_gen: Local<u64>,
     mut assets: ResMut<RuntimeAssets>,
     mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut core_state: Local<CoreState>,
 ) {
     let _prof = crate::prof::scope("coronas::corona_system");
     if crate::loader::new_map(&mut map_gen) {
@@ -169,6 +172,7 @@ pub fn corona_system(
     let width = win.width();
     let modern = modern();
     let dt = time.delta_secs().min(0.1);
+    let mut cores: Vec<(Vec3, [f32; 3], f32, f32)> = Vec::new();
     for (_, c, mut node, mut vis, mut img) in &mut q {
         let co = &level.0.coronas[c.0];
         let p = DVec3::new(co.pos[0] as f64, co.pos[1] as f64, co.pos[2] as f64);
@@ -207,8 +211,14 @@ pub fn corona_system(
             *f += (want - *f) * (dt * 8.0).min(1.0);
             let a = *f;
             img.color = Color::srgba(1.0, 1.0, 1.0, a);
+            if a > 0.01 {
+                cores.push((Vec3::from(ue_to_bevy(co.pos)), co.color, a, co.draw_scale.clamp(0.3, 2.0)));
+            }
             *vis = if a > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
         } else {
+            if shown {
+                cores.push((Vec3::from(ue_to_bevy(co.pos)), co.color, 1.0, co.draw_scale.clamp(0.3, 2.0)));
+            }
             if img.color != Color::WHITE {
                 img.color = Color::WHITE;
             }
@@ -219,4 +229,102 @@ pub fn corona_system(
             };
         }
     }
+    write_cores(&mut commands, &mut core_state, &mut meshes, &mut mats, &mut images, tf, &cores);
+}
+
+/// Coronas into the bloom (with Glow And Bloom on): a small hot core of each visible corona drawn in the world
+/// (HDR, additive), so the bloom pass spreads it round the bulb like the real glow; the 2D corona stays on top.
+#[derive(Default)]
+pub struct CoreState {
+    mesh: Option<(Handle<Mesh>, Entity)>,
+    gen: u64,
+}
+
+const CORE_CAP: usize = 64;
+
+fn core_image() -> Image {
+    let n = 32u32;
+    let mut px = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let dx = (x as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+            let dy = (y as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+            let a = (-(dx * dx + dy * dy) * 6.0).exp();
+            let v = (a * 255.0) as u8;
+            px.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    Image::new(
+        Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        px,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+fn write_cores(
+    commands: &mut Commands,
+    st: &mut CoreState,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    tf: &Transform,
+    cores: &[(Vec3, [f32; 3], f32, f32)],
+) {
+    let on = crate::glow::on();
+    let gen = crate::loader::generation();
+    if st.gen != gen {
+        st.gen = gen;
+        st.mesh = None;
+    }
+    if st.mesh.is_none() {
+        if !on {
+            return;
+        }
+        let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; CORE_CAP * 4]);
+        m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; CORE_CAP * 4]);
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, (0..CORE_CAP).flat_map(|_| [[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]).collect::<Vec<_>>());
+        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; CORE_CAP * 4]);
+        m.insert_indices(bevy::mesh::Indices::U32((0..CORE_CAP as u32).flat_map(|q| [q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3]).collect()));
+        let h = meshes.add(m);
+        let mat = mats.add(StandardMaterial {
+            base_color: Color::LinearRgba(LinearRgba::rgb(6.0, 6.0, 6.0)),
+            base_color_texture: Some(images.add(core_image())),
+            unlit: true,
+            alpha_mode: AlphaMode::Add,
+            fog_enabled: false,
+            ..default()
+        });
+        let e = commands
+            .spawn((
+                Mesh3d(h.clone()),
+                MeshMaterial3d(mat),
+                Transform::default(),
+                bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
+                bevy::camera::visibility::NoAutoAabb,
+                bevy::light::NotShadowCaster,
+            ))
+            .id();
+        st.mesh = Some((h, e));
+    }
+    let Some((h, _)) = &st.mesh else { return };
+    let Some(mut m) = meshes.get_mut(h) else { return };
+    let right = *tf.right();
+    let up = *tf.up();
+    let mut pos = vec![[0.0f32; 3]; CORE_CAP * 4];
+    let mut col = vec![[0.0f32; 4]; CORE_CAP * 4];
+    if on {
+        for (i, (p, c, a, scale)) in cores.iter().take(CORE_CAP).enumerate() {
+            // About 9 units across at draw scale 1: the bulb itself.
+            let r = 4.5 * scale * dx_level::METERS_PER_UNIT;
+            for (k, (sx, sy)) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].into_iter().enumerate() {
+                pos[i * 4 + k] = (*p + right * r * sx + up * r * sy).to_array();
+                col[i * 4 + k] = [c[0] * a, c[1] * a, c[2] * a, 1.0];
+            }
+        }
+    }
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
 }

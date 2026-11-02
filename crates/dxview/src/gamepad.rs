@@ -460,6 +460,8 @@ pub fn pad_in_use() -> bool {
 pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
     let f = frame();
     let mut out = PadOut { inputs: Vec::new(), scroll: 0.0, cursor: Vec2::ZERO, snap: None };
+    // Y's "code from notes" lasts one frame (whoever is open takes it; nobody keeps it for later).
+    PAD_NOTES.store(false, std::sync::atomic::Ordering::Relaxed);
     if !f.connected {
         return out;
     }

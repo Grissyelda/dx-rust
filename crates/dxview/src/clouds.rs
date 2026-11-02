@@ -18,6 +18,10 @@ use bevy::shader::ShaderRef;
 
 pub const CLOUD_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("3c7e1d52-9a4b-4f60-8d2e-b51a07c4e9f3");
 
+/// Sky faces (Unreal units squared) a map needs before it gets clouds: about 5,000 m2 (the training course's
+/// skylights are ~1,000 m2, Liberty Island ~400,000).
+const MIN_SKY_AREA: f32 = 1.4e7;
+
 pub fn on() -> bool {
     crate::settings::get("Clouds") > 0.5
 }
@@ -340,7 +344,8 @@ pub fn clouds_system(
     for (e, _, _) in &mut lights {
         commands.entity(e).despawn();
     }
-    if !want || !crate::skyline::cloudy(&lvl.name) || !lvl.zone_sky.iter().any(|s| *s) {
+    // Maps open to the sky only through windows and skylights (the sky faces cover a few rooms' worth) get none.
+    if !want || !crate::skyline::cloudy(&lvl.name) || !lvl.zone_sky.iter().any(|s| *s) || lvl.sky_area < MIN_SKY_AREA {
         return;
     }
     let (bmin, bmax) = (Vec3::from(lvl.bounds_min), Vec3::from(lvl.bounds_max));

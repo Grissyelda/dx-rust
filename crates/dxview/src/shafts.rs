@@ -458,8 +458,11 @@ pub fn shafts_system(
     // behind it, and through the double-sided wall the far side's shadows showed).
     let aug = crate::abilities::aug_active("AugLight");
     let flash = crate::dynlight::flashlight();
+    // With the Flashlight Cone the haze beam is left out: its narrower glow in the air read as a second, inner
+    // corona inside the cone's pool against far ground (playtest 2026-11-01).
+    let beam_on = aug && !crate::dynlight::flashlight_cone();
     for (mut sl, mut tf, mut vis) in &mut beam {
-        if let (true, Some((from, f, reach))) = (aug, flash) {
+        if let (true, Some((from, f, reach))) = (beam_on, flash) {
             let pos = from + f * (reach * 0.5).min(0.6);
             *tf = Transform::from_translation(pos).looking_to(f, Vec3::Y);
             sl.intensity = 14.0 / AIR_BOOST;
@@ -477,7 +480,7 @@ pub fn shafts_system(
         }
     }
     // No beam anywhere near (no flashlight, spotlight or moon through a window): the haze isn't marched at all.
-    let lit = aug || st.spots_lit > 0 || st.moon_on;
+    let lit = beam_on || st.spots_lit > 0 || st.moon_on;
     let want_v = if lit { Visibility::Inherited } else { Visibility::Hidden };
     for (_, mut v) in &mut haze {
         if *v != want_v {

@@ -113,7 +113,6 @@ pub struct Mirrors {
 #[derive(Component)]
 pub struct MirrorCam(pub usize, pub bool);
 
-static WATER_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The render target the reflection is drawn into (the window's size).
 pub fn make_image(images: &mut Assets<Image>, size: UVec2) -> Handle<Image> {
@@ -454,17 +453,17 @@ pub fn mirror_system(
             }
         }
     }
-    WATER_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     for (mc, mut cam, mut tf, mut proj, mut target) in &mut cams {
         let slot = &mirrors.slots[mc.0.min(SLOTS - 1)];
         let (Some(pi), Some(img)) = (slot.plane, slot.image.clone()) else {
             cam.is_active = false;
             continue;
         };
-        // Water re-renders its reflection every other frame (two extra views of the whole scene were ~3 ms of the
-        // render thread; the waves hide a frame's lag). Mirrors every frame.
-        let half_rate = mirrors.planes[pi].water && !env_on!("DXVIEW_WATER_FULLRATE");
-        cam.is_active = !half_rate || WATER_FRAME.load(std::sync::atomic::Ordering::Relaxed) % 2 == 0;
+        // Every frame: a camera switched off and on again loses the level's GPU-culled surfaces (gpudrive.rs), and
+        // rendering water every other frame bought nothing measurable on the PC.
+        if !cam.is_active {
+            cam.is_active = true;
+        }
         if !matches!(&*target, RenderTarget::Image(t) if t.handle == img) {
             *target = img.into();
         }

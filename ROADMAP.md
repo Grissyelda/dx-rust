@@ -87,8 +87,9 @@ mimalloc, per-system allocation counts in profile runs, and the game's own per-f
 (JC's mesh lookup was copying HDTP's whole override list twice a frame; snapshots, queues, HUD keys and string tests
 now reuse buffers or borrow). Next: Bevy's per-view render bookkeeping (bind groups and buffers rebuilt each frame),
 the weapon view's own pass, the Update schedule's scheduling overhead (about 160 small systems), and splitting the
-NPC component and its update into smaller components and systems (poison and bleeding are out; perception,
-reactions, combat, orders and movement are next).
+NPC component and its update into smaller components and systems (poison and bleeding are their own component and
+system; the update's damage, sight, hearing and state code are separate functions now; next: perception, reactions,
+combat, orders and movement as components and systems of their own).
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.
@@ -146,7 +147,8 @@ reactions, combat, orders and movement are next).
 ### Large (new rendering, audio or interaction work)
 25. Sway-based aiming, a dynamic crosshair and aim-down-sights (done: Modern Aiming - a slight sway of the gun that
     the crosshair follows, steadier as the weapon skill rises and almost still at Master; aim down the sights with
-    firearms only).
+    firearms only; the sights line up on the original weapon models as well as HDTP's, and a scoped rifle's zoom
+    is a live lens in front of the eye - Diegetic Scope).
 26. Real-time shadows for pawns and movers (done: shadows from the map's own lamps, as dark as the light each lamp
     put into the lightmap at that spot).
 27. New particle effects (done: Enhanced Effects - impacts by surface, explosion sparks and smoke, barrel smoke,

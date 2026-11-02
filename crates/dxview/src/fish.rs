@@ -12,10 +12,10 @@
 //!   centre when it's 1-4 x Radius away, back toward home when outside HomeExtent, with a +-4096 yaw / +-1500 pitch
 //!   wobble while it's "following" (leaderTimer 5-15 s, then 2 s on its own). HitWall reflects it (once per
 //!   0.5 s). Fish swim where they face, accelerating at AccelRate up to WaterSpeed (Fish 50, Fish2 30).
-//!   (Deviation, noted: UE1 keeps the last MoveTo acceleration while TurnTo runs; here the swim direction follows
-//!   the facing so the fish never slide sideways.)
-//! * They ignore everything (BlockReactions). Shot or blown up, a fish (Health 10) just disappears: CarcassType
-//!   is None and there's no death sound.
+//!   As in UE1, MoveTo aims the acceleration at its destination and TurnTo leaves it alone, so a fish keeps
+//!   gliding the old way while it turns toward the next.
+//! * They ignore everything (BlockReactions). Shot or blown up, a fish (Health 10) just disappears, as in the
+//!   original: CarcassType is None (ScriptedPawn.Dying spawns no carcass) and there's no death sound.
 
 use crate::weapons::{spawn_mesh_parts, Clip, RuntimeAssets};
 use crate::{FlyCam, LevelRes, Player, SkyCam};
@@ -110,6 +110,9 @@ pub struct Fish {
     height: f64,
     water_speed: f64,
     accel_rate: f64,
+    /// Acceleration's direction: MoveTo aims it at its destination each tick; TurnTo leaves it as it was, so the
+    /// fish keeps gliding the old way while it turns (and HitWall sets it to the reflected heading).
+    accel_dir: DVec3,
     health: f32,
     mesh: Arc<AnimMesh>,
     parts: Vec<MeshPart>,
@@ -410,6 +413,7 @@ pub fn fish_system(
             vel: DVec3::ZERO,
             yaw,
             pitch,
+            accel_dir: dir_of(yaw, pitch),
             phase: Phase::Start(at + dir_of(yaw, pitch) * (radius + 5.0)),
             leader_timer: leader,
             forward_timer: -1.0,
@@ -527,9 +531,13 @@ pub fn fish_system(
             }
         };
 
-        // PHYS_Swimming: accelerate the way it faces, capped at WaterSpeed, with a little fluid drag.
+        // PHYS_Swimming: accelerate along Acceleration (MoveTo's way to its destination; kept through TurnTo),
+        // capped at WaterSpeed, with a little fluid drag.
         let facing = dir_of(f.yaw, f.pitch);
-        f.vel += facing * f.accel_rate * 0.3 * dtd;
+        if let Phase::Start(t) | Phase::Dart(t) = f.phase {
+            f.accel_dir = (t - f.pos).normalize_or(f.accel_dir);
+        }
+        f.vel += f.accel_dir * f.accel_rate * 0.3 * dtd;
         f.vel *= (1.0 - 1.0 * dtd).max(0.0);
         let speed = f.vel.length();
         if speed > f.water_speed {
@@ -564,6 +572,7 @@ pub fn fish_system(
                 let (y, p) = rot_of(v);
                 f.yaw = y;
                 f.pitch = p.clamp(-0.5, 0.5);
+                f.accel_dir = dir_of(f.yaw, f.pitch);
                 f.forward_timer = -1.0;
                 f.abort_timer = 0.0;
                 f.phase = Phase::Dart(pick(f, true, &mut rnd));

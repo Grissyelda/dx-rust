@@ -69,7 +69,10 @@ It runs as a native Windows program, on Steam Deck / Linux and on Apple Silicon 
     under the dead, bloodier gibs), wound marks, hurt poses and limps, and coat tails that ripple as people move.
 - **Modern play (all optional):**
   - Modern Aiming: the aim sways within the accuracy cone (wide when untrained, steady when you master the
-    weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns;
+    weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns (lined up on the
+    original weapon models as well as HDTP's);
+  - a diegetic rifle scope: the zoomed view is a live lens with a reticle in front of the eye, the world still
+    around it, wandering under the reticle until you master the rifle;
   - a third-person camera (free orbit or over the shoulder), mantling, carried objects as cover, ladder grabbing;
   - Smarter AI (GMDX's tougher guards, sharper senses, suppressive fire, guards who call out and check on
     disturbances) with optional alert markers over their heads;

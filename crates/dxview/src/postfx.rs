@@ -28,11 +28,11 @@ const POINT_SIZE: f32 = 0.12;
 pub fn postfx_system(
     mut commands: Commands,
     world: Query<(Entity, Has<ScreenSpaceAmbientOcclusion>), (With<crate::FlyCam>, Without<crate::SkyCam>)>,
-    cams: Query<(Entity, &Msaa, Has<Smaa>, Has<crate::weapons::ViewModelCam>), Or<(With<crate::FlyCam>, With<crate::SkyCam>, With<crate::weapons::ViewModelCam>, With<crate::augdisplay::HeatCam>)>>,
+    cams: Query<(Entity, &Msaa, Has<Smaa>, Has<crate::weapons::ViewModelCam>), Or<(With<crate::FlyCam>, With<crate::SkyCam>, With<crate::weapons::ViewModelCam>, With<crate::augdisplay::HeatCam>, With<crate::upscale::UpscaleCam>)>>,
     mut points: Query<(&mut SpotLight, &crate::shadowlight::ShadowLight), Without<crate::dynlight::FlashCone>>,
     mut spots: Query<&mut SpotLight, (With<crate::dynlight::FlashCone>, Without<crate::shadowlight::ShadowLight>)>,
     mut bsp: ResMut<Assets<crate::shadowlight::BspMaterial>>,
-    mut ao_gen: Local<Option<bool>>,
+    mut ao_gen: Local<Option<(bool, bool)>>,
 ) {
     // The cameras' make-up never changes in play: the SSAO pass, the depth / normal prepasses, MSAA off with SMAA.
     // Each of those is part of every material's pipeline, so adding or removing one recompiled them all (a long
@@ -40,12 +40,14 @@ pub fn postfx_system(
     // SSAO but no depth prepass for a frame). The Ambient Occlusion setting is now just how strongly the world's
     // shader uses it.
     let ao = ao_on();
-    if *ao_gen != Some(ao) {
-        *ao_gen = Some(ao);
+    let detail = crate::settings::get("DetailTextures") > 0.5;
+    if *ao_gen != Some((ao, detail)) {
+        *ao_gen = Some((ao, detail));
         let ids: Vec<_> = bsp.ids().collect();
         for id in ids {
             if let Some(mut m) = bsp.get_mut(id) {
                 m.extension.params.q.x = if ao { 0.85 } else { 0.0 };
+                m.extension.params.q.z = if detail { 1.0 } else { 0.0 };
             }
         }
     }
@@ -67,14 +69,15 @@ pub fn postfx_system(
             commands.entity(e).remove::<ScreenSpaceAmbientOcclusion>();
         }
     }
-    let want_msaa = if ssao { Msaa::Off } else { Msaa::Sample4 };
+    let aa_off = ssao || crate::upscale::mode() > 0;
+    let want_msaa = if aa_off { Msaa::Off } else { Msaa::Sample4 };
     for (e, msaa, smaa, last) in &cams {
         if *msaa != want_msaa {
             commands.entity(e).insert(want_msaa);
         }
-        if last && ssao && !smaa {
+        if last && aa_off && !smaa {
             commands.entity(e).insert(Smaa::default());
-        } else if smaa && !ssao {
+        } else if smaa && !aa_off {
             commands.entity(e).remove::<Smaa>();
         }
     }

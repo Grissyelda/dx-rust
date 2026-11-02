@@ -162,7 +162,7 @@ pub fn charged_system(
     let _prof = crate::prof::scope("charged::charged_system");
     let dt = time.delta_secs();
     // Developer aid: DXVIEW_FX="drunk,goggles" forces those screen effects on (for screenshots).
-    if let Ok(fx) = std::env::var("DXVIEW_FX") {
+    if let Some(fx) = env_val!("DXVIEW_FX") {
         if fx.contains("drunk") {
             ph.drug_timer = ph.drug_timer.max(10.0);
         }

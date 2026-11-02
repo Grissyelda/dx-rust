@@ -476,6 +476,25 @@ pub fn cinematic_input_system(mut keys: ResMut<ButtonInput<KeyCode>>, mut mouse:
     }
 }
 
+/// The prompt last shown on the intro's end frame: 0 keyboard, 1 pad, 2 not yet.
+static PROMPT_PAD: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+
+/// "Press A or Menu to continue" (in the pad's own names) / "Press Enter or Fire to continue".
+fn continue_prompt(pad: bool) -> String {
+    if pad {
+        let k = crate::gamepad::frame().kind;
+        let n = |b| crate::gamepad::pad_name(k, b);
+        format!(
+            "Press {}, {} or {} to continue",
+            n(crate::gamepad::PadBtn::South),
+            n(crate::gamepad::PadBtn::Start),
+            n(crate::gamepad::PadBtn::RT)
+        )
+    } else {
+        "Press Enter or Fire to continue".to_string()
+    }
+}
+
 /// MissionIntro.PostIntro: the new game the intro was started for, or back to the title.
 fn post_intro() {
     match crate::loader::take_after_intro() {
@@ -701,7 +720,7 @@ pub fn cinematic_system(
     // MissionIntro: FirstFrame starts the Intro conversation (forced); Timer sends the player on once it's played.
     if c.intro {
         if !c.intro_started {
-            if !c.intro_started && crate::consys::lock().is_some() {
+            if !c.intro_started && crate::consys::lock().is_some() && !crate::loader::settling() {
                 // InitStateMachine / FirstFrame: every flag deleted, PlayerTraveling set.
                 flags.0 = Default::default();
                 flags.0.set("PlayerTraveling", imsim_core::flags::FlagValue::Bool(true), 0);
@@ -718,7 +737,9 @@ pub fn cinematic_system(
             }
         }
         let Some(c) = g.as_mut() else { return };
-        c.timer += time.delta_secs();
+        // Held while the map settles behind the loading screen (loader::settle_system).
+        let held = crate::loader::settling();
+        c.timer += if held { 0.0 } else { time.delta_secs() };
         if c.timer >= 1.0 {
             c.timer = 0.0;
             if flags.0.get_bool("Intro_Played") {
@@ -726,8 +747,14 @@ pub fn cinematic_system(
                 // goes on (the original went straight to the new game's load).
                 flags.0.set_bool("Intro_Played", false);
                 INTRO_WAIT.store(true, Ordering::Relaxed);
-                let line = if crate::gamepad::pad_in_use() { "Press A to continue" } else { "Press Enter to continue" };
-                crate::classic_hud::quote_text(&[line.to_string()], 1.0e6);
+                PROMPT_PAD.store(2, Ordering::Relaxed);
+            }
+            if INTRO_WAIT.load(Ordering::Relaxed) {
+                // The prompt follows the device last used (a pad picked up while waiting changes it).
+                let pad = crate::gamepad::pad_in_use() as u8;
+                if PROMPT_PAD.swap(pad, Ordering::Relaxed) != pad {
+                    crate::classic_hud::quote_text(&[continue_prompt(pad == 1)], 1.0e6);
+                }
             }
         }
     }
@@ -754,7 +781,7 @@ pub fn cinematic_system(
         }
     }
     let mut ev = Vec::new();
-    c.tick(time.delta_secs_f64().min(0.1), &mut ev);
+    c.tick(if crate::loader::settling() { 0.0 } else { time.delta_secs_f64().min(0.1) }, &mut ev);
     events.0.extend(ev);
 
     // The view: Player.SetLocation / ViewRotation (eye height 0). The body follows the camera, out of the world.

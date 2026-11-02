@@ -2640,6 +2640,7 @@ dependencies = [
  "hidapi",
  "imsim-audio",
  "imsim-core",
+ "imsim-plants",
  "mimalloc",
  "raw-window-handle",
  "ron",
@@ -3453,6 +3454,14 @@ dependencies = [
 
 [[package]]
 name = "imsim-core"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "serde",
+]
+
+[[package]]
+name = "imsim-plants"
 version = "0.1.0"
 dependencies = [
  "glam",

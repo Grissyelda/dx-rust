@@ -7,6 +7,7 @@
     pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
 }
+#import dxview::shadow_spots as spot_shadows
 
 struct ActorLights {
     pos: array<vec4<f32>, 16>,
@@ -42,7 +43,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (lights.wet.w > 0.5 && in.world_position.y > lights.wet.z) {
         discard;
     }
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // Blinking (skeletal.rs lid_uvs): the lids' picture slides to the crease's as they close.
+    var vin = in;
+#ifdef VERTEX_UVS_B
+    if (lights.wet.x > 0.0) {
+        vin.uv = mix(in.uv, in.uv_b, lights.wet.x);
+    }
+#endif
+    var pbr_input = pbr_input_from_standard_material(vin, is_front);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     var out: FragmentOutput;
     var n = normalize(in.world_normal);
@@ -52,6 +60,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let p = in.world_position.xyz;
     var c = vec3<f32>(0.0);
     let count = u32(lights.misc.x);
+    // Real-time shadows (shadowlight.rs): a light whose shadow map says this pixel is blocked (another actor, or
+    // the body's own arm) gives 85% less of its light here.
+    let nspots = spot_shadows::gather(in.world_position, n, in.position, false);
     for (var i = 0u; i < 16u; i = i + 1u) {
         if (i >= count) {
             break;
@@ -66,7 +77,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if (lights.misc.w > 0.5) {
             ndl = abs(ndl);
         }
-        c = c + lights.col[i].rgb * (1.0 - d / r) * max(ndl, 0.0);
+        var shade = 1.0;
+        for (var k = 0u; k < nspots; k = k + 1u) {
+            if (distance(spot_shadows::spots[k].pos, lights.pos[i].xyz) < 0.05) {
+                shade = mix(1.0, spot_shadows::spots[k].shadow, 0.85);
+            }
+        }
+        c = c + lights.col[i].rgb * (1.0 - d / r) * max(ndl, 0.0) * shade;
     }
     c = c + lights.amb.rgb;
     var lin = pow(clamp(c * lights.misc.y, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.2));

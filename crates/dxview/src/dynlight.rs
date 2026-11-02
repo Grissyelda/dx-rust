@@ -288,6 +288,10 @@ fn flash_spot_on(level: &dx_level::Level, center: [f32; 3]) -> Option<LightInfo>
 #[derive(Component)]
 pub struct FlashCone;
 
+/// The flashlight's wide, dim spill round its hot spot (also a FlashCone).
+#[derive(Component)]
+pub struct FlashSpill;
+
 /// Enhancement: a flashlight cone with soft spill instead of the beam light (setting FlashlightCone).
 pub fn flashlight_cone() -> bool {
     crate::settings::get("FlashlightCone") > 0.5
@@ -367,8 +371,7 @@ pub fn setup_dynlights(mut commands: Commands) {
                 .id(),
         );
     }
-    let gain = std::env::var("DXVIEW_DYNLIGHT_GAIN")
-        .ok()
+    let gain = env_val!("DXVIEW_DYNLIGHT_GAIN")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1.0);
     commands.insert_resource(DynLights {
@@ -694,7 +697,7 @@ pub fn aug_light_system(
     level: Res<LevelRes>,
     player: Res<Player>,
     cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>, Without<FlashCone>)>,
-    mut cone: Query<(&mut SpotLight, &mut Transform, &mut Visibility), With<FlashCone>>,
+    mut cone: Query<(&mut SpotLight, &mut Transform, &mut Visibility, Has<FlashSpill>), With<FlashCone>>,
     st: Option<Res<DynLights>>,
 ) {
     let _prof = crate::prof::scope("dynlight::aug_light_system");
@@ -702,7 +705,7 @@ pub fn aug_light_system(
     let on = crate::abilities::aug_active("AugLight") && !crate::consys::third_person();
     let cone_on = on && flashlight_cone();
     if !cone_on {
-        for (mut sl, _, mut vis) in &mut cone {
+        for (mut sl, _, mut vis, _) in &mut cone {
             sl.intensity = 0.0;
             *vis = Visibility::Hidden;
         }
@@ -755,35 +758,36 @@ pub fn aug_light_system(
         if let Ok(mut f) = FLASH.lock() {
             *f = Some((pos, (look - pos).normalize_or(Vec3::NEG_Z), dist as f32 * dx_level::METERS_PER_UNIT));
         }
-        match cone.iter_mut().next() {
-            Some((mut sl, mut t, mut vis)) => {
-                if env_on!("DXVIEW_CONELOG") {
-                    println!("CONE dist {dist:.0} intensity {intensity:.0} at {:?}", tf.translation);
-                }
-                sl.intensity = intensity;
-                sl.color = Color::srgb(c[0], c[1], c[2]);
-                *t = tf;
-                *vis = Visibility::Inherited;
-            }
-            None => {
-                commands.spawn((
+        // A plain cone worked out in the shaders, no shadow map (a shadow view every frame, and its acne on grazing
+        // walls lit from beside the eye): a hot spot, and a wide spill at 22% round it.
+        if env_on!("DXVIEW_CONELOG") {
+            println!("CONE dist {dist:.0} intensity {intensity:.0} at {:?}", tf.translation);
+        }
+        if cone.is_empty() {
+            for spill in [false, true] {
+                let mut e = commands.spawn((
                     SpotLight {
-                        intensity,
+                        intensity: 0.0,
                         color: Color::srgb(c[0], c[1], c[2]),
                         range: 2048.0 * dx_level::METERS_PER_UNIT,
-                        inner_angle: 0.04,
-                        outer_angle: 0.48,
-                        shadow_maps_enabled: !env_on!("DXVIEW_CONE_NOSHADOW"),
-                        // Grazing walls lit from almost the eye: the default biases left acne (black lines, a
-                        // dark wedge, speckles) on them.
-                        shadow_depth_bias: 0.12,
-                        shadow_normal_bias: 3.0,
+                        inner_angle: if spill { 0.3 } else { 0.05 },
+                        outer_angle: if spill { 0.85 } else { 0.32 },
+                        shadow_maps_enabled: false,
                         ..default()
                     },
                     tf,
                     FlashCone,
                 ));
+                if spill {
+                    e.insert(FlashSpill);
+                }
             }
+        }
+        for (mut sl, mut t, mut vis, spill) in &mut cone {
+            sl.intensity = intensity * if spill { 0.22 } else { 1.0 };
+            sl.color = Color::srgb(c[0], c[1], c[2]);
+            *t = tf;
+            *vis = Visibility::Inherited;
         }
     } else {
         hold(crate::sound::key_of("aug-light-beam"), beam_at, beam, 0.0);
@@ -904,5 +908,44 @@ pub fn reset_level() {
     }
     if let Ok(mut v) = SHADOW_CACHE.lock() {
         *v = None;
+    }
+}
+
+/// Glowing surfaces that light their surroundings (with Glowing Surfaces on): the nano-augmentation canister's blue
+/// light, bio cells, computer and ATM screens, keypads - each a small light of its own colour following the object
+/// (picked up, it's gone). Ours: the original gives these no light (Surreal 98's emissive look).
+const GLOWS: &[(&str, Spec)] = &[
+    ("AugmentationCannister", Spec::new(150, 70, 150, 3.0)),
+    ("AugmentationUpgradeCannister", Spec::new(150, 70, 150, 3.0)),
+    ("BioelectricCell", Spec::new(140, 90, 110, 2.0)),
+    ("ComputerPersonal", Spec::new(130, 150, 70, 2.5)),
+    ("ComputerPublic", Spec::new(130, 150, 70, 2.5)),
+    ("ComputerSecurity", Spec::new(110, 150, 70, 2.5)),
+    ("ATM", Spec::new(90, 140, 70, 2.5)),
+    ("Keypad1", Spec::new(85, 120, 60, 1.0)),
+    ("Keypad2", Spec::new(85, 120, 60, 1.0)),
+    ("Keypad3", Spec::new(85, 120, 60, 1.0)),
+];
+
+pub fn glow_lights_system(
+    level: Res<LevelRes>,
+    cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>)>,
+    actors: Query<(&crate::actors::MeshActorRef, &GlobalTransform, &InheritedVisibility)>,
+) {
+    if crate::settings::get("EmissiveSurfaces") < 0.5 {
+        return;
+    }
+    let eye = DVec3::from(dx_level::bevy_to_ue(cam.translation.to_array()).map(|v| v as f64));
+    for (r, gt, vis) in &actors {
+        if !vis.get() {
+            continue;
+        }
+        let Some(ma) = level.0.mesh_actors.get(r.0) else { continue };
+        let Some(a) = level.0.actors.get(ma.actor) else { continue };
+        let Some((_, spec)) = GLOWS.iter().find(|(c, _)| a.class.eq_ignore_ascii_case(c)) else { continue };
+        let p = DVec3::from(dx_level::bevy_to_ue(gt.translation().to_array()).map(|v| v as f64));
+        if p.distance(eye) < 2500.0 {
+            hold(0xE_0000_0000 | ma.actor as u64, p + DVec3::Z * 4.0, *spec, 0.0);
+        }
     }
 }
