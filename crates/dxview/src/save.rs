@@ -578,7 +578,7 @@ pub fn format_date(unix: u64) -> String {
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .map(|h| (h * 60.0) as i64)
-        .unwrap_or_else(local_offset_minutes);
+        .unwrap_or_else(|| local_offset_minutes(unix as i64));
     let t = unix as i64 + off_min * 60;
     let days = t.div_euclid(86400);
     let secs = t.rem_euclid(86400);
@@ -603,9 +603,10 @@ pub fn format_date(unix: u64) -> String {
     format!("{m}/{d}/{y} {h12}:{min:02} {ap}")
 }
 
-/// The system's UTC offset in minutes (Windows: GetTimeZoneInformation; Unix: localtime_r).
+/// The system's UTC offset in minutes (Windows: GetTimeZoneInformation, as it is now; Unix: localtime_r, as it was
+/// at `unix`, so that a summer save shows summer time in winter).
 #[cfg(windows)]
-fn local_offset_minutes() -> i64 {
+fn local_offset_minutes(_unix: i64) -> i64 {
     #[repr(C)]
     struct SystemTime([u16; 8]);
     #[repr(C)]
@@ -629,7 +630,7 @@ fn local_offset_minutes() -> i64 {
     -(bias as i64)
 }
 #[cfg(unix)]
-fn local_offset_minutes() -> i64 {
+fn local_offset_minutes(unix: i64) -> i64 {
     /// `struct tm` up to tm_gmtoff, the same on 64-bit Linux and macOS.
     #[repr(C)]
     struct Tm {
@@ -638,18 +639,16 @@ fn local_offset_minutes() -> i64 {
         zone: *const std::ffi::c_char,
     }
     extern "C" {
-        fn time(out: *mut i64) -> i64;
         fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
     }
     let mut tm: Tm = unsafe { std::mem::zeroed() };
-    let now = unsafe { time(std::ptr::null_mut()) };
-    if unsafe { localtime_r(&now, &mut tm) }.is_null() {
+    if unsafe { localtime_r(&unix, &mut tm) }.is_null() {
         return 0;
     }
     tm.gmtoff as i64 / 60
 }
 #[cfg(not(any(windows, unix)))]
-fn local_offset_minutes() -> i64 {
+fn local_offset_minutes(_unix: i64) -> i64 {
     0
 }
 
