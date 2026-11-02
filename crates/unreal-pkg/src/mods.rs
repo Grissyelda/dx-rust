@@ -180,6 +180,12 @@ pub fn locate(m: &ModDef, dir: &Path) -> Option<PathBuf> {
         }
         return std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_dir() && has(p));
     }
+    // An addon that is one package file: the file itself, chosen directly or lying loose in the folder.
+    if let Some(file) = loose_marker(m) {
+        if dir.is_file() {
+            return dir.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(file)).then(|| dir.to_path_buf());
+        }
+    }
     let ok = |d: &Path| -> bool {
         find_rel(d, m.marker).is_some()
             && !(m.kind == ModKind::HdTextures && find_rel(d, "System/DeusEx.u").is_some())
@@ -226,11 +232,22 @@ pub fn scan(dir: &Path) -> Vec<(&'static ModDef, PathBuf)> {
         // a Textures folder of packages, not of DDS files, but HDTP or others might ship DDS files).
         // New Vision's marker is a game texture package, so only a folder named like it counts.
         let rest = if matches!(m.kind, ModKind::DdsTextures | ModKind::ReliefMaps | ModKind::HdTextures) { Vec::new() } else { rest };
-        if let Some(p) = named.into_iter().chain(rest).find_map(|p| locate(m, p)) {
+        // A loose package in the folder itself (Precipitation.u dropped beside the mod folders) is taken before
+        // other mods' copies (GMDX: Augmented Edition ships one in its System folder).
+        let first_hint = hints(m.id).first().copied().unwrap_or("");
+        let own_folder = named.iter().copied().find(|p| name_of(p).contains(first_hint)).and_then(|p| locate(m, p));
+        let loose = loose_marker(m).and_then(|f| find_rel(dir, f)).filter(|p| p.is_file());
+        if let Some(p) = own_folder.or(loose).or_else(|| named.into_iter().chain(rest).find_map(|p| locate(m, p))) {
             out.push((m, p));
         }
     }
     out
+}
+
+/// The single package an addon may be installed as on its own ("System/Precipitation.u" -> "Precipitation.u"):
+/// only for mods that are one package (Precipitation).
+fn loose_marker(m: &ModDef) -> Option<&'static str> {
+    (m.id == "precipitation").then(|| m.marker.rsplit('/').next().unwrap_or(m.marker))
 }
 
 fn dir_has_dds(d: &Path) -> bool {

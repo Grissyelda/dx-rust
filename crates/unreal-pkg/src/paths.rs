@@ -50,6 +50,9 @@ pub fn set(game_root: &Path, overlays: Vec<PathBuf>) {
 
 /// Addon folders (after the game folder) and HD texture packs.
 pub fn set_addons(addons: Vec<PathBuf>, hd_textures: Vec<PathBuf>) {
+    if let Ok(mut l) = LOOSE.write() {
+        *l = addons.iter().filter(|o| o.is_file()).cloned().collect();
+    }
     if let Ok(mut a) = ADDONS.write() {
         *a = addons.into_iter().filter(|o| o.is_dir()).collect();
     }
@@ -151,8 +154,20 @@ pub fn resolve(path: &Path) -> PathBuf {
 /// A file named `name` in an addon folder's `parent` (relative to the game folder), any case.
 fn in_addons(parent: &Path, name: &str) -> Option<PathBuf> {
     let a = ADDONS.read().ok()?;
-    a.iter().find_map(|d| ci_in(&d.join(parent), name))
+    if let Some(p) = a.iter().find_map(|d| ci_in(&d.join(parent), name)) {
+        return Some(p);
+    }
+    drop(a);
+    // An addon given as its one package file (a loose Precipitation.u in a mods folder) stands for System/<name>.
+    let is_system = parent.as_os_str().to_string_lossy().eq_ignore_ascii_case("System");
+    let l = LOOSE.read().ok()?;
+    l.iter()
+        .find(|f| is_system && f.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name)))
+        .cloned()
 }
+
+/// Addon packages given as single files (mods::locate returned the file itself).
+static LOOSE: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 
 /// A file named `name` (any case) in the game folder `dir`, looking in the overlays first.
 pub fn find_ci(dir: &Path, name: &str) -> Option<PathBuf> {
