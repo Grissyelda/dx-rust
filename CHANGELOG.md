@@ -19,6 +19,8 @@
   guards see through grate vents.
 - Battery Park: the grey slab in front of the harbour wall is gone (the mist there now thins out as it should);
   no more ring pattern in the clouds overhead.
+- Grate and chain-link vents are see-through again: you can look between the bars into the duct behind (a solid
+  face hidden in each vent cover's brush closed it off).
 - JC no longer turns black in a mirror when standing close to it (people and objects against a wall are lit right).
 
 ### Faster loading and frame rate, water crests, glass, hostages (November 2, afternoon)

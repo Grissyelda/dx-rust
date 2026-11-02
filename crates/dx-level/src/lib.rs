@@ -1224,7 +1224,7 @@ pub fn build_level(
             .entry(surf.material)
             .or_insert_with(|| {
                 let path = pkg.object_path(surf.material);
-                let Some((t, mips)) = lib.load_gpu(&path, false) else {
+                let Some((t, mips)) = lib.load_gpu(&path, surf.poly_flags & pf::MASKED != 0) else {
                     // Procedural textures (water, fire, wet) have no pixel data in the package: the original
                     // engine animates them at runtime. A WetTexture (the water surfaces) is its SourceTexture
                     // rippled; the viewer's water shader does the rippling, so take the source picture.
@@ -1250,6 +1250,22 @@ pub fn build_level(
                 Some((idx, t.masked))
             })
             .clone();
+        // A PF_Masked face on a texture first loaded for an unmasked one (or not flagged bMasked): load it again
+        // masked, in place, so its holes show (chain-link vent grates drew solid).
+        let cached = match cached {
+            Some((i, false)) if surf.poly_flags & pf::MASKED != 0 => {
+                let path = pkg.object_path(surf.material);
+                match lib.load_gpu(&path, true) {
+                    Some((_, mips)) if mips.width == textures[i].width && mips.height == textures[i].height => {
+                        textures[i] = TextureImage { name: path, width: mips.width, height: mips.height, mips: mips.mips, bc1: mips.bc1, bc3: mips.bc3 };
+                        tex_cache.insert(surf.material, Some((i, true)));
+                        Some((i, true))
+                    }
+                    _ => cached,
+                }
+            }
+            c => c,
+        };
         let (tex_idx, tex_masked) = match cached {
             Some((i, m)) => (Some(i), m),
             None => {
@@ -1405,10 +1421,24 @@ pub fn build_level(
     let (mesh_actors, actor_list) = actors::build(pkg, classes, &mut lib, &mut textures);
     let nav = nav::NavGraph::build(pkg, classes);
     let movers = {
-        let mut resolve = |material: i32| -> Option<(usize, bool, f32, f32)> {
+        let mut resolve = |material: i32, masked_face: bool| -> Option<(usize, bool, f32, f32)> {
+            // A face drawn PF_Masked needs the picture's see-through texels even when the texture isn't flagged
+            // bMasked (chain-link vent grates drew solid): load it again masked, in place.
+            if masked_face {
+                if let Some(Some((i, false))) = tex_cache.get(&material).copied() {
+                    let path = pkg.object_path(material);
+                    if let Some((_, mips)) = lib.load_gpu(&path, true) {
+                        let old = &textures[i];
+                        if mips.width == old.width && mips.height == old.height {
+                            textures[i] = TextureImage { name: path.clone(), width: mips.width, height: mips.height, mips: mips.mips, bc1: mips.bc1, bc3: mips.bc3 };
+                            tex_cache.insert(material, Some((i, true)));
+                        }
+                    }
+                }
+            }
             let entry = tex_cache.entry(material).or_insert_with(|| {
                 let path = pkg.object_path(material);
-                let (t, mips) = lib.load_gpu(&path, false)?;
+                let (t, mips) = lib.load_gpu(&path, masked_face)?;
                 let idx = textures.len();
                 let (lw, lh) = TexLib::logical_size(&t);
                 logical.insert(idx, (lw as f32, lh as f32));

@@ -83,8 +83,9 @@ fn namev(p: &[unreal_pkg::props::Property], n: &str) -> String {
     }
 }
 
-/// Build every mover. `tex` resolves a material object ref to (texture index, masked, width, height).
-pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Option<(usize, bool, f32, f32)>) -> Vec<MoverInfo> {
+/// Build every mover. `tex` resolves a material object ref (and whether the face is drawn PF_Masked) to (texture
+/// index, masked, width, height).
+pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32, bool) -> Option<(usize, bool, f32, f32)>) -> Vec<MoverInfo> {
     let mut out = Vec::new();
     for (ai, a) in actors.iter().enumerate() {
         let p = &a.props;
@@ -115,7 +116,7 @@ pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Op
             if surf.poly_flags & (pf::INVISIBLE | pf::PORTAL) != 0 {
                 continue;
             }
-            let t = tex(surf.material);
+            let t = tex(surf.material, surf.poly_flags & pf::MASKED != 0);
             let (tidx, masked, tw, th) = match t {
                 Some((i, m, w, h)) => (Some(i), m, w, h),
                 None => (None, false, 256.0, 256.0),
@@ -211,7 +212,7 @@ pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Op
             if pflags & (pf::NOT_SOLID | 0x20) == 0 || in_bsp.contains(&(poly.texture, pflags & !(0x0080_0000 | 0x0000_8000))) {
                 continue;
             }
-            let (tidx, masked, tw, th) = match tex(poly.texture) {
+            let (tidx, masked, tw, th) = match tex(poly.texture, pflags & pf::MASKED != 0) {
                 Some((i, m, w, h)) => (Some(i), m, w, h),
                 None => (None, false, 256.0, 256.0),
             };
@@ -317,7 +318,8 @@ pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Op
 fn drop_covered_by_panes(parts: &mut [MeshPart]) {
     let panes: Vec<([[f32; 3]; 3], [f32; 3])> = parts
         .iter()
-        .filter(|p| p.class == SurfaceClass::Translucent)
+        // (Masked panes too: vent grates' brushes keep a solid face on each grate pane - the vents drew shut.)
+        .filter(|p| matches!(p.class, SurfaceClass::Translucent | SurfaceClass::Masked))
         .flat_map(|p| {
             p.indices.chunks_exact(3).map(move |t| {
                 let v = [p.positions[t[0] as usize], p.positions[t[1] as usize], p.positions[t[2] as usize]];
