@@ -158,8 +158,8 @@ fn leaf_image() -> Image {
 /// The plant's mesh in the actor's own (Bevy) frame, scaled to the original, lit like a mesh actor at `location`
 /// (Unreal) by `lights`; `leaves`: lit through from behind a little.
 #[allow(clippy::too_many_arguments)]
-fn plant_mesh(m: &MeshData, scale: Vec3, foot: Vec3, root: &GlobalTransform, lights: &[dx_level::lighting::LightInfo], amb: [f32; 3], leaves: bool, glow: f32) -> Mesh {
-    let pos: Vec<[f32; 3]> = m.positions.iter().map(|p| (Vec3::from(*p) * scale + foot).to_array()).collect();
+fn plant_mesh(m: &MeshData, scale: Vec3, foot: Vec3, fit: &[f32; DIRS], root: &GlobalTransform, lights: &[dx_level::lighting::LightInfo], amb: [f32; 3], leaves: bool, glow: f32) -> Mesh {
+    let pos: Vec<[f32; 3]> = m.positions.iter().map(|p| (squeeze(Vec3::from(*p) * scale, fit) + foot).to_array()).collect();
     let colors: Vec<[f32; 4]> = pos
         .iter()
         .zip(&m.normals)
@@ -197,6 +197,80 @@ fn plant_mesh(m: &MeshData, scale: Vec3, foot: Vec3, root: &GlobalTransform, lig
     mesh
 }
 
+/// Directions round the trunk the free space is measured in.
+const DIRS: usize = 16;
+
+fn dir_of(k: usize) -> Vec2 {
+    let a = k as f32 / DIRS as f32 * std::f32::consts::TAU;
+    Vec2::new(a.cos(), a.sin())
+}
+
+/// The plant's horizontal squeeze toward the trunk by direction (1 = as grown), interpolated between the measured
+/// directions.
+fn squeeze(p: Vec3, fit: &[f32; DIRS]) -> Vec3 {
+    let a = p.z.atan2(p.x).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * DIRS as f32;
+    let i = a.floor() as usize % DIRS;
+    let t = a - a.floor();
+    let f = fit[i] * (1.0 - t) + fit[(i + 1) % DIRS] * t;
+    Vec3::new(p.x * f, p.y, p.z * f)
+}
+
+/// How far the plant reaches out in each direction (actor-local Bevy metres, after `scale`), from its vertices
+/// above `min_y`, spread a little to the neighbouring directions.
+fn reach(plant: &Plant, scale: Vec3, min_y: f32) -> [f32; DIRS] {
+    let mut r = [0.0f32; DIRS];
+    for p in plant.bark.positions.iter().chain(&plant.leaves.positions) {
+        let q = Vec3::from(*p) * scale;
+        if q.y < min_y {
+            continue;
+        }
+        let a = q.z.atan2(q.x).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * DIRS as f32;
+        let k = a.round() as usize % DIRS;
+        let d = Vec2::new(q.x, q.z).length();
+        r[k] = r[k].max(d);
+    }
+    let mut out = r;
+    for k in 0..DIRS {
+        out[k] = r[k].max(r[(k + 1) % DIRS] * 0.85).max(r[(k + DIRS - 1) % DIRS] * 0.85);
+    }
+    out
+}
+
+/// The free space round a plant (actor-local Bevy metres) in each direction, at heights `ys` (actor-local Bevy
+/// metres above the root): the nearest wall (BSP) or solid actor (a pole, a lamp, a crate - the tree's own
+/// cylinder skipped) on a level line out from the trunk, less a margin.
+fn room(lvl: &dx_level::Level, blockers: &[dx_level::collision::Cylinder], own: usize, gt: &GlobalTransform, ys: &[f32], max: f32) -> [f32; DIRS] {
+    use bevy::math::DVec3;
+    let k = gt.compute_transform().scale.x.max(1e-3);
+    let to_ue = |p: Vec3| {
+        let u = dx_level::bevy_to_ue(gt.transform_point(p).to_array());
+        DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64)
+    };
+    let base = to_ue(Vec3::ZERO);
+    let mut out = [max; DIRS];
+    for (i, o) in out.iter_mut().enumerate() {
+        let d = dir_of(i);
+        for &y in ys {
+            let a = to_ue(Vec3::new(0.0, y, 0.0));
+            let b = to_ue(Vec3::new(d.x * max, y, d.y * max));
+            let len = (b - a).length().max(1e-3);
+            let mut f = lvl.collision.trace(a, b, DVec3::ZERO).fraction;
+            for c in blockers {
+                if c.actor == own || c.radius < 3.0 || (c.center - base).truncate().length() < c.radius.max(12.0) {
+                    continue;
+                }
+                if let Some(t) = crate::pickups::ray_cylinder(a, b, c.center, c.radius, c.height) {
+                    f = f.min(t);
+                }
+            }
+            // A margin of 12 units off what's there.
+            let free = ((f * len - 12.0).max(0.0) as f32) * dx_level::METERS_PER_UNIT / k;
+            *o = o.min(free);
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn trees_system(
     mut commands: Commands,
@@ -208,6 +282,7 @@ pub fn trees_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<PlantMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    blockers: Option<Res<crate::actors::Blockers>>,
 ) {
     let Some(level) = level else { return };
     if roots.is_empty() {
@@ -293,9 +368,34 @@ pub fn trees_system(
         let ph = (plant.bounds[1].y - plant.bounds[0].y).max(0.1);
         let pw = (plant.bounds[1].x - plant.bounds[0].x).max(plant.bounds[1].z - plant.bounds[0].z).max(0.1);
         let k = height / ph;
-        let kw = (spread / pw / k).clamp(0.8, 1.25) * k;
+        // The crown no wider than the original's cards, and a little narrower than its height allows (the
+        // original's cards spread wide and flat; a full crown that wide crowds what's round it).
+        let kw = (spread / pw / k).clamp(0.6, 1.0) * k;
         let scale = Vec3::new(kw, k, kw);
         let foot = Vec3::from(dx_level::ue_to_bevy([0.0, 0.0, lo[2]]));
+        // Fit it to its spot: in each direction the crown (and branches) are drawn in toward the trunk so they stop
+        // short of the walls, poles and lamps round it (trees stood against buildings cut into them).
+        let crown_y = species.trunk * height * 0.7;
+        let top = height;
+        let ys: Vec<f32> = (0..4).map(|i| foot.y + crown_y + (top - crown_y) * (0.15 + 0.25 * i as f32)).collect();
+        let grown_reach = reach(plant, scale, crown_y * 0.5);
+        let max_reach = grown_reach.iter().fold(0.0f32, |a, b| a.max(*b)) + 0.5;
+        let free = room(lvl, blockers.as_ref().map_or(&[][..], |b| &b.list[..]), ma.actor, gt, &ys, max_reach);
+        let mut fit = [1.0f32; DIRS];
+        for i in 0..DIRS {
+            if grown_reach[i] > free[i] {
+                fit[i] = (free[i] / grown_reach[i].max(1e-3)).clamp(0.3, 1.0);
+            }
+        }
+        // Smoothed round the trunk (no sudden notch).
+        let raw = fit;
+        for i in 0..DIRS {
+            fit[i] = raw[i].min((raw[(i + 1) % DIRS] + raw[(i + DIRS - 1) % DIRS]) * 0.5 + 0.15);
+        }
+        if env_on!("DXVIEW_TREELOG") {
+            let min = fit.iter().fold(1.0f32, |a, b| a.min(*b));
+            println!("TREE {} {} h {height:.1} m reach {max_reach:.1} m fit min {min:.2} {:?}", info.class, ma.actor, fit.map(|f| (f * 100.0) as u8));
+        }
         let center = dx_level::bevy_to_ue(gt.translation().to_array());
         let lights = crate::dynlight::lights_at(lvl, center, (hi[2] - lo[2]) * 0.5);
         let amb = dx_level::actors::zone_ambient_at(center);
@@ -303,7 +403,7 @@ pub fn trees_system(
             if m.indices.is_empty() {
                 continue;
             }
-            let mesh = meshes.add(plant_mesh(m, scale, foot, gt, &lights, amb, leaves, if ma.parts.iter().any(|p| p.unlit) { ma.scale_glow * 0.8 } else { 0.0 }));
+            let mesh = meshes.add(plant_mesh(m, scale, foot, &fit, gt, &lights, amb, leaves, if ma.parts.iter().any(|p| p.unlit) { ma.scale_glow * 0.8 } else { 0.0 }));
             commands.spawn((
                 Mesh3d(mesh),
                 MeshMaterial3d(mat.clone()),

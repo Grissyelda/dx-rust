@@ -116,7 +116,9 @@ fn vertex(v: Vertex) -> Out {
     let cx = i32(round(t0.x / TILE));
     let cz = i32(round(t0.y / TILE));
     let cell = hash(u32(cx) * 73856093u ^ u32(cz) * 19349663u ^ 0x5bd1e995u);
-    var s = hash(cell ^ ((k + 1u) * 0x9E3779B9u));
+    // The far layer (params.a.z = where it fades in, m) draws a few wide clumps per tile from seeds of its own.
+    let far_mode = params.a.z > 0.0;
+    var s = hash(cell ^ ((k + 1u + select(0u, 977u, far_mode)) * 0x9E3779B9u));
     let f = vec2<f32>(rnd(&s), rnd(&s));
     let sub = vec2<u32>(min(u32(f.x * 4.0), 3u), min(u32(f.y * 4.0), 3u));
     if (((mask >> (sub.y * 4u + sub.x)) & 1u) == 0u) {
@@ -130,11 +132,16 @@ fn vertex(v: Vertex) -> Out {
     let near = params.eye.w;
     let far = params.b.w;
     var keep = 1.0;
-    if (d > near) {
-        let r = near / d;
-        keep = r * r;
+    if (far_mode) {
+        // Comes in as the near blades thin out (their own fade ends at their far edge), gone at its own edge.
+        keep = smoothstep(params.a.z, params.a.z + 7.0, d) * clamp((far - d) / (far * 0.3), 0.0, 1.0);
+    } else {
+        if (d > near) {
+            let r = near / d;
+            keep = r * r;
+        }
+        keep = keep * clamp((far - d) / (far * 0.25), 0.0, 1.0);
     }
-    keep = keep * clamp((far - d) / (far * 0.25), 0.0, 1.0);
     let kept = keep - (f32(k) + 0.5) / f32(per);
     if (kept <= 0.0) {
         return hidden();
@@ -187,7 +194,7 @@ fn vertex(v: Vertex) -> Out {
     if (up3 < 3u) {
         side = select(0.5, -0.5, (corner & 1u) == 0u);
     }
-    let wide = 0.036 * (0.8 + 0.4 * rnd(&s)) * pow(clamp(1.0 - tt, 0.0, 1.0), 0.7);
+    let wide = select(0.036, 0.1, far_mode) * (0.8 + 0.4 * rnd(&s)) * pow(clamp(1.0 - tt, 0.0, 1.0), 0.7);
     let bend = dot(tip, tip) / max(lie * lie, 1e-4);
     let up = lie * tt * sqrt(clamp(1.0 - 0.5 * bend * tt * tt, 0.0, 1.0));
     let p = root + vec3<f32>(face.x * side * wide + tip.x * tt * tt, up, face.y * side * wide + tip.y * tt * tt);

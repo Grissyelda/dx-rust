@@ -5541,7 +5541,9 @@ fn begin_shot(npc: &mut Npc, an: &Animated, w: &crate::weapons::WeaponStats, cx:
         .as_ref()
         .and_then(|a| a.mesh.seqs.iter().find(|q| q.name.eq_ignore_ascii_case("Attack")));
     let delay = attack.map_or(0.25, |q| {
-        let at = q.notifies.iter().find(|n| n.1.eq_ignore_ascii_case("HandToHandAttack")).map_or(0.5, |n| n.0);
+        // On a rebuilt body the blow lands where its swing is fastest (skeletal::hit_fraction).
+        let at = crate::skeletal::hit_fraction(an.mesh_actor)
+            .unwrap_or_else(|| q.notifies.iter().find(|n| n.1.eq_ignore_ascii_case("HandToHandAttack")).map_or(0.5, |n| n.0));
         q.num_frames.max(1) as f32 / q.rate.max(0.1) * at
     });
     npc.melee_wait = Some(delay);

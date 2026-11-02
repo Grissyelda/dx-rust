@@ -744,7 +744,7 @@ fn main() {
                     .copied()
                     .unwrap_or((1600, 900))
                     .into(),
-                mode: menus::window_mode(settings::get("DisplayMode")),
+                mode: menus::start_window_mode(settings::get("DisplayMode")),
                 present_mode: menus::present_mode(settings::get("VSync")),
                 ..default()
             }),
@@ -910,7 +910,7 @@ fn main() {
         .add_systems(Startup, sound::setup_sound)
         .init_resource::<keybinds::Bindings>()
         .add_systems(Startup, (gamepad::setup, || dualsense::setup(), || haptics::setup()))
-        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, winicon::window_icon_system))
+        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
         .init_resource::<inventory_screen::InvScreen>()
         .init_resource::<destruct::ItemThrows>()
         .add_systems(
@@ -974,6 +974,7 @@ fn main() {
         .add_systems(PostUpdate, mirror::mirror_system.after(diegetic::place_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, skyfollow::init_system)
         .add_systems(Update, gpudrive::gpu_cull_system)
+        .add_systems(PostUpdate, weapons::view_glass_system.after(scope::scope_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, scope::scope_system.after(mirror::mirror_system).before(gpudrive::refile_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, gpudrive::refile_system.after(skyfollow::follow_system).after(mirror::mirror_system).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
         .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))

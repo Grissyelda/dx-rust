@@ -428,6 +428,48 @@ pub fn present_mode(v: f32) -> bevy::window::PresentMode {
 /// yet, so winit has no current monitor and Bevy panics ("Unable to get monitor").
 /// On Linux, Wayland has no primary monitor (and no exclusive fullscreen): Bevy's exclusive mode panicked there
 /// ("Unable to get monitor", GitHub issue #4), so both full-screen modes are borderless on the first monitor.
+/// The mode the window is created in. On Linux winit may not have listed any monitor yet when the first window is
+/// made (Wayland, some X11 setups: GitHub issue #4, "Unable to get monitor" from Bevy as it looks the monitor up), so
+/// a full-screen mode starts windowed and `fullscreen_when_ready_system` switches once a monitor is known.
+pub fn start_window_mode(v: f32) -> WindowMode {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = v;
+        WindowMode::Windowed
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        window_mode(v)
+    }
+}
+
+/// Linux: the saved full-screen mode, applied once Bevy knows of a monitor (see `start_window_mode`). If none ever
+/// shows up the window stays windowed, maximized, instead of crashing.
+pub fn fullscreen_when_ready_system(
+    time: Res<Time<Real>>,
+    monitors: Query<&bevy::window::Monitor>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+    mut done: Local<bool>,
+) {
+    if *done || !cfg!(target_os = "linux") {
+        return;
+    }
+    let want = crate::settings::get("DisplayMode").round() as i32;
+    let Ok(mut w) = windows.single_mut() else { return };
+    if want == 1 {
+        *done = true;
+        return;
+    }
+    if !monitors.is_empty() && time.elapsed_secs() > 0.2 {
+        w.mode = window_mode(want as f32);
+        *done = true;
+    } else if time.elapsed_secs() > 5.0 {
+        println!("dxview: no monitor reported - staying windowed");
+        w.set_maximized(true);
+        *done = true;
+    }
+}
+
 pub fn window_mode(v: f32) -> WindowMode {
     #[cfg(target_os = "linux")]
     {
@@ -679,6 +721,7 @@ impl Enhance {
             ("ThrownNoise", "AI", "Thrown Objects Make Noise", "Anything you throw is heard where it lands or bounces - further for heavy things - and armed guards in earshot go to look. Good for distractions."),
             ("SurfaceFootsteps", "AI", "Footsteps Louder On Hard Floors", "Carpet and grass muffle your steps, metal and water give you away; guards hear you by what you walk on."),
             ("WeaponInertia", "Visuals", "Weapon Inertia", "The weapon in your hands trails a little behind when you turn (GMDX's Viewmodel Inertia)."),
+            ("MaterialSheen", "Visuals", "Material Properties", "Weapons and items in your hands catch the light by what they are made of: gun metal shines, plastic less, gloves and skin hardly at all."),
             ("FlashlightCone", "Visuals", "Flashlight Cone", "The flashlight augmentation casts a soft-edged cone with shadows from your shoulder instead of a pool of light where you look."),
             ("BulletPenetration", "Gameplay", "Bullets Through Thin Walls", "Bullets go on through thin wood (walls, doors) and breakable glass, doing less damage on the other side. Bulletproof glass stays bulletproof."),
             ("SmoothLean", "Gameplay", "Smooth Leaning", "Leaning eases in and out, works while crouch-walking, and at a corner your eyes lean on past where your body stops so you can peek."),
@@ -1761,7 +1804,7 @@ fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waitin
         let fs = fonts.small.clone();
         let (hx, hy, hw, hh) = (cx + 7, cy + f.help_y, f.cw - 21, 27);
         u.c.set_clip(Some((hx, hy, hw, hh)));
-        u.wrapped(&fs, hx + 10, hy, hw - 20, hh, HAlign::Left, VAlign::Center, m_col(7), help_text);
+        u.wrapped_scroll(&fs, hx + 10, hy, hw - 20, hh, m_col(7), help_text);
         u.c.set_clip(None);
     }
 }

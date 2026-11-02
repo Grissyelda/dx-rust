@@ -648,6 +648,21 @@ fn scope_eyepiece(am: &AnimMesh, parts: &[MeshPart], scale: f32) -> Option<Scope
     })
 }
 
+/// A view-model section that is glass (see build_view_parts): hidden while looking through the Diegetic Scope.
+#[derive(Component)]
+pub struct ViewGlass;
+
+/// Hides the view model's glass while the Diegetic Scope's lens is in the eyepiece (the model's own glass drew
+/// over the live picture).
+pub fn view_glass_system(mut q: Query<&mut Visibility, With<ViewGlass>>) {
+    let want = if crate::scope::diegetic() { Visibility::Hidden } else { Visibility::Inherited };
+    for mut v in &mut q {
+        if *v != want {
+            *v = want;
+        }
+    }
+}
+
 /// See `Held::sight`.
 fn sight_point(am: &AnimMesh, parts: &[MeshPart], muzzle_slot: Option<u32>, scale: f32, hdtp: bool) -> Option<[f32; 3]> {
     if hdtp {
@@ -1219,12 +1234,34 @@ pub fn spawn_mesh_parts(
         );
         mesh.insert_indices(Indices::U32(part.indices.clone()));
         let h = meshes.add(mesh);
+        // Its sheen (view models): how shiny the texture's material is (spec_of).
+        if view && !part.unlit && matches!(part.class, SurfaceClass::Opaque | SurfaceClass::Masked) {
+            if let Some(sp) = spec_of(tex_path.as_deref().unwrap_or("")) {
+                if let Ok(mut m) = VIEW_SPEC.lock() {
+                    let m = m.get_or_insert_with(HashMap::new);
+                    if m.len() > 4000 {
+                        m.clear();
+                    }
+                    m.insert(h.id(), sp);
+                }
+            }
+        }
         let mut child = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat)));
         if let Some(l) = &layer {
             child.insert(l.clone());
         }
         if part.env {
             child.insert(crate::actors::EnvMapped);
+        }
+        // See-through sections and anything textured as glass / a lens (HDTP's rifle scope: HDTPWeaponRifleShine, a blue cap
+        // over its eyepiece): hidden while the Diegetic Scope's own lens sits in the eyepiece.
+        let glassy = matches!(part.class, SurfaceClass::Translucent | SurfaceClass::Modulated)
+            || tex_path.as_deref().is_some_and(|p| {
+                let l = p.to_ascii_lowercase();
+                l.contains("glass") || l.contains("lens") || l.contains("shine")
+            });
+        if glassy {
+            child.insert(ViewGlass);
         }
         let child = child.id();
         commands.entity(root).add_child(child);
@@ -1883,7 +1920,88 @@ fn pose_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, dt: f32) {
 }
 
 /// The view model's vertex colours from the lights round the eye.
-fn light_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, level: &dx_level::Level, eye_bevy: Vec3, dt: f32) {
+/// Material properties of the first-person models (ours, enhancement Material Properties, setting MaterialSheen):
+/// (strength, shininess) of a specular highlight by the texture's name - gun metal shines, plastics less, gloves
+/// and skin hardly; None = matte (paper, cloth, glowing effects).
+fn spec_of(tex: &str) -> Option<[f32; 2]> {
+    let t = tex.to_ascii_lowercase();
+    let name = t.rsplit('.').next().unwrap_or(&t);
+    if name.contains("sfx") || name.contains("blade") || name.contains("fx") || name.contains("mask") {
+        return None;
+    }
+    if name.contains("hand") || name.contains("glove") || name.contains("skin") || name.contains("fem") {
+        return Some([0.08, 6.0]);
+    }
+    if ["medkit", "medi", "biocell", "flare", "soda", "candy", "chips", "cigarette", "binocular", "goggle", "datacube", "nanokey", "vial"]
+        .iter()
+        .any(|k| name.contains(k))
+    {
+        return Some([0.3, 18.0]);
+    }
+    if ["wood", "cloth", "paper", "leather"].iter().any(|k| name.contains(k)) {
+        return Some([0.06, 4.0]);
+    }
+    Some([0.55, 30.0])
+}
+
+static VIEW_SPEC: std::sync::Mutex<Option<HashMap<AssetId<Mesh>, [f32; 2]>>> = std::sync::Mutex::new(None);
+
+pub fn material_sheen() -> bool {
+    crate::settings::get("MaterialSheen") > 0.5
+}
+
+/// The specular highlights on a view-model part (Blinn-Phong per vertex from the lights round the player, the
+/// posed model's own normals, seen from the eye), added to its diffuse colours.
+fn add_sheen(cols: &mut [[f32; 4]], part: &MeshPart, shown: &[[f32; 3]], to_world: &Transform, sp: [f32; 2], lights: &[dx_level::lighting::LightInfo], eye: Vec3) {
+    if shown.len() != cols.len() {
+        return;
+    }
+    let mut nrm = vec![Vec3::ZERO; shown.len()];
+    for t in part.indices.chunks(3) {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        let (Some(pa), Some(pb), Some(pc)) = (shown.get(a), shown.get(b), shown.get(c)) else { continue };
+        let n = (Vec3::from(*pb) - Vec3::from(*pa)).cross(Vec3::from(*pc) - Vec3::from(*pa));
+        for i in [a, b, c] {
+            nrm[i] += n;
+        }
+    }
+    let ue = |v: Vec3| Vec3::new(v.x, v.z, v.y);
+    let eye_u = ue(eye) / dx_level::METERS_PER_UNIT;
+    let near: Vec<&dx_level::lighting::LightInfo> =
+        lights.iter().filter(|l| Vec3::from(l.pos).distance(eye_u) < l.radius + 128.0).collect();
+    if near.is_empty() {
+        return;
+    }
+    for (i, c) in cols.iter_mut().enumerate() {
+        let p = ue(to_world.transform_point(Vec3::from(shown[i]))) / dx_level::METERS_PER_UNIT;
+        let mut n = ue(to_world.rotation * nrm[i]).normalize_or_zero();
+        let v = (eye_u - p).normalize_or_zero();
+        // Facing the eye (the mirrored axes can turn the winding round).
+        if n.dot(v) < 0.0 {
+            n = -n;
+        }
+        let mut add = Vec3::ZERO;
+        for l in &near {
+            let to = Vec3::from(l.pos) - p;
+            let d = to.length();
+            if d >= l.radius {
+                continue;
+            }
+            let ld = to / d.max(1e-3);
+            if n.dot(ld) <= 0.0 {
+                continue;
+            }
+            let hv = (ld + v).normalize_or_zero();
+            let k = n.dot(hv).max(0.0).powf(sp[1]) * (1.0 - d / l.radius) * sp[0];
+            add += Vec3::from(l.color) * k;
+        }
+        for ch in 0..3 {
+            c[ch] += add[ch] * dx_level::lighting::LIGHT_GAIN * 0.5;
+        }
+    }
+}
+
+fn light_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, level: &dx_level::Level, eye_bevy: Vec3, cam_rot: Quat, root: &Transform, dt: f32) {
     // Light the weapon from the static lights around the player a few times a second (every frame while a
     // dynamic light such as a muzzle flash or the flashlight is on).
     h.relight -= dt;
@@ -1900,14 +2018,22 @@ fn light_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, level: &dx_level::L
         h.relight = 0.2;
         let eye = bevy_to_ue(eye_bevy.to_array());
         let all = crate::dynlight::lights(&level.lights);
+        let sheen = material_sheen();
+        // The view model's own space -> world (Bevy): the camera's turn about the eye, then the model's place.
+        let to_world = Transform::from_translation(eye_bevy).with_rotation(cam_rot) * *root;
         for (pi, hm) in h.handles.iter().enumerate() {
             if let Some(mut m) = meshes.get_mut(hm) {
                 let c = light_part(&h.parts[pi], eye, [0, 0, 0], 1.0, &all);
                 // Never fully black: Deus Ex lights the weapon with a minimum glow.
-                let c: Vec<[f32; 4]> = c
+                let mut c: Vec<[f32; 4]> = c
                     .into_iter()
                     .map(|x| [x[0].max(0.06), x[1].max(0.06), x[2].max(0.06), 1.0])
                     .collect();
+                if sheen {
+                    if let (Some(sp), Some(shown)) = (VIEW_SPEC.lock().ok().and_then(|g| g.as_ref()?.get(&hm.id()).copied()), h.shown.get(pi)) {
+                        add_sheen(&mut c, &h.parts[pi], shown, &to_world, sp, &all, eye_bevy);
+                    }
+                }
                 m.insert_attribute(Mesh::ATTRIBUTE_COLOR, c);
             }
         }
@@ -3084,7 +3210,20 @@ pub fn weapon_system(
     }
 
     pose_view_model(h, &mut meshes, dt);
-    light_view_model(h, &mut meshes, &level.0, cam.translation, dt);
+    // WeaponNanoSword: in hand (state Idle and swinging; not while drawn or put away) the blade lights what's round
+    // it - LT_Steady, hue 160, saturation 64, brightness 224, radius 4, LE_WateryShimmer. Dark with Dragon's Tooth
+    // Uses Bioenergy and no energy left.
+    if h.stats.class == "WeaponNanoSword"
+        && matches!(h.state, WState::Idle | WState::Firing)
+        && !DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed)
+        && !crate::consys::third_person()
+    {
+        let f = cam.forward().as_vec3();
+        let at = cam.translation + f * 0.45 + cam.right().as_vec3() * 0.15;
+        let ue = bevy_to_ue(at.to_array());
+        crate::dynlight::hold(0xD75_0000, DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64), crate::dynlight::Spec::new(160, 64, 224, 4.0), 0.08);
+    }
+    light_view_model(h, &mut meshes, &level.0, cam.translation, cam.rotation, &root, dt);
     crate::scope::set_lens(lens_eye.as_ref().and_then(|se| se.posed(&h.shown)).map(|(c, axis, r)| {
         let axis = root.rotation * axis;
         if env_on!("DXVIEW_SCOPELOG") {

@@ -406,6 +406,49 @@ impl<W: KitWid> Ui<'_, W> {
     }
     /// A TextWindow with word wrap: lines, aligned in the box.
     #[allow(clippy::too_many_arguments)]
+    /// `wrapped`, but text taller than the box scrolls: it rests at the top, rolls slowly up to the last line, rests
+    /// there and starts over (help lines longer than the help well showed only their middle).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn wrapped_scroll(&mut self, font: &UiFont, x: i32, y: i32, w: i32, h: i32, col: Rgb, s: &str) {
+        let lines = wrap(font, &label(s), w);
+        let lh = font.height;
+        let total = lines.len() as i32 * lh;
+        if total <= h {
+            self.wrapped(font, x, y, w, h, HAlign::Left, VAlign::Center, col, s);
+            return;
+        }
+        static SCROLL: std::sync::Mutex<Option<(u64, std::time::Instant)>> = std::sync::Mutex::new(None);
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hs = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut hs);
+            hs.finish()
+        };
+        let t = SCROLL
+            .lock()
+            .map(|mut g| {
+                if g.is_none_or(|(k, _)| k != key) {
+                    *g = Some((key, std::time::Instant::now()));
+                }
+                g.map_or(0.0, |(_, at)| at.elapsed().as_secs_f32())
+            })
+            .unwrap_or(0.0);
+        let over = (total - h + 2) as f32;
+        const HOLD_TOP: f32 = 2.0;
+        const HOLD_END: f32 = 2.5;
+        const SPEED: f32 = 9.0;
+        let cycle = HOLD_TOP + over / SPEED + HOLD_END;
+        let tt = t % cycle;
+        let off = ((tt - HOLD_TOP) * SPEED).clamp(0.0, over) as i32;
+        let mut ly = y + 1 - off;
+        for l in lines {
+            if ly + lh > y && ly < y + h {
+                self.c.text(font, x, ly, w, lh, HAlign::Left, VAlign::Top, col, &l);
+            }
+            ly += lh;
+        }
+    }
+
     pub(crate) fn wrapped(&mut self, font: &UiFont, x: i32, y: i32, w: i32, h: i32, ha: HAlign, va: VAlign, col: Rgb, s: &str) {
         let lines = wrap(font, &label(s), w);
         let lh = font.height;

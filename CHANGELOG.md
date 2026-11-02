@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Bone bodies, trees, glowing weapons, far grass (November 2)
+- Skeletal people: the arms and chest take an aimed pose over the legs while running or walking in a fight and turn
+  toward the target; heads turn to whoever is speaking in a conversation; strafing to the right plays a right
+  strafe (it was always the left one); footsteps come when a foot actually comes down; a melee blow lands at the
+  fastest point of the swing.
+- Coats no longer shake or jerk (the coat fought the legs where the animation itself puts it inside them, and high
+  frame rates skipped simulation steps), in first and third person.
+- Trees: trunks bend, flare at the foot and are knobbly instead of straight poles; crowns are a few clumps of leaves
+  instead of one ball, smaller leaf clusters; each tree is drawn in where a wall, pole or lamp stands close so it no
+  longer cuts into what's round it.
+- Grass: a second, sparse layer of wider grass carries on beyond the full grass (out to 58 m on High, 34 m on Low)
+  and fades in as the near blades thin out, so the lawn no longer ends in a line you can see.
+- Glowing weapons and items: with Glow And Bloom, the Dragon's Tooth blade, the riot prod's and EMP grenade's arcs,
+  the plasma rifle's coils and the ambrosia vial glow; the Dragon's Tooth lights its surroundings while in hand, as in
+  the original.
+- Material Properties (Settings > Enhancements > Visuals, on in Modern): the weapon or item in your hands catches the
+  light by its material - gun metal shines, plastic less, gloves hardly.
+- Diegetic Scope: HDTP's rifle no longer draws its blue lens cap over the live scope picture.
+- First-person body: no blob shadow under JC while it's on.
+- Enhancements menu: a description too long for its box scrolls slowly to the end and starts over.
+- Controller: D-pad snap-to works on the Achievements screen.
+- Linux: starting in fullscreen no longer crashes when the window opens before the monitor is known (it opens
+  windowed and switches to fullscreen a moment later).
+
 ### Mods folder, Confix and Transcended, healing by body part (November 2)
 - One folder for all your mods: on the launcher's Mods page, Mod Assets Folder... takes a folder holding each mod in
   its own folder (Lay D Denton, HDTP, New Vision, Helios, the Parallax Occlusion addon, Augmentique, Visible

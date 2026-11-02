@@ -1240,17 +1240,24 @@ mod tests {
 /// pitch from mass.
 pub fn npc_footstep_system(
     level: Res<LevelRes>,
-    npcs: Query<(&Npc, &crate::actors::Animated)>,
+    npcs: Query<(&Npc, &crate::actors::Animated, Option<&crate::skeletal::SkelBody>)>,
     mut last: Local<HashMap<usize, (usize, f32)>>,
+    mut skel_steps: Local<HashMap<usize, u32>>,
 ) {
     let _prof = crate::prof::scope("sound::npc_footstep_system");
     // ScriptedPawn.PlayFootStep runs from the walk/run animations' PlayFootStep notifies, so steps keep time with
     // the legs (a big walker's slow stride, a running trooper's quick one).
     let lvl = &level.0;
-    for (n, an) in &npcs {
+    for (n, an, skel) in &npcs {
         let Some(body) = n.body.as_ref() else {
             continue;
         };
+        // A rebuilt (skeletal) body steps when its feet come down (skeletal::foot_plants), not on the original
+        // sequence's notifies (the rebuilt clips' strides fall elsewhere).
+        let skel_step = skel.filter(|s| !s.ragdoll).map(|s| {
+            let prev = skel_steps.insert(n.blocker, s.steps);
+            s.steps_live && prev.is_some_and(|p| p != s.steps)
+        });
         if n.state == NpcState::Dead
             || body.physics != imsim_core::movement::Physics::Walking
             || body.velocity.truncate().length() < 5.0
@@ -1258,30 +1265,35 @@ pub fn npc_footstep_system(
             last.remove(&n.blocker);
             continue;
         }
-        let ma = &lvl.mesh_actors[an.mesh_actor];
-        let Some(anim) = &ma.anim else { continue };
-        let (start, frames, f) = crate::actors::current_frame(an, anim);
-        let Some(seq) = anim.mesh.seqs.iter().find(|s| {
-            s.start_frame.max(0) as usize == start && s.num_frames.max(1) as usize == frames
-        }) else {
-            continue;
-        };
-        let phase = (f / frames.max(1) as f32).rem_euclid(1.0);
-        let prev = last.insert(n.blocker, (start, phase));
-        let Some((pstart, pphase)) = prev else {
-            continue;
-        };
-        if pstart != start {
-            continue;
-        }
-        let crossed = seq.notifies.iter().any(|(t, func)| {
-            func.eq_ignore_ascii_case("PlayFootStep")
-                && if phase >= pphase {
-                    *t > pphase && *t <= phase
-                } else {
-                    *t > pphase || *t <= phase
+        let crossed = match skel_step {
+            Some(stepped) => stepped,
+            None => {
+                let ma = &lvl.mesh_actors[an.mesh_actor];
+                let Some(anim) = &ma.anim else { continue };
+                let (start, frames, f) = crate::actors::current_frame(an, anim);
+                let Some(seq) = anim.mesh.seqs.iter().find(|s| {
+                    s.start_frame.max(0) as usize == start && s.num_frames.max(1) as usize == frames
+                }) else {
+                    continue;
+                };
+                let phase = (f / frames.max(1) as f32).rem_euclid(1.0);
+                let prev = last.insert(n.blocker, (start, phase));
+                let Some((pstart, pphase)) = prev else {
+                    continue;
+                };
+                if pstart != start {
+                    continue;
                 }
-        });
+                seq.notifies.iter().any(|(t, func)| {
+                    func.eq_ignore_ascii_case("PlayFootStep")
+                        && if phase >= pphase {
+                            *t > pphase && *t <= phase
+                        } else {
+                            *t > pphase || *t <= phase
+                        }
+                })
+            }
+        };
         if !crossed {
             continue;
         }

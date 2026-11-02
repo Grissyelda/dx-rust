@@ -40,6 +40,19 @@ pub struct Species {
     pub leaf_radius: f32,
     /// Bark sides on the trunk (fewer on thin branches).
     pub sides: usize,
+    /// The crown as clumps: this many ellipsoid lobes inside the envelope (0 = the whole envelope, one mass). Real
+    /// crowns are a few clusters of foliage on the main limbs with gaps between, not a ball.
+    #[serde(default)]
+    pub lobes: usize,
+    /// How much the trunk wanders as it climbs (0 straight, ~0.3 a clear bend or two).
+    #[serde(default)]
+    pub bend: f32,
+    /// Root flare: the trunk's foot this much wider (0.6 = 60%), easing out over the first stretch.
+    #[serde(default)]
+    pub flare: f32,
+    /// Bark cross-section irregularity on thick wood (0 round; ~0.12 lumpy, ridged).
+    #[serde(default)]
+    pub gnarl: f32,
 }
 
 impl Species {
@@ -55,19 +68,23 @@ impl Species {
             step: 0.035,
             influence: 0.26,
             kill: 0.05,
-            twig: 0.016,
-            pipe: 2.4,
+            twig: 0.02,
+            pipe: 2.3,
             tropism: 0.15,
-            leaf: 0.95,
+            leaf: 0.62,
             leaves_per_twig: 2,
             leaf_radius: 0.035,
-            sides: 8,
+            sides: 9,
+            lobes: 5,
+            bend: 0.32,
+            flare: 0.7,
+            gnarl: 0.13,
         }
     }
 
     /// A tall narrow tree (poplar / cypress).
     pub fn tall_tree() -> Species {
-        Species { name: "tall tree".into(), height: 10.0, trunk: 0.2, crown: [0.18, 0.42], cone: 0.4, points: 650, step: 0.03, influence: 0.22, kill: 0.045, tropism: 0.35, leaf: 0.9, ..Species::park_tree() }
+        Species { name: "tall tree".into(), height: 10.0, trunk: 0.2, crown: [0.17, 0.42], cone: 0.4, points: 650, step: 0.03, influence: 0.22, kill: 0.045, tropism: 0.35, leaf: 0.6, lobes: 6, bend: 0.18, ..Species::park_tree() }
     }
 
     /// A low round bush.
@@ -85,10 +102,14 @@ impl Species {
             twig: 0.006,
             pipe: 2.2,
             tropism: 0.2,
-            leaf: 0.42,
+            leaf: 0.36,
             leaves_per_twig: 2,
             leaf_radius: 0.02,
             sides: 5,
+            lobes: 4,
+            bend: 0.25,
+            flare: 0.0,
+            gnarl: 0.08,
         }
     }
 }
@@ -119,6 +140,8 @@ struct Node {
     children: usize,
     /// Distance along the branches from the foot.
     dist: f32,
+    /// Part of the trunk (the stem grown before the crown's colonisation).
+    trunk: bool,
 }
 
 fn in_crown(s: &Species, p: Vec3, centre: Vec3, half: Vec3) -> bool {
@@ -138,13 +161,23 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
     let half = Vec3::new(s.crown[0] * h, s.crown[1] * h, s.crown[0] * h * (0.8 + 0.4 * rand(&mut rs)));
     let base = s.trunk * h;
     let centre = Vec3::new(0.0, (base + half.y).min(h - half.y), 0.0);
-    // Attraction points: rejection-sampled in the envelope's box.
+    // The crown's lobes: clumps of foliage spread through the envelope (the top one highest, the rest round it).
+    let mut lobes: Vec<(Vec3, Vec3)> = Vec::new();
+    for k in 0..s.lobes {
+        let a = k as f32 / s.lobes.max(1) as f32 * std::f32::consts::TAU + rand(&mut rs) * 1.1;
+        let (rr, up) = if k == 0 { (0.15 * rand(&mut rs), 0.35 + 0.2 * rand(&mut rs)) } else { (0.45 + 0.25 * rand(&mut rs), -0.35 + 0.6 * rand(&mut rs)) };
+        let c = centre + Vec3::new(a.cos() * rr * half.x, up * half.y, a.sin() * rr * half.z);
+        let size = half * (0.38 + 0.2 * rand(&mut rs));
+        lobes.push((c, Vec3::new(size.x, size.y * (0.7 + 0.25 * rand(&mut rs)), size.z)));
+    }
+    let in_lobes = |p: Vec3| lobes.is_empty() || lobes.iter().any(|(c, r)| ((p - *c) / *r).length_squared() <= 1.0);
+    // Attraction points: rejection-sampled in the envelope's box, inside a lobe.
     let mut pts: Vec<Vec3> = Vec::with_capacity(s.points);
     let mut tries = 0;
-    while pts.len() < s.points && tries < s.points * 40 {
+    while pts.len() < s.points && tries < s.points * 60 {
         tries += 1;
         let p = centre + Vec3::new(rand(&mut rs) * 2.0 - 1.0, rand(&mut rs) * 2.0 - 1.0, rand(&mut rs) * 2.0 - 1.0) * half;
-        if p.y > 0.05 * h && in_crown(s, p, centre, half) {
+        if p.y > 0.05 * h && in_crown(s, p, centre, half) && in_lobes(p) {
             pts.push(p);
         }
     }
@@ -153,23 +186,30 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
     let kill = s.kill * h;
     // The trunk, straight up to where the crown's points can reach it (a little lean).
     let lean = Vec3::new(rand(&mut rs) - 0.5, 0.0, rand(&mut rs) - 0.5) * 0.08;
-    let mut nodes = vec![Node { pos: Vec3::ZERO, parent: None, radius: 0.0, children: 0, dist: 0.0 }];
+    let mut nodes = vec![Node { pos: Vec3::ZERO, parent: None, radius: 0.0, children: 0, dist: 0.0, trunk: true }];
     // A bush: several stems from the ground.
     let stems = if s.trunk <= 0.0 { 3 + (rand(&mut rs) * 3.0) as usize } else { 1 };
     let mut tips: Vec<usize> = Vec::new();
     for k in 0..stems {
         let mut cur = 0usize;
         let a = k as f32 / stems as f32 * std::f32::consts::TAU + rand(&mut rs);
-        let dir = if stems > 1 { (Vec3::Y + Vec3::new(a.cos(), 0.0, a.sin()) * 0.45).normalize() } else { (Vec3::Y + lean).normalize() };
+        let dir0 = if stems > 1 { (Vec3::Y + Vec3::new(a.cos(), 0.0, a.sin()) * 0.45).normalize() } else { (Vec3::Y + lean).normalize() };
         let target = if stems > 1 { step * 2.0 } else { base.max(step) };
         let mut y = 0.0;
+        // The stem wanders: a slowly turning sideways drift (a bend or two, not a pole), kept from tipping over.
+        let mut wander = Vec3::ZERO;
+        let mut drift = Vec3::new(rand(&mut rs) - 0.5, 0.0, rand(&mut rs) - 0.5) * s.bend;
         while y < target {
+            drift += Vec3::new(rand(&mut rs) - 0.5, 0.0, rand(&mut rs) - 0.5) * s.bend * 0.5;
+            drift = drift.clamp_length_max(s.bend);
+            wander = (wander + drift * 0.35).clamp_length_max(s.bend * 1.2);
+            let dir = (dir0 + wander).normalize();
             let p = nodes[cur].pos + dir * step;
             let d = nodes[cur].dist + step;
-            nodes.push(Node { pos: p, parent: Some(cur), radius: 0.0, children: 0, dist: d });
+            nodes.push(Node { pos: p, parent: Some(cur), radius: 0.0, children: 0, dist: d, trunk: true });
             nodes[cur].children += 1;
             cur = nodes.len() - 1;
-            y += step;
+            y += dir.y * step;
         }
         tips.push(cur);
     }
@@ -182,7 +222,7 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
         let cur = *tips.last().unwrap();
         let p = top + (centre - top).normalize_or(Vec3::Y) * step;
         let d = nodes[cur].dist + step;
-        nodes.push(Node { pos: p, parent: Some(cur), radius: 0.0, children: 0, dist: d });
+        nodes.push(Node { pos: p, parent: Some(cur), radius: 0.0, children: 0, dist: d, trunk: true });
         nodes[cur].children += 1;
         *tips.last_mut().unwrap() = nodes.len() - 1;
     }
@@ -217,7 +257,7 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
                 continue;
             }
             let d = nodes[i].dist + step;
-            nodes.push(Node { pos: p, parent: Some(i), radius: 0.0, children: 0, dist: d });
+            nodes.push(Node { pos: p, parent: Some(i), radius: 0.0, children: 0, dist: d, trunk: false });
             nodes[i].children += 1;
             grew = true;
         }
@@ -242,14 +282,22 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
     // Bark: a ring at every node, joined to its parent's ring (each branch a tube; a joint shares its parent's ring).
     // Each node's ring and its number of sides (a child of the same thickness class joins its parent's ring).
     let mut ring_of: Vec<(u32, usize)> = vec![(u32::MAX, 0); nodes.len()];
+    // Lumps and ridges on thick wood: two slow lobed waves round the section that drift along the branch, so the
+    // section changes shape as it climbs (and the trunk isn't a lathe-turned pole).
+    let (g1, g2) = (rand(&mut rs) * 6.28, rand(&mut rs) * 6.28);
     let ring = |plant: &mut Plant, i: usize, dir: Vec3, sides: usize, phase: f32| -> u32 {
         let n = &nodes[i];
         let rot = Quat::from_rotation_arc(Vec3::Y, dir.normalize_or(Vec3::Y));
         let first = plant.bark.positions.len() as u32;
+        // The root flare: a trunk's foot spreads out.
+        let flare = if n.trunk { 1.0 + s.flare * (-n.pos.y / (0.045 * h).max(0.05)).exp() } else { 1.0 };
+        let gn = s.gnarl * ((n.radius - 0.03) / 0.08).clamp(0.0, 1.0) * if n.trunk && n.pos.y < 0.1 * h { 1.6 } else { 1.0 };
+        let (p1, p2) = (g1 + n.dist * 1.7, g2 - n.dist * 2.3);
         for k in 0..=sides {
             let a = k as f32 / sides as f32 * std::f32::consts::TAU;
+            let lump = 1.0 + gn * (0.6 * (3.0 * a + p1).sin() + 0.4 * (5.0 * a + p2).sin());
             let out = rot * Vec3::new(a.cos(), 0.0, a.sin());
-            plant.bark.positions.push((n.pos + out * n.radius).to_array());
+            plant.bark.positions.push((n.pos + out * n.radius * flare * lump).to_array());
             plant.bark.normals.push(out.to_array());
             plant.bark.uvs.push([k as f32 / sides as f32 * (n.radius * 40.0).clamp(1.0, 4.0).round(), n.dist / (2.0 * std::f32::consts::PI * 0.15)]);
             plant.bark.sway.push([n.dist / max_dist, phase]);
@@ -285,8 +333,21 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
         let count = if n.children == 0 { s.leaves_per_twig } else { 1 };
         for _ in 0..count {
             let size = s.leaf * (0.7 + 0.6 * rand(&mut ls));
-            let mut at = n.pos + Vec3::new(rand(&mut ls) - 0.5, rand(&mut ls) - 0.5, rand(&mut ls) - 0.5) * size * 0.4;
+            let mut at = n.pos + Vec3::new(rand(&mut ls) - 0.5, rand(&mut ls) - 0.5, rand(&mut ls) - 0.5) * size * 0.3;
             at.y = at.y.max(size * 0.35);
+            // The clump it belongs to (the nearest lobe; else the whole crown).
+            let mid = lobes
+                .iter()
+                .map(|(c, r)| (((at - *c) / *r).length_squared(), *c))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map_or(centre, |l| l.1);
+            // Leaves stay inside the clump's skin: pulled in where the card would stand out of it (no balloon).
+            if let Some((c, r)) = lobes.iter().min_by(|a, b| ((at - a.0) / a.1).length_squared().total_cmp(&((at - b.0) / b.1).length_squared())) {
+                let q = ((at - *c) / *r).length();
+                if q > 0.85 {
+                    at = *c + (at - *c) * (0.85 / q);
+                }
+            }
             let yaw = rand(&mut ls) * std::f32::consts::TAU;
             let tilt = (rand(&mut ls) - 0.5) * 0.9;
             let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(tilt);
@@ -302,8 +363,8 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
                 for (cx, cy, u, v) in [(-1.0, -1.0, 0.0, 1.0), (1.0, -1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 0.0), (-1.0, 1.0, 0.0, 0.0)] {
                     let p = at + ax * cx + ay * cy;
                     plant.leaves.positions.push(p.to_array());
-                    // Normals bent outward from the crown's middle: the cluster shades like a round mass.
-                    let out = ((p - centre).normalize_or_zero() * 0.7 + nrm * 0.3).normalize_or(Vec3::Y);
+                    // Normals bent outward from the middle of its clump: each clump shades like a mass of its own.
+                    let out = ((p - mid).normalize_or_zero() * 0.7 + nrm * 0.3).normalize_or(Vec3::Y);
                     plant.leaves.normals.push(out.to_array());
                     plant.leaves.uvs.push([u0 + u * 0.5, v0 + v * 0.5]);
                     plant.leaves.sway.push([(n.dist / max_dist).max(0.6), phase]);

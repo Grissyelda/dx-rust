@@ -31,6 +31,13 @@ const GLOWS: &[(&str, f32)] = &[
     ("flatfxtex37", 2.5),
     ("securitycameratex", 1.0),
     ("keypadlight", 3.0),
+    // Weapons and items with glowing parts (their unlit electricity / plasma textures): the Dragon's Tooth blade
+    // and its edge, the riot prod's and EMP grenade's arcs, the plasma rifle's coils, the ambrosia vial.
+    ("wepn_nesword_sfx", 3.5),
+    ("wavyblade", 3.0),
+    ("wepn_empg_sfx", 3.0),
+    ("wepn_prifle_sfx", 3.0),
+    ("ambrosia_sfx", 2.0),
 ];
 
 fn boost(name: &str) -> Option<f32> {

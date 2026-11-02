@@ -162,6 +162,12 @@ impl GrassField {
 
     /// The tiles within `radius` of `eye` (nearest first, at most `cap`), into `out`.
     pub fn near(&self, eye: Vec3, radius: f32, cap: usize, out: &mut Vec<u32>) {
+        self.near_ring(eye, 0.0, radius, cap, out);
+    }
+
+    /// The tiles between `inner` and `radius` of the eye, nearest first, at most `cap` (a far layer skips what the
+    /// near one covers).
+    pub fn near_ring(&self, eye: Vec3, inner: f32, radius: f32, cap: usize, out: &mut Vec<u32>) {
         out.clear();
         let mut cand: Vec<(f32, u32)> = Vec::new();
         let r = (radius / self.chunk).ceil() as i32;
@@ -173,7 +179,7 @@ impl GrassField {
                     let t = &self.tiles[k as usize];
                     let mid = Vec3::new(t.x + TILE * 0.5, t.y, t.z + TILE * 0.5);
                     let d = mid.distance(eye);
-                    if d < radius {
+                    if d < radius && d >= inner {
                         cand.push((d, k));
                     }
                 }

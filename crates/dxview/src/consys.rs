@@ -435,6 +435,36 @@ pub fn conversing(blocker: usize) -> Option<Option<DVec3>> {
     Some(look)
 }
 
+/// Where each pawn in the conversation playing turns its head (ours, for the rebuilt bodies; blocker -> eye point,
+/// Unreal): the one speaking looks at whoever it speaks to, everyone else at the one speaking (the player's
+/// lines included).
+pub fn look_targets(out: &mut Vec<(usize, DVec3)>) {
+    out.clear();
+    let g = lock();
+    let Some(s) = g.as_ref() else { return };
+    let Some(p) = s.play.as_ref() else { return };
+    let eye = |w: Who| s.actors.get(&w).map(|a| a.pos + DVec3::Z * a.eye);
+    let speaker = p.speaker;
+    for (w, a) in &s.actors {
+        let Who::Actor(b) = *w else { continue };
+        if !a.pawn {
+            continue;
+        }
+        let involved = p.invoke == *w || speaker == Some(*w) || p.speaking_to == Some(*w) || s.speaks_in(p.con, *w);
+        if !involved {
+            continue;
+        }
+        let at = if speaker == Some(*w) {
+            p.speaking_to.and_then(eye).or_else(|| eye(Who::Player))
+        } else {
+            speaker.and_then(eye).or_else(|| eye(Who::Player))
+        };
+        if let Some(t) = at {
+            out.push((b, t));
+        }
+    }
+}
+
 /// EBarkModes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BarkMode {

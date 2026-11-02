@@ -682,7 +682,31 @@ pub fn page(
             hits.push((PB::ClearLog, (cx + 10, cy + 384, 90, 16), true));
             hits.push((PB::Achievements, (cx + 104, cy + 384, 112, 16), true));
         }
-        SCREEN_ACHIEVEMENTS => hits.push((PB::BackLogs, (cx + 10, cy + 384, 90, 16), true)),
+        SCREEN_ACHIEVEMENTS => {
+            hits.push((PB::BackLogs, (cx + 10, cy + 384, 90, 16), true));
+            // Controller: every row in view (and the one half in view at either edge) is a snap target, and the row
+            // the pad's cursor lands on scrolls fully into view - the D-pad walks down the list.
+            const ROW: i32 = 46;
+            let (lx, ly, lw, lh) = (cx + 14, cy + 30, 400, 346);
+            if let Some(m) = crate::snap::page_map() {
+                let rows = (0..crate::achievements::LIST.len() as i32).filter_map(|i| {
+                    let ry = ly + i * ROW - ui.scroll;
+                    let (top, bot) = (ry.max(ly), (ry + ROW).min(ly + lh));
+                    (bot - top >= 6).then_some((lx, top, lw, bot - top))
+                });
+                crate::snap::offer(crate::snap::LAYER_PERSONA, m, rows.collect::<Vec<_>>());
+            }
+            if crate::gamepad::pad_in_use() && inside(inp.mouse, (lx, ly, lw, lh)) {
+                let i = (inp.mouse.1 - ly + ui.scroll) / ROW;
+                let ry = ly + i * ROW - ui.scroll;
+                let max = (crate::achievements::LIST.len() as i32 * ROW - lh).max(0);
+                if ry < ly {
+                    ui.scroll = (i * ROW).clamp(0, max);
+                } else if ry + ROW > ly + lh {
+                    ui.scroll = (i * ROW + ROW - lh).clamp(0, max);
+                }
+            }
+        }
         SCREEN_GOALS => {
             goals_hits(ui, ctx.fonts, cx, cy, &mut hits);
             if ui.asking_delete {

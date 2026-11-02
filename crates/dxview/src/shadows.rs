@@ -121,7 +121,8 @@ pub fn shadow_system(
     for (se, of, mut tf, mut vis) in &mut shadows {
         let (center, radius, height, scale) = match of.0 {
             // No body to shadow while a cut scene has the camera (the player isn't drawn: the intro, the endings).
-            None if crate::cinematic::active() || crate::consys::third_person() => {
+            // (With the first-person body JC has a body of his own; the blob under it looked like a stain.)
+            None if crate::cinematic::active() || crate::consys::third_person() || crate::bodyfx::fp_on() => {
                 *vis = Visibility::Hidden;
                 continue;
             }

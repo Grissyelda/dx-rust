@@ -470,10 +470,31 @@ pub struct SkelBody {
     /// the time not yet simulated and the cloth's own clock (wind gusts).
     cloth_head: Vec<Vec3>,
     cloth_goal: Vec<Vec3>,
+    /// Each coat bone's head velocity, smoothed (frame-to-frame differences were noisy: the coat twitched).
+    cloth_vel: Vec<Vec3>,
     cloth_acc: f32,
     cloth_clock: f32,
     /// From glTF space (the rig's) to the actor's local Unreal space (before DrawScale).
     to_ue: Mat4,
+    /// The body's motion (Bevy world, smoothed) and which way it strafes (see track_motion).
+    last_pos: Option<Vec3>,
+    vel: Vec3,
+    strafe_right: bool,
+    clip_right: bool,
+    /// The upper-body layers (upper_layers): the aimed upper body over the legs' clip (weight), its turn toward the
+    /// target and the head's turn toward who it watches (yaw, pitch, eased).
+    aim_w: f32,
+    aim_yp: Vec2,
+    look_yp: Vec2,
+    layer_buf: Vec<Trs>,
+    layer_g: Vec<Mat4>,
+    /// Foot plants (foot_plants): each foot down or not, its height last frame, time to the next plant it may
+    /// make; `steps` counts the plants (the footstep sounds follow it), `steps_live` = counting on this body now.
+    foot_down: [bool; 2],
+    foot_prev: [f32; 2],
+    foot_cool: [f32; 2],
+    pub steps: u32,
+    pub steps_live: bool,
 }
 
 /// A vertex part hidden while its pawn wears a rebuilt body.
@@ -784,6 +805,11 @@ fn build(
             }
         }
         let rest = rig.rest.clone();
+        if mesh_actor != usize::MAX {
+            if let Ok(mut m) = SKEL_ACTORS.lock() {
+                m.get_or_insert_with(HashMap::new).insert(mesh_actor, body.female);
+            }
+        }
         SkelBody {
             body,
             rig,
@@ -822,9 +848,24 @@ fn build(
             cloth_prev: Vec::new(),
             cloth_head: Vec::new(),
             cloth_goal: Vec::new(),
+            cloth_vel: Vec::new(),
             cloth_acc: 0.0,
             cloth_clock: 0.0,
             to_ue,
+            last_pos: None,
+            vel: Vec3::ZERO,
+            strafe_right: false,
+            clip_right: false,
+            aim_w: 0.0,
+            aim_yp: Vec2::ZERO,
+            look_yp: Vec2::ZERO,
+            layer_buf: Vec::new(),
+            layer_g: Vec::new(),
+            foot_down: [true; 2],
+            foot_prev: [0.0; 2],
+            foot_cool: [0.0; 2],
+            steps: 0,
+            steps_live: false,
         }
     }
 }
@@ -833,14 +874,20 @@ fn build(
 /// from the pose on screen when the sequence changes; then the weapon frame.
 fn advance(s: &mut SkelBody, seq: &str, start: usize, frames: usize, f: f32, looped: bool, dt: f32) {
     let key = (start, looped);
-    if s.shown_seq != Some(key) {
+    // The original has one Strafe sequence for both ways; the rebuilt rig has a left and a right one: the side the
+    // body is moving to picks (track_motion).
+    let strafe = seq.len() >= 6 && seq[..6].eq_ignore_ascii_case("strafe");
+    let right = strafe && s.strafe_right;
+    if s.shown_seq != Some(key) || s.clip_right != right {
         if s.shown_seq.is_some() {
             s.from.clone_from(&s.pose);
             s.fade = FADE;
         }
         s.shown_seq = Some(key);
+        s.clip_right = right;
         let rig: &'static Rig = s.rig;
-        s.clip = clip_for(rig, seq, s.body.female).or_else(|| clip_for(rig, "BreatheLight", s.body.female));
+        let named = if right { if seq.to_ascii_lowercase().ends_with("2h") { "StrafeRight2H" } else { "StrafeRight" } } else { seq };
+        s.clip = clip_for(rig, named, s.body.female).or_else(|| clip_for(rig, seq, s.body.female)).or_else(|| clip_for(rig, "BreatheLight", s.body.female));
     }
     let clip = s.clip;
     let mut pose = std::mem::take(&mut s.scratch);
@@ -907,6 +954,7 @@ pub fn pose_system(
     cam: Query<&GlobalTransform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
     mut mats: ResMut<Assets<ActorMaterial>>,
     mut tick: Local<u32>,
+    mut look_buf: Local<Vec<(usize, bevy::math::DVec3)>>,
 ) {
     let _prof = crate::prof::scope("skeletal::pose_system");
     let dt = time.delta_secs().min(0.1);
@@ -937,6 +985,10 @@ pub fn pose_system(
     // Poses, faces and weapon frames, in parallel.
     let hurt = crate::bodyfx::hurt_on();
     let cloth_wanted = cloth_on();
+    // Heads turn to the speaker in a conversation (looked up once a frame, not per body).
+    let mut looks = std::mem::take(&mut *look_buf);
+    crate::consys::look_targets(&mut looks);
+    let looks_ref = &looks;
     q.par_iter_mut().for_each(|(e, mut s, mut a, gt, weights, npc)| {
         let s = &mut *s;
         s.posed = false;
@@ -959,12 +1011,24 @@ pub fn pose_system(
         let dt = std::mem::take(&mut s.skip_dt);
         let (start, frames, f) = crate::actors::current_frame(&a, anim);
         let seq = seq_name(&anim.mesh, start).unwrap_or("BreatheLight");
+        track_motion(s, gt.to_matrix(), dt);
         advance(s, seq, start, frames, f, a.clip.as_ref().is_none_or(|c| c.looping), dt);
         weapon_fix(s, &anim.mesh, start, frames, f);
         if hurt {
             if let Some(n) = npc.filter(|n| n.state != crate::ai::NpcState::Dead) {
                 apply_hurt(s, &crate::bodyfx::hurt_fracs(&n.hp_body.parts, &n.hp_body.defaults));
             }
+        }
+        // Aim over the run, the head to the speaker.
+        if let Some(n) = npc.filter(|n| n.state != crate::ai::NpcState::Dead) {
+            let ue = |p: bevy::math::DVec3| Vec3::from(dx_level::ue_to_bevy([p.x as f32, p.y as f32, p.z as f32]));
+            let aim = (n.state == crate::ai::NpcState::Attacking && n.weapon_drawn)
+                .then_some(n.weapon.as_ref())
+                .flatten()
+                .filter(|w| !w.hand_to_hand)
+                .map(|w| (ue(n.last_pos), w.mass >= 30.0));
+            let look = looks_ref.iter().find(|l| l.0 == n.blocker).map(|l| ue(l.1));
+            upper_layers(s, gt.to_matrix(), seq, &Layers { aim, look }, &anim.mesh, dt);
         }
         if cloth_wanted {
             // Not while seated: the coat pressed into the chair jittered against it.
@@ -974,6 +1038,7 @@ pub fn pose_system(
                 cloth(s, gt.to_matrix(), dt);
             }
         }
+        foot_plants(s, seq, dt);
         // Face: lip sync (the mouth shapes), blinks, brows with speech, glances.
         let has_w = weights.is_some();
         let mut wmax = 0.0f32;
@@ -989,6 +1054,7 @@ pub fn pose_system(
             );
         }
     });
+    *look_buf = looks;
     // Bones, hidden parts and lights.
     for (e, mut s, _a, gt, _w, _n) in &mut q {
         if let Ok(ch) = kids.get(e) {
@@ -1354,6 +1420,7 @@ pub fn mirror_skel_system(
     if let Ok((_, mut s, gt, w)) = skels.get_mut(b.root) {
         MIRROR_ON.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some((seq, start, frames, f, looped)) = b.cur.clone() {
+            track_motion(&mut s, gt.to_matrix(), dt);
             advance(&mut s, &seq, start, frames, f, looped, dt);
             // DXVIEW_LEAN=<units>: a fixed lean for screenshots (the player isn't moved).
             let lean = env_val!("DXVIEW_LEAN").and_then(|v| v.parse::<f32>().ok()).unwrap_or(player.lean as f32);
@@ -1691,6 +1758,317 @@ pub fn apply_hurt(s: &mut SkelBody, frac: &[f32; 6]) {
     s.pose = pose;
 }
 
+// ------------------------------------------------------------------------------------------------ layers
+
+/// Bones by role, per rig (found by name once).
+struct RigParts {
+    /// The upper body: spine.003 and up (chest, neck, head), shoulders, arms, hands, fingers, the weapon bone and the
+    /// breasts. The export flattened Rigify's tree, so the arms hang off the rig's root, not the chest.
+    upper: Vec<bool>,
+    spine2: usize,
+    spine3: usize,
+    neck: usize,
+    head: usize,
+    hand_r: usize,
+    feet: [usize; 2],
+}
+
+fn rig_parts(rig: &Rig) -> Option<&'static RigParts> {
+    static P: OnceLock<[Option<RigParts>; 2]> = OnceLock::new();
+    let both = P.get_or_init(|| {
+        rigs().each_ref().map(|r| {
+            let at = |n: &str| r.names.iter().position(|x| x == n);
+            let mut upper = vec![false; r.names.len()];
+            for i in 0..r.names.len() {
+                let n = &r.names[i];
+                let own = !n.contains("coat")
+                    && (n == "DEF-spine.003"
+                        || ["shoulder", "upper_arm", "forearm", "hand", "f_middle", "thumb", "weapon", "breast"].iter().any(|k| n.contains(k)));
+                upper[i] = own || r.parent[i].is_some_and(|p| upper[p] && !n.contains("coat"));
+            }
+            Some(RigParts {
+                upper,
+                spine2: at("DEF-spine.002")?,
+                spine3: at("DEF-spine.003")?,
+                neck: at("DEF-spine.005")?,
+                head: at("DEF-spine.006")?,
+                hand_r: at("DEF-hand.R")?,
+                feet: [at("DEF-foot.L")?, at("DEF-foot.R")?],
+            })
+        })
+    });
+    both[std::ptr::eq(rig, &rigs()[1]) as usize].as_ref()
+}
+
+/// The rig's up, forward and right (rig space), from the Unreal axes.
+fn rig_axes(s: &SkelBody) -> (Vec3, Vec3, Vec3) {
+    let from_ue = s.to_ue.inverse();
+    let up = from_ue.transform_vector3(Vec3::Z).normalize_or(Vec3::Y);
+    let fwd = from_ue.transform_vector3(Vec3::X).normalize_or(Vec3::Z);
+    let right = from_ue.transform_vector3(Vec3::Y).normalize_or(Vec3::X);
+    (up, fwd, right)
+}
+
+/// The body's motion: its velocity (Bevy world, smoothed over ~0.12 s) and, for strafing, the side it moves to
+/// (with some slack, so a wobble in the path doesn't flip the legs). `world` = the pawn entity's transform.
+pub(crate) fn track_motion(s: &mut SkelBody, world: Mat4, dt: f32) {
+    let p = world.w_axis.truncate();
+    if let Some(q) = s.last_pos {
+        if dt > 0.0 {
+            let v = (p - q) / dt;
+            // A teleport is not a motion.
+            if v.length() < 30.0 {
+                let a = 1.0 - (-dt / 0.12).exp();
+                s.vel += (v - s.vel) * a;
+            }
+        }
+    }
+    s.last_pos = Some(p);
+    let inv = (world * s.root_local).inverse();
+    let (_, _, right) = rig_axes(s);
+    let lat = inv.transform_vector3(s.vel).dot(right);
+    if lat > 0.25 {
+        s.strafe_right = true;
+    } else if lat < -0.25 {
+        s.strafe_right = false;
+    }
+}
+
+/// What the upper body does over the legs' clip this frame.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Layers {
+    /// Aiming at this point (Bevy world) on the move (`two`: a two-handed weapon): the arms and chest come from the
+    /// aimed pose (Shoot / Shoot2H) while the legs run, and the chest turns toward the target.
+    pub aim: Option<(Vec3, bool)>,
+    /// The head turns to this point (Bevy world): whoever is speaking in a conversation.
+    pub look: Option<Vec3>,
+}
+
+/// The legs' clips the aimed upper body is laid over.
+fn locomotion(seq: &str) -> bool {
+    let l = seq.to_ascii_lowercase();
+    ["run", "walk", "strafe", "backpedal", "crouchwalk"].iter().any(|k| l.starts_with(k)) && !l.contains("shoot") && !l.contains("carry")
+}
+
+/// Yaw and pitch of `d` against the rig's forward (rig space), and the direction for clamped angles.
+fn yaw_pitch(d: Vec3, up: Vec3, fwd: Vec3, right: Vec3) -> Vec2 {
+    let h = d - up * d.dot(up);
+    Vec2::new(h.dot(right).atan2(h.dot(fwd)), d.dot(up).atan2(h.length().max(1e-4)))
+}
+
+fn dir_of(yp: Vec2, up: Vec3, fwd: Vec3, right: Vec3) -> Vec3 {
+    (fwd * yp.x.cos() + right * yp.x.sin()) * yp.y.cos() + up * yp.y.sin()
+}
+
+/// Turns the subtree under each of `roots` about `pivot` by `r` (rig space), in the globals `g`, and writes the
+/// roots' new local transforms (their subtrees ride along).
+fn turn_subtrees(s: &mut SkelBody, g: &mut [Mat4], roots: &[usize], pivot: Vec3, r: Quat) {
+    let m = Mat4::from_translation(pivot) * Mat4::from_quat(r) * Mat4::from_translation(-pivot);
+    for &i in roots {
+        let ng = m * g[i];
+        let local = match s.rig.parent[i] {
+            Some(p) => g[p].inverse() * ng,
+            None => ng,
+        };
+        let (sc, rr, t) = local.to_scale_rotation_translation();
+        s.pose[i] = Trs { t, r: rr, s: sc };
+    }
+    globals(s.rig, &s.pose, &mut s.layer_g);
+    g.copy_from_slice(&s.layer_g);
+}
+
+/// The upper-body layers (ours; the original's vertex meshes can't mix two sequences): aim over the run, and the
+/// head turned to the speaker. `world` = the pawn entity's transform; the weapon frame follows the aimed hand.
+pub(crate) fn upper_layers(s: &mut SkelBody, world: Mat4, seq: &str, lay: &Layers, mesh: &dx_level::actors::AnimMesh, dt: f32) {
+    let Some(parts) = rig_parts(s.rig) else { return };
+    let (up, fwd, right) = rig_axes(s);
+    let ease = |v: f32, to: f32, tau: f32| v + (to - v) * (1.0 - (-dt / tau).exp());
+    let aiming = lay.aim.is_some() && locomotion(seq);
+    s.aim_w = if aiming { (s.aim_w + dt / 0.2).min(1.0) } else { (s.aim_w - dt / 0.25).max(0.0) };
+    let look_on = lay.look.is_some();
+    if s.aim_w <= 0.0 && !look_on && s.look_yp.length_squared() < 1e-5 {
+        s.aim_yp = Vec2::ZERO;
+        return;
+    }
+    let to_rig = (world * s.root_local).inverse();
+    let mut g = std::mem::take(&mut s.gmat);
+    globals(s.rig, &s.pose, &mut g);
+    let mut twist = Quat::IDENTITY;
+    if s.aim_w > 0.0 {
+        let two = lay.aim.is_some_and(|a| a.1) || seq.to_ascii_lowercase().ends_with("2h");
+        let shoot = clip_for(s.rig, if two { "Shoot2H" } else { "Shoot" }, s.body.female);
+        if let Some(c) = shoot {
+            let mut sp = std::mem::take(&mut s.layer_buf);
+            sp.resize(s.rig.rest.len(), s.rig.rest[0]);
+            sample(s.rig, c, 0.0, false, &mut sp);
+            let mut gs = Vec::with_capacity(sp.len());
+            globals(s.rig, &sp, &mut gs);
+            // The aimed upper body carried onto this pose's lower spine.
+            let m = g[parts.spine2] * gs[parts.spine2].inverse();
+            let w = s.aim_w * s.aim_w * (3.0 - 2.0 * s.aim_w);
+            for i in 0..s.pose.len() {
+                if !parts.upper[i] {
+                    continue;
+                }
+                let root = s.rig.parent[i].is_none_or(|p| !parts.upper[p]);
+                let target = if root {
+                    let local = match s.rig.parent[i] {
+                        Some(p) => g[p].inverse() * m * gs[i],
+                        None => m * gs[i],
+                    };
+                    let (sc, r, t) = local.to_scale_rotation_translation();
+                    Trs { t, r, s: sc }
+                } else {
+                    sp[i]
+                };
+                s.pose[i] = s.pose[i].lerp(&target, w);
+            }
+            s.layer_buf = sp;
+            globals(s.rig, &s.pose, &mut g);
+            // The chest turned toward the target (at most 50 degrees aside, 40 up or down).
+            let want = match lay.aim.filter(|_| aiming) {
+                Some((t, _)) => {
+                    let tr = to_rig.transform_point3(t);
+                    let yp = yaw_pitch(tr - g[parts.head].w_axis.truncate(), up, fwd, right);
+                    Vec2::new(yp.x.clamp(-0.87, 0.87), yp.y.clamp(-0.7, 0.7))
+                }
+                None => Vec2::ZERO,
+            };
+            s.aim_yp = Vec2::new(ease(s.aim_yp.x, want.x, 0.15), ease(s.aim_yp.y, want.y, 0.15));
+            let r = Quat::from_rotation_arc(fwd, dir_of(s.aim_yp, up, fwd, right).normalize_or(fwd));
+            twist = Quat::IDENTITY.slerp(r, w);
+            let roots: Vec<usize> = (0..s.pose.len()).filter(|&i| parts.upper[i] && s.rig.parent[i].is_none_or(|p| !parts.upper[p])).collect();
+            let pivot = g[parts.spine3].w_axis.truncate();
+            s.layer_g.clone_from(&g);
+            turn_subtrees(s, &mut g, &roots, pivot, twist);
+            // The weapon: placed by the aimed hand, turned like the original's aimed pose (Shoot's first frame)
+            // plus the chest's turn.
+            let held = s.weapon;
+            s.gmat = std::mem::take(&mut g);
+            if let Some(mut wf) = weapon_frame(s) {
+                let aim_seq = mesh.seqs.iter().find(|q| q.name.eq_ignore_ascii_case(if two { "Shoot2H" } else { "Shoot" }));
+                let axes = aim_seq.and_then(|q| mesh.weapon_coords(q.start_frame.max(0) as usize, q.num_frames.max(1) as usize, 0.0));
+                let rq = {
+                    let tu = Mat3::from_mat4(s.to_ue);
+                    let m = tu * Mat3::from_quat(twist) * tu.inverse();
+                    Quat::from_mat3(&Mat3::from_cols(m.x_axis.normalize_or_zero(), m.y_axis.normalize_or_zero(), m.z_axis.normalize_or_zero())).normalize()
+                };
+                match (axes, held) {
+                    (Some(v), _) if w > 0.5 => {
+                        for k in 1..4 {
+                            wf[k] = (rq * Vec3::from(v[k])).to_array();
+                        }
+                    }
+                    (_, Some(h)) => {
+                        for k in 1..4 {
+                            wf[k] = h[k];
+                        }
+                    }
+                    _ => {}
+                }
+                s.weapon = Some(wf);
+            }
+            g = std::mem::take(&mut s.gmat);
+        }
+    }
+    // The head: toward who it watches (at most 70 degrees aside, 35 up or down), eased; back ahead after.
+    let want = match lay.look {
+        Some(t) => {
+            let tr = to_rig.transform_point3(t);
+            let head = g[parts.head].w_axis.truncate();
+            let yp = yaw_pitch(tr - head, up, fwd, right) - s.aim_yp;
+            // Behind the shoulder: held at the limit rather than swung round.
+            Vec2::new(yp.x.clamp(-1.22, 1.22), yp.y.clamp(-0.6, 0.6))
+        }
+        None => Vec2::ZERO,
+    };
+    s.look_yp = Vec2::new(ease(s.look_yp.x, want.x, 0.3), ease(s.look_yp.y, want.y, 0.3));
+    if s.look_yp.length_squared() > 1e-6 {
+        let base = twist * fwd;
+        let r = Quat::from_rotation_arc(base, (twist * dir_of(s.look_yp, up, fwd, right)).normalize_or(base));
+        let half = Quat::IDENTITY.slerp(r, 0.45);
+        let neck_at = g[parts.neck].w_axis.truncate();
+        s.layer_g.clone_from(&g);
+        turn_subtrees(s, &mut g, &[parts.neck], neck_at, half);
+        let rest = half.inverse() * r;
+        let head_at = g[parts.head].w_axis.truncate();
+        turn_subtrees(s, &mut g, &[parts.head], head_at, rest);
+    }
+    s.gmat = g;
+}
+
+/// Foot plants from the rebuilt legs: a foot coming down to the ground (near its lowest, after falling) is a step
+/// - the footstep sounds keep time with the feet drawn (the original's PlayFootStep notifies sit on its own
+/// sequences, whose stride the rebuilt clips don't share).
+pub(crate) fn foot_plants(s: &mut SkelBody, seq: &str, dt: f32) {
+    let Some(parts) = rig_parts(s.rig) else { return };
+    let moving = s.vel.length() > 0.3 && locomotion(seq.trim_end_matches("Shoot").trim_end_matches("Shoot2H"))
+        || seq.to_ascii_lowercase().starts_with("runshoot");
+    s.steps_live = moving;
+    let (up, ..) = rig_axes(s);
+    let mut g = std::mem::take(&mut s.gmat);
+    globals(s.rig, &s.pose, &mut g);
+    let low = s.rig.rest.first().map_or(0.0, |_| 0.0);
+    let _ = low;
+    // The ground: the lower of the two feet (both are never off it while walking or running).
+    let h = [g[parts.feet[0]].w_axis.truncate().dot(up), g[parts.feet[1]].w_axis.truncate().dot(up)];
+    let ground = h[0].min(h[1]);
+    for k in 0..2 {
+        s.foot_cool[k] = (s.foot_cool[k] - dt).max(0.0);
+        let falling = h[k] < s.foot_prev[k] - 1e-4;
+        let near = h[k] - ground < 0.05;
+        if moving && !s.foot_down[k] && near && !falling && s.foot_cool[k] <= 0.0 {
+            s.steps = s.steps.wrapping_add(1);
+            s.foot_cool[k] = 0.22;
+            s.foot_down[k] = true;
+        } else if h[k] - ground > 0.08 {
+            s.foot_down[k] = false;
+        }
+        s.foot_prev[k] = h[k];
+    }
+    s.gmat = g;
+}
+
+/// Where in the swing a melee blow lands (fraction of the Attack sequence) on a rebuilt body: the moment the
+/// striking hand moves fastest relative to the chest. None without a rebuilt body (the original's notify then).
+pub fn hit_fraction(mesh_actor: usize) -> Option<f32> {
+    if !enabled() {
+        return None;
+    }
+    let female = SKEL_ACTORS.lock().ok()?.as_ref()?.get(&mesh_actor).copied()?;
+    static F: OnceLock<[Option<f32>; 2]> = OnceLock::new();
+    F.get_or_init(|| {
+        [false, true].map(|fem| {
+            let rig = &rigs()[fem as usize];
+            let parts = rig_parts(rig)?;
+            let c = clip_for(rig, "Attack", fem)?;
+            let n = 40;
+            let len = c.frames().max(2) as f32 / CLIP_FPS;
+            let mut pose = rig.rest.clone();
+            let mut g = Vec::new();
+            let mut last: Option<Vec3> = None;
+            let mut best = (0.0f32, 0.5f32);
+            for i in 0..=n {
+                let u = i as f32 / n as f32;
+                sample(rig, c, u * len, false, &mut pose);
+                globals(rig, &pose, &mut g);
+                let p = g[parts.hand_r].w_axis.truncate() - g[parts.spine3].w_axis.truncate();
+                if let Some(q) = last {
+                    let v = (p - q).length();
+                    if (0.15..0.9).contains(&u) && v > best.0 {
+                        best = (v, u);
+                    }
+                }
+                last = Some(p);
+            }
+            Some(best.1)
+        })
+    })[female as usize]
+}
+
+/// Mesh actors wearing a rebuilt body (and whether it's the female rig).
+static SKEL_ACTORS: std::sync::Mutex<Option<HashMap<usize, bool>>> = std::sync::Mutex::new(None);
+
 // ------------------------------------------------------------------------------------------------ coat cloth
 
 /// The coat's bones per rig, in hierarchy order: (node, length in rig units).
@@ -1755,17 +2133,21 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         s.cloth_prev = vec![Vec3::ZERO; bones.len()];
         s.cloth_head = vec![Vec3::ZERO; bones.len()];
         s.cloth_goal = vec![Vec3::ZERO; bones.len()];
+        s.cloth_vel = vec![Vec3::ZERO; bones.len()];
         s.cloth_acc = 0.0;
     }
     let scale = world.x_axis.truncate().length();
     let gravity = Vec3::NEG_Y * (950.0 / 52.5) * 0.5;
-    // Substeps this frame (the rest carries over).
-    s.cloth_acc = (s.cloth_acc + dt.min(0.1)).min(0.1);
-    let n = (s.cloth_acc / STEP).floor() as usize;
-    s.cloth_acc -= n as f32 * STEP;
+    // Substeps this frame: at least one every frame, none longer than STEP (with whole fixed steps a fast frame
+    // had none: the coat stood still in the world while the body moved on, then caught up - a jitter at high
+    // frame rates).
+    let dt = dt.min(0.1);
+    let n = ((dt / STEP).ceil() as usize).max(1);
+    let h = dt / n as f32;
+    s.cloth_acc = 0.0;
     s.cloth_clock += dt;
     let clock = s.cloth_clock;
-    let decay = (1.0 - DAMP * STEP).max(0.0);
+    let decay = (1.0 - DAMP * h).max(0.0);
     // How far down the coat each bone hangs (0 at the collar): the hem is looser and trails more than the yoke, so
     // the coat bends along its length instead of swinging as stiff panels.
     let depth: Vec<f32> = bones
@@ -1783,8 +2165,13 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
             d
         })
         .collect();
-    for (k, &(i, len)) in bones.iter().enumerate() {
-        let spring = K / (1.0 + depth[k] * 0.7) * STEP * STEP;
+    // Collar first, hem last: a bone's parent is settled before the bone hangs from it (a child moved from a parent
+    // not yet swung this frame and snapped back the next: the coat jerked).
+    let mut order: Vec<usize> = (0..bones.len()).collect();
+    order.sort_by(|a, b| depth[*a].total_cmp(&depth[*b]));
+    for k in order {
+        let (i, len) = bones[k];
+        let spring = K / (1.0 + depth[k] * 0.7) * h * h;
         let parent = rig.parent[i].map_or(Mat4::IDENTITY, |p| g[p]);
         let anim = parent * s.pose[i].mat();
         let head_r = anim.w_axis.truncate();
@@ -1805,7 +2192,12 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         let (head0, goal0) = (s.cloth_head[k], s.cloth_goal[k]);
         // Moving through the air: the coat streams back from the way the body goes (more toward the hem), so a run
         // or a turn swings it out behind instead of the coat hanging as animated.
-        let head_vel = (head_w - head0) / dt.max(1e-3);
+        // Smoothed over ~0.15 s and capped (a teleport-sized step or an uneven frame is not a gust).
+        let raw = ((head_w - head0) / dt.max(1e-3)).clamp_length_max(len_w * 40.0);
+        let a = 1.0 - (-dt / 0.15).exp();
+        let cv = s.cloth_vel[k];
+        s.cloth_vel[k] = cv + (raw - cv) * a;
+        let head_vel = s.cloth_vel[k];
         let stream = (-head_vel * (0.03 + 0.025 * depth[k])).clamp_length_max(len_w * 0.9);
         let target_w = target_w + stream;
         // A gentle gust across the coat (each bone a little out of step), mostly sideways to the body.
@@ -1820,17 +2212,23 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
             let head = head0.lerp(head_w, u);
             let goal = goal0.lerp(target_w, u);
             let vel = (tail - prev) * decay;
-            let mut next = tail + vel + (goal - tail) * spring + (gravity + wind) * STEP * STEP;
+            let mut next = tail + vel + (goal - tail) * spring + (gravity + wind) * h * h;
             // Hold the length.
             next = head + (next - head).normalize_or(goal - head) * len_w;
-            // Out of the legs.
+            // Out of the legs - but never further out than the animation itself puts the coat (where the animated
+            // hem sits inside a leg's capsule, pushing out fought the spring pulling in, every step: the coat
+            // shook), and eased out rather than snapped.
             for (a, b) in legs.iter().flatten() {
                 let ab = *b - *a;
-                let t = ((next - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
-                let c = *a + ab * t;
+                let near = |p: Vec3| {
+                    let t = ((p - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                    *a + ab * t
+                };
+                let r = leg_r.min(goal.distance(near(goal)) * 0.95);
+                let c = near(next);
                 let d = next - c;
-                if d.length() < leg_r {
-                    next = c + d.normalize_or(Vec3::Z) * leg_r;
+                if d.length() < r {
+                    next = next.lerp(c + d.normalize_or(Vec3::Z) * r, 0.5);
                 }
             }
             // A soft limit on the swing: past SOFT half the excess is taken back each step, never past HARD.

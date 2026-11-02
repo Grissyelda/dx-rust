@@ -34,6 +34,16 @@ fn budget(l: u8) -> (usize, u32, f32, f32) {
     }
 }
 
+/// The far grass beyond the near blades (a second, sparse layer of wider clumps that fades in as the near blades
+/// thin out, so the lawn doesn't end in a visible edge): (tiles at most, slots per tile, fade-in start m, far edge m,
+/// how far the eye moves before it is re-gathered m).
+fn far_budget(l: u8) -> (usize, u32, f32, f32, f32) {
+    match l {
+        1 => (14000, 2, 10.0, 34.0, 2.0),
+        _ => (40000, 3, 15.0, 58.0, 2.5),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
 pub struct GrassUniform {
     pub a: Vec4,
@@ -99,6 +109,12 @@ impl Plugin for GrassPlugin {
 pub struct Grass {
     field: GrassField,
     lightmap: Option<Handle<Image>>,
+    /// The near blades and the far clumps.
+    layers: [Layer; 2],
+}
+
+#[derive(Default)]
+struct Layer {
     /// (mesh entity, material, data image, level it was built for).
     drawn: Option<(Entity, Handle<GrassMaterial>, Handle<Image>, u8)>,
     last_eye: Vec3,
@@ -170,82 +186,20 @@ pub fn grass_system(
     lres: Option<Res<LevelRes>>,
 ) {
     let Some(mut g) = grass else { return };
+    let g = &mut *g;
     let lv = level();
     if g.field.is_empty() || lv == 0 || lres.is_none() {
-        if let Some((e, ..)) = g.drawn {
-            if let Ok(mut v) = vis.get_mut(e) {
-                *v = Visibility::Hidden;
+        for l in &g.layers {
+            if let Some((e, ..)) = l.drawn {
+                if let Ok(mut v) = vis.get_mut(e) {
+                    *v = Visibility::Hidden;
+                }
             }
         }
         return;
     }
-    let (cap, per, near, far) = budget(lv);
-    // (Re)build the slot mesh for this level.
-    if g.drawn.as_ref().is_none_or(|d| d.3 != lv || vis.get(d.0).is_err()) {
-        if let Some((e, ..)) = g.drawn.take() {
-            if let Ok(mut ec) = commands.get_entity(e) {
-                ec.despawn();
-            }
-        }
-        let Some(lm) = g.lightmap.clone() else { return };
-        let rows = (cap as u32 * TEXELS).div_ceil(DATA_W);
-        let mut img = Image::new_fill(
-            bevy::render::render_resource::Extent3d { width: DATA_W, height: rows, depth_or_array_layers: 1 },
-            bevy::render::render_resource::TextureDimension::D2,
-            &[0u8; 16],
-            bevy::render::render_resource::TextureFormat::Rgba32Float,
-            RenderAssetUsages::default(),
-        );
-        img.sampler = bevy::image::ImageSampler::nearest();
-        let data = images.add(img);
-        let mat = mats.add(GrassMaterial { data: data.clone(), lightmap: lm, params: GrassUniform::default(), pushes: [Vec4::ZERO; 16] });
-        let e = commands
-            .spawn((
-                Mesh3d(meshes.add(slot_mesh(cap as u32 * per))),
-                MeshMaterial3d(mat.clone()),
-                Transform::default(),
-                Visibility::Inherited,
-                bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
-                bevy::camera::visibility::NoAutoAabb,
-                bevy::light::NotShadowCaster,
-                bevy::light::NotShadowReceiver,
-            ))
-            .id();
-        g.drawn = Some((e, mat, data, lv));
-        g.last_t = -1.0;
-    }
-    let Some((e, mat, data, _)) = g.drawn.clone() else { return };
-    if let Ok(mut v) = vis.get_mut(e) {
-        if *v != Visibility::Inherited {
-            *v = Visibility::Inherited;
-        }
-    }
     let eye = cam.translation;
     let now = time.elapsed_secs();
-    let mut repack = false;
-    if g.last_t < 0.0 || eye.distance(g.last_eye) > 0.4 || now - g.last_t > 0.5 {
-        g.last_eye = eye;
-        g.last_t = now;
-        let g = &mut *g;
-        g.field.near(eye, far, cap, &mut g.near);
-        g.texels.clear();
-        g.texels.resize(g.near.len() * TEXELS as usize, [0.0; 4]);
-        g.field.pack(&g.near, &mut g.texels);
-        if let Some(mut img) = images.get_mut(&data) {
-            if let Some(bytes) = img.data.as_mut() {
-                for (k, t) in g.texels.iter().enumerate() {
-                    let at = k * 16;
-                    if at + 16 > bytes.len() {
-                        break;
-                    }
-                    for (c, v) in t.iter().enumerate() {
-                        bytes[at + c * 4..at + c * 4 + 4].copy_from_slice(&v.to_le_bytes());
-                    }
-                }
-            }
-        }
-        repack = true;
-    }
     // What stands on the grass: the player and the people and things near the eye (Bevy metres, radius).
     let mut pushes = [Vec4::ZERO; 16];
     let mut n = 0usize;
@@ -275,15 +229,84 @@ pub fn grass_system(
             add(c.center, c.radius, c.height);
         }
     }
-    let Some(mut m) = mats.get_mut(&mat) else { return };
-    let w = 0.35f32;
-    m.params = GrassUniform {
-        a: Vec4::new(g.near.len() as f32, per as f32, 0.0, lv as f32),
-        // A light breeze off the sea with gusts (a direction and strength of its own; ours).
-        wind: Vec4::new(0.8, 0.6, 0.05 * w, 0.35 * w),
-        eye: eye.extend(near),
-        b: Vec4::new(1.0, n as f32, 1.0, far),
-    };
-    m.pushes = pushes;
-    let _ = repack;
+    let (cap, per, near, far) = budget(lv);
+    let (fcap, fper, fstart, ffar, fstep) = far_budget(lv);
+    for (k, l) in g.layers.iter_mut().enumerate() {
+        let far_layer = k == 1;
+        let (cap, per, reach, step, every) = if far_layer { (fcap, fper, ffar, fstep, 2.0) } else { (cap, per, far, 0.4, 0.5) };
+        // (Re)build the slot mesh for this level.
+        if l.drawn.as_ref().is_none_or(|d| d.3 != lv || vis.get(d.0).is_err()) {
+            if let Some((e, ..)) = l.drawn.take() {
+                if let Ok(mut ec) = commands.get_entity(e) {
+                    ec.despawn();
+                }
+            }
+            let Some(lm) = g.lightmap.clone() else { return };
+            let rows = (cap as u32 * TEXELS).div_ceil(DATA_W);
+            let mut img = Image::new_fill(
+                bevy::render::render_resource::Extent3d { width: DATA_W, height: rows, depth_or_array_layers: 1 },
+                bevy::render::render_resource::TextureDimension::D2,
+                &[0u8; 16],
+                bevy::render::render_resource::TextureFormat::Rgba32Float,
+                RenderAssetUsages::default(),
+            );
+            img.sampler = bevy::image::ImageSampler::nearest();
+            let data = images.add(img);
+            let mat = mats.add(GrassMaterial { data: data.clone(), lightmap: lm, params: GrassUniform::default(), pushes: [Vec4::ZERO; 16] });
+            let e = commands
+                .spawn((
+                    Mesh3d(meshes.add(slot_mesh(cap as u32 * per))),
+                    MeshMaterial3d(mat.clone()),
+                    Transform::default(),
+                    Visibility::Inherited,
+                    bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
+                    bevy::camera::visibility::NoAutoAabb,
+                    bevy::light::NotShadowCaster,
+                    bevy::light::NotShadowReceiver,
+                ))
+                .id();
+            l.drawn = Some((e, mat, data, lv));
+            l.last_t = -1.0;
+        }
+        let Some((e, mat, data, _)) = l.drawn.clone() else { return };
+        if let Ok(mut v) = vis.get_mut(e) {
+            if *v != Visibility::Inherited {
+                *v = Visibility::Inherited;
+            }
+        }
+        if l.last_t < 0.0 || eye.distance(l.last_eye) > step || now - l.last_t > every {
+            l.last_eye = eye;
+            l.last_t = now;
+            // The far layer skips the tiles it never draws (it fades in from fstart; the eye may move `step`).
+            let inner = if far_layer { (fstart - step - 0.5).max(0.0) } else { 0.0 };
+            g.field.near_ring(eye, inner, reach, cap, &mut l.near);
+            l.texels.clear();
+            l.texels.resize(l.near.len() * TEXELS as usize, [0.0; 4]);
+            g.field.pack(&l.near, &mut l.texels);
+            if let Some(mut img) = images.get_mut(&data) {
+                if let Some(bytes) = img.data.as_mut() {
+                    for (k, t) in l.texels.iter().enumerate() {
+                        let at = k * 16;
+                        if at + 16 > bytes.len() {
+                            break;
+                        }
+                        for (c, v) in t.iter().enumerate() {
+                            bytes[at + c * 4..at + c * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                        }
+                    }
+                }
+            }
+        }
+        let Some(mut m) = mats.get_mut(&mat) else { return };
+        let w = 0.35f32;
+        m.params = GrassUniform {
+            // a.z: 0 = the near blades; else where the far clumps start fading in (m).
+            a: Vec4::new(l.near.len() as f32, per as f32, if far_layer { fstart } else { 0.0 }, lv as f32),
+            // A light breeze off the sea with gusts (a direction and strength of its own; ours).
+            wind: Vec4::new(0.8, 0.6, 0.05 * w, 0.35 * w),
+            eye: eye.extend(near),
+            b: Vec4::new(1.0, if far_layer { 0.0 } else { n as f32 }, 1.0, reach),
+        };
+        m.pushes = pushes;
+    }
 }
