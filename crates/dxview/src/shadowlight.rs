@@ -461,7 +461,11 @@ pub fn assign_system(st: Res<ShadowLights>, mut parts: Query<(&ChildOf, &mut Ren
     for (c, mut layers) in &mut parts {
         let slot = if on { st.assign.get(&c.parent()).and_then(|&l| slot_of(l)) } else { None };
         let heat = layers.intersects(&RenderLayers::layer(crate::augdisplay::HEAT_LAYER));
+        let world = layers.intersects(&RenderLayers::layer(crate::mirror::WORLD_LAYER));
         let mut want = vec![0];
+        if world {
+            want.push(crate::mirror::WORLD_LAYER);
+        }
         if let Some(k) = slot {
             want.push(SLOT_LAYERS[k]);
         }
@@ -482,8 +486,8 @@ pub fn tag_casters_system(
     movers: Option<Res<crate::movers::Movers>>,
     roots: Query<(), With<MeshActorRef>>,
     parts: Query<
-        (Entity, &ChildOf, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::camera::primitives::Aabb>, &GlobalTransform),
-        (With<Mesh3d>, Without<RenderLayers>, Without<ShadowCaster>),
+        (Entity, &ChildOf, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::camera::primitives::Aabb>, &GlobalTransform, Option<&RenderLayers>),
+        (With<Mesh3d>, Without<ShadowCaster>),
     >,
     lvl_res: Res<LevelRes>,
     anim_parts: Query<(), With<MeshMaterial3d<crate::gpuanim::AnimMaterial>>>,
@@ -498,7 +502,12 @@ pub fn tag_casters_system(
     }
     let mover_roots: std::collections::HashSet<Entity> =
         movers.as_ref().map(|m| m.entities.iter().copied().collect()).unwrap_or_default();
-    for (e, parent, mat, aabb, gt) in &parts {
+    let world_pair = RenderLayers::from_layers(&[0, crate::mirror::WORLD_LAYER]);
+    for (e, parent, mat, aabb, gt, layers) in &parts {
+        // Parts with layers of their own are left alone, except the level's (movers: 0 + WORLD_LAYER).
+        if layers.is_some_and(|l| *l != world_pair) {
+            continue;
+        }
         let p = parent.parent();
         let mover = mover_roots.contains(&p);
         if !roots.contains(p) && !mover {
@@ -535,7 +544,7 @@ pub fn tag_casters_system(
         let mut ec = commands.entity(e);
         ec.insert(ShadowCaster);
         if casts {
-            ec.insert((caster_layers(&[]), Casts));
+            ec.insert((if layers.is_some() { world_pair.clone() } else { caster_layers(&[]) }, Casts));
         }
     }
 }

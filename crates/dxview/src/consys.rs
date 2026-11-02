@@ -345,7 +345,7 @@ pub struct Link {
 pub struct ConState {
     /// The next conversation started is a forced (cut scene) one.
     force_next: bool,
-    db: ConDb,
+    db: std::sync::Arc<ConDb>,
     sys_dir: PathBuf,
     pub mission: i32,
     pub location: String,
@@ -463,6 +463,29 @@ pub fn look_targets(out: &mut Vec<(usize, DVec3)>) {
             out.push((b, t));
         }
     }
+}
+
+/// The conversation database, parsed once per session (every map used to parse all of DeusExConText.u again:
+/// 100-180 ms on each arrival). Keyed by the file found (Confix's own when Confix Fixes is on).
+/// Parses the conversations on a thread of their own at start-up (100-180 ms on the first map otherwise).
+pub fn warm_db(sys: PathBuf) {
+    std::thread::spawn(move || {
+        let _ = cached_db(&sys);
+    });
+}
+
+fn cached_db(sys: &std::path::Path) -> Option<std::sync::Arc<ConDb>> {
+    static DB: Mutex<Option<(PathBuf, std::sync::Arc<ConDb>)>> = Mutex::new(None);
+    let path = unreal_pkg::paths::find_ci(sys, "DeusExConText.u")?;
+    let mut g = DB.lock().ok()?;
+    if let Some((p, db)) = g.as_ref() {
+        if *p == path {
+            return Some(db.clone());
+        }
+    }
+    let db = std::sync::Arc::new(ConDb::load(sys)?);
+    *g = Some((path, db.clone()));
+    Some(db)
 }
 
 /// EBarkModes.
@@ -1023,12 +1046,13 @@ impl Link {
 
 impl ConState {
     fn new(
-        db: ConDb,
+        db: impl Into<std::sync::Arc<ConDb>>,
         sys_dir: PathBuf,
         mission: i32,
         location: String,
         classes: &mut unreal_pkg::classes::ClassDb,
     ) -> ConState {
+        let db: Arc<ConDb> = db.into();
         let mut owners: HashMap<String, Vec<usize>> = HashMap::new();
         for &i in db.missions.get(&mission).into_iter().flatten() {
             owners
@@ -2530,7 +2554,7 @@ pub fn consys_system(
         let location = info
             .map(|a| sv(&a.props, "MissionLocation"))
             .unwrap_or_default();
-        match ConDb::load(&sys) {
+        match cached_db(&sys) {
             Some(db) => {
                 println!(
                     "consys: {} conversations, mission {} lists {}",
@@ -2656,7 +2680,17 @@ pub fn consys_system(
                 && !n.knocked_out
                 && blockers.list.get(n.blocker).is_some_and(|c| c.radius > 0.0);
             a.hostile = n.hates("Player");
-            a.busy = !matches!(n.state, NpcState::Idle) || n.on_fire.is_some();
+            // ScriptedPawn.CanConverse / CanConverseWithPlayer: every state takes a conversation except the ones
+            // that clear bInterruptState (TakingHit, Stunned, RubbingEyes, Dying) and Fleeing from a live enemy that
+            // isn't the player (the cowering subway hostages are Fleeing, and talk once the terrorists are dead).
+            let fleeing_other = n.state == NpcState::Fleeing
+                && matches!(n.target, Some(crate::ai::Target::Pawn(t))
+                    if t != n.blocker && blockers.list.get(t).is_some_and(|c| c.radius > 0.0));
+            a.busy = matches!(
+                n.state,
+                NpcState::TakingHit(_) | NpcState::Stunned(_) | NpcState::RubbingEyes(_) | NpcState::Dead
+            ) || fleeing_other
+                || n.on_fire.is_some();
             a.yaw = n.yaw;
             if a.base_eye != 0.0 {
                 a.eye = if n.sitting { a.base_eye + a.ass * 0.5 } else { a.base_eye };

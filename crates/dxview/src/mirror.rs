@@ -19,6 +19,20 @@ use bevy::shader::ShaderRef;
 pub const LAYER: usize = 5;
 /// Render layer of JC's own body: seen by the reflection camera only (first person has no body to see).
 pub const BODY_LAYER: usize = 6;
+/// The level's own surfaces (BSP and movers) carry this layer as well as 0: water reflections draw only these, the sky
+/// and JC - not the hundreds of decorations, pickups and people, which cost the render thread a whole second pass
+/// over every mesh for what a wavy, dark reflection hardly shows. Mirrors keep everything.
+pub const WORLD_LAYER: usize = 16;
+
+/// The layers a reflection camera draws: everything for a mirror, the level's surfaces for water.
+fn reflect_layers(water: bool) -> RenderLayers {
+    let first = if water { WORLD_LAYER } else { 0 };
+    if crate::skyfollow::enabled() {
+        RenderLayers::from_layers(&[first, BODY_LAYER, crate::skyfollow::LAYER])
+    } else {
+        RenderLayers::from_layers(&[first, BODY_LAYER])
+    }
+}
 
 pub type MirrorMaterial = ExtendedMaterial<StandardMaterial, MirrorExt>;
 
@@ -269,15 +283,16 @@ pub fn spawn_camera(commands: &mut Commands, mirrors: &Mirrors) {
                 // a second set of every material's pipelines).
                 bevy::render::view::Msaa::Off,
             ));
+            // One light cluster for a reflection (a third of the window's size): clustering a whole extra view
+            // each frame cost the render thread more than the few lights it sorts.
+            e.insert(bevy::light::cluster::ClusterConfig::Single);
             if sky {
-                e.insert((RenderLayers::layer(1), bevy::light::cluster::ClusterConfig::Single));
-            } else if crate::skyfollow::enabled() {
-                // The sky room comes with the world (skyfollow.rs: the copies sit kilometres out, so the few metres
+                e.insert(RenderLayers::layer(1));
+            } else {
+                // With skyfollow the sky room comes with the world (the copies sit kilometres out, so the few metres
                 // between the eye and its reflection don't show): this camera clears and draws them, and the
                 // slot's sky camera stays off - one whole view less per reflection.
-                e.insert(RenderLayers::from_layers(&[0, BODY_LAYER, crate::skyfollow::LAYER]));
-            } else {
-                e.insert(RenderLayers::from_layers(&[0, BODY_LAYER]));
+                e.insert(reflect_layers(false));
             }
         }
     }
@@ -293,7 +308,7 @@ pub fn mirror_system(
     mut mats: ResMut<Assets<MirrorMaterial>>,
     main: Query<(&Transform, &Projection), (With<crate::FlyCam>, Without<crate::SkyCam>, Without<MirrorCam>)>,
     sky_main: Query<&Projection, (With<crate::SkyCam>, Without<MirrorCam>)>,
-    mut cams: Query<(&MirrorCam, &mut Camera, &mut Transform, &mut Projection, &mut RenderTarget)>,
+    mut cams: Query<(&MirrorCam, &mut Camera, &mut Transform, &mut Projection, &mut RenderTarget, &mut RenderLayers)>,
     mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
 ) {
     if mirrors.planes.is_empty() {
@@ -373,8 +388,8 @@ pub fn mirror_system(
         seen_water = true;
         keep
     });
-    // DXVIEW_MIRROR_SLOTS=n: at most n reflections (performance comparisons).
-    let max = env_val!("DXVIEW_MIRROR_SLOTS").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(SLOTS).min(SLOTS);
+    // At most two reflections at once (each is the whole scene drawn again); DXVIEW_MIRROR_SLOTS=n for comparisons.
+    let max = env_val!("DXVIEW_MIRROR_SLOTS").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(2).min(SLOTS);
     near.truncate(max);
     let want: Vec<usize> = near.iter().map(|x| x.0).collect();
     // Keep planes in the slot they had; free the rest; give the newcomers free slots.
@@ -405,12 +420,14 @@ pub fn mirror_system(
             // The nearest reflection at full resolution, the others at half (they're farther and smaller on screen).
             // Water's waves hide resolution: a third.
             let water = mirrors.slots[k].plane.is_some_and(|p| mirrors.planes[p].water);
+            // (Performance: a full-resolution second view of a busy room halved the frame rate; two thirds is
+            // hard to tell apart in a mirror, the others a third.)
             let size = if water {
                 (full / 3).max(UVec2::ONE)
             } else if mirrors.slots[k].plane.is_some() && mirrors.slots[k].plane == nearest {
-                full
+                (full * 2 / 3).max(UVec2::ONE)
             } else {
-                (full / 2).max(UVec2::ONE)
+                (full / 3).max(UVec2::ONE)
             };
             if mirrors.slots[k].plane.is_some() && mirrors.slots[k].size != size {
                 let img = make_image(&mut images, size);
@@ -453,7 +470,7 @@ pub fn mirror_system(
             }
         }
     }
-    for (mc, mut cam, mut tf, mut proj, mut target) in &mut cams {
+    for (mc, mut cam, mut tf, mut proj, mut target, mut layers) in &mut cams {
         let slot = &mirrors.slots[mc.0.min(SLOTS - 1)];
         let (Some(pi), Some(img)) = (slot.plane, slot.image.clone()) else {
             cam.is_active = false;
@@ -490,6 +507,10 @@ pub fn mirror_system(
             continue;
         }
         *tf = look;
+        let want = reflect_layers(p.water);
+        if *layers != want {
+            *layers = want;
+        }
         // Oblique near plane on the mirror: keep only what is on the viewer's side of it (n.x - d >= 0), written in
         // this camera's view space: (view-space n, -distance from the plane).
         let nv = (tf.rotation.inverse() * n).normalize();
@@ -502,6 +523,9 @@ pub fn mirror_system(
                 // stripes along the clip plane.
                 nv.extend(-(dist + MIRROR_CLIP_EPS))
             },
+            // A mirror shows the room it's in: nothing past 60 m behind it is drawn (water reflects the sky line,
+            // so keeps the full distance).
+            far: if p.water { main_proj.far } else { main_proj.far.min(dist + 60.0) },
             ..main_proj.clone()
         });
     }

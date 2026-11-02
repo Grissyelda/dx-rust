@@ -108,6 +108,8 @@ impl Plugin for GrassPlugin {
 #[derive(Resource, Default)]
 pub struct Grass {
     field: GrassField,
+    /// The field being cut on a worker thread while the map loads (it took a few hundred ms of the load).
+    pending: Option<std::thread::JoinHandle<GrassField>>,
     lightmap: Option<Handle<Image>>,
     /// The near blades and the far clumps.
     layers: [Layer; 2],
@@ -142,12 +144,15 @@ pub fn build(commands: &mut Commands, level: &dx_level::Level, lightmap: Option<
             });
         }
     }
-    let t0 = std::time::Instant::now();
-    let field = GrassField::build(&tris, 0.5);
-    if !field.is_empty() {
-        println!("grass: {} tiles from {} faces in {:.0} ms", field.tiles.len(), tris.len(), t0.elapsed().as_secs_f32() * 1000.0);
-    }
-    commands.insert_resource(Grass { field, lightmap, ..default() });
+    let pending = (!tris.is_empty()).then(|| {
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            let field = GrassField::build(&tris, 0.5);
+            println!("grass: {} tiles from {} faces in {:.0} ms (background)", field.tiles.len(), tris.len(), t0.elapsed().as_secs_f32() * 1000.0);
+            field
+        })
+    });
+    commands.insert_resource(Grass { pending, lightmap, ..default() });
 }
 
 fn slot_mesh(slots: u32) -> Mesh {
@@ -188,6 +193,11 @@ pub fn grass_system(
     let Some(mut g) = grass else { return };
     let g = &mut *g;
     let lv = level();
+    if g.pending.as_ref().is_some_and(|h| h.is_finished()) {
+        if let Some(Ok(f)) = g.pending.take().map(|h| h.join()) {
+            g.field = f;
+        }
+    }
     if g.field.is_empty() || lv == 0 || lres.is_none() {
         for l in &g.layers {
             if let Some((e, ..)) = l.drawn {

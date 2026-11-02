@@ -2126,7 +2126,7 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
     // The legs, as capsules in world space (bone indices looked up once per rig).
     let at = |i: Option<usize>| i.map(|i| world.transform_point3(g[i].w_axis.truncate()));
     let legs: [Option<(Vec3, Vec3)>; 4] = leg_bones(rig).map(|(a, b)| Some((at(a)?, at(b)?)));
-    let leg_r = 0.1 * world.x_axis.truncate().length();
+    let leg_r = 0.13 * world.x_axis.truncate().length();
     let fresh = s.cloth_tail.len() != bones.len();
     if fresh {
         s.cloth_tail = vec![Vec3::ZERO; bones.len()];
@@ -2199,7 +2199,21 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         s.cloth_vel[k] = cv + (raw - cv) * a;
         let head_vel = s.cloth_vel[k];
         let stream = (-head_vel * (0.03 + 0.025 * depth[k])).clamp_length_max(len_w * 0.9);
-        let target_w = target_w + stream;
+        let mut target_w = target_w + stream;
+        // Where the animation itself puts the hem inside a leg (the rig's coat cuts through the thighs on a stride),
+        // the goal is moved out of it first: the coat then hangs round the leg instead of through it (the first-person
+        // body showed the coat inside the legs), and the push below never fights the spring.
+        for (a, b) in legs.iter().flatten() {
+            let ab = *b - *a;
+            let t = ((target_w - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+            let c = *a + ab * t;
+            let d = target_w - c;
+            let r = leg_r * 1.15;
+            if d.length() < r {
+                let out = d.normalize_or((target_w - head_w).cross(ab).normalize_or(Vec3::Z));
+                target_w = c + out * r;
+            }
+        }
         // A gentle gust across the coat (each bone a little out of step), mostly sideways to the body.
         let side = world.z_axis.truncate().normalize_or(Vec3::X);
         let ph = k as f32 * 0.7;
@@ -2224,7 +2238,7 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
                     let t = ((p - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
                     *a + ab * t
                 };
-                let r = leg_r.min(goal.distance(near(goal)) * 0.95);
+                let r = leg_r.min(goal.distance(near(goal)).max(leg_r * 0.5));
                 let c = near(next);
                 let d = next - c;
                 if d.length() < r {

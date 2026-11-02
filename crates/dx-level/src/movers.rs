@@ -259,6 +259,11 @@ pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Op
             }
         }
 
+        // A window pane coplanar with a solid face of the same door: the brush has the hole (its inner faces face
+        // into it) and the pane, but its BSP kept a solid face over the pane too (the UNATCO HQ doors). The solid
+        // face would hide the glass: drop solid triangles lying on a translucent pane.
+        drop_covered_by_panes(&mut parts);
+
         let mut key_pos = [[0.0f32; 3]; 8];
         let mut key_rot = [[0i32; 3]; 8];
         for i in 0..8u32 {
@@ -306,4 +311,48 @@ pub fn build(pkg: &Package, actors: &[ActorInfo], tex: &mut dyn FnMut(i32) -> Op
         });
     }
     out
+}
+
+/// See the call in `load_movers`.
+fn drop_covered_by_panes(parts: &mut [MeshPart]) {
+    let panes: Vec<([[f32; 3]; 3], [f32; 3])> = parts
+        .iter()
+        .filter(|p| p.class == SurfaceClass::Translucent)
+        .flat_map(|p| {
+            p.indices.chunks_exact(3).map(move |t| {
+                let v = [p.positions[t[0] as usize], p.positions[t[1] as usize], p.positions[t[2] as usize]];
+                (v, p.normals[t[0] as usize])
+            })
+        })
+        .collect();
+    if panes.is_empty() {
+        return;
+    }
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let inside = |q: [f32; 3], t: &[[f32; 3]; 3], n: [f32; 3]| {
+        (0..3).all(|k| dot(cross(sub(t[(k + 1) % 3], t[k]), sub(q, t[k])), n) >= -0.05)
+            || (0..3).all(|k| dot(cross(sub(t[(k + 1) % 3], t[k]), sub(q, t[k])), n) <= 0.05)
+    };
+    for p in parts.iter_mut().filter(|p| p.class == SurfaceClass::Opaque) {
+        let before = p.indices.len();
+        let kept: Vec<u32> = p
+            .indices
+            .chunks_exact(3)
+            .filter(|t| {
+                let v = [p.positions[t[0] as usize], p.positions[t[1] as usize], p.positions[t[2] as usize]];
+                let c = [(v[0][0] + v[1][0] + v[2][0]) / 3.0, (v[0][1] + v[1][1] + v[2][1]) / 3.0, (v[0][2] + v[1][2] + v[2][2]) / 3.0];
+                let n = p.normals[t[0] as usize];
+                !panes.iter().any(|(pt, pn)| {
+                    dot(n, *pn).abs() > 0.99 && dot(sub(c, pt[0]), *pn).abs() < 0.5 && inside(c, pt, *pn)
+                })
+            })
+            .flatten()
+            .copied()
+            .collect();
+        if kept.len() != before {
+            p.indices = kept;
+        }
+    }
 }

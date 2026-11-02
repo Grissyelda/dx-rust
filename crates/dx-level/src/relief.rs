@@ -22,6 +22,7 @@ use crate::dds;
 use crate::TextureImage;
 
 /// One texture's maps, RGBA8, mip 0 first.
+#[derive(Clone)]
 pub struct Relief {
     pub width: u32,
     pub height: u32,

@@ -813,6 +813,9 @@ pub struct Npc {
     pub fear_indirect_injury: bool,
     pub hate_indirect_injury: bool,
     pub fear_projectiles: bool,
+    /// A melee weapon and the enemy out of reach: the closest it has got, and how long since it last got closer.
+    pub melee_best: f64,
+    pub melee_stuck: f32,
     /// FearLevel / FearTimer: civilians run once something scares them enough (IsFearful).
     pub fear: imsim_core::reactions::Fear,
     /// FutzTimer: at most one futz bark every 2 s.
@@ -1191,6 +1194,8 @@ impl Npc {
             fear_indirect_injury: flag(p, "bFearIndirectInjury"),
             hate_indirect_injury: flag(p, "bHateIndirectInjury"),
             fear_projectiles: flag(p, "bFearProjectiles"),
+            melee_best: f64::MAX,
+            melee_stuck: 0.0,
             fear: imsim_core::reactions::Fear::new(fv(p, "FearSustainTime", 25.0), fv(p, "FearDecayRate", 0.5)),
             futz_timer: 0.0,
             fear_flee: false,
@@ -5071,6 +5076,25 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
             // Suppressive fire: hold position and shoot.
             npc.route = None;
         } else if !npc.crouching && (!seen_recently || dist > accurate) {
+            // A knife (out of ammo, NPC Finite Ammo) and an enemy it can't get to - across a wall, up on a ledge -
+            // it doesn't stand there waving it: once it has gained no ground for 4 s it runs for cover instead.
+            if melee {
+                if dist < npc.melee_best - 24.0 {
+                    npc.melee_best = dist;
+                    npc.melee_stuck = 0.0;
+                } else {
+                    npc.melee_stuck += dt;
+                }
+                if npc.melee_stuck > 4.0 {
+                    npc.melee_stuck = 0.0;
+                    npc.melee_best = f64::MAX;
+                    npc.enter_fleeing();
+                    return (DVec3::ZERO, false, false);
+                }
+            } else {
+                npc.melee_best = f64::MAX;
+                npc.melee_stuck = 0.0;
+            }
             // Close in, over the path network if there's no straight way.
             let replan = npc
                 .route
@@ -5705,7 +5729,7 @@ impl Senses<'_> {
             return None;
         }
         let clear = [height * 0.8, 0.0, -height * 0.8].iter().any(|&dz| {
-            let h = self.world.trace(my_eye, center + DVec3::new(0.0, 0.0, dz), DVec3::splat(1.0));
+            let h = self.world.sight(my_eye, center + DVec3::new(0.0, 0.0, dz), DVec3::splat(1.0));
             h.fraction >= 0.999 || (other.is_some() && h.actor == other)
         });
         clear.then_some(dist)

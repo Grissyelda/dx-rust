@@ -29,6 +29,43 @@ pub fn init() {
 }
 
 /// Note a slow piece of work outside the per-frame scopes (a level load, a view model build) in hitch.log.
+/// Load breakdown: time since the previous mark, per step of building a map (setup and the first frames' heavy
+/// systems), reported once to stdout and hitch.log by load_report().
+static LOAD: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+
+pub fn load_mark(label: &str) {
+    if let Ok(mut g) = LOAD.lock() {
+        let now = std::time::Instant::now();
+        match g.as_mut() {
+            Some((t, s)) if label != "start" => {
+                s.push_str(&format!(" {label} {:.0}", now.duration_since(*t).as_secs_f64() * 1000.0));
+                *t = now;
+            }
+            _ => *g = Some((now, String::new())),
+        }
+    }
+}
+
+pub fn load_report() {
+    if let Ok(mut g) = LOAD.lock() {
+        if let Some((_, s)) = g.take() {
+            println!("PROF load:{s}");
+            hitch_write(&format!("load breakdown (ms):{s}\n"));
+        }
+    }
+}
+
+/// Times one first-frame build (trees, skyline, grass...) into hitch.log when it is slow.
+pub fn build_note(what: &str, t0: std::time::Instant) {
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    if ms > 20.0 {
+        println!("PROF build {what}: {ms:.0} ms");
+        if HITCH.load(Ordering::Relaxed) {
+            hitch_write(&format!("build {what}: {ms:.0} ms\n"));
+        }
+    }
+}
+
 pub fn hitch_note(what: &str, ms: f64) {
     if ms > 250.0 && HITCH.load(Ordering::Relaxed) {
         hitch_write(&format!("{what}: {ms:.0} ms\n"));
@@ -579,9 +616,11 @@ pub fn prof_ab_system(
 // ---- Feature costs: DXVIEW_PROF_FEATURES=1 switches each Modern look feature off in turn and times the frames -----
 
 /// The look features measured, with the value each is restored to.
-const FEATURES: [&str; 16] = [
+const FEATURES: [&str; 27] = [
     "RealtimeShadows", "AmbientOcclusion", "ModernWater", "LightShafts", "Clouds", "Weather", "Bloom", "FogVolumes",
     "AtmosphericFog", "SoftShadows", "Skyline", "LightHalos", "EnhancedFX", "ModernCoronas", "FlashlightCone", "HQAudio",
+    "Grass", "Trees", "SkeletalCharacters", "FirstPersonBody", "CoatCloth", "AugGlows", "MaterialSheen",
+    "EmissiveSurfaces", "SoundOcclusion", "SmarterAI", "AlertIndicators",
 ];
 
 /// 20 s as set up, then per feature: 3 s to settle (pipelines), 5 s timed with that one feature off; a baseline (all

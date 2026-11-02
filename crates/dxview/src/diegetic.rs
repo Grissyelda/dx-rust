@@ -31,6 +31,8 @@ struct ScreenDef {
     bl: [f64; 3],
     br: [f64; 3],
     tl: [f64; 3],
+    /// The fourth corner when the screen isn't a rectangle (the ATM's display is a trapezoid painted on its panel).
+    tr: Option<[f64; 3]>,
 }
 
 /// Keypad buttons: the 3 x 4 grid of button centres (columns, rows) in the face's (y, z), and the pitch.
@@ -48,11 +50,13 @@ struct KeyGrid {
 fn screen_def(class: &str) -> Option<ScreenDef> {
     Some(match class {
         // The middle of the three-panel monitor.
-        "ComputerPersonal" => ScreenDef { bl: [17.55, 7.61, -0.14], br: [-17.55, 7.61, -0.14], tl: [17.55, 12.69, 24.18] },
-        "ComputerPublic" => ScreenDef { bl: [3.0, 14.55, 4.29], br: [3.0, -14.55, 4.29], tl: [1.9, 14.55, 28.91] },
+        "ComputerPersonal" => ScreenDef { bl: [17.55, 7.61, -0.14], br: [-17.55, 7.61, -0.14], tl: [17.55, 12.69, 24.18], tr: None },
+        "ComputerPublic" => ScreenDef { bl: [3.0, 14.55, 4.29], br: [3.0, -14.55, 4.29], tl: [1.9, 14.55, 28.91], tr: None },
         // The screen inside the unfolded security terminal (Activate's last frame).
-        "ComputerSecurity" => ScreenDef { bl: [-0.59, 8.95, -4.3], br: [-0.59, -8.96, -4.3], tl: [-0.59, 8.95, 4.39] },
-        "ATM" => ScreenDef { bl: [2.5, 11.6, -17.6], br: [2.5, -11.6, -17.6], tl: [-2.5, 11.6, 12.6] },
+        "ComputerSecurity" => ScreenDef { bl: [-0.59, 8.95, -4.3], br: [-0.59, -8.96, -4.3], tl: [-0.59, 8.95, 4.39], tr: None },
+        // The cyan "WELCOME" display painted on the recessed panel (ATMTex1 pixels (60,143) (112,143) (117,165)
+        // (56,165), carried onto the panel's two faces through their texture mapping).
+        "ATM" => ScreenDef { bl: [0.75, 10.4, -7.01], br: [0.75, -3.87, -7.01], tl: [-0.9, 9.44, 2.91], tr: Some([-0.9, -2.76, 2.91]) },
         _ => return None,
     })
 }
@@ -74,7 +78,7 @@ fn keypad_def(class: &str) -> Option<(ScreenDef, KeyGrid)> {
     let x = 1.0;
     let above = if class == "Keypad1" { 2.0 } else { 0.0 };
     let (y0, y1, z0, z1) = (uy.1, uy.3, vz.1, vz.3);
-    let def = ScreenDef { bl: [x, y0, z1], br: [x, y1, z1], tl: [x, y0, z0] };
+    let def = ScreenDef { bl: [x, y0, z1], br: [x, y1, z1], tl: [x, y0, z0], tr: None };
     Some((def, KeyGrid { cols, rows, pitch, x, above }))
 }
 
@@ -88,9 +92,29 @@ struct Rect3 {
     w: f64,
     h: f64,
     bl: DVec3,
+    /// Corners (bl, br, tr, tl) of a screen that isn't a rectangle: the picture is spread over them (bilinear) and
+    /// the mouse is found back through the same mapping.
+    quad: Option<[DVec3; 4]>,
+    tl_raw: DVec3,
 }
 
 impl Rect3 {
+    fn with_tr(mut self, tr: Option<DVec3>) -> Rect3 {
+        if let Some(tr) = tr {
+            let br = self.bl + self.right * self.w;
+            // The real top-left (not squared to the bottom edge).
+            let tl = self.tl_raw;
+            self.quad = Some([self.bl, br, tr, tl]);
+        }
+        self
+    }
+    /// A point of the screen by (u, v): 0..1 left to right, bottom to top.
+    fn at(&self, u: f64, v: f64) -> DVec3 {
+        match self.quad {
+            Some([a, b, c, d]) => a + (b - a) * u + (d - a) * v + (a - b + c - d) * (u * v),
+            None => self.bl + self.right * (self.w * u) + self.up * (self.h * v),
+        }
+    }
     fn new(bl: DVec3, br: DVec3, tl: DVec3) -> Rect3 {
         let r = br - bl;
         let u = tl - bl;
@@ -99,7 +123,7 @@ impl Rect3 {
         let up = (u - right * u.dot(right)).normalize_or_zero();
         let n = up.cross(right).normalize_or_zero();
         let (w, h) = (r.length(), u.dot(up));
-        Rect3 { c: bl + right * w * 0.5 + up * h * 0.5, right, up, n, w, h, bl }
+        Rect3 { c: bl + right * w * 0.5 + up * h * 0.5, right, up, n, w, h, bl, quad: None, tl_raw: tl }
     }
     /// Where a ray meets the screen's plane, as (u, v): 0..1 left to right, top to bottom.
     fn hit(&self, o: DVec3, d: DVec3) -> Option<(f64, f64)> {
@@ -112,7 +136,27 @@ impl Rect3 {
             return None;
         }
         let p = o + d * t - self.bl;
-        Some((p.dot(self.right) / self.w, 1.0 - p.dot(self.up) / self.h))
+        let (x, y) = (p.dot(self.right), p.dot(self.up));
+        if let Some(q) = self.quad {
+            // Inverse bilinear in the screen's plane (a few Newton steps from the middle).
+            let to2 = |v: DVec3| bevy::math::DVec2::new((v - self.bl).dot(self.right), (v - self.bl).dot(self.up));
+            let (a, b, c, dd) = (to2(q[0]), to2(q[1]), to2(q[2]), to2(q[3]));
+            let target = bevy::math::DVec2::new(x, y);
+            let (mut u, mut v) = (0.5f64, 0.5f64);
+            for _ in 0..8 {
+                let f = a + (b - a) * u + (dd - a) * v + (a - b + c - dd) * (u * v) - target;
+                let du = (b - a) + (a - b + c - dd) * v;
+                let dv = (dd - a) + (a - b + c - dd) * u;
+                let det = du.x * dv.y - du.y * dv.x;
+                if det.abs() < 1e-9 {
+                    break;
+                }
+                u -= (f.x * dv.y - f.y * dv.x) / det;
+                v -= (du.x * f.y - du.y * f.x) / det;
+            }
+            return Some((u, 1.0 - v));
+        }
+        Some((x / self.w, 1.0 - y / self.h))
     }
 }
 
@@ -216,6 +260,8 @@ pub struct DgRes {
     lcd: Option<(Entity, Handle<Image>, String)>,
     hover: Option<Entity>,
     gen: u64,
+    /// Which screen shape the screen entity's mesh was built for.
+    screen_key: u64,
 }
 
 fn quad_mesh(w: f32, h: f32) -> Mesh {
@@ -228,6 +274,78 @@ fn quad_mesh(w: f32, h: f32) -> Mesh {
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
     m.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
     m
+}
+
+/// A screen that isn't a rectangle, as a mesh in the world (Bevy space): an 8 x 8 grid spread bilinearly over its
+/// corners, `lift` units out along its normal, the picture's top-left at (0, 0).
+fn screen_mesh(r: &Rect3, lift: f64) -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    const N: u32 = 8;
+    let mut pos = Vec::new();
+    let mut uv = Vec::new();
+    for j in 0..=N {
+        for i in 0..=N {
+            let (u, v) = (i as f64 / N as f64, j as f64 / N as f64);
+            pos.push(bevy(r.at(u, v) + r.n * lift).to_array());
+            uv.push([u as f32, 1.0 - v as f32]);
+        }
+    }
+    let n = (bevy(r.c + r.n) - bevy(r.c)).normalize_or_zero();
+    let mut idx = Vec::new();
+    for j in 0..N {
+        for i in 0..N {
+            let a = j * (N + 1) + i;
+            idx.extend_from_slice(&[a, a + 1, a + N + 2, a, a + N + 2, a + N + 1]);
+        }
+    }
+    let count = pos.len();
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![n.to_array(); count]);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_indices(Indices::U32(idx));
+    m
+}
+
+/// While a terminal is in use, its own see-through glow panels (ComputerPersonal's translucent holo screens) are
+/// hidden: drawn over the live picture they washed it out into the room behind.
+pub fn hide_glass_system(
+    level: Res<LevelRes>,
+    actors: Query<(&crate::actors::MeshActorRef, &crate::actors::Animated, &Children)>,
+    mut parts: Query<(&Mesh3d, &mut Visibility), Without<DgScreen>>,
+    mut hidden: Local<Vec<Entity>>,
+) {
+    let want = SESSION
+        .lock()
+        .ok()
+        .and_then(|s| s.as_ref().filter(|s| s.kind == Kind::Computer && s.phase != Phase::Closing).and_then(|s| s.mesh_actor));
+    if want.is_none() {
+        for e in hidden.drain(..) {
+            if let Ok((_, mut v)) = parts.get_mut(e) {
+                *v = Visibility::Inherited;
+            }
+        }
+        return;
+    }
+    if !hidden.is_empty() {
+        return;
+    }
+    let lvl = &level.0;
+    for (r, a, kids) in &actors {
+        if Some(r.0) != want {
+            continue;
+        }
+        let Some(ma) = lvl.mesh_actors.get(r.0) else { continue };
+        for c in kids.iter() {
+            let Ok((m3, mut v)) = parts.get_mut(c) else { continue };
+            let Some(pi) = a.parts.iter().find(|(h, _)| *h == m3.0).map(|(_, i)| *i) else { continue };
+            if ma.parts.get(pi).is_some_and(|p| matches!(p.class, dx_level::SurfaceClass::Translucent | dx_level::SurfaceClass::Modulated)) {
+                *v = Visibility::Hidden;
+                hidden.push(c);
+            }
+        }
+    }
 }
 
 /// A transform putting a quad (facing +Z, X right, Y up) on a rectangle, `lift` units out of it.
@@ -330,7 +448,8 @@ pub fn diegetic_system(
             if let (Some(def), Some(mi)) = (screen_def(&a.class), mesh_actor_of(lvl, actor)) {
                 let ma = &lvl.mesh_actors[mi];
                 let sc = draw_scale(a);
-                let rect = Rect3::new(to_world(ma, sc, def.bl), to_world(ma, sc, def.br), to_world(ma, sc, def.tl));
+                let rect = Rect3::new(to_world(ma, sc, def.bl), to_world(ma, sc, def.br), to_world(ma, sc, def.tl))
+                    .with_tr(def.tr.map(|t| to_world(ma, sc, t)));
                 let unfold = play(lvl, &mut anims, Some(mi), "Activate");
                 // The desktop: 640 x 480 stretched to the screen's shape; drawn at 2x for sharp text up close.
                 let aspect = rect.w / rect.h.max(1e-3);
@@ -508,10 +627,27 @@ pub fn diegetic_system(
     }
     // ---- the screen quad (computers: the UI image; shown once the terminal has opened)
     let show_screen = guard.as_ref().is_some_and(|s| s.kind == Kind::Computer && s.phase == Phase::Active);
-    if let (Some(s), Some((_, img, _))) = (guard.as_ref(), res.cam.as_ref()) {
+    let cam_img = res.cam.as_ref().map(|c| c.1.clone());
+    if let (Some(s), Some(img)) = (guard.as_ref(), cam_img.as_ref()) {
         if s.kind == Kind::Computer {
-            let tf = quad_tf(&s.rect, s.rect.c, 0.12);
-            let size = (s.rect.w as f32 / 52.5, s.rect.h as f32 / 52.5);
+            // A little out from the monitor's surface (its own glow panels are hidden meanwhile: hide_glass_system).
+            let lift = 0.4;
+            let (tf, size) = match s.rect.quad {
+                // A trapezoid: the mesh itself is the screen in the world (rebuilt for each terminal).
+                Some(_) => (Transform::IDENTITY, (1.0, 1.0)),
+                None => (quad_tf(&s.rect, s.rect.c, lift), (s.rect.w as f32 / 52.5, s.rect.h as f32 / 52.5)),
+            };
+            let key = s.rect.quad.map(|q| q[0].x.to_bits() ^ q[2].y.to_bits().rotate_left(7) ^ q[3].z.to_bits().rotate_left(13)).unwrap_or(1);
+            if res.screen.is_some() && res.screen_key != key {
+                if let Some((e, _)) = res.screen.as_ref() {
+                    let mesh = match s.rect.quad {
+                        Some(_) => screen_mesh(&s.rect, lift),
+                        None => quad_mesh(1.0, 1.0),
+                    };
+                    commands.entity(*e).insert(Mesh3d(meshes.add(mesh)));
+                }
+                res.screen_key = key;
+            }
             match res.screen.as_ref() {
                 Some((e, mat)) => {
                     if let Some(mut m) = materials.get_mut(mat) {
@@ -534,9 +670,14 @@ pub fn diegetic_system(
                         double_sided: true,
                         ..default()
                     });
+                    let mesh = match s.rect.quad {
+                        Some(_) => screen_mesh(&s.rect, lift),
+                        None => quad_mesh(1.0, 1.0),
+                    };
+                    res.screen_key = key;
                     let e = commands
                         .spawn((
-                            Mesh3d(meshes.add(quad_mesh(1.0, 1.0))),
+                            Mesh3d(meshes.add(mesh)),
                             MeshMaterial3d(mat.clone()),
                             tf.with_scale(Vec3::new(size.0, size.1, 1.0)),
                             Visibility::Hidden,

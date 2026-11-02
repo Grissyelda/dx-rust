@@ -42,6 +42,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("BodyWounds", 1.0),
     ("FlashlightCone", 1.0),
     ("MaterialSheen", 1.0),
+    ("ModernGlass", 1.0),
     ("FogVolumes", 1.0),
     ("LightHalos", 1.0),
     ("LightShafts", 1.0),
@@ -142,6 +143,20 @@ pub fn is_modern() -> bool {
     let keys: Vec<&str> = PRESET.iter().map(|p| p.0).filter(|k| applies(k)).collect();
     let on = keys.iter().filter(|k| crate::settings::get(k) > 0.0).count();
     on * 2 > keys.len()
+}
+
+/// Playing Modern with a settings file from before a feature joined the preset: the new feature is on (in memory
+/// until a menu saves), as it would have been had the switch been made after it existed. Only keys the file doesn't
+/// mention at all - a feature the player turned off stays off.
+pub fn fill_new_modern_keys() {
+    if !crate::settings::has("ModernMode") || !is_modern() {
+        return;
+    }
+    for (k, v) in PRESET {
+        if !crate::settings::has(k) && applies(k) {
+            crate::settings::set(k, *v);
+        }
+    }
 }
 
 /// The values a switch gives: (key, value) for every covered setting, and the memory to keep ("Modern.<key>",

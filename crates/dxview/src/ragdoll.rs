@@ -49,6 +49,10 @@ pub fn request(d: Death) {
     }
 }
 
+/// Ragdolls simulating at once, and how far from the player one may start (Unreal units, ~40 m).
+const MAX_ACTIVE: usize = 6;
+const FAR_UNITS: f64 = 2100.0;
+
 /// Unreal gravity (950 units / s²) in Bevy metres.
 const GRAVITY: f32 = 950.0 / 52.5;
 /// World cells for the static colliders (metres).
@@ -274,6 +278,8 @@ pub fn start_system(
     kids: Query<&Children>,
     mover_meshes: Query<(&Mesh3d, &GlobalTransform)>,
     mesh_assets: Res<Assets<Mesh>>,
+    active: Query<(), With<Ragdoll>>,
+    player: Option<Res<crate::Player>>,
 ) {
     if crate::loader::new_map(&mut map_gen) {
         *world = RagWorld { generation: *map_gen, ..default() };
@@ -286,7 +292,22 @@ pub fn start_system(
     if !world.built {
         world.build(&level.0);
     }
+    // At most MAX_ACTIVE bodies simulate at once, and only near the player: the mission script killing every
+    // terrorist on the island at once (Mission01 StatueMissionComplete) started ~28 ragdolls together and the game
+    // ran at 4 fps until they settled. The rest play their death animation.
+    let mut live = active.iter().count();
+    let me = player.as_ref().map(|p| p.body.location);
     for d in deaths {
+        if d.blocker != PLAYER {
+            let near = match (me, blockers.list.get(d.blocker)) {
+                (Some(p), Some(c)) => c.center.distance(p) < FAR_UNITS,
+                _ => true,
+            };
+            if !near || live >= MAX_ACTIVE {
+                continue;
+            }
+        }
+        live += 1;
         let Some((_e, _, _, mut s)) = pawns
             .iter_mut()
             .find(|(_, n, pb, _)| n.is_some_and(|n| n.blocker == d.blocker) || (pb.is_some() && d.blocker == PLAYER))

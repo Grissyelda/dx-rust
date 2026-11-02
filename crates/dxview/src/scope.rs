@@ -51,6 +51,39 @@ pub fn set_lens(l: Option<(Vec3, Quat, f32)>) {
 #[derive(Component)]
 pub struct ScopeCam;
 
+/// The scope's glass, drawn over everything else in the view model's picture (no depth test, after the opaque and
+/// in the transparent pass, nearest last): the rifle's own tube and lens - HDTP's objective ring, the eyepiece's
+/// front - can never cut into the live picture.
+pub type GlassMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, OnTop>;
+
+#[derive(Asset, bevy::render::render_resource::AsBindGroup, Reflect, Debug, Clone, Default)]
+pub struct OnTop {}
+
+impl bevy::pbr::MaterialExtension for OnTop {
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if let Some(ds) = descriptor.depth_stencil.as_mut() {
+            ds.depth_compare = Some(bevy::render::render_resource::CompareFunction::Always);
+            ds.depth_write_enabled = Some(false);
+        }
+        Ok(())
+    }
+    fn enable_prepass() -> bool {
+        false
+    }
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+fn glass_mat(base: StandardMaterial) -> GlassMaterial {
+    GlassMaterial { base, extension: OnTop {} }
+}
+
 /// `.0` = the disc's place in the stack: 0 the picture, 1 the reticle and tube, 2 the glass's sheen.
 #[derive(Component)]
 pub struct ScopeGlass(u8);
@@ -184,7 +217,7 @@ pub fn scope_system(
     vm: Query<&Projection, (With<crate::weapons::ViewModelCam>, Without<ScopeCam>)>,
     mut cam: Query<(&mut Camera, &mut Transform, &mut Projection), (With<ScopeCam>, Without<crate::FlyCam>, Without<ScopeGlass>)>,
     mut glass: Query<(&ScopeGlass, &mut Transform, &mut Visibility), (Without<ScopeCam>, Without<crate::FlyCam>)>,
-    (mut meshes, mut materials, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>),
+    (mut meshes, mut materials, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<GlassMaterial>>, ResMut<Assets<Image>>),
 ) {
     let on = active(&zoom, &weapons) && !crate::thirdperson::active();
     ACTIVE.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -227,29 +260,31 @@ pub fn scope_system(
             RenderLayers::from_layers(&layers),
             ScopeCam,
         ));
-        let lens = materials.add(StandardMaterial {
+        let lens = materials.add(glass_mat(StandardMaterial {
             // A faint cool cast through the glass.
             base_color: Color::srgb(0.93, 0.97, 1.0),
             base_color_texture: Some(image),
             unlit: true,
             fog_enabled: false,
+            // In the transparent pass (drawn after the rifle), fully opaque.
+            alpha_mode: AlphaMode::Blend,
             ..default()
-        });
-        let sheen = materials.add(StandardMaterial {
+        }));
+        let sheen = materials.add(glass_mat(StandardMaterial {
             base_color_texture: Some(images.add(sheen_image())),
             unlit: true,
             fog_enabled: false,
             alpha_mode: AlphaMode::Add,
             ..default()
-        });
-        let rim = materials.add(StandardMaterial {
+        }));
+        let rim = materials.add(glass_mat(StandardMaterial {
             base_color: Color::BLACK,
             base_color_texture: Some(images.add(rim_image())),
             unlit: true,
             fog_enabled: false,
             alpha_mode: AlphaMode::Blend,
             ..default()
-        });
+        }));
         let layer = RenderLayers::layer(crate::weapons::VIEW_LAYER);
         let unit = meshes.add(disc(1.0));
         for (k, (mesh, mat)) in [(unit.clone(), lens), (meshes.add(disc(RIM)), rim), (unit, sheen)].into_iter().enumerate() {

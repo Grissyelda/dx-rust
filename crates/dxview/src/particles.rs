@@ -490,3 +490,45 @@ pub fn reset_level() {
         q.clear();
     }
 }
+
+/// Enhanced Effects (ours): burning barrels (BarrelFire) also throw licks of flame and sparks above the rim and a
+/// thin column of smoke that drifts up out of the light - the original has only the animated fire texture.
+pub fn barrel_fire_system(level: Res<LevelRes>, blockers: Res<crate::actors::Blockers>, mut map_gen: Local<u64>, mut done: Local<bool>) {
+    if crate::loader::new_map(&mut map_gen) {
+        *done = false;
+    }
+    if *done || blockers.list.is_empty() || !crate::fx::on() {
+        return;
+    }
+    *done = true;
+    let lvl = &level.0;
+    for (b, c) in blockers.list.iter().enumerate() {
+        let Some(a) = lvl.actors.get(c.actor) else { continue };
+        if !a.class.eq_ignore_ascii_case("BarrelFire") {
+            continue;
+        }
+        let rim = DVec3::new(0.0, 0.0, c.height * 0.9);
+        let gen = |tex: &str, ds: f32, check: f32, freq: f32, rise: f64, eject: f64, life: f32, off: DVec3| GenSpec {
+            pos: c.center + off,
+            dir: DVec3::Z,
+            tex: tex.into(),
+            draw_scale: ds,
+            check,
+            frequency: freq,
+            rise,
+            eject,
+            life,
+            random: true,
+            follow: Some((b, off)),
+            gravity: false,
+            lifespan: None,
+            spawn_sound: None,
+        };
+        // Flame licks over the rim.
+        add_generator(gen("Effects.Fire.OneFlame_J", 0.35, 0.08, 0.8, 45.0, 8.0, 0.55, rim));
+        // Sparks: small, quick, high.
+        add_generator(gen("Effects.Fire.OneFlame_J", 0.06, 0.15, 0.5, 140.0, 25.0, 1.1, rim + DVec3::Z * 6.0));
+        // Smoke: a thin column, slow and long-lived, starting above the flames.
+        add_generator(gen("Effects.Smoke.SmokePuff1", 0.9, 0.25, 0.7, 55.0, 6.0, 5.0, rim + DVec3::Z * 22.0));
+    }
+}

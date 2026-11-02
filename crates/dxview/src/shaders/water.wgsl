@@ -20,11 +20,42 @@ struct WaterParams {
     m: vec4<f32>,
     tint: vec4<f32>,
     moon: vec4<f32>,
+    grid: vec4<f32>,
+    mask: vec4<f32>,
+    heights: array<vec4<f32>, 4>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var reflection_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var reflection_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var mask_tex: texture_2d<u32>;
+
+// The water mask (water::build_mask) at a Bevy (x, z): bit 7 = water, bits 0-4 = its height's index.
+fn mask_at(p: vec2<f32>) -> u32 {
+    let q = floor((p - water.mask.xy) / max(water.mask.z, 1e-4));
+    let dim = vec2<f32>(textureDimensions(mask_tex));
+    if (q.x < 0.0 || q.y < 0.0 || q.x >= dim.x || q.y >= dim.y) {
+        return 0u;
+    }
+    return textureLoad(mask_tex, vec2<i32>(q), 0).r;
+}
+
+// The wave grid's centre for this view: the eye, snapped to the grid's step (water::grid_mesh).
+fn grid_centre() -> vec2<f32> {
+    return floor(view.world_position.xz / water.grid.z) * water.grid.z;
+}
+
+// A water face or the open sea gives way to the wave grid inside its square, where the mask has water.
+fn under_grid(p: vec2<f32>) -> bool {
+    if (water.grid.x < 0.5 || water.grid.x > 1.5 || water.m.x < 0.5) {
+        return false;
+    }
+    let d = abs(p - grid_centre());
+    if (max(d.x, d.y) >= water.grid.y) {
+        return false;
+    }
+    return (mask_at(p) & 128u) != 0u;
+}
 
 const TAU: f32 = 6.2831853;
 
@@ -156,6 +187,14 @@ fn rain_rings(p: vec2<f32>, t: f32, amount: f32) -> vec2<f32> {
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     let t = globals.time;
+    // The wave grid where there's water; the flat faces everywhere else.
+    if (water.grid.x > 1.5) {
+        if ((mask_at(in.world_position.xz) & 128u) == 0u) {
+            discard;
+        }
+    } else if (under_grid(in.world_position.xz)) {
+        discard;
+    }
     if (water.m.x > 0.5) {
         return modern_water(in, is_front, t);
     }
@@ -317,7 +356,24 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     var wp = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
 #ifdef VERTEX_NORMALS
     out.world_normal = mesh_functions::mesh_normal_local_to_world(vertex.normal, ii);
-    if (water.far.w > 0.0 && abs(out.world_normal.y) > 0.7) {
+    if (water.grid.x > 1.5) {
+        // The wave grid: round this view's eye, at the water's height the mask gives, with the swell - fading to
+        // nothing at the square's edge, where the flat faces take over.
+        let c = grid_centre();
+        wp = vec4<f32>(vertex.position.x + c.x, 0.0, vertex.position.z + c.y, 1.0);
+        let k = mask_at(wp.xz) & 31u;
+        wp.y = water.heights[k / 4u][k % 4u];
+        let edge = max(abs(vertex.position.x), abs(vertex.position.z)) / water.grid.y;
+        // And with distance from the eye: out where a 1.5 m grid step is a good part of a wave, the crests stood up
+        // from the sea as rows of pale triangles against the flat water beyond (the shading still carries the waves
+        // there: swell_grad_lod).
+        let de = length(view.world_position.xz - wp.xz);
+        let st = water.m.z;
+        let near = 1.0 - smoothstep(35.0 + 25.0 * st, 75.0 + 35.0 * st, de);
+        let fade = (1.0 - smoothstep(0.6, 0.95, edge)) * near;
+        wp.y += swell_h(wp.xz, globals.time) * water.far.w * fade;
+        out.world_normal = vec3<f32>(0.0, 1.0, 0.0);
+    } else if (water.far.w > 0.0 && water.grid.x < 0.5 && abs(out.world_normal.y) > 0.7) {
         // Full near the eye, flat far away (where a vertex is many waves apart and the far sea meets the map's).
         let de = length(view.world_position.xz - wp.xz);
         // In a storm the swell runs on much farther (flattened close by, the far flat sea showed in the troughs as

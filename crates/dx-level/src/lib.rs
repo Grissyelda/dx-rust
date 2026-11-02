@@ -543,7 +543,9 @@ impl TexLib {
         if tex.format == unreal_pkg::objects::tex_format::P8 {
             return None;
         }
-        if force_mask {
+        // The game's texture decides whether it's see-through: New Vision's replacements don't always carry bMasked
+        // (Battery Park's ChainLinks vent grates drew their holes black).
+        if force_mask || self.orig_masked(path) {
             tex.masked = true;
         }
         let mut mips = Vec::new();
@@ -556,6 +558,25 @@ impl TexLib {
         if mips.is_empty() {
             return None;
         }
+        // A masked game texture whose HD replacement was stored without punch-through alpha: the holes come from
+        // the game's own picture (its palette index 0), stretched to each mip.
+        if tex.masked && mips.first().is_some_and(|m| m.chunks_exact(4).all(|px| px[3] >= 128)) {
+            if let Some((ow, oh, alpha)) = self.orig_alpha(path) {
+                for (level, m) in mips.iter_mut().enumerate() {
+                    let (w, h) = ((tex.width() >> level).max(1) as usize, (tex.height() >> level).max(1) as usize);
+                    if m.len() != w * h * 4 {
+                        continue;
+                    }
+                    for y in 0..h {
+                        let oy = (y * oh / h).min(oh - 1);
+                        for x in 0..w {
+                            let ox = (x * ow / w).min(ow - 1);
+                            m[(y * w + x) * 4 + 3] = alpha[oy * ow + ox];
+                        }
+                    }
+                }
+            }
+        }
         // Masked textures: DXT1's punch-through alpha already marks the see-through texels; opaque ones keep
         // alpha 255 everywhere.
         if !tex.masked {
@@ -566,6 +587,22 @@ impl TexLib {
             }
         }
         Some((tex, mips))
+    }
+
+    /// The game's own texture's see-through texels (mip 0: width, height, alpha per texel).
+    fn orig_alpha(&mut self, path: &str) -> Option<(usize, usize, Vec<u8>)> {
+        let (pkg_name, rest) = path.split_once('.')?;
+        let tex = self.read_raw(path, false)?;
+        let _ = rest;
+        let palette = self.palette_of(pkg_name, tex.palette_ref);
+        let rgba = tex.mip_to_rgba8(0, palette.as_ref())?;
+        let (w, h) = (tex.mips.first()?.width as usize, tex.mips.first()?.height as usize);
+        Some((w, h, rgba.chunks_exact(4).map(|p| p[3]).collect()))
+    }
+
+    /// The game's own texture is masked (bMasked), whatever the HD / DDS replacement says.
+    fn orig_masked(&mut self, path: &str) -> bool {
+        self.read_raw(path, false).is_some_and(|t| t.masked)
     }
 
     /// A texture's size as the game lays it out (USize / VSize): UVs on level surfaces are in these texels even
@@ -601,9 +638,15 @@ impl TexLib {
         if bc1_supported() {
             let hd = if self.hd_scope && unreal_pkg::paths::has_hd_textures() { self.read_raw(path, true) } else { None };
             let from_hd = hd.is_some();
-            if let Some(tex) = hd.or_else(|| self.read_raw(path, false)) {
+            if let Some(mut tex) = hd.or_else(|| self.read_raw(path, false)) {
+                if from_hd && !tex.masked && self.orig_masked(path) {
+                    tex.masked = true;
+                }
                 if let Some(mips) = bc1_mips(&tex) {
-                    if tex.masked || force_mask || !bc1_has_holes(&mips[0]) {
+                    // (A masked game texture whose HD version has no holes takes them from the game's picture:
+                    // decoded below, not kept as BC1.)
+                    let holes = bc1_has_holes(&mips[0]);
+                    if (tex.masked || force_mask || !holes) && !(from_hd && tex.masked && !holes) {
                         if from_hd {
                             self.hd_used += 1;
                         }

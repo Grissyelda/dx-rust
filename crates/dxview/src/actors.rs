@@ -36,6 +36,29 @@ pub struct World<'a> {
     pub movers: Option<&'a [crate::movers::MoverRt]>,
 }
 
+impl World<'_> {
+    /// A line of sight: like `trace`, but it carries on through see-through grates and fences (masked level faces
+    /// - vent covers, chain-link): people see through them as you do.
+    pub fn sight(&self, start: DVec3, end: DVec3, extent: DVec3) -> Hit {
+        let mut from = start;
+        for _ in 0..4 {
+            let h = self.trace(from, end, extent);
+            if h.fraction >= 1.0 || h.actor.is_some() {
+                // Fractions of the whole line.
+                let done = (from - start).length() / (end - start).length().max(1e-9);
+                return Hit { fraction: done + (1.0 - done) * h.fraction, ..h };
+            }
+            let at = from + (end - from) * h.fraction;
+            if !crate::seethrough::on_grate(self.level, at) {
+                let done = (from - start).length() / (end - start).length().max(1e-9);
+                return Hit { fraction: done + (1.0 - done) * h.fraction, ..h };
+            }
+            from = at + (end - start).normalize_or_zero() * 4.0;
+        }
+        Hit { fraction: 1.0, normal: DVec3::ZERO, actor: None }
+    }
+}
+
 impl CollisionWorld for World<'_> {
     fn trace(&self, start: DVec3, end: DVec3, extent: DVec3) -> Hit {
         let h = self.level.collision.trace(start, end, extent);

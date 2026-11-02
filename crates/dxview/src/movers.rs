@@ -94,8 +94,10 @@ pub fn spawn_movers(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     handles: &[Handle<Image>],
+    glass: &HashMap<usize, Handle<Image>>,
 ) -> Movers {
     let mut cache = HashMap::new();
+    let mut glass_mats: HashMap<usize, Handle<StandardMaterial>> = HashMap::new();
     let mut out = Movers {
         rt: Vec::new(),
         entities: Vec::new(),
@@ -151,15 +153,16 @@ pub fn spawn_movers(
                 continue;
             }
             let h = meshes.add(part_mesh(info, pi, info.location, info.rotation, level));
-            let mat = crate::actors::material_for(
-                materials,
-                &mut cache,
-                handles,
-                part.texture,
-                part.class,
-            );
+            let frosted = (part.class == dx_level::SurfaceClass::Translucent)
+                .then(|| part.texture.and_then(|t| glass.get(&t).map(|h| (t, h.clone()))))
+                .flatten();
+            let mat = match frosted {
+                // Modern Glass (glass.rs).
+                Some((t, img)) => glass_mats.entry(t).or_insert_with(|| crate::glass::material(materials, img)).clone(),
+                None => crate::actors::material_for(materials, &mut cache, handles, part.texture, part.class),
+            };
             let child = commands
-                .spawn((Mesh3d(h.clone()), MeshMaterial3d(mat)))
+                .spawn((Mesh3d(h.clone()), MeshMaterial3d(mat), bevy::camera::visibility::RenderLayers::from_layers(&[0, crate::mirror::WORLD_LAYER])))
                 .id();
             commands.entity(parent).add_child(child);
             parts.push((h, pi));

@@ -245,7 +245,9 @@ fn spots_of(lvl: &dx_level::Level) -> Vec<SpotDef> {
             color: Color::srgb(c[0], c[1], c[2]),
             range: r_m,
             angle: (cone * std::f32::consts::FRAC_PI_2).clamp(0.08, 1.2),
-            intensity: std::f32::consts::PI.powi(2) * r_m * r_m * k * 0.6,
+            // (Haze only. A big, bright street lamp - Battery Park's blue one by the player start - lit the air
+            // like a stage light: a third of it, and no lamp past a set brightness.)
+            intensity: (std::f32::consts::PI.powi(2) * r_m * r_m * k * 0.6).min(450.0) * 0.3,
         });
     }
     out
@@ -295,7 +297,7 @@ pub fn shafts_system(
                 // Local fog glows dimly all over (the bars' and sewers' light, baked into the walls, isn't in the air).
                 ambient_intensity: 0.0,
                 jitter: 0.0,
-                step_count: 24,
+                step_count: 16,
             });
         } else if !any && has_fog {
             commands.entity(cam_e).remove::<VolumetricFog>();
@@ -316,7 +318,7 @@ pub fn shafts_system(
                     density_texture: Some(tex.clone()),
                     absorption: 0.01,
                     scattering: 0.6,
-                    scattering_asymmetry: 0.6,
+                    scattering_asymmetry: 0.45,
                     light_intensity: AIR_BOOST,
                     ..default()
                 },
@@ -377,7 +379,7 @@ pub fn shafts_system(
                 // (0.02 laid a grey veil over everything near, people included.)
                 ambient_intensity: 0.012,
                 jitter: 0.0,
-                step_count: 24,
+                step_count: 16,
             });
         }
         return;

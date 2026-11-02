@@ -721,6 +721,7 @@ impl Enhance {
             ("ThrownNoise", "AI", "Thrown Objects Make Noise", "Anything you throw is heard where it lands or bounces - further for heavy things - and armed guards in earshot go to look. Good for distractions."),
             ("SurfaceFootsteps", "AI", "Footsteps Louder On Hard Floors", "Carpet and grass muffle your steps, metal and water give you away; guards hear you by what you walk on."),
             ("WeaponInertia", "Visuals", "Weapon Inertia", "The weapon in your hands trails a little behind when you turn (GMDX's Viewmodel Inertia)."),
+            ("ModernGlass", "Visuals", "Modern Glass", "Window panes are frosted glass you can see, with their streaks catching the light, instead of a faint additive smear that leaves an empty-looking hole (the UNATCO HQ doors). Takes effect when the map loads."),
             ("MaterialSheen", "Visuals", "Material Properties", "Weapons and items in your hands catch the light by what they are made of: gun metal shines, plastic less, gloves and skin hardly at all."),
             ("FlashlightCone", "Visuals", "Flashlight Cone", "The flashlight augmentation casts a soft-edged cone with shadows from your shoulder instead of a pool of light where you look."),
             ("BulletPenetration", "Gameplay", "Bullets Through Thin Walls", "Bullets go on through thin wood (walls, doors) and breakable glass, doing less damage on the other side. Bulletproof glass stays bulletproof."),

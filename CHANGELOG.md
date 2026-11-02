@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Faster loading and frame rate, water crests, glass, hostages (November 2, afternoon)
+- Frame rate: water reflections draw the level, the sky and JC but not every decoration and person (the biggest single
+  cost of the Modern look); reflections and the light shafts are cheaper; ragdolls are capped at six at once near you,
+  so finishing Liberty Island (every terrorist goes down at once) no longer drops to a few frames a second; mirrors
+  render at a lower resolution.
+- Loading: textures and relief maps are prepared on all CPU cores, grass is laid out in the background and the
+  conversations are read once while the menu is up instead of on every map. With New Vision, Battery Park's relief
+  maps alone took seconds.
+- Water: the waves are one smooth surface round you instead of many separate water faces, so no seams open between
+  them; out at a distance the swell eases off so wave crests no longer stand up as rows of pale triangles.
+- UNATCO HQ doors have their glass windows again (a solid face was drawn over each pane), and Modern Glass
+  (Settings > Enhancements > Visuals, on in Modern) shows panes as frosted glass instead of a faint smear.
+- Battery Park subway: the rescued hostages can be talked to (cowering people could never start a conversation).
+- Third person: JC's glasses stay on his face. First person: the coat keeps out of your legs.
+- Diegetic Scope: the rifle's own lens no longer cuts in front of the scope picture.
+- Diegetic ATMs show their screen only in the machine's screen; diegetic computers hide their see-through panels so
+  the screen is readable.
+- New Vision textures keep their see-through parts: ladders and vent grates are no longer filled in black, and guards
+  can see you through chain-link vents.
+- Battery Park: the blue light at the start is no longer blinding. Burning barrels have flames, sparks and a smoke
+  column (Enhanced Effects).
+- Achievements: Rescue the Lady unlocks as soon as the statue is cleared; unlock notices wait until a map has loaded.
+- Out-of-ammo troops with knives who can't reach their target stop standing there and take cover.
+
 ### Bone bodies, trees, glowing weapons, far grass (November 2)
 - Skeletal people: the arms and chest take an aimed pose over the legs while running or walking in a fight and turn
   toward the target; heads turn to whoever is speaking in a conversation; strafing to the right plays a right

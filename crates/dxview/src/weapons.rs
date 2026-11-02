@@ -654,7 +654,7 @@ pub struct ViewGlass;
 
 /// Hides the view model's glass while the Diegetic Scope's lens is in the eyepiece (the model's own glass drew
 /// over the live picture).
-pub fn view_glass_system(mut q: Query<&mut Visibility, With<ViewGlass>>) {
+pub fn view_glass_system(mut q: Query<&mut Visibility, (With<ViewGlass>, Without<crate::skeletal::HiddenPart>)>) {
     let want = if crate::scope::diegetic() { Visibility::Hidden } else { Visibility::Inherited };
     for mut v in &mut q {
         if *v != want {
@@ -1260,7 +1260,9 @@ pub fn spawn_mesh_parts(
                 let l = p.to_ascii_lowercase();
                 l.contains("glass") || l.contains("lens") || l.contains("shine")
             });
-        if glassy {
+        // View models only: the mirror / third-person body (JC's glasses are translucent / modulated) is built here too,
+        // and showing its hidden vertex glasses again left them floating beside the skeletal body.
+        if glassy && view {
             child.insert(ViewGlass);
         }
         let child = child.id();

@@ -144,6 +144,8 @@ mod weapons;
 mod wisp;
 mod gpudrive;
 mod scope;
+mod seethrough;
+mod glass;
 
 use actors::{Blockers, Deco, World};
 use dx_level::{bevy_to_ue, ue_to_bevy, Level, SurfaceClass};
@@ -639,6 +641,7 @@ fn main() {
     }
     unreal_pkg::paths::set(&PathBuf::from(&root), mods);
     unreal_pkg::mods::activate(&enabled);
+    remaster::fill_new_modern_keys();
     // Relief maps (remastered lighting): the Parallax Maps mod's folder, the copy shipped beside the exe
     // (relief/), and packs installed in the game's Textures folder the DX11 renderer's way.
     {
@@ -680,6 +683,7 @@ fn main() {
     }
     unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
     unreal_pkg::paths::set_picks_on(settings::get("ConfixFixes") > 0.5);
+    consys::warm_db(PathBuf::from(&root).join("System"));
     dx_level::skincolor::TR_FIXES.store(crate::transcended::fixes(), std::sync::atomic::Ordering::Relaxed);
     hdtp::apply_dds_filter();
     travel::init_lddp();
@@ -954,6 +958,7 @@ fn main() {
         .add_systems(Update, (augdisplay::augdisplay_system, augdisplay::vision_system, augdisplay::aug_text_system))
         .init_resource::<particles::Particles>()
         .add_systems(Update, particles::particle_system.after(devices::device_system).after(fixtures::fixture_system))
+        .add_systems(Update, particles::barrel_fire_system.before(particles::particle_system))
         .add_systems(Update, weather::weather_system.after(fly))
         .add_systems(Update, (shadowlight::shadow_light_system.after(fly), shadowlight::tag_casters_system, shadowlight::assign_system.after(shadowlight::shadow_light_system).after(shadowlight::tag_casters_system), shadowlight::no_transparent_shadows_system))
         .add_systems(Update, fx::fx_system.after(fly))
@@ -979,6 +984,7 @@ fn main() {
         .add_systems(PostUpdate, gpudrive::refile_system.after(skyfollow::follow_system).after(mirror::mirror_system).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
         .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
+        .add_systems(Update, diegetic::hide_glass_system.after(diegetic::diegetic_system))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
         .add_systems(Update, aimmode::aim_mode_system.after(hud::aim_system).before(weapons::weapon_system).before(hud::crosshair_system))
         .add_systems(Update, (eggs::matrix_system, eggs::warren_system))
@@ -1041,6 +1047,7 @@ fn main() {
         .add_plugins(bevy::pbr::MaterialPlugin::<shadowlight::BspMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<skeletal::ActorMaterial>::default())
         .add_plugins(bevy::pbr::MaterialPlugin::<weather::RainMaterial>::default())
+        .add_plugins(bevy::pbr::MaterialPlugin::<scope::GlassMaterial>::default())
         .init_resource::<water::WaterMats>()
         .init_resource::<gpuanim::GpuAnim>()
         .add_systems(Startup, (gpuanim::setup_anim_shader, mirror::setup_mirror_shader, water::setup_water_shader, clouds::setup_cloud_shader, shadowlight::setup_bsp_shader, skeletal::setup_shader, weather::setup_rain_shader, install_crash_log))
@@ -1321,6 +1328,7 @@ fn setup(
 ) {
     let mut water_list = water::WaterMats::default();
     let mut backing_mat: Option<Handle<StandardMaterial>> = None;
+    prof::load_mark("start");
     // The tessellated water sheets' vertices (the open sea's first band meets them vertex to vertex).
     let mut sheet_pts: Vec<[f32; 3]> = Vec::new();
     let mut bsp_cache: std::collections::HashMap<(AssetId<StandardMaterial>, bool), Handle<shadowlight::BspMaterial>> = Default::default();
@@ -1345,11 +1353,18 @@ fn setup(
         });
         images.add(img)
     });
-    let handles: Vec<Handle<Image>> = level
-        .textures
-        .iter()
-        .map(|t| images.add(make_image(t)))
-        .collect();
+    // The textures' GPU images, made on several threads (copying / decoding hundreds of mip chains was a good part
+    // of each map's load).
+    let made: Vec<Image> = {
+        let n = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
+        let chunk = level.textures.len().div_ceil(n).max(1);
+        std::thread::scope(|sc| {
+            let jobs: Vec<_> = level.textures.chunks(chunk).map(|c| sc.spawn(move || c.iter().map(make_image).collect::<Vec<Image>>())).collect();
+            jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
+        })
+    };
+    let handles: Vec<Handle<Image>> = made.into_iter().map(|i| images.add(i)).collect();
+    prof::load_mark("water list");
     // Remastered lighting (relight.rs): the bake's per-texel reach of each surface's three strongest lights, and
     // the light table.
     let relight_imgs: Option<(Handle<Image>, Handle<Image>)> = level
@@ -1366,10 +1381,36 @@ fn setup(
     > = Default::default();
     let mut scrollers = UvScroll::default();
 
+    prof::load_mark("relight bake tables");
     // The water sheets, split fine enough to move with the swell (Modern Water's waves), with T-junctions mended
     // across all of them (water::tessellate_sheets).
-    let water_batches: Vec<&dx_level::Batch> = level.batches.iter().filter(|b| b.class == SurfaceClass::Water && !b.sky).collect();
-    let mut water_sheets = water::tessellate_sheets(&water_batches, 2.0).into_iter();
+    // (Flat: Modern Water's swell is carried by the wave grid, water::grid_mesh.)
+    let mask_ph = water::mask_placeholder(&mut images);
+    // Relief maps for every texture that can get one, made on all cores before the batches use them.
+    let relief_maps = {
+        let mut want: Vec<usize> = level
+            .batches
+            .iter()
+            .filter(|b| !b.sky && b.mirror.is_none() && matches!(b.class, SurfaceClass::Opaque | SurfaceClass::Masked))
+            .filter_map(|b| b.texture)
+            .collect();
+        want.sort_unstable();
+        want.dedup();
+        relight::relief_maps_parallel(&level.textures, &want)
+    };
+    // Modern Glass (glass.rs): frosted copies of the glass textures on translucent level and mover faces.
+    let glass_imgs = glass::images(
+        level,
+        level
+            .batches
+            .iter()
+            .filter(|b| b.class == SurfaceClass::Translucent && !b.sky && b.mirror.is_none())
+            .filter_map(|b| b.texture)
+            .chain(level.movers.iter().flat_map(|m| m.parts.iter()).filter(|p| p.class == SurfaceClass::Translucent).filter_map(|p| p.texture)),
+        &mut images,
+        &handles,
+    );
+    let mut glass_mats: std::collections::HashMap<usize, Handle<StandardMaterial>> = Default::default();
     for b in &level.batches {
         let mat = cache
             .entry((
@@ -1406,7 +1447,8 @@ fn setup(
                 if !b.sky && b.mirror.is_none() && matches!(b.class, SurfaceClass::Opaque | SurfaceClass::Masked) {
                     if let Some(t) = b.texture.map(|i| &level.textures[i]) {
                         if let Some(mut m) = materials.get_mut(&h) {
-                            if relight::apply_relief(&mut m, t, &mut images) {
+                            let r = b.texture.and_then(|i| relief_maps.get(&i).cloned());
+                            if relight::apply_relief_maps(&mut m, t, r, &mut images) {
                                 relief_mats.insert(h.id());
                             }
                         }
@@ -1426,14 +1468,12 @@ fn setup(
             RenderAssetUsages::default(),
         );
         if b.class == SurfaceClass::Water && !b.sky {
-            // Fine enough for the surface to move with the swell (Modern Water's waves).
-            let (p, n, u, u1, i) = water_sheets.next().unwrap_or_default();
-            sheet_pts.extend_from_slice(&p);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, u);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, u1);
-            mesh.insert_indices(Indices::U32(i));
+            sheet_pts.extend_from_slice(&b.positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
+            mesh.insert_indices(Indices::U32(b.indices.clone()));
         } else {
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
@@ -1454,12 +1494,21 @@ fn setup(
         // vertex of those meshes every frame (1.6 million with the open sea - 3 ms of the main thread). Their
         // bounds are worked out once here instead (water with room for its waves).
         let fixed_bounds = static_bounds(&mesh, if b.class == SurfaceClass::Water { 2.5 } else { 0.0 });
+        let glass_img = (b.class == SurfaceClass::Translucent && !b.sky && b.mirror.is_none())
+            .then(|| b.texture.and_then(|i| glass_imgs.get(&i).map(|h| (i, h.clone()))))
+            .flatten();
         let mut e = match b.mirror {
+            // Modern Glass: a frosted pane.
+            _ if glass_img.is_some() => {
+                let (i, img) = glass_img.unwrap();
+                let gm = glass_mats.entry(i).or_insert_with(|| glass::material(&mut materials, img)).clone();
+                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(gm), bevy::light::NotShadowCaster))
+            }
             // Water: the WetTexture source picture rippled by the water shader (water.rs).
             _ if b.class == SurfaceClass::Water && !b.sky => {
                 let base = materials.get(&mat).cloned().unwrap_or_default();
                 let ph = mirror::placeholder(&mut mirrors, &mut images);
-                let wm = water_mats.add(water::material(base, b.water_opaque, ph));
+                let wm = water_mats.add(water::material(base, b.water_opaque, ph, mask_ph.clone()));
                 water_list.mats.push(wm.clone());
                 water_list.opaque.push(b.water_opaque);
                 mirror::add_water(&mut mirrors, &wm, &b.positions);
@@ -1519,7 +1568,7 @@ fn setup(
                         bsp_mats.add(bm)
                     })
                     .clone();
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm)))
+                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm), RenderLayers::from_layers(&[0, mirror::WORLD_LAYER])))
             }
         };
         if let Some(a) = fixed_bounds {
@@ -1548,6 +1597,7 @@ fn setup(
     if relight::relief_level() > 0 {
         println!("relight: {} textures with relief maps ({} ms)", relief_mats.len(), relief_t0.elapsed().as_millis());
     }
+    prof::load_mark("batches + relief + water");
     // The map's edge walls in Bevy space: where the open sea may run on.
     let edge_walls: Vec<[Vec3; 3]> = level
         .batches
@@ -1555,8 +1605,12 @@ fn setup(
         .filter(|b| !b.sky && b.texture.is_some_and(|t| level.textures[t].name.eq_ignore_ascii_case("CoreTexMisc.Marker_sky")))
         .flat_map(|b| b.indices.chunks_exact(3).map(move |t| [t[0], t[1], t[2]].map(|i| Vec3::from(b.positions[i as usize]))))
         .collect();
+    let mut ocean_geom: Option<(Vec<[f32; 3]>, Vec<u32>)> = None;
+    let mut ring_mat: Option<Handle<water::WaterMaterial>> = None;
     if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches, &sheet_pts, &edge_walls) {
+        ring_mat = Some(mat.clone());
         if let (Some(bevy::mesh::VertexAttributeValues::Float32x3(p)), Some(Indices::U32(i))) = (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices()) {
+            ocean_geom = Some((p.clone(), i.clone()));
             let y = p.first().map_or(0.0, |v| v[1]);
             let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
             let back_mesh = water::backing_mesh(p, i);
@@ -1591,18 +1645,80 @@ fn setup(
             e.insert(a);
         }
     }
+    // Modern Water's wave grid over the map's water (water::grid_mesh), cut to it by the mask.
+    {
+        let sheets: Vec<(&[[f32; 3]], &[u32])> = level
+            .batches
+            .iter()
+            .filter(|b| b.class == SurfaceClass::Water && !b.sky)
+            .map(|b| (&b.positions[..], &b.indices[..]))
+            .collect();
+        let ring = ocean_geom.as_ref().map(|(p, i)| (&p[..], &i[..]));
+        if let Some((img, rect, heights)) = water::build_mask(&sheets, ring) {
+            let mask = images.add(img);
+            // The biggest flat water plane's material is the grid's (its reflection slot, its settings).
+            let plane = mirrors
+                .planes
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.water && !p.water_mats.is_empty())
+                .max_by(|a, b| {
+                    let ar = |p: &mirror::Plane| (p.max.x - p.min.x) * (p.max.z - p.min.z);
+                    ar(a.1).total_cmp(&ar(b.1))
+                })
+                .map(|(i, _)| i);
+            let grid = Vec4::new(1.0, water::GRID_R, water::GRID_STEP, 0.0);
+            // The open sea too: left with its own vertex swell it opened pale triangles against the flat sheets
+            // (the "triangles at the crests").
+            for h in water_list.mats.iter().chain(ring_mat.iter()) {
+                if let Some(mut m) = water_mats.get_mut(h) {
+                    m.extension.mask = mask.clone();
+                    m.extension.params.grid = grid;
+                    m.extension.params.mask = rect;
+                    m.extension.params.heights = heights;
+                }
+            }
+            if let Some(pi) = plane {
+                let src = mirrors.planes[pi].water_mats[0].clone();
+                if let Some(mut gm) = water_mats.get(&src).cloned() {
+                    gm.extension.params.grid.x = 2.0;
+                    // Never solid: it's the moving surface over every water face, translucent ones included.
+                    let gh = water_mats.add(gm);
+                    water_list.mats.push(gh.clone());
+                    water_list.opaque.push(false);
+                    mirrors.planes[pi].water_mats.push(gh.clone());
+                    commands.spawn((
+                        Mesh3d(meshes.add(water::grid_mesh())),
+                        MeshMaterial3d(gh),
+                        Transform::IDENTITY,
+                        Visibility::Hidden,
+                        water::WaterGrid,
+                        RenderLayers::layer(mirror::LAYER),
+                        bevy::light::NotShadowReceiver,
+                        bevy::light::NotShadowCaster,
+                        // The shader puts it round each camera: never culled.
+                        bevy::camera::visibility::NoFrustumCulling,
+                        bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
+                        bevy::camera::visibility::NoAutoAabb,
+                    ));
+                }
+            }
+        }
+    }
     mirror::spawn_camera(&mut commands, &mirrors);
     commands.insert_resource(mirrors);
     commands.insert_resource(mirror::MirrorBodyRes::default());
     commands.insert_resource(water_list);
+    prof::load_mark("edge walls / grass");
     // Mesh actors (decorations, pickups, characters) with live decoration physics.
     let blockers =
         actors::spawn_mesh_actors(&mut commands, level, &mut meshes, &mut materials, &handles);
     commands.insert_resource(blockers);
-    let mv = movers::spawn_movers(&mut commands, level, &mut meshes, &mut materials, &handles);
+    let mv = movers::spawn_movers(&mut commands, level, &mut meshes, &mut materials, &handles, &glass_imgs);
     commands.insert_resource(mv);
     commands.insert_resource(movers::HudMessage::default());
     commands.insert_resource(pickups::FrobRequest::default());
+    prof::load_mark("mesh actors");
     // DeusExPlayer.ResetPlayer: a new game starts with a pistol, a riot prod and a medkit on the belt.
     commands.insert_resource(pickups::starting_inventory(&root_dir.0));
     pickups::spawn_belt_ui(&mut commands);
@@ -1643,6 +1759,7 @@ fn setup(
         &mut materials,
     );
     drug::spawn_drug_overlay(&mut commands, &mut runtime_assets, &mut images);
+    prof::load_mark("start kit");
     // AnimNext loops (screens, monitors, TV noise) on the level's surfaces and meshes.
     anim_tex::reset();
     for (i, t) in level.textures.iter().enumerate() {
@@ -1650,6 +1767,7 @@ fn setup(
         let masked = t.has_alpha_holes();
         anim_tex::register(&mut runtime_assets.lib, &t.name, &handles[i], masked, true);
     }
+    prof::load_mark("anim textures");
     // Procedural textures on the level's meshes and surfaces (the augmentation canister's blue Nano_SFX_A glow):
     // the level loader only has their static first frame, so they animate through the fire texture system.
     for (i, t) in level.textures.iter().enumerate() {
@@ -1726,6 +1844,7 @@ fn setup(
     ));
     commands.insert_resource(scrollers);
 
+    prof::load_mark("fire textures / HUD");
     // Lighting comes entirely from the rebuilt original lightmaps.
     commands.insert_resource(GlobalAmbientLight {
         color: Color::WHITE,
@@ -1811,6 +1930,8 @@ fn setup(
         },
         Overlay,
     ));
+    prof::load_mark("cameras");
+    prof::load_report();
 }
 
 /// Bounds for a mesh that never changes shape, worked out once (`grow` metres of slack up and down for a surface the

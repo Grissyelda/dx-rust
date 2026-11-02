@@ -362,6 +362,11 @@ pub fn achievements_system(
     let f = &flags.0;
     let fl = |n: &str| f.get_bool(n);
     // ---- flags
+    // Rescue the Lady: as soon as Liberty Island's mission is done (the statue cleared), not only on reaching
+    // mission 2 (the notice used to come on the next map's arrival, behind its loading screen).
+    if fl("StatueMissionComplete") {
+        unlock("lady");
+    }
     if fl("TerroristFollowup2_Played") {
         unlock("based");
     }
@@ -549,6 +554,10 @@ fn draw_popup(
     layers: &mut Assets<crate::classic_hud::HudLayer>,
     nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<crate::classic_hud::HudLayer>)>,
 ) {
+    // Not behind a loading screen or a menu: the notice waits.
+    if st.popup.is_none() && (crate::loader::settling() || crate::loader::busy() || crate::menus::open()) {
+        return;
+    }
     if st.popup.is_none() {
         let next = STORE.lock().ok().and_then(|mut s| (!s.popups.is_empty()).then(|| s.popups.remove(0)));
         if let Some(id) = next {

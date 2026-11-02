@@ -107,6 +107,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("WeaponInertia", 0.0),
     ("FlashlightCone", 0.0),
     ("MaterialSheen", 0.0),
+    ("ModernGlass", 0.0),
     ("BulletPenetration", 0.0),
     ("SmoothLean", 0.0),
     ("MeleeArc", 0.0),
