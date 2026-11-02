@@ -33,6 +33,11 @@ const FP_KEEP: f32 = 0.82;
 /// the arms).
 const FP_DROP: &[&str] = &["DEF-spine.005", "DEF-spine.006", "DEF-upper_arm", "DEF-forearm", "DEF-hand", "DEF-f_", "DEF-thumb"];
 
+/// A bone whose triangles the first-person body leaves out (FP_DROP names are prefixes).
+fn fp_dropped(bone: &str) -> bool {
+    FP_DROP.iter().any(|p| bone.starts_with(p))
+}
+
 fn on(key: &str) -> bool {
     crate::settings::get(key) > 0.5 && crate::skeletal::enabled()
 }
@@ -175,7 +180,19 @@ pub struct FpBody;
 pub struct FpState {
     root: Option<Entity>,
     gen: u64,
+    /// How much further back than FP_BACK the body stands this frame (m): enough to keep the cut chest out of view
+    /// whatever the pose (walking and aiming lean it forward), eased back when the pose allows.
+    extra: f32,
 }
+
+/// The bones round the cut (chest, shoulders): kept behind and below the view.
+const FP_CHEST: &[&str] = &["DEF-spine.003", "DEF-spine.004", "DEF-shoulder.L", "DEF-shoulder.R", "DEF-breast.L", "DEF-breast.R"];
+/// How far the coat's front stands ahead of those bones (Unreal units), and the clearance kept on top.
+const FP_CHEST_FRONT: f32 = 8.0;
+const FP_CHEST_CLEAR: f32 = 2.0;
+/// tan of half the vertical field of view (75 degrees across a 16:9 view): looking straight down, the view reaches
+/// this far behind the eye per unit below it.
+const FP_VIEW_BACK: f32 = 0.45;
 
 /// Which body part the medkit would treat (aim ray against the first-person body): None = the head.
 static AIMED: Mutex<Option<usize>> = Mutex::new(None);
@@ -293,8 +310,32 @@ pub fn fp_body_system(
         }
         let crouched = b.cur.as_ref().is_some_and(|c| crate::util::contains_ci(&c.0, "crouch"));
         let back = if crouched { FP_BACK_CROUCH } else { FP_BACK };
-        tf.translation -= Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero() * (back * dx_level::METERS_PER_UNIT);
+        let flat = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or_zero();
+        tf.translation -= flat * (back * dx_level::METERS_PER_UNIT);
         tf.translation.y -= FP_DOWN * dx_level::METERS_PER_UNIT;
+        // The pose (last frame's bones, in the body's own space) decides how much further back: the coat's front
+        // at the chest must stay behind the view even looking straight down (walking, running and the aiming poses
+        // lean the chest forward into the eye).
+        if let (Some(c), Ok(rg)) = (cam.iter().next(), gts.get(root)) {
+            let eye = c.translation();
+            // Along the view (the body can turn away from it in the aiming poses).
+            let cf = c.forward().as_vec3();
+            let flat = Vec3::new(cf.x, 0.0, cf.z).try_normalize().unwrap_or(flat);
+            let inv = rg.affine().inverse();
+            let m = dx_level::METERS_PER_UNIT;
+            let mut need = 0.0f32;
+            for name in FP_CHEST {
+                let Some(i) = s.rig.names.iter().position(|n| n == name) else { continue };
+                let Ok(bg) = gts.get(s.nodes[i]) else { continue };
+                let p = tf.transform_point(inv.transform_point3(bg.translation())) + flat * (FP_CHEST_FRONT * m);
+                let ahead = (p - eye).dot(flat);
+                let below = (eye.y - p.y).max(0.0);
+                need = need.max(ahead + below * FP_VIEW_BACK + FP_CHEST_CLEAR * m);
+            }
+            let dt = time.delta_secs().min(0.1);
+            st.extra = if need > st.extra { need } else { (st.extra - dt * 0.4).max(need) };
+            tf.translation -= flat * st.extra.max(0.0);
+        }
     }
     let medkit = weapons.held.as_ref().is_some_and(|h| h.stats.class == "MedKit");
     if let Some((seq, start, frames, f, looped)) = b.cur.clone() {
@@ -452,21 +493,29 @@ pub fn glow_system(
         ph.flash_color = [0.25, 0.9, 0.5];
     }
     let glows_on = on("AugGlows");
-    let mut want: Vec<((Entity, &'static str, usize), Entity, f32, Vec3)> = Vec::new();
+    // (key, bone, radius, offset, layer: each body's glows only on its own layer - the mirror body's head is at the
+    // camera in first person)
+    let mut want: Vec<((Entity, &'static str, usize), Entity, f32, Vec3, usize)> = Vec::new();
     for (s, is_fp, is_mirror) in &bodies {
         if !is_fp && !is_mirror {
             continue;
         }
         let bone = |name: &str| s.rig.names.iter().position(|n| n == name).map(|i| s.nodes[i]);
+        let layer = if is_fp { FP_LAYER } else { crate::mirror::BODY_LAYER };
         if glows_on {
             for (aug, bones) in AUG_GLOWS {
                 if !crate::abilities::aug_active(aug) {
                     continue;
                 }
                 for (k, bn) in bones.iter().enumerate() {
+                    // The first-person body has no head, neck or arms: a glow there sat on the camera (the flashlight
+                    // aug's "eyes" filled the view with two orange balls).
+                    if is_fp && fp_dropped(bn) {
+                        continue;
+                    }
                     let Some(b) = bone(bn) else { continue };
                     if *bn != "DEF-spine.006" {
-                        want.push(((s.root, *aug, k), b, 0.06, Vec3::ZERO));
+                        want.push(((s.root, *aug, k), b, 0.06, Vec3::ZERO, layer));
                         continue;
                     }
                     // The eyes: in front of the head, either side (the body's forward is glTF +Z).
@@ -478,7 +527,7 @@ pub fn glow_system(
                     for (j, side) in [-1.0f32, 1.0].iter().enumerate() {
                         let p = hg.translation() + fwd * 0.085 + up * 0.06 + lat * 0.032 * side;
                         let local = hg.affine().inverse().transform_point3(p);
-                        want.push(((s.root, *aug, k * 2 + j), b, 0.018, local));
+                        want.push(((s.root, *aug, k * 2 + j), b, 0.018, local, layer));
                     }
                 }
             }
@@ -492,14 +541,14 @@ pub fn glow_system(
                 crate::ai::P_LEG_L => "DEF-shin.L",
                 _ => "DEF-shin.R",
             };
-            if let Some(b) = bone(bn) {
+            if let Some(b) = bone(bn).filter(|_| !(is_fp && fp_dropped(bn))) {
                 commands.spawn((
                     Mesh3d(sphere.clone()),
                     MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgba(0.3, 1.0, 0.55, 1.0), unlit: true, alpha_mode: AlphaMode::Add, ..default() })),
                     Transform::from_scale(Vec3::splat(0.12)),
                     FpGlow { t: 0.0, life: Some(0.9), aug: None },
                     bevy::light::NotShadowCaster,
-                    RenderLayers::from_layers(&[FP_LAYER, crate::mirror::BODY_LAYER]),
+                    RenderLayers::layer(layer),
                     ChildOf(b),
                 ));
             }
@@ -514,7 +563,7 @@ pub fn glow_system(
         }
         keep
     });
-    for (k, bone, r, at) in want {
+    for (k, bone, r, at, layer) in want {
         if active.contains_key(&k) {
             continue;
         }
@@ -525,7 +574,7 @@ pub fn glow_system(
                 Transform::from_translation(at).with_scale(Vec3::splat(r)),
                 FpGlow { t: 0.0, life: None, aug: Some(k.1) },
                 bevy::light::NotShadowCaster,
-                RenderLayers::from_layers(&[FP_LAYER, crate::mirror::BODY_LAYER]),
+                RenderLayers::layer(layer),
                 ChildOf(bone),
             ))
             .id();

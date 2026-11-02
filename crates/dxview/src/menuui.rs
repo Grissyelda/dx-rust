@@ -476,7 +476,7 @@ pub(crate) fn edit_field<W: KitWid>(u: &mut Ui<W>, w: W, x: i32, y: i32, width: 
     info_button(u, x, y, width, "", m_col(8));
     let f = u.f.small.clone();
     let (tx, ty, tw, th) = (x + 4, y + 4, width - 8, 11);
-    let cur_x = f.width(&e.text[..e.cur].iter().collect::<String>());
+    let cur_x = f.chars_width(&e.text[..e.cur]);
     if cur_x - e.scroll > tw - 2 {
         e.scroll = cur_x - tw + 2;
     }
@@ -488,8 +488,8 @@ pub(crate) fn edit_field<W: KitWid>(u: &mut Ui<W>, w: W, x: i32, y: i32, width: 
     let (a, b) = e.sel();
     let s: String = e.text.iter().collect();
     if focused && a != b {
-        let sx = f.width(&e.text[..a].iter().collect::<String>());
-        let sw = f.width(&e.text[a..b].iter().collect::<String>());
+        let sx = f.chars_width(&e.text[..a]);
+        let sw = f.chars_width(&e.text[a..b]);
         u.c.fill(tx - e.scroll + sx, ty, sw, th, Style::Normal, m_col(8));
     }
     let mut cx = tx - e.scroll;

@@ -372,8 +372,8 @@ pub struct ActorLights {
     pub col: [Vec4; 16],
     /// x: lights in use, y: LIGHT_GAIN x ScaleGlow, z: 1 = unlit, w: 1 = lit from both sides.
     pub misc: Vec4,
-    /// x, y: unused (the Wet Bodies enhancement is gone), z: world height above which nothing is drawn, w: 1 = that
-    /// cut is on.
+    /// x: how far the eyelids are closed (0..1: the lid vertices' picture slides to UV_1, see lid_uvs), y: unused,
+    /// z: world height above which nothing is drawn, w: 1 = that cut is on.
     pub wet: Vec4,
     /// rgb: the lights past the sixteen strongest, summed as an even fill (the vertex-lit meshes add up every
     /// light; leaving them out drew the rebuilt people darker).
@@ -454,11 +454,14 @@ pub struct SkelBody {
     light_sig: u64,
     /// The weapon frame (origin, X, Y, Z) in the original mesh's space, as `AnimMesh::weapon_coords` gives it.
     pub weapon: Option<[[f32; 3]; 4]>,
+    /// The turn that takes this body's weapon frame onto the original mesh's (worked out once, see weapon_fix).
+    weapon_turn: Option<Mat3>,
     /// A ragdoll (ragdoll.rs) has the bones: no more posing.
     pub ragdoll: bool,
-    /// How wet (rain, water): 0..1, eased; and what the materials hold.
-    pub wet: f32,
-    wet_shown: f32,
+    /// The sections (by `mats` index) whose eyelids blink by sliding their picture (lid_uvs), and the blink last
+    /// written to their materials.
+    lid_mats: Vec<usize>,
+    blink_shown: f32,
     /// The rig node -> pawn transform (the root's local Transform), and the coat's simulated bone tails (world).
     root_local: Mat4,
     cloth_tail: Vec<Vec3>,
@@ -652,6 +655,7 @@ fn build(
         let nm = body.morphs.len();
         let mut mesh_ents = Vec::new();
         let mut mat_handles = Vec::new();
+        let mut lid_mats = Vec::new();
         let mut first_mesh: Option<Handle<Mesh>> = None;
         for sec in &body.sections {
             if sec.style == "WEAPONTRI" {
@@ -704,9 +708,7 @@ fn build(
                 }
                 mesh.insert_indices(bevy::mesh::Indices::U16(kept));
             }
-            if dx_level::actors::LID_FIX.load(std::sync::atomic::Ordering::Relaxed) {
-                helios_lids(&mut mesh, sec, body);
-            }
+            let lids = morphs && lid_uvs(&mut mesh, sec, body);
             let mh = meshes.add(mesh);
             if morphs {
                 first_mesh.get_or_insert(mh.clone());
@@ -762,6 +764,9 @@ fn build(
                 commands.entity(me).insert(MeshMorphWeights::Reference(weights_ent));
             }
             mesh_ents.push(me);
+            if lids {
+                lid_mats.push(mat_handles.len());
+            }
             mat_handles.push(mat);
         }
         if nm > 0 && first_mesh.is_some() {
@@ -800,8 +805,9 @@ fn build(
             light_sig: 0,
             weapon: None,
             ragdoll: false,
-            wet: 0.0,
-            wet_shown: 0.0,
+            lid_mats,
+            blink_shown: 0.0,
+            weapon_turn: None,
             root_local: root_tf.to_matrix(),
             cloth_tail: Vec::new(),
             cloth_prev: Vec::new(),
@@ -941,6 +947,7 @@ pub fn pose_system(
         let (start, frames, f) = crate::actors::current_frame(&a, anim);
         let seq = seq_name(&anim.mesh, start).unwrap_or("BreatheLight");
         advance(s, seq, start, frames, f, a.clip.as_ref().is_none_or(|c| c.looping), dt);
+        weapon_fix(s, &anim.mesh, start, frames, f);
         if hurt {
             if let Some(n) = npc.filter(|n| n.state != crate::ai::NpcState::Dead) {
                 apply_hurt(s, &crate::bodyfx::hurt_fracs(&n.hp_body.parts, &n.hp_body.defaults));
@@ -977,6 +984,16 @@ pub fn pose_system(
         }
         if s.posed {
             write_bones(&s, &mut tfs);
+        }
+        if !s.lid_mats.is_empty() {
+            let blink = s
+                .body
+                .morphs
+                .iter()
+                .position(|m| m.eq_ignore_ascii_case("Blink"))
+                .and_then(|i| _w.as_ref().and_then(|w| w.weights().get(i).copied()))
+                .unwrap_or(0.0);
+            set_blink(&mut s, blink, &mut mats);
         }
         // Re-extract the section meshes (their morph descriptors) for a while after the body appears and whenever
         // it comes back on screen.
@@ -1055,16 +1072,65 @@ fn weapon_frame(s: &mut SkelBody) -> Option<[[f32; 3]; 4]> {
     Some([o.to_array(), x.to_array(), y.to_array(), z.to_array()])
 }
 
-/// Helios repaints the eyes larger, up into the strip of the face picture the eyelids sample, so a closing lid
-/// would show a painted eye. With Helios dressing the people, every vertex the Blink shape moves takes the picture
-/// coordinates of the nearest still vertex above it (the skin of the crease): the lids close as skin, as they do on
-/// the original faces with the original art.
-fn helios_lids(mesh: &mut Mesh, sec: &Section, body: &Body) {
-    let Some(k) = body.morphs.iter().position(|m| m.eq_ignore_ascii_case("Blink")) else { return };
-    let Some(Some(d)) = sec.morphs.get(k) else { return };
+/// Per rebuilt body (by its address): the weapon frame's turn once some pawn measured it.
+static BODY_WEAPON_TURN: std::sync::Mutex<Option<HashMap<usize, Mat3>>> = std::sync::Mutex::new(None);
+
+/// The weapon frame from the rebuilt body's weapon triangle doesn't always sit like the original mesh's special face
+/// (the remodelled triangle can face the other way: JC and some NPCs held their guns upside down). The first time a
+/// body is posed, its frame is compared with the original mesh's at the same frame; the nearest whole-axis turn
+/// between them (identity when they already agree) is kept and applied to every frame after.
+fn weapon_fix(s: &mut SkelBody, mesh: &dx_level::actors::AnimMesh, start: usize, frames: usize, f: f32) {
+    let Some(w) = s.weapon else { return };
+    let axes = |w: &[[f32; 3]; 4]| Mat3::from_cols(Vec3::from(w[1]), Vec3::from(w[2]), Vec3::from(w[3]));
+    if s.weapon_turn.is_none() {
+        let key = s.body as *const Body as usize;
+        let Some(v) = mesh.weapon_coords(start, frames, f) else { return };
+        let r = axes(&v) * axes(&w).transpose();
+        // Snap to a signed permutation (the triangle's axes swapped / flipped).
+        let snap = |x: f32| if x > 0.5 { 1.0 } else if x < -0.5 { -1.0 } else { 0.0 };
+        let q = Mat3::from_cols(
+            Vec3::new(snap(r.x_axis.x), snap(r.x_axis.y), snap(r.x_axis.z)),
+            Vec3::new(snap(r.y_axis.x), snap(r.y_axis.y), snap(r.y_axis.z)),
+            Vec3::new(snap(r.z_axis.x), snap(r.z_axis.y), snap(r.z_axis.z)),
+        );
+        let ok = (q.determinant() - 1.0).abs() < 1e-3
+            && (q * q.transpose()).abs_diff_eq(Mat3::IDENTITY, 1e-3)
+            // Close to it (within ~30 degrees): the two poses agree well enough to tell.
+            && r.abs_diff_eq(q, 0.45);
+        // The turn belongs to the rebuilt body, not the pawn: a pawn caught in a pose that differs too much from the
+        // original's takes what another pawn on the same body measured (or tries again next frame).
+        let mut guard = BODY_WEAPON_TURN.lock().ok();
+        let known = guard.as_mut().map(|g| g.get_or_insert_with(HashMap::new));
+        if ok {
+            s.weapon_turn = Some(q);
+            if let Some(k) = known {
+                k.entry(key).or_insert(q);
+            }
+        } else if let Some(t) = known.and_then(|k| k.get(&key).copied()) {
+            s.weapon_turn = Some(t);
+        }
+        if log_on() {
+            bevy::log::info!("SKELWEAPON actor {} turn {:?} (measured {ok}, raw {:?})", s.mesh_actor, s.weapon_turn, r);
+        }
+    }
+    if let Some(t) = s.weapon_turn.filter(|t| *t != Mat3::IDENTITY) {
+        let n = t * axes(&w);
+        s.weapon = Some([w[0], n.x_axis.to_array(), n.y_axis.to_array(), n.z_axis.to_array()]);
+    }
+}
+
+/// Blinking: the Blink shape pulls the upper lid down over the eye, stretching whatever the face picture holds
+/// between the brow and the lid's edge - on some faces (Paul's, Helios's larger painted eyes) that strip is part of
+/// the eye, so a closing lid showed a stretched eyeball. Every vertex the Blink shape moves gets a second set of picture
+/// coordinates (UV_1) = those of the nearest still vertex above it (the skin of the crease), and actor_lit.wgsl slides
+/// the lid's picture toward them as the blink closes (ActorLights.wet.x): the lids close as skin and the open eye is
+/// untouched. False when the section has no lids.
+fn lid_uvs(mesh: &mut Mesh, sec: &Section, body: &Body) -> bool {
+    let Some(k) = body.morphs.iter().position(|m| m.eq_ignore_ascii_case("Blink")) else { return false };
+    let Some(Some(d)) = sec.morphs.get(k) else { return false };
     let moving: Vec<bool> = d.iter().map(|v| v[0].abs() + v[1].abs() + v[2].abs() > 1e-4).collect();
     if !moving.iter().any(|m| *m) {
-        return;
+        return false;
     }
     let mut uvs = sec.uvs.clone();
     for (v, &m) in moving.iter().enumerate() {
@@ -1079,7 +1145,22 @@ fn helios_lids(mesh: &mut Mesh, sec: &Section, body: &Body) {
             uvs[v] = sec.uvs[u];
         }
     }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uvs);
+    true
+}
+
+/// The blink (the Blink shape's weight) on the lid sections' materials, when it changed enough to show.
+fn set_blink(s: &mut SkelBody, blink: f32, mats: &mut Assets<ActorMaterial>) {
+    let blink = blink.clamp(0.0, 1.0);
+    if (blink - s.blink_shown).abs() < 0.02 && !(blink == 0.0 && s.blink_shown != 0.0) {
+        return;
+    }
+    s.blink_shown = blink;
+    for &i in &s.lid_mats {
+        if let Some(mut m) = s.mats.get(i).and_then(|h| mats.get_mut(h)) {
+            m.extension.lights.wet.x = blink;
+        }
+    }
 }
 
 /// DXVIEW_FACETEST="MouthA:1,Blink:0.5": hold these face shapes on every rebuilt body (screenshots).
@@ -1247,6 +1328,7 @@ pub fn mirror_skel_system(
         MIRROR_ON.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some((seq, start, frames, f, looped)) = b.cur.clone() {
             advance(&mut s, &seq, start, frames, f, looped, dt);
+            weapon_fix(&mut s, &b.mesh, start, frames, f);
             if crate::bodyfx::hurt_on() {
                 apply_hurt(&mut s, &crate::bodyfx::hurt_fracs(&ph.parts, &[100.0; 6]));
             }
@@ -1356,14 +1438,13 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
         lt.col[i] = Vec3::from(l.color).extend(0.0);
     }
     lt.amb = amb.extend(0.0);
-    lt.wet = Vec4::new(s.wet, 0.0, 0.0, 0.0);
-    s.wet_shown = s.wet;
     for h in &s.mats {
         let Some(cur) = mats.get(h) else { continue };
         let old = cur.extension.lights;
         let mut new = lt;
-        // Per-material: unlit, never-wet, the height cut.
+        // Per-material: unlit, the blink, the height cut.
         new.misc.z = old.misc.z;
+        new.wet.x = old.wet.x;
         new.wet.y = old.wet.y;
         new.wet.z = old.wet.z;
         new.wet.w = old.wet.w;

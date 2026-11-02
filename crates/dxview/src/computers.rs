@@ -2393,16 +2393,7 @@ pub fn computer_system(
                             if let Some(e) = e {
                                 let font = wx.hud.font(wx.assets, "FontMenuSmall");
                                 if let Some(font) = font {
-                                    let rel = mouse.0 - e.org;
-                                    let mut i = 0;
-                                    while i < e.text.len() {
-                                        let wch = font.width(&e.text[..=i].iter().collect::<String>());
-                                        let wprev = font.width(&e.text[..i].iter().collect::<String>());
-                                        if rel < (wch + wprev) / 2 {
-                                            break;
-                                        }
-                                        i += 1;
-                                    }
+                                    let i = font.caret_at(&e.text, mouse.0 - e.org);
                                     e.cur = i;
                                     if !shift {
                                         e.anchor = i;

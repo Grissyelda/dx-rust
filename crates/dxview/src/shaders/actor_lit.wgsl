@@ -42,7 +42,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (lights.wet.w > 0.5 && in.world_position.y > lights.wet.z) {
         discard;
     }
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // Blinking (skeletal.rs lid_uvs): the lids' picture slides to the crease's as they close.
+    var vin = in;
+#ifdef VERTEX_UVS_B
+    if (lights.wet.x > 0.0) {
+        vin.uv = mix(in.uv, in.uv_b, lights.wet.x);
+    }
+#endif
+    var pbr_input = pbr_input_from_standard_material(vin, is_front);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
     var out: FragmentOutput;
     var n = normalize(in.world_normal);

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Playtest fixes (November 1, evening)
+- First-person body: it now stands back as far as the pose needs, so the cut chest is never in view, looking straight
+  down or walking, running and aiming (those poses lean the chest forward); looking down you see your legs and feet.
+- Weapons held by the rebuilt characters sit right again: their weapon triangle is turned against the original
+  mesh's (JC and many NPCs held their guns upside down or sideways).
+- Blinking slides the eyelid's picture up to the crease instead of stretching what's under it (Paul's eyeball
+  stretched over his eye).
+- Relief maps: parallax depth now matches each texture's size (a fixed depth was up to 36 units deep on large
+  textures, so bricks slid and smeared); more layers.
+- The flashlight no longer puts two orange balls in front of you: the aug glows only go on the parts of a body that
+  are drawn (the first-person body has no head), and each body's glows only show with that body.
+- Third person: aiming while looking down no longer drops the camera onto JC's head.
+- Code: the player's shots, melee blows, lock-on and view-model posing / lighting are separate functions now
+  (weapon_system 1,300 -> under 900 lines); text fields place the caret without building strings.
+
 ### Playtest fixes (November 1)
 - Paul runs to you on the dock again: when re-planning his way he kept picking the nearest path point even when it
   was behind him, so he ran back and forth; and a straight line through the dock's row of BlockMonsters (which stop

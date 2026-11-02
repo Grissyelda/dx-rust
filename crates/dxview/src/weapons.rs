@@ -1631,6 +1631,388 @@ pub fn spread_dir(
     end.normalize()
 }
 
+
+/// The view model's vertices for its clip's current frame (see the comments inside).
+fn pose_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, dt: f32) {
+    // Animate the view model (only when the pose changed since the last write). A new sequence (or a one-shot one
+    // started again: the next shot, swing or fidget) eases in from the pose on screen over TWEEN seconds, as the
+    // original's TweenAnim / blended PlayAnim did, instead of snapping to its first frame.
+    let f = h.clip.frame();
+    let f_used = if h.clip.looping { f } else { f.min(h.clip.frames as f32 - 1.001) };
+    let pose = (h.clip.start, h.clip.frames, (f_used * 1000.0) as u32);
+    if let Some(last) = h.last_pose {
+        let restarted = !h.clip.looping && pose.2 + 500 < last.2;
+        if (last.0, last.1) != (pose.0, pose.1) || restarted {
+            if h.shown.len() == h.parts.len() {
+                h.tween = Some((std::mem::take(&mut h.shown), 0.0));
+            }
+        }
+    }
+    let mut tween_k = None;
+    if let Some((_, t)) = h.tween.as_mut() {
+        *t += dt;
+        let x = (*t / VIEW_TWEEN).min(1.0);
+        tween_k = Some(x * x * (3.0 - 2.0 * x));
+        if x >= 1.0 {
+            h.tween = None;
+        }
+    }
+    let pose_changed = h.last_pose != Some(pose) || tween_k.is_some();
+    h.last_pose = Some(pose);
+    if pose_changed {
+        let mut shown = std::mem::take(&mut h.shown);
+        shown.resize(h.parts.len(), Vec::new());
+        for (pi, hm) in h.handles.iter().enumerate() {
+            let part = &h.parts[pi];
+            let out = &mut shown[pi];
+            out.clear();
+            out.extend(part.vert_ids.iter().map(|&v| {
+                let p = h.mesh.sample(h.clip.start, h.clip.frames, f_used, v as usize);
+                view_to_cam([p[0] * h.stats.view_scale, p[1] * h.stats.view_scale, p[2] * h.stats.view_scale])
+            }));
+            if let (Some(k), Some((from, _))) = (tween_k, h.tween.as_ref()) {
+                if let Some(a) = from.get(pi).filter(|a| a.len() == out.len()) {
+                    for (o, a) in out.iter_mut().zip(a) {
+                        for c in 0..3 {
+                            o[c] = a[c] + (o[c] - a[c]) * k;
+                        }
+                    }
+                }
+            }
+            if let Some(mut m) = meshes.get_mut(hm) {
+                m.insert_attribute(Mesh::ATTRIBUTE_POSITION, out.clone());
+            }
+        }
+        h.shown = shown;
+    }
+}
+
+/// The view model's vertex colours from the lights round the eye.
+fn light_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, level: &dx_level::Level, eye_bevy: Vec3, dt: f32) {
+    // Light the weapon from the static lights around the player a few times a second (every frame while a
+    // dynamic light such as a muzzle flash or the flashlight is on).
+    h.relight -= dt;
+    // A dynamic light near enough to matter (a lamp across the map used to relight - and re-upload - the view
+    // model every frame).
+    let eye_now = bevy_to_ue(eye_bevy.to_array());
+    let dyn_on = crate::dynlight::with_current(|c| {
+        c.iter().any(|l| {
+            let d2 = (0..3).map(|k| (l.pos[k] - eye_now[k]).powi(2)).sum::<f32>();
+            d2 < (l.radius + 96.0).powi(2)
+        })
+    });
+    if h.relight <= 0.0 || (dyn_on && h.relight <= 0.15) {
+        h.relight = 0.2;
+        let eye = bevy_to_ue(eye_bevy.to_array());
+        let all = crate::dynlight::lights(&level.lights);
+        for (pi, hm) in h.handles.iter().enumerate() {
+            if let Some(mut m) = meshes.get_mut(hm) {
+                let c = light_part(&h.parts[pi], eye, [0, 0, 0], 1.0, &all);
+                // Never fully black: Deus Ex lights the weapon with a minimum glow.
+                let c: Vec<[f32; 4]> = c
+                    .into_iter()
+                    .map(|x| [x[0].max(0.06), x[1].max(0.06), x[2].max(0.06), 1.0])
+                    .collect();
+                m.insert_attribute(Mesh::ATTRIBUTE_COLOR, c);
+            }
+        }
+    }
+}
+
+
+/// A hand-to-hand blow at the HandToHandAttack notify (TraceFire along the view out to MaxRange): birds, the level
+/// (breakable movers only get marked), decorations and pawns (GMDX Piercing against bots and security), the hit
+/// sounds by what it met; and the Melee Sweeps An Arc enhancement.
+fn melee_blow(stats: &WeaponStats, cx: &mut ShotCx, eye: DVec3, fw: DVec3) {
+    let range = stats.max_range as f64;
+    let dmg_type = stats.damage_type(stats.ammo_class.as_deref());
+    let base_dmg = stats.hit_damage * stats.damage_mult();
+    let world = World { level: cx.level, blockers: cx.blockers, ignore: None, pushable: None, movers: Some(cx.movers) };
+    let hit = world.trace(eye, eye + fw * range, DVec3::splat(0.5));
+    let bird = crate::critters::trace_birds(eye, eye + fw * range).filter(|b| b.1 < hit.fraction);
+    if let Some((b, _)) = bird {
+        crate::critters::hit_bird(b, base_dmg);
+        if let Some(s) = &stats.snd.misc[0] {
+            crate::sound::play_player(s, 1.0, 1024.0);
+        }
+        return;
+    }
+    if hit.fraction < 1.0 {
+        melee_hit(stats, cx, &hit, eye, fw, base_dmg, dmg_type);
+    }
+    // Enhancement (Melee Sweeps An Arc, setting MeleeArc): the blow also catches whatever stands within 25 degrees
+    // either side of the aim (traces at 12.5 and 25 degrees), each thing once, at three quarters damage.
+    if crate::settings::get("MeleeArc") <= 0.5 {
+        return;
+    }
+    let mut done: Vec<usize> = hit.actor.into_iter().collect();
+    let dmg = base_dmg * 0.75;
+    for deg in [12.5f64, -12.5, 25.0, -25.0] {
+        let (s, c) = deg.to_radians().sin_cos();
+        let d = DVec3::new(fw.x * c - fw.y * s, fw.x * s + fw.y * c, fw.z).normalize();
+        let side = world.trace(eye, eye + d * range, DVec3::splat(0.5));
+        let Some(b) = side.actor.filter(|b| side.fraction < 1.0 && !done.contains(b)) else { continue };
+        done.push(b);
+        let at = eye + d * range * side.fraction;
+        let props = &cx.level.actors[cx.blockers[b].actor].props;
+        if find(props, "GroundSpeed").is_none() {
+            cx.deco_hits.push(crate::destruct::DecoHit { blocker: b, damage: dmg, damage_type: dmg_type });
+            continue;
+        }
+        if stats.penetrating && find(props, "EMPHitPoints").is_none() {
+            cx.blood.push((at - d, d));
+        }
+        if let Some(snd) = &stats.snd.misc[0] {
+            crate::sound::play_player(snd, 1.0, 1024.0);
+        }
+        cx.pawn_hits.push(crate::damage::PawnHit { blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
+    }
+}
+
+/// What the blow along the aim met (melee_blow).
+fn melee_hit(stats: &WeaponStats, cx: &mut ShotCx, hit: &imsim_core::movement::Hit, eye: DVec3, fw: DVec3, base_dmg: f32, dmg_type: &'static str) {
+    let at = eye + fw * stats.max_range as f64 * hit.fraction;
+    if hit.actor.is_none() {
+        crate::movers::hit_line(eye, at, base_dmg, dmg_type);
+        // TraceHitHandSpawner: only breakable movers get marked by a blow.
+        crate::impacts::wall_hit(at, hit.normal, fw, base_dmg, crate::impacts::Source::Weapon { penetrating: stats.penetrating, hand_to_hand: true });
+    }
+    let props = hit.actor.map(|b| &cx.level.actors[cx.blockers[b].actor].props);
+    let pawn = props.is_some_and(|p| find(p, "GroundSpeed").is_some());
+    // SpawnEffectSounds: flesh (Misc1), a decoration (Misc3), anything else hard (Misc2); hard world surfaces textured
+    // from the Glass group: BulletProofHit.
+    let k = if pawn { 0 } else if props.is_some() { 2 } else { 1 };
+    let glass = props.is_none() && cx.level.wall_group(at.to_array(), hit.normal.to_array()).is_some_and(|g| g.eq_ignore_ascii_case("Glass"));
+    if glass {
+        crate::sound::play_player("DeusExSounds.Generic.BulletProofHit", 1.0, 1024.0);
+    } else if let Some(s) = &stats.snd.misc[k] {
+        crate::sound::play_player(s, 1.0, 1024.0);
+    }
+    let Some(b) = hit.actor else { return };
+    let cls = &cx.level.actors[cx.blockers[b].actor].class;
+    if !pawn {
+        if props.is_some_and(|p| matches!(find(p, "bOwned"), Some(Value::Bool(true)))) {
+            crate::reactions::futz(cx.blockers[b].center);
+        }
+        cx.deco_hits.push(crate::destruct::DecoHit { blocker: b, damage: base_dmg * crate::perks::piercing_mult(cls, false), damage_type: dmg_type });
+        return;
+    }
+    let robot = props.is_some_and(|p| find(p, "EMPHitPoints").is_some());
+    if stats.penetrating && !robot {
+        cx.blood.push((at - fw, fw));
+    }
+    cx.pawn_hits.push(crate::damage::PawnHit {
+        blocker: b,
+        damage: base_dmg * crate::perks::piercing_mult(cls, robot),
+        damage_type: dmg_type,
+        hit_loc: at,
+        attacker: None,
+        attacker_pos: cx.player_at,
+    });
+}
+
+
+/// DeusExWeapon.Tick lock-on (bCanTrack) for what's in the sights (blocker, range, a living pawn): the lock state,
+/// its beeps / held tone, and the HUD line (LockText) with its colour.
+fn lock_on(h: &mut Held, target: Option<(usize, f64, bool)>, dt: f32) -> (String, Color) {
+    match target {
+        None => {
+            h.lock_mode = 0;
+            h.lock_target = None;
+            h.lock_timer -= dt;
+        }
+        Some((b, range, alive_pawn)) => {
+            h.target_range = range;
+            if h.lock_mode == 4
+                && alive_pawn
+                && h.lock_target.is_some()
+                && h.lock_target != Some(b)
+            {
+                h.lock_mode = 0;
+                h.lock_target = None;
+            } else if !alive_pawn {
+                h.lock_mode = 1;
+                h.lock_timer -= dt;
+            } else if h.target_range > h.stats.max_range as f64 {
+                h.lock_mode = 2;
+                h.lock_timer -= dt;
+            } else {
+                let lock_time = (h.stats.lock_time + 3.0 * h.stats.skill).max(0.0);
+                h.lock_timer += dt;
+                if h.lock_timer >= lock_time {
+                    h.lock_mode = 4;
+                    h.lock_target = Some(b);
+                } else {
+                    h.lock_mode = 3;
+                }
+            }
+        }
+    }
+    h.lock_timer = h.lock_timer.max(0.0);
+    let lock_time = (h.stats.lock_time + 3.0 * h.stats.skill).max(0.0);
+    // Acquiring beeps faster as the lock nears (beepspeed = clamp(time left / LockTime, 0.2, 1)); one tone on lock.
+    h.beep_timer += dt;
+    if h.lock_mode == 3 {
+        let beep = ((lock_time - h.lock_timer) / h.stats.lock_time.max(0.01)).clamp(0.2, 1.0);
+        if h.beep_timer > beep {
+            h.beep_timer = 0.0;
+            if let Some(s) = &h.stats.snd.tracking {
+                crate::sound::play_player(s, 1.0, 0.0);
+            }
+        }
+    }
+    // While locked, PlayLockSound every 0.1 s: a held tone.
+    if h.lock_mode == 4 {
+        if let Some(s) = &h.stats.snd.locked {
+            crate::sound::hold(crate::sound::key_of("gep-lock"), s, None, 1.0, 0.0, 1.0);
+        }
+    }
+    let ft = (h.target_range / 16.0) as i32;
+    let (msg, col) = match h.lock_mode {
+        1 => ("INVALID".to_string(), Color::srgb(0.0, 1.0, 0.0)),
+        2 => (format!("RANGE {ft} FT"), Color::srgb(0.0, 1.0, 0.0)),
+        3 => (
+            format!("ACQUIRE {:.2} SEC", (lock_time - h.lock_timer).max(0.0)),
+            Color::srgb(1.0, 1.0, 0.0),
+        ),
+        4 => (format!("LOCKED {ft} FT"), Color::srgb(1.0, 0.0, 0.0)),
+        _ => ("NONE".to_string(), Color::srgb(0.0, 1.0, 0.0)),
+    };
+    (msg, col)
+}
+
+/// What the player's traced shots read and write (trace_fire).
+struct ShotCx<'a> {
+    level: &'a dx_level::Level,
+    blockers: &'a [dx_level::collision::Cylinder],
+    movers: &'a [crate::movers::MoverRt],
+    player_at: DVec3,
+    pawn_hits: &'a mut Vec<crate::damage::PawnHit>,
+    deco_hits: &'a mut Vec<crate::destruct::DecoHit>,
+    blood: &'a mut Vec<(DVec3, DVec3)>,
+}
+
+/// The eye and the view's axes (Unreal space) a shot leaves along.
+#[derive(Clone, Copy)]
+struct Aim3 {
+    eye: DVec3,
+    fw: DVec3,
+    rt: DVec3,
+    up: DVec3,
+}
+
+/// DeusExWeapon.TraceFire for a firearm: each slug traced from the eye within the accuracy cone (aimmode::shot_dir),
+/// birds first, then ProcessTraceHit on what it meets (level / mover / decoration / pawn), ricochets, tracers, and the
+/// GMDX Stopping Power bonus on a blast that put every slug into one pawn.
+fn trace_fire(stats: &WeaponStats, cx: &mut ShotCx, aim: Aim3, acc: f64, scoped: bool, seed: &mut u64) {
+    let Aim3 { eye, fw, rt, up } = aim;
+    let range = stats.max_range as f64;
+    let dmg_type = stats.damage_type(stats.ammo_class.as_deref());
+    let base_dmg = stats.hit_damage * stats.damage_mult();
+    let mut ricocheted = false;
+    let slugs_from = cx.pawn_hits.len();
+    for _ in 0..stats.shots_per_fire() {
+        let dir = crate::aimmode::shot_dir(fw, rt, up, acc, range, seed);
+        let end = eye + dir * range;
+        let world = World { level: cx.level, blockers: cx.blockers, ignore: None, pushable: None, movers: Some(cx.movers) };
+        let hit = world.trace(eye, end, DVec3::splat(0.5));
+        if let Some((bird, f)) = crate::critters::trace_birds(eye, end) {
+            if f < hit.fraction {
+                crate::critters::hit_bird(bird, base_dmg);
+                continue;
+            }
+        }
+        let at = eye + dir * range * hit.fraction;
+        // TraceFire: a tracer for half the single-slug shots of 10mm / 30.06 / 7.62mm ammo (never scoped).
+        if stats.shots_per_fire() == 1 && !scoped && crate::impacts::tracer_ammo(stats.ammo_class.as_deref()) && crate::sound::frand() < 0.5 {
+            crate::impacts::tracer(eye, end, at);
+        }
+        if hit.fraction >= 1.0 {
+            continue;
+        }
+        let props = hit.actor.map(|b| &cx.level.actors[cx.blockers[b].actor].props);
+        let pawn = props.is_some_and(|p| find(p, "GroundSpeed").is_some());
+        let robot = props.is_some_and(|p| find(p, "EMPHitPoints").is_some());
+        if !ricocheted && stats.penetrating && (!pawn || robot) && matches!(dmg_type, "Shot" | "Sabot") {
+            // One ricochet per trigger pull: five overlapping ones from a shotgun blast sound wrong.
+            ricocheted = true;
+            // TraceHitSpawner.PlayHitSound: a ricochet, or ArmorRicochet off robots and tough decorations.
+            let armored = robot || props.is_some_and(|p| crate::sound::fprop(p, "minDamageThreshold", 0.0) > 10.0);
+            let snd = if armored {
+                "DeusExSounds.Generic.ArmorRicochet".to_string()
+            } else {
+                format!("DeusExSounds.Generic.Ricochet{}", 1 + (crate::sound::frand() * 4.0) as u32 % 4)
+            };
+            crate::sound::play(&snd, at, 1.0, 1024.0, 1.1 - 0.2 * crate::sound::frand());
+        }
+        let Some(b) = hit.actor else {
+            // ProcessTraceHit on the level or a mover: breakable doors take HitDamage x the skill multiplier, and
+            // SpawnEffects (TraceHitSpawner): smoke, chips, the hole and a spark.
+            crate::movers::hit_line(eye, at, base_dmg, dmg_type);
+            crate::impacts::wall_hit(at, hit.normal, dir, base_dmg, crate::impacts::Source::Weapon { penetrating: stats.penetrating, hand_to_hand: false });
+            // Enhancement (Bullets Through Thin Walls): on through thin wood or glass, weaker.
+            if stats.penetrating && matches!(dmg_type, "Shot" | "Sabot") {
+                through_wall(cx, &world, at, dir, end, base_dmg, dmg_type);
+            }
+            continue;
+        };
+        let a = &cx.level.actors[cx.blockers[b].actor];
+        // ProcessTraceHit: shooting something bOwned is a Futz.
+        if matches!(find(&a.props, "bOwned"), Some(Value::Bool(true))) {
+            crate::reactions::futz(cx.blockers[b].center);
+        }
+        if !pawn {
+            cx.deco_hits.push(crate::destruct::DecoHit { blocker: b, damage: base_dmg, damage_type: dmg_type });
+            continue;
+        }
+        if stats.penetrating && !robot {
+            cx.blood.push((at - dir, dir));
+        }
+        // ProcessTraceHit: damage scaled by skill (1 - 2 * skill value); GMDX Hollow Points on animals.
+        let dmg = base_dmg * crate::perks::hollow_points_mult(stats.ammo_class.as_deref(), &a.class);
+        cx.pawn_hits.push(crate::damage::PawnHit { blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
+    }
+    // GMDX Stopping Power (TraceFire bDoExtraSlugDamage): every slug of a shotgun blast into one pawn, and the last does
+    // extra. GMDX's 8 slugs get two slugs' worth (+25%); with the original's 5 the last slug does 1 + 0.25 x slugs so
+    // the blast stays +25%.
+    let n = stats.shots_per_fire();
+    if n > 1 && crate::perks::has("PerkStoppingPower") {
+        let hits = &mut cx.pawn_hits[slugs_from..];
+        if hits.len() == n && hits.iter().all(|x| x.blocker == hits[0].blocker) {
+            if let Some(last) = hits.last_mut() {
+                last.damage *= 1.0 + 0.25 * n as f32;
+            }
+        }
+    }
+}
+
+/// Enhancement (Bullets Through Thin Walls, weapons::penetrate): a slug that went through thin wood or glass at `at`
+/// hits what is behind, weaker.
+fn through_wall(cx: &mut ShotCx, world: &World, at: DVec3, dir: DVec3, end: DVec3, dmg: f32, dmg_type: &'static str) {
+    let Some((exit, keep)) = penetrate(cx.level, cx.movers, at, dir, dmg_type == "Sabot") else { return };
+    let dmg = dmg * keep;
+    let from = exit + dir * 0.5;
+    let hit = world.trace(from, end, DVec3::splat(0.5));
+    if hit.fraction >= 1.0 {
+        return;
+    }
+    let at2 = from + (end - from) * hit.fraction;
+    let Some(b) = hit.actor else {
+        crate::movers::hit_line(exit, at2, dmg, dmg_type);
+        crate::impacts::wall_hit(at2, hit.normal, dir, dmg, crate::impacts::Source::Weapon { penetrating: true, hand_to_hand: false });
+        return;
+    };
+    let a = &cx.level.actors[cx.blockers[b].actor];
+    if find(&a.props, "GroundSpeed").is_none() {
+        cx.deco_hits.push(crate::destruct::DecoHit { blocker: b, damage: dmg, damage_type: dmg_type });
+        return;
+    }
+    if find(&a.props, "EMPHitPoints").is_none() {
+        cx.blood.push((at2 - dir, dir));
+    }
+    cx.pawn_hits.push(crate::damage::PawnHit { blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at2, attacker: None, attacker_pos: cx.player_at });
+}
+
 /// Fire, reload and animate the held weapon; apply hits to pawns.
 #[allow(clippy::too_many_arguments)]
 pub fn weapon_system(
@@ -1883,74 +2265,13 @@ pub fn weapon_system(
             movers: Some(&mv.rt),
         };
         let hit = world.trace(eye, eye + fw * 10000.0, DVec3::ZERO);
-        let target = hit.actor;
-        let reloading = h.state == WState::Reloading;
-        match target.filter(|_| !reloading) {
-            None => {
-                h.lock_mode = 0;
-                h.lock_target = None;
-                h.lock_timer -= dt;
-            }
-            Some(b) => {
-                h.target_range = blockers.list[b].center.distance(player.body.location);
-                let a = &level.0.actors[blockers.list[b].actor];
-                let alive_pawn = find(&a.props, "GroundSpeed").is_some()
-                    && pawn_health.0.get(&b).map_or(true, |&hp| hp > 0.0);
-                if h.lock_mode == 4
-                    && alive_pawn
-                    && h.lock_target.is_some()
-                    && h.lock_target != Some(b)
-                {
-                    h.lock_mode = 0;
-                    h.lock_target = None;
-                } else if !alive_pawn {
-                    h.lock_mode = 1;
-                    h.lock_timer -= dt;
-                } else if h.target_range > h.stats.max_range as f64 {
-                    h.lock_mode = 2;
-                    h.lock_timer -= dt;
-                } else {
-                    let lock_time = (h.stats.lock_time + 3.0 * h.stats.skill).max(0.0);
-                    h.lock_timer += dt;
-                    if h.lock_timer >= lock_time {
-                        h.lock_mode = 4;
-                        h.lock_target = Some(b);
-                    } else {
-                        h.lock_mode = 3;
-                    }
-                }
-            }
-        }
-        h.lock_timer = h.lock_timer.max(0.0);
-        let lock_time = (h.stats.lock_time + 3.0 * h.stats.skill).max(0.0);
-        // Acquiring beeps faster as the lock nears (beepspeed = clamp(time left / LockTime, 0.2, 1)); one tone on lock.
-        h.beep_timer += dt;
-        if h.lock_mode == 3 {
-            let beep = ((lock_time - h.lock_timer) / h.stats.lock_time.max(0.01)).clamp(0.2, 1.0);
-            if h.beep_timer > beep {
-                h.beep_timer = 0.0;
-                if let Some(s) = &h.stats.snd.tracking {
-                    crate::sound::play_player(s, 1.0, 0.0);
-                }
-            }
-        }
-        // While locked, PlayLockSound every 0.1 s: a held tone.
-        if h.lock_mode == 4 {
-            if let Some(s) = &h.stats.snd.locked {
-                crate::sound::hold(crate::sound::key_of("gep-lock"), s, None, 1.0, 0.0, 1.0);
-            }
-        }
-        let ft = (h.target_range / 16.0) as i32;
-        let (msg, col) = match h.lock_mode {
-            1 => ("INVALID".to_string(), Color::srgb(0.0, 1.0, 0.0)),
-            2 => (format!("RANGE {ft} FT"), Color::srgb(0.0, 1.0, 0.0)),
-            3 => (
-                format!("ACQUIRE {:.2} SEC", (lock_time - h.lock_timer).max(0.0)),
-                Color::srgb(1.0, 1.0, 0.0),
-            ),
-            4 => (format!("LOCKED {ft} FT"), Color::srgb(1.0, 0.0, 0.0)),
-            _ => ("NONE".to_string(), Color::srgb(0.0, 1.0, 0.0)),
-        };
+        // What's in the sights: (blocker, its range, a living pawn).
+        let target = hit.actor.filter(|_| h.state != WState::Reloading).map(|b| {
+            let a = &level.0.actors[blockers.list[b].actor];
+            let alive = find(&a.props, "GroundSpeed").is_some() && pawn_health.0.get(&b).map_or(true, |&hp| hp > 0.0);
+            (b, blockers.list[b].center.distance(player.body.location), alive)
+        });
+        let (msg, col) = lock_on(h, target, dt);
         let (ref mut t, ref mut c) = *lock_text;
         if t.0 != msg {
             t.0 = msg;
@@ -2010,125 +2331,16 @@ pub fn weapon_system(
         let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
         let f = cam.forward().as_vec3();
         let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
-        let range = h.stats.max_range as f64;
-        let world = World {
+        let mut cx = ShotCx {
             level: &level.0,
             blockers: &blockers.list,
-            ignore: None,
-            pushable: None,
-            movers: Some(&mv.rt),
+            movers: &mv.rt,
+            player_at: player.body.location,
+            pawn_hits: &mut pawn_hits.0,
+            deco_hits: &mut deco_hits.0,
+            blood: &mut blood.0,
         };
-        let hit = world.trace(eye, eye + fw * range, DVec3::splat(0.5));
-        let bird =
-            crate::critters::trace_birds(eye, eye + fw * range).filter(|b| b.1 < hit.fraction);
-        if let Some((b, _)) = bird {
-            crate::critters::hit_bird(b, h.stats.hit_damage * h.stats.damage_mult());
-            if let Some(s) = &h.stats.snd.misc[0] {
-                crate::sound::play_player(s, 1.0, 1024.0);
-            }
-        } else if hit.fraction < 1.0 {
-            let at = eye + fw * range * hit.fraction;
-            if hit.actor.is_none() {
-                crate::movers::hit_line(
-                    eye,
-                    at,
-                    h.stats.hit_damage * h.stats.damage_mult(),
-                    h.stats.damage_type(h.stats.ammo_class.as_deref()),
-                );
-                // TraceHitHandSpawner: only breakable movers get marked by a blow.
-                crate::impacts::wall_hit(
-                    at,
-                    hit.normal,
-                    fw,
-                    h.stats.hit_damage * h.stats.damage_mult(),
-                    crate::impacts::Source::Weapon { penetrating: h.stats.penetrating, hand_to_hand: true },
-                );
-            }
-            let props = hit
-                .actor
-                .map(|b| &level.0.actors[blockers.list[b].actor].props);
-            let pawn = props.map_or(false, |p| find(p, "GroundSpeed").is_some());
-            // SpawnEffectSounds: flesh (Misc1), a decoration (Misc3), anything else hard (Misc2).
-            let k = if pawn {
-                0
-            } else if props.is_some() {
-                2
-            } else {
-                1
-            };
-            // Hard world surfaces textured from the Glass group: BulletProofHit.
-            let glass = props.is_none()
-                && level.0.wall_group(at.to_array(), hit.normal.to_array()).is_some_and(|g| g.eq_ignore_ascii_case("Glass"));
-            if glass {
-                crate::sound::play_player("DeusExSounds.Generic.BulletProofHit", 1.0, 1024.0);
-            } else if let Some(s) = &h.stats.snd.misc[k] {
-                crate::sound::play_player(s, 1.0, 1024.0);
-            }
-            if let Some(b) = hit.actor {
-                let dt_name = h.stats.damage_type(h.stats.ammo_class.as_deref());
-                if !pawn {
-                    if props.is_some_and(|p| matches!(find(p, "bOwned"), Some(Value::Bool(true)))) {
-                        crate::reactions::futz(blockers.list[b].center);
-                    }
-                    let cls = &level.0.actors[blockers.list[b].actor].class;
-                    deco_hits.0.push(crate::destruct::DecoHit {
-                        blocker: b,
-                        damage: h.stats.hit_damage * h.stats.damage_mult() * crate::perks::piercing_mult(cls, false),
-                        damage_type: dt_name,
-                    });
-                } else {
-                    if h.stats.penetrating
-                        && props.map_or(true, |p| find(p, "EMPHitPoints").is_none())
-                    {
-                        blood.0.push((at - fw, fw));
-                    }
-                    let cls = &level.0.actors[blockers.list[b].actor].class;
-                    let robot = props.is_some_and(|p| find(p, "EMPHitPoints").is_some());
-                    pawn_hits.0.push(crate::damage::PawnHit {
-                        blocker: b,
-                        damage: h.stats.hit_damage * h.stats.damage_mult() * crate::perks::piercing_mult(cls, robot),
-                        damage_type: dt_name,
-                        hit_loc: at,
-                        attacker: None,
-                        attacker_pos: player.body.location,
-                    });
-                }
-            }
-        }
-        // Enhancement (Melee Sweeps An Arc, setting MeleeArc): the blow also catches whatever stands within 25
-        // degrees either side of the aim (traces at 12.5 and 25 degrees), each thing once, at three quarters damage.
-        if crate::settings::get("MeleeArc") > 0.5 && bird.is_none() {
-            let mut done: Vec<usize> = hit.actor.into_iter().collect();
-            let dt_name = h.stats.damage_type(h.stats.ammo_class.as_deref());
-            let dmg = h.stats.hit_damage * h.stats.damage_mult() * 0.75;
-            for deg in [12.5f64, -12.5, 25.0, -25.0] {
-                let (s, c) = deg.to_radians().sin_cos();
-                let d = DVec3::new(fw.x * c - fw.y * s, fw.x * s + fw.y * c, fw.z).normalize();
-                let side = world.trace(eye, eye + d * range, DVec3::splat(0.5));
-                let Some(b) = side.actor.filter(|b| side.fraction < 1.0 && !done.contains(b)) else { continue };
-                done.push(b);
-                let at = eye + d * range * side.fraction;
-                let props = &level.0.actors[blockers.list[b].actor].props;
-                if find(props, "GroundSpeed").is_some() {
-                    if h.stats.penetrating && find(props, "EMPHitPoints").is_none() {
-                        blood.0.push((at - d, d));
-                    }
-                    if let Some(snd) = &h.stats.snd.misc[0] {
-                        crate::sound::play_player(snd, 1.0, 1024.0);
-                    }
-                    pawn_hits.0.push(crate::damage::PawnHit {
-                        blocker: b,
-                        damage: dmg,
-                        damage_type: dt_name,
-                        hit_loc: at,
-                        attacker: None,
-                        attacker_pos: player.body.location,
-                    });
-                } else {
-                    deco_hits.0.push(crate::destruct::DecoHit { blocker: b, damage: dmg, damage_type: dt_name });
-                }
-            }
-        }
+        melee_blow(&h.stats, &mut cx, eye, fw);
     }
     // The grenade leaves the hand halfway through the throw (or place) animation.
     if h.state == WState::Firing && h.clip.t * h.clip.rate >= h.clip.frames as f32 * 0.5 {
@@ -2557,7 +2769,6 @@ pub fn weapon_system(
                 let s = if heavy { 1.0 } else { (h.stats.hit_damage / 30.0).clamp(0.25, 0.9) };
                 crate::dualsense::event(crate::dualsense::Haptic::Shot(s));
             }
-            let range = h.stats.max_range as f64;
             // Ammo for hand-to-hand weapons with a ReloadCount (grenades, throwing knives) is used per throw
             // (Fire: AmmoType.UseAmmo(1)); out of it, the weapon goes once the animation ends. Single-use launchers
             // (ReloadCount 0: LAW, PS20) are destroyed after one shot.
@@ -2641,284 +2852,22 @@ pub fn weapon_system(
                 // The swing (FireSound) starts now; the blow lands at the HandToHandAttack notify.
                 h.melee_pending = true;
             } else {
-                let mut ricocheted = false;
-                let slugs_from = pawn_hits.0.len();
-                for _ in 0..h.stats.shots_per_fire() {
-                    let dir = if h.stats.hand_to_hand {
-                        fw
-                    } else {
-                        crate::aimmode::shot_dir(fw, rt, up, acc, range, &mut seed)
-                    };
-                    let end = eye + dir * range;
-                    let world = World {
-                        level: &level.0,
-                        blockers: &blockers.list,
-                        ignore: None,
-                        pushable: None,
-                        movers: Some(&mv.rt),
-                    };
-                    let hit = world.trace(eye, end, DVec3::splat(0.5));
-                    if let Some((bird, f)) = crate::critters::trace_birds(eye, end) {
-                        if f < hit.fraction {
-                            crate::critters::hit_bird(
-                                bird,
-                                h.stats.hit_damage * h.stats.damage_mult(),
-                            );
-                            continue;
-                        }
-                    }
-                    if hit.fraction < 1.0 {
-                        let at = eye + dir * range * hit.fraction;
-                        let props = hit
-                            .actor
-                            .map(|b| &level.0.actors[blockers.list[b].actor].props);
-                        let pawn = props.map_or(false, |p| find(p, "GroundSpeed").is_some());
-                        let robot = props.map_or(false, |p| find(p, "EMPHitPoints").is_some());
-                        if h.stats.hand_to_hand {
-                            // SpawnEffectSounds: flesh (Misc1), a decoration (Misc3), anything else hard (Misc2).
-                            let k = if pawn {
-                                0
-                            } else if props.is_some() {
-                                2
-                            } else {
-                                1
-                            };
-                            let glass = props.is_none()
-                                && level.0.wall_group(at.to_array(), hit.normal.to_array()).is_some_and(|g| g.eq_ignore_ascii_case("Glass"));
-                            if glass {
-                                crate::sound::play_player("DeusExSounds.Generic.BulletProofHit", 1.0, 1024.0);
-                            } else if let Some(s) = &h.stats.snd.misc[k] {
-                                crate::sound::play_player(s, 1.0, 1024.0);
-                            }
-                        } else if !ricocheted
-                            && h.stats.penetrating
-                            && (!pawn || robot)
-                            && matches!(
-                                h.stats.damage_type(h.stats.ammo_class.as_deref()),
-                                "Shot" | "Sabot"
-                            )
-                        {
-                            // One ricochet per trigger pull: five overlapping ones from a shotgun blast sound wrong.
-                            ricocheted = true;
-                            // TraceHitSpawner.PlayHitSound: a ricochet, or ArmorRicochet off robots and tough decorations.
-                            let armored = robot
-                                || props.map_or(false, |p| {
-                                    crate::sound::fprop(p, "minDamageThreshold", 0.0) > 10.0
-                                });
-                            let snd = if armored {
-                                "DeusExSounds.Generic.ArmorRicochet".to_string()
-                            } else {
-                                format!(
-                                    "DeusExSounds.Generic.Ricochet{}",
-                                    1 + (crate::sound::frand() * 4.0) as u32 % 4
-                                )
-                            };
-                            crate::sound::play(
-                                &snd,
-                                at,
-                                1.0,
-                                1024.0,
-                                1.1 - 0.2 * crate::sound::frand(),
-                            );
-                        }
-                    }
-                    // TraceFire: a tracer for half the single-slug shots of 10mm / 30.06 / 7.62mm ammo (never scoped).
-                    if !h.stats.hand_to_hand
-                        && h.stats.shots_per_fire() == 1
-                        && zoom.0.is_none()
-                        && crate::impacts::tracer_ammo(h.stats.ammo_class.as_deref())
-                        && crate::sound::frand() < 0.5
-                    {
-                        crate::impacts::tracer(eye, end, eye + (end - eye) * hit.fraction);
-                    }
-                    if hit.fraction < 1.0 && hit.actor.is_none() {
-                        // ProcessTraceHit on the level or a mover: breakable doors take HitDamage x the skill multiplier.
-                        crate::movers::hit_line(
-                            eye,
-                            eye + dir * range * hit.fraction,
-                            h.stats.hit_damage * h.stats.damage_mult(),
-                            h.stats.damage_type(h.stats.ammo_class.as_deref()),
-                        );
-                        // SpawnEffects (TraceHitSpawner): smoke, chips, the hole and a spark.
-                        crate::impacts::wall_hit(
-                            eye + dir * range * hit.fraction,
-                            hit.normal,
-                            dir,
-                            h.stats.hit_damage * h.stats.damage_mult(),
-                            crate::impacts::Source::Weapon { penetrating: h.stats.penetrating, hand_to_hand: false },
-                        );
-                        // Enhancement (Bullets Through Thin Walls): on through thin wood or glass, weaker.
-                        let dt_name = h.stats.damage_type(h.stats.ammo_class.as_deref());
-                        if h.stats.penetrating && matches!(dt_name, "Shot" | "Sabot") {
-                            let at = eye + dir * range * hit.fraction;
-                            if let Some((exit, keep)) = penetrate(&level.0, &mv.rt, at, dir, dt_name == "Sabot") {
-                                let dmg = h.stats.hit_damage * h.stats.damage_mult() * keep;
-                                let hit2 = world.trace(exit + dir * 0.5, end, DVec3::splat(0.5));
-                                let at2 = exit + dir * 0.5 + (end - exit - dir * 0.5) * hit2.fraction;
-                                if hit2.fraction < 1.0 {
-                                    match hit2.actor {
-                                        None => {
-                                            crate::movers::hit_line(exit, at2, dmg, dt_name);
-                                            crate::impacts::wall_hit(at2, hit2.normal, dir, dmg, crate::impacts::Source::Weapon { penetrating: true, hand_to_hand: false });
-                                        }
-                                        Some(b) => {
-                                            let a = &level.0.actors[blockers.list[b].actor];
-                                            if find(&a.props, "GroundSpeed").is_some() {
-                                                if find(&a.props, "EMPHitPoints").is_none() {
-                                                    blood.0.push((at2 - dir, dir));
-                                                }
-                                                pawn_hits.0.push(crate::damage::PawnHit {
-                                                    blocker: b,
-                                                    damage: dmg,
-                                                    damage_type: dt_name,
-                                                    hit_loc: at2,
-                                                    attacker: None,
-                                                    attacker_pos: player.body.location,
-                                                });
-                                            } else {
-                                                deco_hits.0.push(crate::destruct::DecoHit { blocker: b, damage: dmg, damage_type: dt_name });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if let Some(b) = hit.actor {
-                        let ai = blockers.list[b].actor;
-                        let a = &level.0.actors[ai];
-                        let is_pawn = find(&a.props, "GroundSpeed").is_some();
-                        // ProcessTraceHit: shooting something bOwned is a Futz.
-                        if matches!(find(&a.props, "bOwned"), Some(Value::Bool(true))) {
-                            crate::reactions::futz(blockers.list[b].center);
-                        }
-                        if !is_pawn {
-                            deco_hits.0.push(crate::destruct::DecoHit {
-                                blocker: b,
-                                damage: h.stats.hit_damage * h.stats.damage_mult(),
-                                damage_type: h.stats.damage_type(h.stats.ammo_class.as_deref()),
-                            });
-                        }
-                        if is_pawn
-                            && h.stats.penetrating
-                            && find(&a.props, "EMPHitPoints").is_none()
-                        {
-                            blood
-                                .0
-                                .push((eye + dir * range * hit.fraction - dir * 1.0, dir));
-                        }
-                        if is_pawn {
-                            // ProcessTraceHit: damage scaled by skill (1 - 2 * skill value); GMDX Hollow Points on
-                            // animals.
-                            let dmg = h.stats.hit_damage
-                                * h.stats.damage_mult()
-                                * crate::perks::hollow_points_mult(h.stats.ammo_class.as_deref(), &a.class);
-                            pawn_hits.0.push(crate::damage::PawnHit {
-                                blocker: b,
-                                damage: dmg,
-                                damage_type: h.stats.damage_type(h.stats.ammo_class.as_deref()),
-                                hit_loc: eye + dir * range * hit.fraction,
-                                attacker: None,
-                                attacker_pos: player.body.location,
-                            });
-                        }
-                    }
-                }
-                // GMDX Stopping Power (TraceFire bDoExtraSlugDamage): every slug of a shotgun blast into one pawn,
-                // and the last does extra. GMDX's 8 slugs get two slugs' worth (+25%); with the original's 5 the
-                // last slug does 1 + 0.25 x slugs so the blast stays +25%.
-                let n = h.stats.shots_per_fire();
-                if n > 1 && crate::perks::has("PerkStoppingPower") {
-                    let hits = &mut pawn_hits.0[slugs_from..];
-                    if hits.len() == n && hits.iter().all(|x| x.blocker == hits[0].blocker) {
-                        if let Some(last) = hits.last_mut() {
-                            last.damage *= 1.0 + 0.25 * n as f32;
-                        }
-                    }
-                }
+                let mut cx = ShotCx {
+                    level: &level.0,
+                    blockers: &blockers.list,
+                    movers: &mv.rt,
+                    player_at: player.body.location,
+                    pawn_hits: &mut pawn_hits.0,
+                    deco_hits: &mut deco_hits.0,
+                    blood: &mut blood.0,
+                };
+                trace_fire(&h.stats, &mut cx, Aim3 { eye, fw, rt, up }, acc, zoom.0.is_some(), &mut seed);
             }
         }
     }
 
-    // Animate the view model (only when the pose changed since the last write). A new sequence (or a one-shot one
-    // started again: the next shot, swing or fidget) eases in from the pose on screen over TWEEN seconds, as the
-    // original's TweenAnim / blended PlayAnim did, instead of snapping to its first frame.
-    let f = h.clip.frame();
-    let f_used = if h.clip.looping { f } else { f.min(h.clip.frames as f32 - 1.001) };
-    let pose = (h.clip.start, h.clip.frames, (f_used * 1000.0) as u32);
-    if let Some(last) = h.last_pose {
-        let restarted = !h.clip.looping && pose.2 + 500 < last.2;
-        if (last.0, last.1) != (pose.0, pose.1) || restarted {
-            if h.shown.len() == h.parts.len() {
-                h.tween = Some((std::mem::take(&mut h.shown), 0.0));
-            }
-        }
-    }
-    let mut tween_k = None;
-    if let Some((_, t)) = h.tween.as_mut() {
-        *t += dt;
-        let x = (*t / VIEW_TWEEN).min(1.0);
-        tween_k = Some(x * x * (3.0 - 2.0 * x));
-        if x >= 1.0 {
-            h.tween = None;
-        }
-    }
-    let pose_changed = h.last_pose != Some(pose) || tween_k.is_some();
-    h.last_pose = Some(pose);
-    if pose_changed {
-        let mut shown = std::mem::take(&mut h.shown);
-        shown.resize(h.parts.len(), Vec::new());
-        for (pi, hm) in h.handles.iter().enumerate() {
-            let part = &h.parts[pi];
-            let out = &mut shown[pi];
-            out.clear();
-            out.extend(part.vert_ids.iter().map(|&v| {
-                let p = h.mesh.sample(h.clip.start, h.clip.frames, f_used, v as usize);
-                view_to_cam([p[0] * h.stats.view_scale, p[1] * h.stats.view_scale, p[2] * h.stats.view_scale])
-            }));
-            if let (Some(k), Some((from, _))) = (tween_k, h.tween.as_ref()) {
-                if let Some(a) = from.get(pi).filter(|a| a.len() == out.len()) {
-                    for (o, a) in out.iter_mut().zip(a) {
-                        for c in 0..3 {
-                            o[c] = a[c] + (o[c] - a[c]) * k;
-                        }
-                    }
-                }
-            }
-            if let Some(mut m) = meshes.get_mut(hm) {
-                m.insert_attribute(Mesh::ATTRIBUTE_POSITION, out.clone());
-            }
-        }
-        h.shown = shown;
-    }
-    // Light the weapon from the static lights around the player a few times a second (every frame while a
-    // dynamic light such as a muzzle flash or the flashlight is on).
-    h.relight -= dt;
-    // A dynamic light near enough to matter (a lamp across the map used to relight - and re-upload - the view
-    // model every frame).
-    let eye_now = bevy_to_ue(cam.translation.to_array());
-    let dyn_on = crate::dynlight::with_current(|c| {
-        c.iter().any(|l| {
-            let d2 = (0..3).map(|k| (l.pos[k] - eye_now[k]).powi(2)).sum::<f32>();
-            d2 < (l.radius + 96.0).powi(2)
-        })
-    });
-    if h.relight <= 0.0 || (dyn_on && h.relight <= 0.15) {
-        h.relight = 0.2;
-        let eye = bevy_to_ue(cam.translation.to_array());
-        let all = crate::dynlight::lights(&level.0.lights);
-        for (pi, hm) in h.handles.iter().enumerate() {
-            if let Some(mut m) = meshes.get_mut(hm) {
-                let c = light_part(&h.parts[pi], eye, [0, 0, 0], 1.0, &all);
-                // Never fully black: Deus Ex lights the weapon with a minimum glow.
-                let c: Vec<[f32; 4]> = c
-                    .into_iter()
-                    .map(|x| [x[0].max(0.06), x[1].max(0.06), x[2].max(0.06), 1.0])
-                    .collect();
-                m.insert_attribute(Mesh::ATTRIBUTE_COLOR, c);
-            }
-        }
-    }
+    pose_view_model(h, &mut meshes, dt);
+    light_view_model(h, &mut meshes, &level.0, cam.translation, dt);
 
     let clip_now = *clips.0.get(&h.stats.class).unwrap_or(&0);
     ammo_text.0 = match (h.stats.hand_to_hand || h.stats.reload_count == 0, pool) {
