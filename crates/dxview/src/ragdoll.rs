@@ -113,20 +113,24 @@ struct PartDef {
     /// Joint limits (radians): swing half-angle, twist either way.
     swing: f32,
     twist: f32,
+    hinge: Option<(f32, f32)>,
 }
 
+/// Hinged parts (knees, elbows): `hinge` = Some(range of the bend in radians, about the body's left-to-right axis -
+/// negative swings the part backward, as a knee bends; positive forward, as an elbow). Spherical parts use swing /
+/// twist; hinges ignore them.
 const PARTS: &[PartDef] = &[
-    PartDef { bone: "DEF-spine", tail: "DEF-spine.002", extend: 0.0, radius: 0.13, parent: None, swing: 0.0, twist: 0.0 },
-    PartDef { bone: "DEF-spine.003", tail: "DEF-spine.005", extend: 0.0, radius: 0.15, parent: Some(0), swing: 0.5, twist: 0.4 },
-    PartDef { bone: "DEF-spine.005", tail: "DEF-spine.006", extend: 1.6, radius: 0.1, parent: Some(1), swing: 0.7, twist: 0.7 },
-    PartDef { bone: "DEF-upper_arm.L", tail: "DEF-forearm.L", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.6, twist: 0.9 },
-    PartDef { bone: "DEF-forearm.L", tail: "DEF-hand.L", extend: 0.45, radius: 0.045, parent: Some(3), swing: 1.4, twist: 0.3 },
-    PartDef { bone: "DEF-upper_arm.R", tail: "DEF-forearm.R", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.6, twist: 0.9 },
-    PartDef { bone: "DEF-forearm.R", tail: "DEF-hand.R", extend: 0.45, radius: 0.045, parent: Some(5), swing: 1.4, twist: 0.3 },
-    PartDef { bone: "DEF-thigh.L", tail: "DEF-shin.L", extend: 0.0, radius: 0.075, parent: Some(0), swing: 1.2, twist: 0.4 },
-    PartDef { bone: "DEF-shin.L", tail: "DEF-foot.L", extend: 0.15, radius: 0.055, parent: Some(7), swing: 1.3, twist: 0.2 },
-    PartDef { bone: "DEF-thigh.R", tail: "DEF-shin.R", extend: 0.0, radius: 0.075, parent: Some(0), swing: 1.2, twist: 0.4 },
-    PartDef { bone: "DEF-shin.R", tail: "DEF-foot.R", extend: 0.15, radius: 0.055, parent: Some(9), swing: 1.3, twist: 0.2 },
+    PartDef { bone: "DEF-spine", tail: "DEF-spine.002", extend: 0.0, radius: 0.13, parent: None, swing: 0.0, twist: 0.0, hinge: None },
+    PartDef { bone: "DEF-spine.003", tail: "DEF-spine.005", extend: 0.0, radius: 0.15, parent: Some(0), swing: 0.45, twist: 0.3, hinge: None },
+    PartDef { bone: "DEF-spine.005", tail: "DEF-spine.006", extend: 1.6, radius: 0.1, parent: Some(1), swing: 0.6, twist: 0.5, hinge: None },
+    PartDef { bone: "DEF-upper_arm.L", tail: "DEF-forearm.L", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.4, twist: 0.5, hinge: None },
+    PartDef { bone: "DEF-forearm.L", tail: "DEF-hand.L", extend: 0.45, radius: 0.045, parent: Some(3), swing: 0.0, twist: 0.0, hinge: Some((-0.05, 2.4)) },
+    PartDef { bone: "DEF-upper_arm.R", tail: "DEF-forearm.R", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.4, twist: 0.5, hinge: None },
+    PartDef { bone: "DEF-forearm.R", tail: "DEF-hand.R", extend: 0.45, radius: 0.045, parent: Some(5), swing: 0.0, twist: 0.0, hinge: Some((-0.05, 2.4)) },
+    PartDef { bone: "DEF-thigh.L", tail: "DEF-shin.L", extend: 0.0, radius: 0.075, parent: Some(0), swing: 1.0, twist: 0.25, hinge: None },
+    PartDef { bone: "DEF-shin.L", tail: "DEF-foot.L", extend: 0.15, radius: 0.055, parent: Some(7), swing: 0.0, twist: 0.0, hinge: Some((-2.3, 0.05)) },
+    PartDef { bone: "DEF-thigh.R", tail: "DEF-shin.R", extend: 0.0, radius: 0.075, parent: Some(0), swing: 1.0, twist: 0.25, hinge: None },
+    PartDef { bone: "DEF-shin.R", tail: "DEF-foot.R", extend: 0.15, radius: 0.055, parent: Some(9), swing: 0.0, twist: 0.0, hinge: Some((-2.3, 0.05)) },
 ];
 
 /// Bones hung straight off the rig root (the export flattens Rigify's parenting) and the bone each rides with:
@@ -293,6 +297,9 @@ pub fn start_system(
         let hit = Vec3::from(dx_level::ue_to_bevy(d.hit.as_vec3().to_array()));
         let run = Vec3::new(d.vel.x as f32, d.vel.z as f32, d.vel.y as f32) * dx_level::METERS_PER_UNIT;
         let kick = (d.damage * 0.12).clamp(1.5, 7.0);
+        // The body's left-to-right axis (hips, else shoulders): the hinges' axis.
+        let lr = |a: &str, b: &str| Some(g[idx(b)?].w_axis.truncate() - g[idx(a)?].w_axis.truncate()).filter(|v| v.length_squared() > 1e-6);
+        let right = lr("DEF-thigh.L", "DEF-thigh.R").or_else(|| lr("DEF-upper_arm.L", "DEF-upper_arm.R")).unwrap_or(Vec3::X).normalize();
         let mut bodies: Vec<Entity> = Vec::new();
         let mut body_w: Vec<Mat4> = Vec::new();
         let mut ok = true;
@@ -329,11 +336,23 @@ pub fn start_system(
             let rot = Quat::from_rotation_arc(Vec3::Y, axis);
             let mid = (a + b) * 0.5;
             let w = Mat4::from_rotation_translation(rot, mid);
-            let mut v = run;
+            // The shot carries the whole body a little, the part hit most and its neighbours more; a hit above the
+            // hips tips the body over away from the shooter (the legs get a touch the other way), a hit in the legs
+            // sweeps them out from under it.
+            let mut v = run + push_dir * kick * 0.3;
             if i == near {
-                v += push_dir * kick;
+                v += push_dir * kick * 0.8;
             } else if PARTS[near].parent == Some(i) || p.parent == Some(near) {
-                v += push_dir * kick * 0.4;
+                v += push_dir * kick * 0.45;
+            }
+            let upper_hit = near <= 6;
+            let is_leg = i >= 7;
+            if upper_hit && !is_leg && i != 0 {
+                v += push_dir * kick * 0.25;
+            } else if upper_hit && is_leg {
+                v -= push_dir * kick * 0.12;
+            } else if !upper_hit && !is_leg && i != 0 {
+                v -= push_dir * kick * 0.1;
             }
             let body = commands
                 .spawn((
@@ -342,8 +361,8 @@ pub fn start_system(
                     CollisionLayers::new(LAYER_RAG, LAYER_WORLD),
                     Friction::new(0.8),
                     Restitution::new(0.0),
-                    LinearDamping(0.1),
-                    AngularDamping(1.2),
+                    LinearDamping(0.15),
+                    AngularDamping(2.2),
                     LinearVelocity(v),
                     TransformInterpolation,
                     Transform::from_translation(mid).with_rotation(rot),
@@ -359,9 +378,29 @@ pub fn start_system(
             let Some(pi) = p.parent else { continue };
             let (a, b) = segs[i];
             anchors.push((pi, i, body_w[pi].inverse().transform_point3(a), body_w[i].inverse().transform_point3(a)));
-            let rot = Quat::from_rotation_arc(Vec3::Y, (b - a).normalize_or(Vec3::Y));
-            joints.push(
-                commands
+            let child = (b - a).normalize_or(Vec3::NEG_Y);
+            let rot = Quat::from_rotation_arc(Vec3::Y, child);
+            let j = match p.hinge {
+                Some((lo, hi)) => {
+                    // A hinge about the body's left-to-right axis (the basis's Z), its limits measured from the bend
+                    // the pose already has (the joint starts at angle 0).
+                    let (pa, pb) = segs[pi];
+                    let parent_dir = (pb - pa).normalize_or(Vec3::NEG_Y);
+                    let bend = parent_dir.cross(child).dot(right).atan2(parent_dir.dot(child));
+                    let y = (child - right * child.dot(right)).normalize_or(Vec3::Y);
+                    let basis = Quat::from_mat3(&Mat3::from_cols(y.cross(right), y, right));
+                    let (min, max) = ((lo - bend).min(0.0), (hi - bend).max(0.0));
+                    commands
+                        .spawn((
+                            RevoluteJoint::new(bodies[pi], bodies[i])
+                                .with_anchor(a)
+                                .with_basis(basis)
+                                .with_angle_limits(min, max),
+                            JointCollisionDisabled,
+                        ))
+                        .id()
+                }
+                None => commands
                     .spawn((
                         SphericalJoint::new(bodies[pi], bodies[i])
                             .with_anchor(a)
@@ -371,7 +410,8 @@ pub fn start_system(
                         JointCollisionDisabled,
                     ))
                     .id(),
-            );
+            };
+            joints.push(j);
         }
         // Which bones the bodies carry, and which ride other bones.
         let count = s.rig.names.len();

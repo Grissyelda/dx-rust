@@ -751,6 +751,8 @@ pub struct Npc {
     pub use_home: bool,
     pub home_extent: f64,
     pub defend_home: bool,
+    /// Where the current fight started (set on the first Attacking tick): robots keep within HomeExtent of it.
+    pub combat_anchor: Option<DVec3>,
     /// Animals wander to random spots (AIPickRandomDestination) instead of path nodes.
     pub animal: bool,
     pub wander_goal: Option<DVec3>,
@@ -1143,6 +1145,7 @@ impl Npc {
                 _ => 800.0,
             },
             defend_home: matches!(find(p, "bDefendHome"), Some(Value::Bool(true))),
+            combat_anchor: None,
             animal: find(p, "FoodHealth").is_some()
                 || matches!(name_of(p, "Alliance").as_str(), "Rat" | "Fly"),
             wander_goal: None,
@@ -1433,6 +1436,7 @@ impl Npc {
         self.last_seen = seen_at;
         self.readiness = 1.0;
         if matches!(self.state, NpcState::Idle | NpcState::Seeking) {
+            self.combat_anchor = None;
             self.stand_up();
             self.seek = None;
             self.seek_level = 0;
@@ -4911,6 +4915,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
     }
     // Attacking.BeginState: SetupWeapon(true) - the weapon comes out even when no surprise pause ran.
     npc.weapon_drawn = true;
+    npc.combat_anchor.get_or_insert(me.center);
     let target_dead = match npc.target {
         Some(Target::Pawn(b)) => *hp.0.get(&b).unwrap_or(&1.0) <= 0.0,
         Some(Target::Player) => ph.dead,
@@ -5066,6 +5071,23 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
             let r = npc.route.as_mut().unwrap();
             wish = follow(lvl, r, me.center, &npc.params, dt);
             running = true;
+            // bDefendHome: no combat move leaves home (PickDestination / ComputeBestFiringPosition test
+            // IsNearHome on every destination). Ours: robots are kept within HomeExtent of where the fight began
+            // too (the dock's security bot ran off across the island after terrorists).
+            let anchor = npc.combat_anchor.unwrap_or(me.center);
+            let step = me.center + DVec3::new(wish.x, wish.y, 0.0).normalize_or_zero() * 48.0;
+            let leaves = if npc.defend_home {
+                !is_near_home(lvl, npc, step) && is_near_home(lvl, npc, me.center)
+            } else if npc.emp_hp > 0.0 && !npc.animal {
+                step.distance(anchor) > npc.home_extent && step.distance(anchor) > me.center.distance(anchor)
+            } else {
+                false
+            };
+            if leaves {
+                wish = DVec3::ZERO;
+                running = false;
+                npc.route = None;
+            }
         } else {
             npc.route = None;
         }

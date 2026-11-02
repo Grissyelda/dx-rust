@@ -666,7 +666,7 @@ impl Enhance {
             ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo, reload every clip and switch weapons (or to melee) when they run dry, as the original scripts say."),
             ("FloorConsumables", "Gameplay", "Use Consumables From The Floor", "With no room in your inventory, a medkit, bioelectric cell, food or drink you pick up is used on the spot."),
             ("LadderGrab", "Gameplay", "Grab Ladders", "Use takes hold of a ladder and Jump lets go; on it, forward and back climb up and down."),
-            ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab types a keypad code, logins are filled in."),
+            ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab (pad: Y) types a keypad code or fills in a login."),
             ("DialogueHotkeys", "Interface", "Dialogue Hotkeys", "Number the first four conversation choices; keys 1-4 pick them."),
             ("InventorySort", "Interface", "Inventory Auto-Sort", "A Sort button on the inventory screen packs the items neatly, weapons first."),
             ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish, many more blood splats stay, and blood, bullet holes and casings are still there when you come back to a map or load a save."),
@@ -1079,6 +1079,12 @@ pub fn open_keypad(blocker: usize, valid: String, instant: bool) {
 /// The keypad in use (its blocker), its code so far and the result showing (diegetic.rs).
 static KEYPAD_NOW: std::sync::Mutex<Option<(usize, String, Option<bool>, usize)>> = std::sync::Mutex::new(None);
 static KEYPAD_PRESSES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// The open keypad's code is in the notes (Codes From Notes): its "Tab / Y: code from notes" hint is wanted.
+pub fn keypad_noted() -> bool {
+    KEYPAD_NOTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+static KEYPAD_NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn keypad_blocker() -> Option<usize> {
     KEYPAD_NOW.lock().ok().and_then(|k| k.as_ref().map(|k| k.0))
@@ -2473,7 +2479,7 @@ pub fn menu_system(
         st.stack.push(Win { f, body: Body::Keypad(k), pos: None, focus: None, hides_below: true, drop: None });
     }
     // The pad's Y on a keypad: the code from the notes (gamepad.rs).
-    if crate::gamepad::PAD_NOTES.swap(false, std::sync::atomic::Ordering::Relaxed) {
+    if crate::gamepad::PAD_NOTES.load(std::sync::atomic::Ordering::Relaxed) {
         if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
             if k.noted && k.wait.is_none() {
                 keypad_from_notes(k);
@@ -2507,6 +2513,8 @@ pub fn menu_system(
             Some(Body::Keypad(k)) => Some((k.blocker, k.input.clone(), k.wait.map(|w| w.1), k.valid.chars().count())),
             _ => None,
         };
+        let noted = matches!(st.stack.last().map(|w| &w.body), Some(Body::Keypad(k)) if k.noted && k.wait.is_none() && k.input != k.valid);
+        KEYPAD_NOTED.store(noted, std::sync::atomic::Ordering::Relaxed);
     }
     // DeusExPlayer.QuickSave / QuickLoad (ConfirmQuickLoad asks first).
     if st.stack.is_empty() && st.intro.is_none() && !others && !others_before {

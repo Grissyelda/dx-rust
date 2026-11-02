@@ -499,10 +499,11 @@ pub fn loading_screen_system(
     mut images: ResMut<Assets<Image>>,
     mut layers: ResMut<Assets<crate::classic_hud::HudLayer>>,
     windows: Query<&Window>,
-    mut shown: Local<bool>,
+    mut shown: Local<u8>,
     mut font: Local<Option<Option<std::sync::Arc<crate::uicanvas::UiFont>>>>,
 ) {
-    let want = busy();
+    // 0 = nothing, 1 = loading (the old map's last frame stays up), 2 = settling (black, the new map hidden).
+    let want: u8 = if busy() { 1 } else if settling() { 2 } else { 0 };
     if want == *shown {
         return;
     }
@@ -510,13 +511,59 @@ pub fn loading_screen_system(
     for e in &q {
         commands.entity(e).despawn();
     }
-    if !want {
+    if want == 0 {
         return;
+    }
+    if want == 2 {
+        commands.spawn((
+            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+            BackgroundColor(Color::BLACK),
+            GlobalZIndex(999),
+            Pickable::IGNORE,
+            LoadingScreen,
+        ));
     }
     let Some(assets) = assets.as_mut() else { return };
     let Some(win) = windows.iter().next() else { return };
     if let Some(e) = spawn_loading_words(&mut commands, assets, &mut images, &mut layers, win, &mut *font, 1000) {
         commands.entity(e).insert(LoadingScreen);
+    }
+}
+
+/// After a map is put in place it stays behind the loading screen (black, "LOADING", game time paused, cut scenes
+/// held) until its render pipelines have compiled and its textures are up: without this the intro's first room
+/// popped in surface by surface. Ends after 6 calm frames (and at least 0.35 s), or 6 s at most.
+static SETTLE: Mutex<Option<(std::time::Instant, u32)>> = Mutex::new(None);
+
+pub fn settling() -> bool {
+    SETTLE.lock().map(|s| s.is_some()).unwrap_or(false)
+}
+
+pub fn settle_system(mut seen: Local<u64>, mut paused_by_us: Local<bool>, mut time: ResMut<Time<Virtual>>) {
+    if generation() != *seen {
+        *seen = generation();
+        if !env_on!("DXVIEW_NO_SETTLE") {
+            if let Ok(mut s) = SETTLE.lock() {
+                *s = Some((std::time::Instant::now(), 0));
+            }
+        }
+    }
+    let mut g = SETTLE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((t0, calm)) = g.as_mut() {
+        *calm = if crate::remaster::pipelines_waiting() == 0 { *calm + 1 } else { 0 };
+        let age = t0.elapsed().as_secs_f32();
+        if (*calm >= 6 && age >= 0.35) || age >= 6.0 || busy() {
+            *g = None;
+        }
+    }
+    let on = g.is_some();
+    drop(g);
+    if on && !time.is_paused() {
+        time.pause();
+        *paused_by_us = true;
+    } else if !on && *paused_by_us {
+        *paused_by_us = false;
+        time.unpause();
     }
 }
 

@@ -56,6 +56,8 @@ pub struct SmartState {
     pub alert: f32,
     /// Whether the enemy was in sight last frame (to catch losing sight).
     pub was_seen: bool,
+    /// Ours: seconds the enemy has been out of sight (a glimpse lost for a moment doesn't restart the react time).
+    pub unseen: f32,
     /// Ours: the state last frame (to call out on starting an attack).
     pub was_attacking: bool,
 }
@@ -210,14 +212,20 @@ pub fn combat_tick(npc: &mut Npc, class: &str, seen: bool, target_is_player: boo
         .as_ref()
         .map(|w| (w.class.clone(), w.governing_skill.clone().unwrap_or_default(), w.class == "WeaponMiniCrossbow"))
         .unwrap_or_default();
+    // Sight of the enemy flickers (a doorway, cover, the 0.1 s sight checks): only losing it for half a second
+    // counts as losing it. Restarting the react time on every flicker left a pawn staring without ever firing.
+    const LOST: f32 = 0.5;
     if seen {
         if target_is_player {
             npc.smart.spotted = true;
         }
         npc.smart.sfire = 0.0;
+        npc.smart.unseen = 0.0;
         npc.smart.react_left -= dt;
     } else {
-        if npc.smart.was_seen {
+        let was = npc.smart.unseen;
+        npc.smart.unseen += dt;
+        if npc.smart.was_seen && was < LOST && npc.smart.unseen >= LOST {
             npc.smart.react_left = fire_react_time(class, &wclass, &skill);
             let human = !robot(class) && !crate::classtree::is_a(class, "Animal");
             let mil_bot = crate::classtree::is_a(class, "MilitaryBot");
@@ -227,7 +235,9 @@ pub fn combat_tick(npc: &mut Npc, class: &str, seen: bool, target_is_player: boo
         }
         npc.smart.sfire = (npc.smart.sfire - dt).max(0.0);
     }
-    npc.smart.was_seen = seen;
+    if seen || npc.smart.unseen >= LOST {
+        npc.smart.was_seen = seen;
+    }
     npc.smart.react_left <= 0.0 || npc.smart.high_alert > 0.0
 }
 

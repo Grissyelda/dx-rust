@@ -466,6 +466,12 @@ pub struct SkelBody {
     root_local: Mat4,
     cloth_tail: Vec<Vec3>,
     cloth_prev: Vec<Vec3>,
+    /// The coat's heads and animated tails last frame (world; the substeps move between those and this frame's),
+    /// the time not yet simulated and the cloth's own clock (wind gusts).
+    cloth_head: Vec<Vec3>,
+    cloth_goal: Vec<Vec3>,
+    cloth_acc: f32,
+    cloth_clock: f32,
     /// From glTF space (the rig's) to the actor's local Unreal space (before DrawScale).
     to_ue: Mat4,
 }
@@ -811,6 +817,10 @@ fn build(
             root_local: root_tf.to_matrix(),
             cloth_tail: Vec::new(),
             cloth_prev: Vec::new(),
+            cloth_head: Vec::new(),
+            cloth_goal: Vec::new(),
+            cloth_acc: 0.0,
+            cloth_clock: 0.0,
             to_ue,
         }
     }
@@ -923,7 +933,7 @@ pub fn pose_system(
     }
     // Poses, faces and weapon frames, in parallel.
     let hurt = crate::bodyfx::hurt_on();
-    let cloth = cloth_on();
+    let cloth_wanted = cloth_on();
     q.par_iter_mut().for_each(|(e, mut s, mut a, gt, weights, npc)| {
         let s = &mut *s;
         s.posed = false;
@@ -953,8 +963,13 @@ pub fn pose_system(
                 apply_hurt(s, &crate::bodyfx::hurt_fracs(&n.hp_body.parts, &n.hp_body.defaults));
             }
         }
-        if cloth {
-            crate::skeletal::cloth_pub(s, gt.to_matrix(), dt);
+        if cloth_wanted {
+            // Not while seated: the coat pressed into the chair jittered against it.
+            if seq.starts_with("Sit") || npc.is_some_and(|n| n.seat.is_some()) {
+                cloth_rest(s);
+            } else {
+                cloth(s, gt.to_matrix(), dt);
+            }
         }
         // Face: lip sync (the mouth shapes), blinks, brows with speech, glances.
         let has_w = weights.is_some();
@@ -1333,7 +1348,11 @@ pub fn mirror_skel_system(
                 apply_hurt(&mut s, &crate::bodyfx::hurt_fracs(&ph.parts, &[100.0; 6]));
             }
             if cloth_on() {
-                cloth(&mut s, gt.to_matrix(), dt);
+                if seq.starts_with("Sit") {
+                    cloth_rest(&mut s);
+                } else {
+                    cloth(&mut s, gt.to_matrix(), dt);
+                }
             }
             write_bones(&s, &mut tfs);
             if let Ok(mut g) = MIRROR_WEAPON.lock() {
@@ -1633,10 +1652,19 @@ fn coat_bones(rig: &Rig) -> &'static [(usize, f32)] {
     &both[std::ptr::eq(rig, &rigs()[1]) as usize]
 }
 
-/// Cloth (enhancement "Coat Cloth"): each coat bone's tail is a Verlet point pulled toward where the animation
-/// puts it, swinging with the body's motion, held to the bone's length and pushed out of the legs; the bone turns
-/// to point at it. `pawn` = the pawn entity's world transform.
+/// Cloth (enhancement "Coat Cloth"): each coat bone's tail is a point in world space on a damped spring toward
+/// where the animation puts it, so the coat trails the body's motion and settles back; held to the bone's length,
+/// pushed out of the legs, softly limited in how far it swings, with a light gust of wind; the bone turns to point at
+/// it. Simulated in fixed 1/120 s substeps with the animated targets moving smoothly between frames (a body posed
+/// every third frame, or a frame hitch, no longer jolts it). `pawn` = the pawn entity's world transform.
 fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
+    const STEP: f32 = 1.0 / 120.0;
+    /// Spring toward the animated pose (rad/s natural frequency ~ 2 pi x 2.6 Hz) and its damping per second.
+    const K: f32 = 270.0;
+    const DAMP: f32 = 7.0;
+    /// Past SOFT the swing is pulled back harder; HARD it never passes (radians off the animated direction).
+    const SOFT: f32 = 0.3;
+    const HARD: f32 = 0.75;
     let bones = coat_bones(s.rig);
     if bones.is_empty() || dt <= 0.0 {
         return;
@@ -1654,9 +1682,20 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
     if fresh {
         s.cloth_tail = vec![Vec3::ZERO; bones.len()];
         s.cloth_prev = vec![Vec3::ZERO; bones.len()];
+        s.cloth_head = vec![Vec3::ZERO; bones.len()];
+        s.cloth_goal = vec![Vec3::ZERO; bones.len()];
+        s.cloth_acc = 0.0;
     }
     let scale = world.x_axis.truncate().length();
-    let gravity = Vec3::NEG_Y * (950.0 / 52.5) * 0.15;
+    let gravity = Vec3::NEG_Y * (950.0 / 52.5) * 0.5;
+    // Substeps this frame (the rest carries over).
+    s.cloth_acc = (s.cloth_acc + dt.min(0.1)).min(0.1);
+    let n = (s.cloth_acc / STEP).floor() as usize;
+    s.cloth_acc -= n as f32 * STEP;
+    s.cloth_clock += dt;
+    let clock = s.cloth_clock;
+    let decay = (1.0 - DAMP * STEP).max(0.0);
+    let spring = K * STEP * STEP;
     for (k, &(i, len)) in bones.iter().enumerate() {
         let parent = rig.parent[i].map_or(Mat4::IDENTITY, |p| g[p]);
         let anim = parent * s.pose[i].mat();
@@ -1665,48 +1704,58 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         let head_w = world.transform_point3(head_r);
         let target_w = world.transform_point3(head_r + dir_r * len);
         let len_w = len * scale;
-        let mut tail = s.cloth_tail[k];
-        let prev = s.cloth_prev[k];
-        if fresh || tail.distance(target_w) > len_w * 4.0 + 1.0 {
+        let jumped = s.cloth_tail[k].distance(target_w) > len_w * 4.0 + 1.0;
+        if fresh || jumped {
             // First frame, or a jump (teleport, respawn): start where the animation is.
             s.cloth_tail[k] = target_w;
             s.cloth_prev[k] = target_w;
+            s.cloth_head[k] = head_w;
+            s.cloth_goal[k] = target_w;
             g[i] = anim;
             continue;
         }
-        // A subtle ripple: well damped, pulled firmly back to the animated pose (per 60 Hz step, so a body posed
-        // every 3rd frame far away moves alike), and never more than a few degrees off it (below).
-        let steps = (dt * 60.0).clamp(0.25, 4.0);
-        let vel = (tail - prev) * 0.72f32.powf(steps);
-        let pull = 1.0 - (1.0 - 0.4f32).powf(steps);
-        let mut next = tail + vel + (target_w - tail) * pull + gravity * dt * dt;
-        // Hold the length.
-        next = head_w + (next - head_w).normalize_or(target_w - head_w) * len_w;
-        // Out of the legs.
-        for (a, b) in legs.iter().flatten() {
-            let ab = *b - *a;
-            let t = ((next - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
-            let c = *a + ab * t;
-            let d = next - c;
-            if d.length() < leg_r {
-                next = c + d.normalize_or(Vec3::Z) * leg_r;
+        let (head0, goal0) = (s.cloth_head[k], s.cloth_goal[k]);
+        // A gentle gust across the coat (each bone a little out of step), mostly sideways to the body.
+        let side = world.z_axis.truncate().normalize_or(Vec3::X);
+        let ph = k as f32 * 0.7;
+        let gust = (clock * 1.3 + ph).sin() * 0.5 + (clock * 2.9 + ph * 1.7).sin() * 0.25;
+        let wind = side * gust * 2.5 + Vec3::Y * (clock * 2.1 + ph).sin() * 0.6;
+        let mut tail = s.cloth_tail[k];
+        let mut prev = s.cloth_prev[k];
+        for j in 0..n {
+            let u = (j + 1) as f32 / n as f32;
+            let head = head0.lerp(head_w, u);
+            let goal = goal0.lerp(target_w, u);
+            let vel = (tail - prev) * decay;
+            let mut next = tail + vel + (goal - tail) * spring + (gravity + wind) * STEP * STEP;
+            // Hold the length.
+            next = head + (next - head).normalize_or(goal - head) * len_w;
+            // Out of the legs.
+            for (a, b) in legs.iter().flatten() {
+                let ab = *b - *a;
+                let t = ((next - *a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                let c = *a + ab * t;
+                let d = next - c;
+                if d.length() < leg_r {
+                    next = c + d.normalize_or(Vec3::Z) * leg_r;
+                }
             }
+            // A soft limit on the swing: past SOFT half the excess is taken back each step, never past HARD.
+            let a_dir = (goal - head).normalize_or(Vec3::NEG_Y);
+            let n_dir = (next - head).normalize_or(a_dir);
+            let ang = a_dir.angle_between(n_dir);
+            if ang > SOFT {
+                let keep = (SOFT + (ang - SOFT) * 0.5).min(HARD);
+                let axis = a_dir.cross(n_dir).normalize_or(Vec3::X);
+                next = head + Quat::from_axis_angle(axis, keep) * a_dir * len_w;
+            }
+            prev = tail;
+            tail = next;
         }
-        next = head_w + (next - head_w).normalize_or(target_w - head_w) * len_w;
-        // At most MAX_SWING off the animated direction (each bone of a chain from its parent's), so a fast turn or
-        // a stop never flips the coat over.
-        const MAX_SWING: f32 = 0.17;
-        let a_dir = (target_w - head_w).normalize_or(Vec3::NEG_Y);
-        let n_dir = (next - head_w).normalize_or(a_dir);
-        let ang = a_dir.angle_between(n_dir);
-        if ang > MAX_SWING {
-            let q = Quat::from_rotation_arc(a_dir, n_dir);
-            let (axis, _) = q.to_axis_angle();
-            next = head_w + Quat::from_axis_angle(axis, MAX_SWING) * a_dir * len_w;
-        }
-        tail = next;
-        s.cloth_prev[k] = s.cloth_tail[k];
         s.cloth_tail[k] = tail;
+        s.cloth_prev[k] = prev;
+        s.cloth_head[k] = head_w;
+        s.cloth_goal[k] = target_w;
         // Turn the bone toward its tail (in rig space).
         let want = (inv.transform_point3(tail) - head_r).normalize_or(dir_r);
         let (sc, rot, tr) = anim.to_scale_rotation_translation();
@@ -1717,6 +1766,11 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
         s.pose[i] = Trs { t: lt, r: lr, s: ls };
     }
     s.gmat = g;
+}
+
+/// The coat hangs as animated (sitting: the chair would fight it) and starts afresh when it moves again.
+fn cloth_rest(s: &mut SkelBody) {
+    s.cloth_tail.clear();
 }
 
 /// The leg segments the coat is kept out of (thigh -> shin, shin -> foot, both sides), as rig node indices.
@@ -1736,6 +1790,3 @@ pub fn cloth_on() -> bool {
     crate::settings::get("CoatCloth") > 0.5
 }
 
-pub fn cloth_pub(s: &mut SkelBody, pawn: Mat4, dt: f32) {
-    cloth(s, pawn, dt);
-}

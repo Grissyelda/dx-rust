@@ -122,7 +122,14 @@ pub fn prompts_system(
     let (hint_img, frob_img, hint_key, frob_key) = &mut *state;
 
     // ---- the hint bar
-    let items: Vec<(PadBtn, &str)> = if !pad || !ui || crate::settings::get("PadHints") < 0.5 {
+    // A keypad used in the world (Diegetic Screens) has no window to carry "Tab: code from notes": it's here.
+    let notes = crate::diegetic::keypad_active() && crate::menus::keypad_noted();
+    let items: Vec<(PadBtn, &str)> = if notes && pad {
+        vec![(PadBtn::North, "Code from notes"), (PadBtn::East, "Back")]
+    } else if notes {
+        // Keyboard: text only (Tab has no glyph).
+        vec![(PadBtn::Touch, "Tab: code from notes")]
+    } else if !pad || !ui || crate::settings::get("PadHints") < 0.5 {
         Vec::new()
     } else if crate::consys::third_person() {
         vec![(PadBtn::Down, "Choose"), (PadBtn::South, "Select")]
@@ -137,10 +144,11 @@ pub fn prompts_system(
         present::<HintNode, _>(&mut commands, &mut images, &mut layers, &mut hint, hint_img, None, (1, 1), s, Vec2::ZERO, k);
         *hint_key = 0;
     } else {
-        let w = bar_width(&items, &font);
+        let text_only = notes && !pad;
+        let w = if text_only { font.width(items[0].1) + 14 } else { bar_width(&items, &font) };
         let h = 19;
         let pos = Vec2::new((win.width() - w as f32 * k) / 2.0, win.height() - (h as f32 + 6.0) * k);
-        let key = hash(&format!("{items:?}{kind:?}{s}{w}{}", win.width()));
+        let key = hash(&format!("{items:?}{kind:?}{s}{w}{}{text_only}", win.width()));
         if key != *hint_key || hint.is_empty() {
             *hint_key = key;
             let mut c = Canvas::new(w, h, s);
@@ -150,8 +158,10 @@ pub fn prompts_system(
             c.fill(0, 0, w, 1, crate::uicanvas::Style::Normal, border);
             let mut x = 4;
             for (b, t) in &items {
-                crate::glyphs::draw_in(&mut c, kind, *b, x, 2);
-                x += crate::glyphs::width_in(kind, *b) + 3;
+                if !text_only {
+                    crate::glyphs::draw_in(&mut c, kind, *b, x, 2);
+                    x += crate::glyphs::width_in(kind, *b) + 3;
+                }
                 c.text(&font, x, 2, font.width(t) + 2, 15, HAlign::Left, VAlign::Center, text_col, t);
                 x += font.width(t) + 10;
             }

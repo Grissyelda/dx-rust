@@ -459,6 +459,10 @@ pub struct Held {
     /// moved so this lies just under the middle of the view. None for HDTP models, whose sights sit on the model's
     /// own centre line (the original placement, raised, lines them up).
     pub sight: Option<[f32; 3]>,
+    /// Diegetic Scope: the rifle's scope eyepiece (centre in the model's own space, Unreal view axes, scaled) and
+    /// its radius - the eye is put on its axis and the lens drawn in it. None: no scope tube found (the model is
+    /// hidden while scoped, the lens drawn by itself).
+    pub scope_eye: Option<([f32; 3], f32)>,
     /// The view model's vertex positions as last drawn, per part (camera space), and a tween from such a pose into
     /// the current sequence (positions, seconds so far).
     pub shown: Vec<Vec<[f32; 3]>>,
@@ -470,6 +474,61 @@ const VIEW_TWEEN: f32 = 0.1;
 
 /// How far under the line of sight (units) an original view model's barrel sits down the sights.
 const SIGHT_DROP: f32 = 1.7;
+
+/// A scope's radius over the eye's distance from its eyepiece: the lens fills about 0.45 of the view model camera's
+/// half height, with the tube and the rifle in view round it.
+pub const SCOPE_EYE_K: f32 = 0.21;
+
+/// See `Held::scope_eye`. The scope is the tube on top of the model: its vertices come in rings across the barrel's
+/// axis (the original's hexagonal tube; HDTP's denser one). Rings are vertices in the top band of the mesh grouped by
+/// their distance along the gun; the rearmost ring of a plausible size is the eyepiece.
+fn scope_eyepiece(am: &AnimMesh, parts: &[MeshPart], scale: f32) -> Option<([f32; 3], f32)> {
+    let seq = ["Still", "Idle1", "Idle"]
+        .iter()
+        .find_map(|n| am.seqs.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
+        .or_else(|| am.seqs.iter().find(|s| !s.name.eq_ignore_ascii_case("All")))?;
+    let (start, frames) = (seq.start_frame.max(0) as usize, seq.num_frames.max(1) as usize);
+    let mut ids: Vec<u32> = parts.iter().filter(|p| p.class != SurfaceClass::Translucent).flat_map(|p| p.vert_ids.iter().copied()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let pts: Vec<Vec3> = ids
+        .iter()
+        .map(|&v| {
+            let p = am.sample(start, frames, 0.0, v as usize);
+            Vec3::new(p[0], p[1], p[2])
+        })
+        .collect();
+    let top = pts.iter().fold(f32::MIN, |a, p| a.max(p.z));
+    // The top band (a scope is at most ~5 units across in the original's scale).
+    let band: Vec<Vec3> = pts.iter().copied().filter(|p| p.z > top - 6.0).collect();
+    if band.len() < 8 {
+        return None;
+    }
+    let mut ys: Vec<f32> = band.iter().map(|p| p.y).collect();
+    ys.sort_by(f32::total_cmp);
+    let ymid = ys[ys.len() / 2];
+    let mut band: Vec<Vec3> = band.into_iter().filter(|p| (p.y - ymid).abs() < 5.0).collect();
+    band.sort_by(|a, b| a.x.total_cmp(&b.x));
+    // Rings: runs of vertices within 0.6 units of each other along the gun.
+    let mut rings: Vec<Vec<Vec3>> = Vec::new();
+    for p in band {
+        match rings.last_mut() {
+            Some(r) if p.x - r.last().unwrap().x < 0.6 => r.push(p),
+            _ => rings.push(vec![p]),
+        }
+    }
+    for r in rings.iter().filter(|r| r.len() >= 5) {
+        let c = r.iter().fold(Vec3::ZERO, |a, p| a + *p) / r.len() as f32;
+        let rad = r.iter().map(|p| ((p.y - c.y).powi(2) + (p.z - c.z).powi(2)).sqrt()).sum::<f32>() / r.len() as f32;
+        // Round enough: no vertex far from the mean radius.
+        let round = r.iter().all(|p| (((p.y - c.y).powi(2) + (p.z - c.z).powi(2)).sqrt() - rad).abs() < rad * 0.6);
+        if (0.6..5.0).contains(&rad) && round {
+            let x = r.iter().fold(f32::MAX, |a, p| a.min(p.x));
+            return Some(([x * scale, c.y * scale, c.z * scale], rad * scale));
+        }
+    }
+    None
+}
 
 /// See `Held::sight`.
 fn sight_point(am: &AnimMesh, parts: &[MeshPart], muzzle_slot: Option<u32>, scale: f32, hdtp: bool) -> Option<[f32; 3]> {
@@ -1184,12 +1243,17 @@ fn build_held(
     }
     let hdtp_mesh = crate::hdtp::is_view_mesh(&stats.class, &stats.view_mesh);
     let sight = sight_point(&am, &parts, muzzle_slot, stats.view_scale, hdtp_mesh);
+    let scope_eye = if stats.class == "WeaponRifle" { scope_eyepiece(&am, &parts, stats.view_scale) } else { None };
+    if env_on!("DXVIEW_SCOPELOG") {
+        println!("SCOPE eyepiece {} {:?}", stats.view_mesh, scope_eye);
+    }
     // DeusExWeapon BringUp: Owner.PlaySound(SelectSound, SLOT_None,,, 1024).
     if let Some(snd) = stats.snd.select.as_ref().filter(|_| !quiet) {
         crate::sound::play_player(snd, stats.snd.volume, 1024.0);
     }
     Some(Held {
         sight,
+        scope_eye,
         shown: Vec::new(),
         tween: None,
         last_pose: None,
@@ -1496,6 +1560,18 @@ pub fn select_system(
                 Some(_) => w.pending = Some(slot),
                 None => w.pending = Some(slot),
             }
+        }
+    }
+    // Whatever is in hand must still be in the inventory: a stack used up from the inventory screen, an item
+    // dropped or given away, or the training course's RemoveAllInventory left it in hand (a free copy). The key
+    // ring and a carried body aren't inventory items.
+    let gone = weapons.held.as_ref().is_some_and(|h| {
+        !matches!(h.stats.class.as_str(), "NanoKeyRing" | "POVCorpse") && !inv.0.items.iter().any(|i| i.def.class == h.stats.class)
+    });
+    if gone {
+        weapons.held = None;
+        if weapons.pending_class.as_deref().is_some_and(|c| !inv.0.items.iter().any(|i| i.def.class == c)) {
+            weapons.pending_class = None;
         }
     }
     // Once put away, the old view model goes (even when nothing new is coming up).
@@ -2210,6 +2286,11 @@ pub fn weapon_system(
             off[k] += (to[k] - off[k]) * e;
         }
     }
+    // Diegetic Scope on a model with its scope found: the eye on the scope's axis, the eyepiece in front of it.
+    let scoped_eye = h.scope_eye.filter(|_| zoom.0.is_some() && crate::scope::setting_on() && !crate::thirdperson::active());
+    if let Some((e, r)) = scoped_eye {
+        off = [r / SCOPE_EYE_K - e[0], -e[1], -e[2]];
+    }
     root.translation = Vec3::from(view_to_cam(off));
     root.rotation = Quat::IDENTITY;
     // GMDX (Sarge) CalcDrawOffset "Viewmodel Inertia" (setting WeaponInertia): the weapon trails the view when you
@@ -2246,6 +2327,11 @@ pub fn weapon_system(
         root.translation = r * root.translation;
         root.rotation = r * root.rotation;
     }
+    // Where the diegetic scope's lens goes (scope.rs): the eyepiece, in the view model camera's space.
+    crate::scope::set_lens(scoped_eye.map(|(e, r)| {
+        let c = root.translation + root.rotation * Vec3::from(view_to_cam(e));
+        (c, root.rotation, r * METERS_PER_UNIT)
+    }));
 
     h.clip.t += dt;
     h.timer -= dt;
@@ -2418,7 +2504,8 @@ pub fn weapon_system(
             return;
         }
         // State Idle: every 3 s there's a 30% chance of one of the fidget animations (PlayIdleAnim).
-        WState::Idle if h.timer <= 0.0 && !h.using => {
+        // (Not while looking through a scope: the rifle stays put at the eye.)
+        WState::Idle if h.timer <= 0.0 && !h.using && zoom.0.is_none() => {
             h.timer = 3.0;
             if *seed == 0 {
                 *seed = 0x9E37_79B9_7F4A_7C15;
@@ -2538,8 +2625,9 @@ pub fn weapon_system(
             zoom.0 = None;
         }
         // Looking through the scope (the original's picture, or the diegetic lens: its tube rings the glass) the
-        // weapon itself is out of sight.
-        root.scale = if zoom.0.is_some() {
+        // weapon itself is out of sight - unless the diegetic lens sits in the rifle's own eyepiece.
+        let in_eyepiece = h.scope_eye.is_some() && crate::scope::setting_on() && !crate::thirdperson::active();
+        root.scale = if zoom.0.is_some() && !in_eyepiece {
             Vec3::ZERO
         } else {
             Vec3::ONE

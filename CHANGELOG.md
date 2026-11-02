@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Playtest fixes (November 1, night)
+- Maps no longer pop in surface by surface: after a load the screen stays black with "LOADING" (game time and cut
+  scenes held) until the new map's shaders have compiled, at most 6 seconds. The intro's first room appears whole.
+- Cut scenes take no game input: the pad's flashlight, belt and weapon buttons did things during the intro. The
+  intro's end now says "Press A, Menu or RT to continue" with a pad (the pad's own names) and "Press Enter or Fire
+  to continue" otherwise, and follows whichever was used last.
+- Bob Page's line over JC in the clone tank is no longer near silent: cut scene speech always plays through the
+  player (Sound Occlusion muffled it behind the tank's glass).
+- No more free copy of an item: whatever is in hand must still be in the inventory, so using up a stack from the
+  inventory screen, or the training course taking your things away, also takes it out of your hand.
+- Flashlight cone: the narrower haze beam inside it (a second, inner corona against far ground) is gone; the cone
+  alone lights the way.
+- Security bots stay near where a fight starts (within their home extent) instead of chasing across the island;
+  pawns with bDefendHome keep every combat move at home, as the original does.
+- Smarter AI: an enemy glimpsed and lost for a moment no longer restarts the pawn's reaction time, which could leave
+  it staring at you without ever firing.
+- Wounds sit on the body: they're placed where the shot's line meets the limb (it was the collision cylinder, up to
+  a foot out).
+- Coats: no cloth on seated people (it fought the chair); otherwise the coat runs on a softer spring in fixed small
+  steps, trails the body's motion and settles back, with a soft limit instead of a hard stop and a light breeze -
+  it flows instead of jerking.
+- Ragdolls: knees and elbows are hinges that bend only the way they should, twists are tighter and the body is
+  damped more, so limbs no longer twist into broken shapes; the shot carries the whole body, hits above the hips
+  topple it away from the shooter and leg hits sweep the legs.
+- Modern Water: the water's colour no longer uses the lightmap, whose per-surface blocks showed as blue-grey angular
+  patches and seams; lamps still show in the reflection and as glints.
+- Codes From Notes: a keypad used in the world shows "Tab: code from notes" (pad: Y) at the bottom of the screen;
+  computer logins found in the notes are now offered the same way ("Tab: log in from notes" under the fields)
+  instead of being filled in silently.
+- Diegetic Scope: the sniper rifle stays in view and you look through its own scope - the lens sits in the
+  eyepiece found on the model (original and HDTP), with a glass sheen, a cool tint and a colour fringe at its edge.
+
 ### Playtest fixes (November 1, evening)
 - First-person body: it now stands back as far as the pose needs, so the cut chest is never in view, looking straight
   down or walking, running and aiming (those poses lean the chest forward); looking down you see your legs and feet.

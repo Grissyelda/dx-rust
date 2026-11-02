@@ -227,6 +227,10 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     pbr_input.material.base_color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
     // Low roughness: the dynamic lights (lamps, muzzle flashes, the flashlight) leave sharp glints.
     pbr_input.material.perceptual_roughness = 0.06;
+    // Not the lightmap: each water surface has its own coarse lightmap block, so in the body colour their edges showed
+    // as blue-grey angular patches and seams across the harbour. The lamps still show in the reflection and as
+    // glints of the dynamic lights.
+    pbr_input.lightmap_light = vec3<f32>(0.0);
     var light = apply_pbr_lighting(pbr_input).rgb;
     let to_eye = view.world_position.xyz - in.world_position.xyz;
     let dist = length(to_eye);

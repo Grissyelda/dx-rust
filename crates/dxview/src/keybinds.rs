@@ -472,11 +472,25 @@ pub fn remap_system(
             b.buttons.just_released(*m),
         ));
     }
+    // A cut scene takes no game input but going on / skipping (Enter, Space = Jump, Escape, Fire): the pad's
+    // flashlight, belt and weapon buttons were getting through in the intro.
+    let cine = !ui && crate::cinematic::active();
+    if cine {
+        scroll.delta = Vec2::ZERO;
+    }
     for (p, pressed, just_pressed, just_released) in phys {
         for out in b.outputs(p) {
             match out {
-                Input::Key(k) => apply(&mut keys, k, pressed, just_pressed, just_released),
-                Input::Mouse(m) => apply(&mut buttons, m, pressed, just_pressed, just_released),
+                Input::Key(k) => {
+                    if !cine || matches!(k, KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space) {
+                        apply(&mut keys, k, pressed, just_pressed, just_released)
+                    }
+                }
+                Input::Mouse(m) => {
+                    if !cine || m == MouseButton::Left {
+                        apply(&mut buttons, m, pressed, just_pressed, just_released)
+                    }
+                }
             }
         }
     }

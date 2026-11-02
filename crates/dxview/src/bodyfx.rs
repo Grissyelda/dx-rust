@@ -77,6 +77,21 @@ const WOUND_BONES: &[&str] = &[
     "DEF-shin.L.001", "DEF-thigh.R", "DEF-thigh.R.001", "DEF-shin.R", "DEF-shin.R.001",
 ];
 
+/// The closest points between segment a-b and the ray from `o` along unit `d`: (on the segment, on the ray).
+fn closest_seg_ray(a: Vec3, b: Vec3, o: Vec3, d: Vec3) -> (Vec3, Vec3) {
+    let u = b - a;
+    let w = a - o;
+    let (aa, bb, cc, dd, ee) = (u.dot(u), u.dot(d), d.dot(d), u.dot(w), d.dot(w));
+    let den = aa * cc - bb * bb;
+    let mut s = if den.abs() > 1e-8 { ((bb * ee - cc * dd) / den).clamp(0.0, 1.0) } else { 0.0 };
+    let t = ((bb * s + ee) / cc).max(0.0);
+    // Back onto the segment for that ray point.
+    if aa > 1e-8 {
+        s = ((o + d * t - a).dot(u) / aa).clamp(0.0, 1.0);
+    }
+    (a + u * s, o + d * t)
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn wounds_system(
     mut commands: Commands,
@@ -102,21 +117,35 @@ pub fn wounds_system(
         let Some((e, _, s, wounds)) = bodies.iter_mut().find(|(_, n, ..)| n.blocker == blocker) else { continue };
         let hit = Vec3::from(dx_level::ue_to_bevy(at.as_vec3().to_array()));
         let d = Vec3::new(dir.x as f32, dir.z as f32, dir.y as f32).normalize_or(Vec3::NEG_Z);
-        // The nearest skin bone (by its segment to its child's head when there is one).
-        let mut best: Option<(f32, Entity, Mat4)> = None;
+        // The shot's line runs on into the body (`hit` is where it met the collision cylinder, up to a foot out):
+        // the skin bone whose segment (head to its child's head) passes nearest that line, and on it the point
+        // nearest the line; the wound sits on the limb's surface there, facing the shot.
+        let mut best: Option<(f32, Entity, Mat4, Vec3, Vec3, f32)> = None;
         for name in WOUND_BONES {
             let Some(i) = s.rig.names.iter().position(|n| n == name) else { continue };
             let Ok(g) = gts.get(s.nodes[i]) else { continue };
-            let p = g.translation();
-            let dist = p.distance_squared(hit);
-            if best.is_none_or(|b| dist < b.0) {
-                best = Some((dist, s.nodes[i], g.to_matrix()));
+            let a = g.translation();
+            let child = (0..s.rig.names.len())
+                .find(|&c| s.rig.parent[c] == Some(i) && s.rig.names[c].starts_with("DEF-") && !s.rig.names[c].starts_with("DEF-coat"))
+                .and_then(|c| gts.get(s.nodes[c]).ok())
+                .map(|c| c.translation());
+            let b = child.unwrap_or(a + g.up().as_vec3() * 0.15);
+            let (on_seg, on_ray) = closest_seg_ray(a, b, hit, d);
+            if (on_ray - hit).dot(d) < -0.3 {
+                continue; // behind where the shot came in
+            }
+            let dist = on_seg.distance_squared(on_ray);
+            if best.is_none_or(|x| dist < x.0) {
+                let r = if name.starts_with("DEF-spine") { 0.12 } else if name.contains("upper_arm") || name.contains("thigh") { 0.065 } else { 0.05 };
+                best = Some((dist, s.nodes[i], g.to_matrix(), on_seg, (on_ray - on_seg).reject_from(d).clamp_length_max(r * 0.9), r));
             }
         }
-        let Some((dist, bone, g)) = best else { continue };
-        if dist > 0.6 * 0.6 {
+        let Some((dist, bone, g, axis_pt, side, r)) = best else { continue };
+        if dist > 0.35 * 0.35 {
             continue;
         }
+        // Out from the limb's axis toward the shooter by its radius.
+        let hit = axis_pt + side - d * (r * r - side.length_squared()).max(0.0).sqrt();
         let tex = match kind {
             "Burned" | "Flamed" | "Exploded" => "DeusExItems.Skins.FlatFXTex7",
             _ => ["DeusExItems.Skins.FlatFXTex2", "DeusExItems.Skins.FlatFXTex5"][(*seed as usize >> 7) & 1],
@@ -133,7 +162,7 @@ pub fn wounds_system(
         };
         // Facing back along the shot, a little out from the bone toward where it went in.
         let size = if kind == "Shot" || kind == "Sabot" { 7.0 } else { 14.0 } * dx_level::METERS_PER_UNIT;
-        let world = Transform::from_translation(hit - d * 0.01)
+        let world = Transform::from_translation(hit - d * 0.004)
             .looking_to(d, if d.y.abs() > 0.9 { Vec3::X } else { Vec3::Y })
             .with_scale(Vec3::splat(size));
         let local = Transform::from_matrix(g.inverse() * world.to_matrix());

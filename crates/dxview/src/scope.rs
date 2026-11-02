@@ -38,11 +38,22 @@ pub fn diegetic() -> bool {
     ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The rifle's eyepiece in the view model camera's space (centre, rotation, radius in metres), set by the weapon
+/// system while the lens sits in it; None = the lens floats on its own in front of the eye.
+static LENS: std::sync::Mutex<Option<(Vec3, Quat, f32)>> = std::sync::Mutex::new(None);
+
+pub fn set_lens(l: Option<(Vec3, Quat, f32)>) {
+    if let Ok(mut g) = LENS.lock() {
+        *g = l;
+    }
+}
+
 #[derive(Component)]
 pub struct ScopeCam;
 
+/// `.0` = the disc's place in the stack: 0 the picture, 1 the reticle and tube, 2 the glass's sheen.
 #[derive(Component)]
-pub struct ScopeGlass;
+pub struct ScopeGlass(u8);
 
 #[derive(Default)]
 pub struct ScopeState {
@@ -93,6 +104,50 @@ fn rim_image() -> Image {
     )
 }
 
+/// The glass itself, drawn additively over the picture: a soft reflection of the sky arcing across the upper left,
+/// a faint cool tint thickening toward the edge with a thin warm / cool colour fringe at the rim (chromatic
+/// aberration), so the lens reads as glass in front of the eye rather than a hole.
+fn sheen_image() -> Image {
+    const N: usize = 256;
+    let mut px = vec![0u8; N * N * 4];
+    let c = (N as f32 - 1.0) * 0.5;
+    for y in 0..N {
+        for x in 0..N {
+            let (dx, dy) = ((x as f32 - c) / c, (y as f32 - c) / c);
+            let r = (dx * dx + dy * dy).sqrt();
+            if r > 1.0 {
+                continue;
+            }
+            // The reflection: a broad crescent band toward the upper left, brightest along an arc.
+            let (ox, oy) = (dx + 0.55, dy + 0.55);
+            let arc = ((ox * ox + oy * oy).sqrt() - 0.75).abs();
+            let band = (1.0 - arc / 0.22).max(0.0).powi(2) * (1.0 - r).clamp(0.0, 1.0).sqrt();
+            // A small hot glint near the top left.
+            let (gx, gy) = (dx + 0.42, dy + 0.48);
+            let glint = (1.0 - (gx * gx + gy * gy).sqrt() / 0.12).max(0.0).powi(2);
+            // Tint and fringe at the edge.
+            let edge = ((r - 0.7) / 0.3).clamp(0.0, 1.0).powi(2);
+            let fringe_w = (1.0 - ((r - 0.93) / 0.05).abs()).max(0.0);
+            let fringe_c = (1.0 - ((r - 0.985) / 0.03).abs()).max(0.0);
+            let rr = band * 0.10 + glint * 0.35 + edge * 0.015 + fringe_w * 0.06;
+            let gg = band * 0.11 + glint * 0.35 + edge * 0.03 + fringe_c * 0.04;
+            let bb = band * 0.13 + glint * 0.35 + edge * 0.05 + fringe_c * 0.09;
+            let i = (y * N + x) * 4;
+            px[i] = (rr.clamp(0.0, 1.0) * 255.0) as u8;
+            px[i + 1] = (gg.clamp(0.0, 1.0) * 255.0) as u8;
+            px[i + 2] = (bb.clamp(0.0, 1.0) * 255.0) as u8;
+            px[i + 3] = 255;
+        }
+    }
+    Image::new(
+        Extent3d { width: N as u32, height: N as u32, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        px,
+        TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
 /// A disc of `r` (m), UVs across its square, facing +Z (toward the view camera, which looks down -Z).
 fn disc(r: f32) -> Mesh {
     const SEG: usize = 64;
@@ -128,7 +183,7 @@ pub fn scope_system(
     eye: Query<(&Transform, &Projection), (With<crate::FlyCam>, Without<crate::SkyCam>, Without<ScopeCam>)>,
     vm: Query<&Projection, (With<crate::weapons::ViewModelCam>, Without<ScopeCam>)>,
     mut cam: Query<(&mut Camera, &mut Transform, &mut Projection), (With<ScopeCam>, Without<crate::FlyCam>, Without<ScopeGlass>)>,
-    mut glass: Query<(&mut Transform, &mut Visibility), (With<ScopeGlass>, Without<ScopeCam>, Without<crate::FlyCam>)>,
+    mut glass: Query<(&ScopeGlass, &mut Transform, &mut Visibility), (Without<ScopeCam>, Without<crate::FlyCam>)>,
     (mut meshes, mut materials, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>),
 ) {
     let on = active(&zoom, &weapons) && !crate::thirdperson::active();
@@ -173,9 +228,18 @@ pub fn scope_system(
             ScopeCam,
         ));
         let lens = materials.add(StandardMaterial {
+            // A faint cool cast through the glass.
+            base_color: Color::srgb(0.93, 0.97, 1.0),
             base_color_texture: Some(image),
             unlit: true,
             fog_enabled: false,
+            ..default()
+        });
+        let sheen = materials.add(StandardMaterial {
+            base_color_texture: Some(images.add(sheen_image())),
+            unlit: true,
+            fog_enabled: false,
+            alpha_mode: AlphaMode::Add,
             ..default()
         });
         let rim = materials.add(StandardMaterial {
@@ -187,14 +251,15 @@ pub fn scope_system(
             ..default()
         });
         let layer = RenderLayers::layer(crate::weapons::VIEW_LAYER);
-        for (mesh, mat, z) in [(meshes.add(disc(1.0)), lens, 0.0f32), (meshes.add(disc(RIM)), rim, 0.0005)] {
+        let unit = meshes.add(disc(1.0));
+        for (k, (mesh, mat)) in [(unit.clone(), lens), (meshes.add(disc(RIM)), rim), (unit, sheen)].into_iter().enumerate() {
             commands.spawn((
                 Mesh3d(mesh),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(0.0, 0.0, -LENS_D + z),
+                Transform::from_xyz(0.0, 0.0, -LENS_D),
                 Visibility::Hidden,
                 layer.clone(),
-                ScopeGlass,
+                ScopeGlass(k as u8),
                 bevy::light::NotShadowCaster,
                 bevy::light::NotShadowReceiver,
                 bevy::camera::visibility::NoFrustumCulling,
@@ -212,14 +277,27 @@ pub fn scope_system(
         _ => 0.03,
     };
     let r = half_h * LENS_FRAC;
-    for (mut g, mut v) in &mut glass {
+    let lens = LENS.lock().ok().and_then(|g| *g);
+    for (k, mut g, mut v) in &mut glass {
         let want = if on { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
         }
-        if on && (g.scale.x - r).abs() > 1e-6 {
-            g.scale = Vec3::splat(r);
+        if !on {
+            continue;
         }
+        // Each disc a hair nearer the eye than the one before (picture, reticle, sheen).
+        let lift = k.0 as f32 * 0.0004;
+        *g = match lens {
+            // In the rifle's eyepiece: just in front of its rear cap (the original's eyepiece is a closed face, which
+            // hid a lens set inside the tube), a little smaller than the tube.
+            Some((c, rot, rad)) => Transform {
+                translation: c + rot * Vec3::new(0.0, 0.0, 0.003 + lift),
+                rotation: rot,
+                scale: Vec3::splat(rad * 0.94),
+            },
+            None => Transform::from_xyz(0.0, 0.0, -LENS_D + lift).with_scale(Vec3::splat(r)),
+        };
     }
     if !on {
         return;

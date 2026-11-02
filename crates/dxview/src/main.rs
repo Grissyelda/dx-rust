@@ -759,7 +759,7 @@ fn main() {
         .add_systems(loader::LevelSetup, setup)
         .add_systems(Startup, (detect_bc1, loader::first_level_setup).chain())
         .add_systems(First, loader::loader_system.before(save::save_first_system))
-        .add_systems(Update, loader::loading_screen_system)
+        .add_systems(Update, (loader::settle_system, loader::loading_screen_system).chain())
         .add_systems(
             Update,
             (
