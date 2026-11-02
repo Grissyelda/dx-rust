@@ -466,7 +466,7 @@ pub fn look_targets(out: &mut Vec<(usize, DVec3)>) {
 }
 
 /// The conversation database, parsed once per session (every map used to parse all of DeusExConText.u again:
-/// 100-180 ms on each arrival). Keyed by the file found (the corrected conversation files' own while Optional Fixes is on).
+/// 100-180 ms on each arrival). Keyed by the file found.
 /// Parses the conversations on a thread of their own at start-up (100-180 ms on the first map otherwise).
 pub fn warm_db(sys: PathBuf) {
     std::thread::spawn(move || {

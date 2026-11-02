@@ -120,15 +120,6 @@ pub fn mission_system(
                 fl.set(f, FlagValue::Bool(v), 0);
             }
         }
-        // Corrected conversation files without Lay D Denton: their Morpheus is LDDP's edited one unless
-        // LDDPOGMorpheus, and M04PlayerLikesUNATCO (their M04PaulBetrayal) waits for a flag nothing sets - both set
-        // here so the original's conversations play.
-        if crate::settings::get("OptionalFixes") > 0.5 && unreal_pkg::mods::active("confiles").is_some() {
-            if !crate::travel::lddp() {
-                fl.set("LDDPOGMorpheus", FlagValue::Bool(true), 0);
-            }
-            fl.set("Enable_UNATCO_Storyline", FlagValue::Bool(true), 0);
-        }
         // Augmentique (OutfitManager.Setup): finishing the game or the training makes this playthrough's outfits
         // permanent; the outfit worn has its JCOutfits_Equipped_ flag.
         if crate::augmentique::active() {

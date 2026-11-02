@@ -23,13 +23,8 @@ pub enum ModKind {
     /// the Parallax Occlusion Mapping addon): read by dx-level's relief module for remastered lighting, never as
     /// colour textures.
     ReliefMaps,
-    /// A few files used in place of the game's while a setting asks for them (corrected conversation packages
-    /// only - DeusExConText / DeusExConAudio* / DeusExConversations - never a DeusEx.u).
-    ConFiles,
 }
 
-/// The file-name prefixes a ConFiles mod supplies.
-pub const CON_FILES: &[&str] = &["DeusExConText", "DeusExConAudio", "DeusExConversations"];
 
 #[derive(Clone, Copy, Debug)]
 pub struct ModDef {
@@ -99,13 +94,6 @@ pub const MODS: &[ModDef] = &[
         kind: ModKind::ReliefMaps,
         marker: "",
         help: "Normal and height maps (the Parallax Occlusion Mapping addon): choose its folder; used by Remastered Lighting",
-    },
-    ModDef {
-        id: "confiles",
-        name: "Conversation Fixes",
-        kind: ModKind::ConFiles,
-        marker: "System/ConSys.u",
-        help: "Corrected conversation files: choose their folder; used while Optional Fixes is on (Settings > Enhancements)",
     },
     ModDef {
         id: "gmdx",
@@ -344,12 +332,6 @@ pub fn activate(list: &[(&'static ModDef, PathBuf)]) {
     let addons = list.iter().filter(|(m, _)| m.kind == ModKind::Addon).map(|(_, p)| p.clone()).collect();
     let hd = list.iter().filter(|(m, _)| m.kind == ModKind::HdTextures).map(|(_, p)| p.clone()).collect();
     crate::paths::set_addons(addons, hd);
-    let picks = list
-        .iter()
-        .filter(|(m, _)| m.kind == ModKind::ConFiles)
-        .map(|(_, p)| (p.clone(), CON_FILES.iter().map(|s| s.to_string()).collect()))
-        .collect();
-    crate::paths::set_picks(picks);
     let dds: Vec<PathBuf> = list.iter().filter(|(m, _)| m.kind == ModKind::DdsTextures).map(|(_, p)| p.clone()).collect();
     if !dds.is_empty() {
         let n = crate::paths::set_dds(&dds);

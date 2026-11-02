@@ -684,7 +684,6 @@ fn main() {
         }
     }
     unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
-    unreal_pkg::paths::set_picks_on(settings::get("OptionalFixes") > 0.5);
     consys::warm_db(PathBuf::from(&root).join("System"));
     dx_level::skincolor::OPT_FIXES.store(crate::optfixes::fixes(), std::sync::atomic::Ordering::Relaxed);
     hdtp::apply_dds_filter();

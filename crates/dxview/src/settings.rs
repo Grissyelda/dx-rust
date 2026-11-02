@@ -118,8 +118,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("FixBlastDoors", 0.0),
     ("FixGibLoot", 0.0),
     ("FixCarryJump", 0.0),
-    // Optional bug fixes, and corrected conversation files when installed (on in the Modern preset); the bigger
-    // gameplay changes below are all off.
+    // Optional bug fixes (on in the Modern preset); the bigger gameplay changes below are all off.
     ("OptionalFixes", 0.0),
     ("UnconsciousDeath", 0.0),
     ("NoisyObjects", 0.0),
