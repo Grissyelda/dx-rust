@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Live terminals, controller layout, ladders and playtest fixes (November 2, evening)
+- Diegetic Screens: computers are now used like a live machine. The view stays at your own field of view with the
+  monitor filling most of it and the room still around it; the mouse moves the terminal's own cursor, which stays
+  on the monitor; the terminal shows a desktop (wallpaper, task bar with the user and a clock, status line). Step
+  away with Escape, right click or a walk key. Idle terminals near you show a live standby screen.
+- Controller Layout: a picture of the pad with what every button does (Settings > Enhancements > Controller), shown
+  once on Liberty Island the first time you play with a controller.
+- Ladders (Grab Ladders on): looking at a ladder shows "Climb Ladder" with the key or button; use it to take hold.
+- Conversations with many choices (Gunther's weapon request) show every choice.
+- Newspapers and other flat two-sided items are no longer black.
+- The riot prod glows in your hand (Emissive Surfaces).
+- The helicopter outside UNATCO HQ no longer repeats its take-off; throwing things near friendly people no longer
+  sends them running to investigate (Manderley left his office).
+- New Vision / HD monitors and screens animate again; ladders and vent grates line up with Relief Maps on, and
+  guards see through grate vents.
+- Battery Park: the grey slab in front of the harbour wall is gone (the mist there now thins out as it should);
+  no more ring pattern in the clouds overhead.
+- JC no longer turns black in a mirror when standing close to it (people and objects against a wall are lit right).
+
 ### Faster loading and frame rate, water crests, glass, hostages (November 2, afternoon)
 - Frame rate: water reflections draw the level, the sky and JC but not every decoration and person (the biggest single
   cost of the Modern look); reflections and the light shafts are cheaper; ragdolls are capped at six at once near you,

@@ -145,6 +145,8 @@ mod wisp;
 mod gpudrive;
 mod scope;
 mod seethrough;
+mod paddiagram;
+mod desktop;
 mod glass;
 
 use actors::{Blockers, Deco, World};
@@ -972,6 +974,7 @@ fn main() {
         .add_plugins(trees::TreesPlugin)
         .add_systems(PostUpdate, upscale::upscale_system.before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, achievements::achievements_system.after(ai::npc_system))
+        .add_systems(Update, paddiagram::first_time_system)
         .add_systems(First, (diegetic::restore_system, thirdperson::restore_system).chain())
         .add_systems(PostUpdate, (thirdperson::place_system, diegetic::place_system).chain().before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         // Reflections from the camera as it is drawn: after the third-person / terminal camera moves (in Update
@@ -985,6 +988,7 @@ fn main() {
         .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
         .add_systems(Update, diegetic::hide_glass_system.after(diegetic::diegetic_system))
+        .add_systems(Update, diegetic::standby_system.after(diegetic::diegetic_system))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
         .add_systems(Update, aimmode::aim_mode_system.after(hud::aim_system).before(weapons::weapon_system).before(hud::crosshair_system))
         .add_systems(Update, (eggs::matrix_system, eggs::warren_system))
@@ -1391,7 +1395,7 @@ fn setup(
         let mut want: Vec<usize> = level
             .batches
             .iter()
-            .filter(|b| !b.sky && b.mirror.is_none() && matches!(b.class, SurfaceClass::Opaque | SurfaceClass::Masked))
+            .filter(|b| !b.sky && b.mirror.is_none() && b.class == SurfaceClass::Opaque)
             .filter_map(|b| b.texture)
             .collect();
         want.sort_unstable();
@@ -1443,8 +1447,10 @@ fn setup(
                     },
                     ..default()
                 });
-                // Relief maps for the solid world (remastered lighting).
-                if !b.sky && b.mirror.is_none() && matches!(b.class, SurfaceClass::Opaque | SurfaceClass::Masked) {
+                // Relief maps for the solid world (remastered lighting). Not on masked faces (ladders, grates, chain
+                // link): parallax slid the picture off its holes - the ladder no longer lined up with itself - and the
+                // depth prepass filled the holes in.
+                if !b.sky && b.mirror.is_none() && b.class == SurfaceClass::Opaque {
                     if let Some(t) = b.texture.map(|i| &level.textures[i]) {
                         if let Some(mut m) = materials.get_mut(&h) {
                             let r = b.texture.and_then(|i| relief_maps.get(&i).cloned());
@@ -2076,7 +2082,7 @@ fn fly(
     let free_cam = thirdperson::free();
     let mut looked = false;
     // While the Diegetic Healing overlay is up, the mouse / right stick move its medkit cursor instead.
-    if cursor.grab_mode == CursorGrabMode::Locked && !healui::active() {
+    if cursor.grab_mode == CursorGrabMode::Locked && !healui::active() && !computers::open() && !diegetic::virtual_cursor() {
         // MouseSensitivity (default 3) scales the look; Invert Mouse flips the pitch.
         let k = 0.0022 * crate::settings::mouse_sensitivity() / 3.0;
         let inv = if crate::settings::invert_mouse() { -1.0 } else { 1.0 };
@@ -2308,8 +2314,50 @@ fn fly(
                     if player.body.physics == Physics::Climbing {
                         player.body.physics = Physics::Falling;
                     }
+                    // Grab Ladders: "Climb Ladder" is highlighted (in reach along the view, not yet touching): Use
+                    // steps up to it and takes hold.
+                    if settings::get("LadderGrab") > 0.5
+                        && frobui::LADDER_AIM.load(std::sync::atomic::Ordering::Relaxed)
+                        && mouse.just_pressed(MouseButton::Right)
+                    {
+                        let fv = tf.forward().as_vec3();
+                        let dir = DVec3::new(fv.x as f64, fv.z as f64, fv.y as f64).normalize_or_zero();
+                        let eye_ue = dx_level::bevy_to_ue(tf.translation.to_array());
+                        let eye = DVec3::new(eye_ue[0] as f64, eye_ue[1] as f64, eye_ue[2] as f64);
+                        let hit = level.0.ladders.iter().filter_map(|l| {
+                            let n = DVec3::from_array(l.normal);
+                            let den = n.dot(dir);
+                            if den.abs() < 1e-4 {
+                                return None;
+                            }
+                            let t = (l.dist - n.dot(eye)) / den;
+                            (t > 0.0 && t < 112.0 && l.touches((eye + dir * t).to_array(), 0.0, 0.0, 1.0)).then_some((t, n, l))
+                        }).min_by(|a, b| a.0.total_cmp(&b.0));
+                        if let Some((t, n, l)) = hit {
+                            let p = eye + dir * t;
+                            let n = if n.dot(c - p) < 0.0 { -n } else { n };
+                            let nf = DVec3::new(n.x, n.y, 0.0).normalize_or_zero();
+                            let mut to = DVec3::new(p.x, p.y, c.z) + nf * (r + 1.0);
+                            // Not below the ladder's foot or above its top.
+                            let (zlo, zhi) = l.points.iter().fold((f64::MAX, f64::MIN), |a, q| (a.0.min(q[2]), a.1.max(q[2])));
+                            to.z = to.z.clamp(zlo + hh, (zhi + hh).max(zlo + hh));
+                            let world = World {
+                                level: &level.0,
+                                blockers: &blockers.list,
+                                ignore: None,
+                                pushable: Some(&blockers.pushable_mass),
+                                movers: Some(&movers_res.rt),
+                            };
+                            if imsim_core::movement::CollisionWorld::trace(&world, c, to, DVec3::new(r, r, hh)).fraction >= 1.0 {
+                                player.body.location = to;
+                                player.body.physics = Physics::Climbing;
+                                player.body.velocity = DVec3::ZERO;
+                            }
+                        }
+                    }
                 }
             }
+            frobui::LADDER_HELD.store(player.body.physics == Physics::Climbing, std::sync::atomic::Ordering::Relaxed);
         }
         let carried_mass = carrying.held.as_ref().map(|h| h.mass).unwrap_or(0.0);
         // Can't jump with anything heavier than 20 in your arms; carrying slows you by Mass * 2.

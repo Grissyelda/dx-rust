@@ -215,18 +215,22 @@ pub fn lights_at_into(level: &dx_level::Level, center: [f32; 3], half_h: f32, v:
         (center[2] / 32.0).floor() as i32,
         (half_h / 16.0).round() as i32,
     );
-    {
+    // The middle of the cell, so every actor in it gets the same answer - unless a wall stands between the actor
+    // and it (someone close to a wall, JC at a mirror): then the middle can be inside or behind the wall, where no
+    // light reaches, and the actor went black. Then its own place is used (not cached).
+    let mid = [(key.0 as f32 + 0.5) * 32.0, (key.1 as f32 + 0.5) * 32.0, (key.2 as f32 + 0.5) * 32.0];
+    let dv = |p: [f32; 3]| bevy::math::DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+    let mid_ok = level.collision.trace(dv(center), dv(mid), bevy::math::DVec3::ZERO).fraction >= 0.995;
+    if mid_ok {
         let mut g = SHADOW_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let map = g.get_or_insert_with(HashMap::new);
         if map.len() > 200_000 {
             map.clear();
         }
-        let statics = map.entry(key).or_insert_with(|| {
-            // The middle of the cell, so every actor in it gets the same answer.
-            let c = [(key.0 as f32 + 0.5) * 32.0, (key.1 as f32 + 0.5) * 32.0, (key.2 as f32 + 0.5) * 32.0];
-            std::sync::Arc::new(dx_level::actors::shadowed_lights(&level.collision, &level.lights, c, half_h))
-        });
+        let statics = map.entry(key).or_insert_with(|| std::sync::Arc::new(dx_level::actors::shadowed_lights(&level.collision, &level.lights, mid, half_h)));
         v.extend_from_slice(statics);
+    } else {
+        dx_level::actors::shadowed_lights_into(&level.collision, &level.lights, center, half_h, v);
     }
     with_current_copy(|cur| {
         if !cur.is_empty() {

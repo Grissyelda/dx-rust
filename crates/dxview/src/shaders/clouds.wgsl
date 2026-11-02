@@ -53,10 +53,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let t = globals.time;
     let len = min(p.slab.y / dir.y, p.slab.y * 7.0);
-    let steps = 18;
+    // The march samples level slices of the slab (equal steps in height), which from below draw rings round the
+    // point overhead: more steps looking up, and a white-noise jitter per pixel and frame (interleaved gradient noise
+    // lined up with the slices into a ring pattern that turned with the view).
+    let steps = 18 + i32(10.0 * smoothstep(0.4, 0.95, dir.y));
     let dt = len / f32(steps);
-    // Interleaved gradient noise jitters the start (no banding).
-    let jit = fract(52.9829189 * fract(dot(in.position.xy, vec2<f32>(0.06711056, 0.00583715))) + fract(t * 7.123));
+    var hs = vec3<u32>(vec2<u32>(in.position.xy), u32(fract(t * 0.37) * 4096.0));
+    hs = hs * 1664525u + 1013904223u;
+    hs.x += hs.y * hs.z; hs.y += hs.z * hs.x; hs.z += hs.x * hs.y;
+    hs = hs ^ (hs >> vec3<u32>(16u));
+    hs.x += hs.y * hs.z;
+    let jit = f32(hs.x & 0xffffu) / 65536.0;
     var trans = 1.0;
     var col = vec3<f32>(0.0);
     let moon_col = vec3<f32>(0.62, 0.70, 0.88) * p.moon.w;

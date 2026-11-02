@@ -481,9 +481,56 @@ pub fn frob_target_system(
             }
         }
     }
+    // Grab Ladders: nothing else in reach and the line of sight meets a ladder face close by - highlight it with
+    // the button to take hold (walking into a ladder doesn't climb it with the setting on, so say how).
+    let mut ladder_aim = false;
+    if best.is_none() && crate::settings::get("LadderGrab") > 0.5 && !LADDER_HELD.load(std::sync::atomic::Ordering::Relaxed) {
+        let reach = (FROB_DIST * 0.85).min(wall * FROB_DIST + 2.0);
+        let mut near: Option<(f64, DVec3)> = None;
+        for l in &lvl.ladders {
+            let n = DVec3::from_array(l.normal);
+            let den = n.dot(dir);
+            if den.abs() < 1e-4 {
+                continue;
+            }
+            let t = (l.dist - n.dot(eye)) / den;
+            if t <= 0.0 || t > reach || near.is_some_and(|(b, _)| t >= b) {
+                continue;
+            }
+            let p = eye + dir * t;
+            if l.touches(p.to_array(), 0.0, 0.0, 1.0) {
+                near = Some((t, p));
+            }
+        }
+        if let Some((_, p)) = near {
+            ladder_aim = true;
+            let key = if crate::gamepad::pad_in_use() {
+                match crate::gamepad::glyph_kind() {
+                    crate::gamepad::PadKind::PlayStation => "Square",
+                    _ => "X",
+                }
+            } else {
+                "Right Mouse"
+            };
+            best = Some(Highlight {
+                center: p,
+                ext: DVec3::new(10.0, 10.0, 20.0),
+                mover: false,
+                text: format!("Climb Ladder [{key}]"),
+                mover_idx: None,
+                blocker: None,
+            });
+        }
+    }
+    LADDER_AIM.store(ladder_aim, std::sync::atomic::Ordering::Relaxed);
     HAS_TARGET.store(best.is_some(), std::sync::atomic::Ordering::Relaxed);
     hl.target = best;
 }
+
+/// The frob line meets a ladder in reach (Grab Ladders): Use takes hold of it from there.
+pub static LADDER_AIM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The player is on a ladder (no "Climb Ladder" prompt then).
+pub static LADDER_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Something is highlighted to frob (the pad's X: use it, else reload).
 static HAS_TARGET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

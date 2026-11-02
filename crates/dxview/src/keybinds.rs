@@ -380,7 +380,9 @@ pub fn remap_system(
         crate::gamepad::note_kbm();
     }
     // The gamepad: in menus (cursor free) it's a mouse; in play its buttons press the actions' bound inputs.
-    let ui = windows.iter().next().is_some_and(|(_, c)| c.grab_mode != CursorGrabMode::Locked) || b.open;
+    // (A diegetic terminal keeps the pointer locked but is still worked with a cursor: diegetic.rs.)
+    let vcur = crate::diegetic::virtual_cursor();
+    let ui = windows.iter().next().is_some_and(|(_, c)| c.grab_mode != CursorGrabMode::Locked) || b.open || vcur;
     UI_MODE.store(ui, std::sync::atomic::Ordering::Relaxed);
     let snap_ok = crate::snap::swap_frame();
     let pad = crate::gamepad::outputs(&b.map, time.delta_secs().min(0.1), ui, snap_ok && ui);
@@ -394,7 +396,11 @@ pub fn remap_system(
         *pad_cursor = None;
     }
     if let Some((mut w, _)) = windows.iter_mut().next() {
-        if ui && (pad.cursor != Vec2::ZERO || pad.snap.is_some()) {
+        if vcur {
+            // The terminal's cursor is its own: the pad's motion goes to it, the pointer isn't moved.
+            crate::diegetic::add_pad_delta(pad.cursor / w.scale_factor().max(0.1));
+            *pad_cursor = None;
+        } else if ui && (pad.cursor != Vec2::ZERO || pad.snap.is_some()) {
             let (ww, wh) = (w.width(), w.height());
             let at = pad_cursor.or(w.cursor_position()).unwrap_or(Vec2::new(ww / 2.0, wh / 2.0));
             let k = 1.0 / w.scale_factor();

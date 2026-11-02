@@ -39,6 +39,16 @@ pub struct World<'a> {
 impl World<'_> {
     /// A line of sight: like `trace`, but it carries on through see-through grates and fences (masked level faces
     /// - vent covers, chain-link): people see through them as you do.
+    /// The hit at `fraction` of from..end is a see-through mover (a vent grate: every part masked or translucent).
+    fn grate_mover_at(&self, from: DVec3, end: DVec3, extent: DVec3, fraction: f64) -> bool {
+        let Some(rts) = self.movers else { return false };
+        self.level.movers.iter().zip(rts).any(|(info, rt)| {
+            !info.parts.is_empty()
+                && info.parts.iter().all(|p| p.class != dx_level::SurfaceClass::Opaque)
+                && crate::movers::trace_mover(info, rt, from, end, extent).is_some_and(|hm| (hm.fraction - fraction).abs() < 1e-4)
+        })
+    }
+
     pub fn sight(&self, start: DVec3, end: DVec3, extent: DVec3) -> Hit {
         let mut from = start;
         for _ in 0..4 {
@@ -49,7 +59,7 @@ impl World<'_> {
                 return Hit { fraction: done + (1.0 - done) * h.fraction, ..h };
             }
             let at = from + (end - from) * h.fraction;
-            if !crate::seethrough::on_grate(self.level, at) {
+            if !crate::seethrough::on_grate(self.level, at) && !self.grate_mover_at(from, end, extent, h.fraction) {
                 let done = (from - start).length() / (end - start).length().max(1e-9);
                 return Hit { fraction: done + (1.0 - done) * h.fraction, ..h };
             }

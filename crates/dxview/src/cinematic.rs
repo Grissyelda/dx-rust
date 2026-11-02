@@ -39,6 +39,9 @@ struct ITrigger {
     loc: DVec3,
     radius: f64,
     height: f64,
+    /// The player was inside last frame: Touch fires on entering only (it fired every frame, so the HQ helicopter
+    /// restarted its take-off for as long as JC stood on the pad).
+    inside: bool,
 }
 
 struct Rider {
@@ -579,10 +582,10 @@ pub fn cinematic_system(
         if let Ok(mut trs) = ITRIGGERS.lock() {
             for t in trs.iter_mut().filter(|t| !t.gone) {
                 let by_event = evs.iter().any(|e| e.eq_ignore_ascii_case(&t.tag));
-                let by_touch = t.touch
-                    && !active()
-                    && DVec3::new(pl.x - t.loc.x, pl.y - t.loc.y, 0.0).length() < t.radius + pr
+                let inside = DVec3::new(pl.x - t.loc.x, pl.y - t.loc.y, 0.0).length() < t.radius + pr
                     && (pl.z - t.loc.z).abs() < t.height + phh;
+                let by_touch = t.touch && !active() && inside && !t.inside;
+                t.inside = inside;
                 if by_event || by_touch {
                     fire.push(t.event.clone());
                     if t.once {
@@ -903,6 +906,7 @@ fn load_itriggers(level: &dx_level::Level) -> Vec<ITrigger> {
                 loc: DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64),
                 radius: num("CollisionRadius", 40.0),
                 height: num("CollisionHeight", 40.0),
+                inside: false,
             }
         })
         .collect()

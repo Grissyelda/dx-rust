@@ -3225,6 +3225,22 @@ pub fn weapon_system(
         let ue = bevy_to_ue(at.to_array());
         crate::dynlight::hold(0xD75_0000, DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64), crate::dynlight::Spec::new(160, 64, 224, 4.0), 0.08);
     }
+    // Emissive Surfaces: the riot prod's arcs light what's round its tip (a dim blue-white flicker), like the
+    // Dragon's Tooth's blade does in the original.
+    if h.stats.class == "WeaponProd"
+        && matches!(h.state, WState::Idle | WState::Firing)
+        && crate::relight::emissive_on()
+        && !crate::consys::third_person()
+    {
+        let f = cam.forward().as_vec3();
+        let at = cam.translation + f * 0.55 + cam.right().as_vec3() * 0.12 - cam.up().as_vec3() * 0.05;
+        let ue = bevy_to_ue(at.to_array());
+        let t = time.elapsed_secs();
+        let flick = 0.75 + 0.25 * ((t * 23.0).sin() * (t * 7.3).cos()).abs();
+        let firing = matches!(h.state, WState::Firing);
+        let bri = ((if firing { 200.0 } else { 70.0 }) * flick) as u8;
+        crate::dynlight::hold(0x9D0_0000, DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64), crate::dynlight::Spec::new(150, 96, bri, if firing { 4.0 } else { 2.5 }), 0.08);
+    }
     light_view_model(h, &mut meshes, &level.0, cam.translation, cam.rotation, &root, dt);
     crate::scope::set_lens(lens_eye.as_ref().and_then(|se| se.posed(&h.shown)).map(|(c, axis, r)| {
         let axis = root.rotation * axis;

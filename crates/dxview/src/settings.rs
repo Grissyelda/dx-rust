@@ -108,6 +108,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("FlashlightCone", 0.0),
     ("MaterialSheen", 0.0),
     ("ModernGlass", 0.0),
+    ("PadLayoutShown", 0.0),
     ("BulletPenetration", 0.0),
     ("SmoothLean", 0.0),
     ("MeleeArc", 0.0),
@@ -236,7 +237,8 @@ fn ensure() {
         for line in t.lines() {
             if let Some((k, v)) = line.split_once('=') {
                 if let Ok(v) = v.trim().parse::<f32>() {
-                    m.insert(k.trim().to_string(), v);
+                    let k = k.trim();
+                    m.insert(k.to_string(), v);
                 }
             }
         }

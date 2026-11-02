@@ -36,6 +36,7 @@ const GLOWS: &[(&str, f32)] = &[
     ("wepn_nesword_sfx", 3.5),
     ("wavyblade", 3.0),
     ("wepn_empg_sfx", 3.0),
+    ("wepn_prod_fx", 3.0),
     ("wepn_prifle_sfx", 3.0),
     ("ambrosia_sfx", 2.0),
 ];

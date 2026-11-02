@@ -429,7 +429,17 @@ pub fn draw_lower(
         return;
     };
     let mut y = 2;
-    if !p.text.is_empty() || !p.name.is_empty() {
+    // Every choice has to fit (deviation: the original clipped them at the bottom - Gunther's third choice after the
+    // rescue). The choices' room first; the speech above them only if it fits too, else just its first line; rows
+    // tighten as a last resort.
+    let hotkeys = crate::settings::get("DialogueHotkeys") > 0.5;
+    let mut pad = 4;
+    let choice_room = |pad: i32| p.choices.len() as i32 * (sf.height + pad);
+    while pad > 0 && choice_room(pad) + 2 > h {
+        pad -= 1;
+    }
+    let text_room = (h - 2 - choice_room(pad)).max(0);
+    if (!p.text.is_empty() || !p.name.is_empty()) && (p.choices.is_empty() || text_room >= sf.height.max(nf.height)) {
         let label = if p.name.is_empty() {
             String::new()
         } else {
@@ -454,7 +464,16 @@ pub fn draw_lower(
         } else {
             COL_SPEECH
         };
-        let lines = wrap(&sf, &p.text, (w - 4 - nw).max(40));
+        let mut lines = wrap(&sf, &p.text, (w - 4 - nw).max(40));
+        if !p.choices.is_empty() {
+            let fit = (text_room / sf.height.max(1)).max(0) as usize;
+            if lines.len() > fit {
+                lines.truncate(fit);
+                if let Some(l) = lines.last_mut() {
+                    l.push_str("...");
+                }
+            }
+        }
         let mut ty = y;
         for line in &lines {
             c.text(
@@ -475,10 +494,12 @@ pub fn draw_lower(
     }
     let top = LOWER_Y.load(std::sync::atomic::Ordering::Relaxed);
     let mut rows = Vec::new();
+    if !p.choices.is_empty() {
+        y = y.min((h - choice_room(pad)).max(0));
+    }
     // Enhancement "Dialogue Hotkeys": the first four choices are numbered.
-    let hotkeys = crate::settings::get("DialogueHotkeys") > 0.5;
     for (i, (text, skill)) in p.choices.iter().enumerate() {
-        let bh = sf.height + 4;
+        let bh = sf.height + pad;
         rows.push((top + y, top + y + bh));
         let focus = i == p.focus;
         if focus {

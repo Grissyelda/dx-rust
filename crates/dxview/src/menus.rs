@@ -585,6 +585,23 @@ enum MsgPurpose {
     AutosaveWarn,
     /// root.MessageBox asked for by another screen (the persona screen's Delete Note?): the answer goes back.
     External,
+    /// Ours: the controller layout picture (Settings > Enhancements > Controller Layout; once at the first map for
+    /// a player on a pad).
+    PadMap,
+}
+
+/// Open the controller layout picture (paddiagram).
+static PADMAP_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn open_pad_map() {
+    PADMAP_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn pad_map_box(hud: &mut ClassicHud, assets: &mut RuntimeAssets) -> Option<Win> {
+    let mut w = msg_box(hud, assets, "Controller Layout", "", false, MsgPurpose::PadMap)?;
+    w.f.cw = crate::paddiagram::W;
+    w.f.ch = crate::paddiagram::H;
+    w.f.textures.clear();
+    Some(w)
 }
 
 /// root.MessageBox(title, text, MB_YesNo) for another screen; its answer comes back through `take_box_answer`.
@@ -1249,6 +1266,9 @@ struct Win {
 }
 
 fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) -> Option<Win> {
+    if class == "PadLayout" {
+        return pad_map_box(hud, assets);
+    }
     let mut f = frame(assets, class);
     let body = match class {
         "MenuMain" | "MenuSelectDifficulty" | "MenuSettings" => {
@@ -1475,6 +1495,19 @@ fn enhancement_choices() -> Vec<Choice> {
             label: "|&Controller Bindings".into(),
             help: "Assign the gamepad's buttons to actions.".into(),
             kind: ChoiceKind::Action { action: 1, invoke: "MenuScreenPadBindings".into() },
+            value: 0.0,
+            saved: 0.0,
+            info_w: 98,
+            info_x: 270,
+            control_x: 270,
+            voff: 0,
+            dropdown: false,
+        },
+        Choice {
+            key: "PadLayout".into(),
+            label: "|&Controller Layout".into(),
+            help: "A picture of the gamepad with what each button does (your bindings).".into(),
+            kind: ChoiceKind::Action { action: 1, invoke: "PadLayout".into() },
             value: 0.0,
             saved: 0.0,
             info_w: 98,
@@ -2103,6 +2136,9 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
             u.hit(W::Header(2), (cx + 389, cy + 255, 160, 15), true);
         }
         Body::Keypad(_) => {}
+        Body::Msg(m) if m.purpose == MsgPurpose::PadMap => {
+            crate::paddiagram::draw(u, cx, cy);
+        }
         Body::Msg(m) => {
             let fds = u.hud.font(u.assets, "FontMenuHeaders_DS").unwrap_or(fh.clone());
             let (tx, ty, tw, th) = (cx + 20, cy + 14, win.f.cw - 40, win.f.ch - 28);
@@ -2543,6 +2579,10 @@ pub fn menu_system(
     let dead_click = ph.dead && st.dead_t > 2.0 && binds.buttons.just_pressed(MouseButton::Left);
     if st.stack.is_empty() && st.intro.is_none() && !others && !others_before && (binds.keys.just_pressed(KeyCode::Escape) || dead_click) {
         let w = open_window(&mut hud, &mut assets, "MenuMain");
+        st.push(w);
+    }
+    if PADMAP_OPEN.swap(false, Ordering::Relaxed) {
+        let w = pad_map_box(&mut hud, &mut assets);
         st.push(w);
     }
     // A keypad was used (Keypad.ActivateKeypadWindow).
@@ -3488,7 +3528,7 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
                 acts.push(Act::LoadGame(crate::save::quick_path()));
             }
         }
-        MsgPurpose::Info | MsgPurpose::NameBlank | MsgPurpose::Restart => {}
+        MsgPurpose::Info | MsgPurpose::NameBlank | MsgPurpose::Restart | MsgPurpose::PadMap => {}
     }
 }
 

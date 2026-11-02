@@ -205,6 +205,8 @@ struct Session {
     /// Seconds the mouse has been off the screen.
     out: f32,
     mouse_uv: Option<(f64, f64)>,
+    /// Computers: the terminal's own cursor (u, v: 0..1 left to right, top to bottom), moved by the mouse's motion.
+    cursor: (f64, f64),
     /// Keypad button under the mouse, and one being shown pressed (index, seconds).
     hover: Option<usize>,
     flash: Option<(usize, f32)>,
@@ -216,6 +218,20 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// The computer UI's view for computers.rs while a terminal is diegetic.
 static VIEW: Mutex<Option<CompView>> = Mutex::new(None);
 static LEAVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The gamepad's cursor motion (logical pixels) while a terminal has its own cursor (keybinds.rs adds to it).
+static PAD_DELTA: Mutex<Vec2> = Mutex::new(Vec2::ZERO);
+
+/// A terminal is up with its own cursor: the pointer stays locked, the mouse's motion moves the cursor on the
+/// monitor (keybinds.rs keeps the pad in its menu mode and hands its cursor motion here).
+pub fn virtual_cursor() -> bool {
+    SESSION.lock().ok().is_some_and(|s| s.as_ref().is_some_and(|s| s.kind == Kind::Computer && s.phase != Phase::Closing))
+}
+
+pub fn add_pad_delta(d: Vec2) {
+    if let Ok(mut p) = PAD_DELTA.lock() {
+        *p += d;
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct CompView {
@@ -387,6 +403,9 @@ fn play(lvl: &dx_level::Level, anims: &mut Query<(&mut crate::actors::Animated, 
 const CAM_IN: f32 = 0.55;
 const CAM_OUT: f32 = 0.45;
 const ZOOM_FOV: f32 = 40.0;
+/// How much of the view's height (and width) a computer's monitor fills while in use.
+const FRAME_H: f64 = 0.62;
+const FRAME_W: f64 = 0.8;
 
 fn smooth(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
@@ -422,6 +441,7 @@ pub fn diegetic_system(
         ResMut<crate::weapons::RuntimeAssets>,
     ),
     binds: Res<crate::keybinds::Bindings>,
+    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
     mut tfs: Query<(&mut Transform, &mut Visibility), Or<(With<DgScreen>, With<DgKeyLcd>, With<DgKeyHover>)>>,
 ) {
     let _prof = crate::prof::scope("diegetic::diegetic_system");
@@ -465,6 +485,7 @@ pub fn diegetic_system(
                     unfold,
                     out: 0.0,
                     mouse_uv: None,
+                    cursor: (0.5, 0.45),
                     hover: None,
                     flash: None,
                     desk: (sw, sh, 2),
@@ -488,6 +509,7 @@ pub fn diegetic_system(
                         unfold: 0.0,
                         out: 0.0,
                         mouse_uv: None,
+                        cursor: (0.5, 0.5),
                         hover: None,
                         flash: None,
                         desk: (0, 0, 1),
@@ -521,7 +543,28 @@ pub fn diegetic_system(
         }
         // The mouse on the screen.
         s.mouse_uv = None;
-        if s.phase == Phase::Active {
+        let pad_d = PAD_DELTA.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
+        if s.phase == Phase::Active && s.kind == Kind::Computer {
+            // The terminal's own cursor: the mouse's motion over the screen's size as seen now, so it moves like a
+            // pointer would across the monitor, and never leaves it.
+            let (camera, gt) = *cam;
+            let px = |u: f64, v: f64| camera.world_to_viewport(gt, bevy(s.rect.at(u, v))).ok();
+            let (pw, ph) = match (px(0.0, 0.0), px(1.0, 0.0), px(0.0, 1.0)) {
+                (Some(a), Some(b), Some(c)) => ((b - a).length().max(60.0), (c - a).length().max(45.0)),
+                _ => (640.0, 480.0),
+            };
+            let sens = (crate::settings::mouse_sensitivity() / 3.0).clamp(0.4, 2.5);
+            let d = motion.delta / window.scale_factor().max(0.1) * sens + pad_d;
+            s.cursor.0 = (s.cursor.0 + d.x as f64 / pw as f64).clamp(0.0, 0.999);
+            s.cursor.1 = (s.cursor.1 + d.y as f64 / ph as f64).clamp(0.0, 0.999);
+            if let Some(uv) = env_val!("DXVIEW_DG_MOUSE").map(str::to_owned).and_then(|v| {
+                let p: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                (p.len() == 2).then(|| (p[0], p[1]))
+            }) {
+                s.cursor = uv;
+            }
+            s.mouse_uv = Some(s.cursor);
+        } else if s.phase == Phase::Active {
             let (camera, gt) = *cam;
             if let Some(ray) = window.cursor_position().and_then(|c| camera.viewport_to_world(gt, c).ok()) {
                 let o = ue(ray.origin);
@@ -555,9 +598,9 @@ pub fn diegetic_system(
                     if env_on!("DXVIEW_DGLOG") {
                         println!("DG leave {:?}", s.kind);
                     }
-                    // Only computers close when the mouse wanders off; a keypad stays up until Escape (pad B /
-                    // Circle) or the code is entered.
-                    if s.kind == Kind::Computer {
+                    // A keypad stays up until Escape (pad B / Circle) or the code is entered; a computer's cursor
+                    // can't leave its monitor (step away with Escape, right click or a walk key: computers.rs).
+                    if s.kind == Kind::Computer && env_on!("DXVIEW_DG_LEAVE") {
                         LEAVE.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
@@ -829,12 +872,17 @@ pub fn place_system(
     if let Ok(mut e) = EYE.lock() {
         *e = Some((eye_tf, eye_fov, **vm));
     }
-    // Fit the screen (keypads: with room for the display above) at the zoom field of view.
-    let fov = ZOOM_FOV.to_radians();
+    // Fit the screen. Computers keep the player's own field of view with the monitor filling about 60% of the
+    // view's height, the room still round it (as a terminal in Prey / Human Revolution); keypads (with room for
+    // the display above) at the zoom field of view.
+    let fov = match s.kind {
+        Kind::Computer => eye_fov,
+        Kind::Keypad => ZOOM_FOV.to_radians(),
+    };
     let aspect = (window.width() / window.height().max(1.0)) as f64;
     let r = &s.rect;
     let (h_fit, c) = match s.kind {
-        Kind::Computer => ((r.h.max(r.w / aspect)) * 1.06, r.c),
+        Kind::Computer => ((r.h / FRAME_H).max(r.w / (aspect * FRAME_W)), r.c),
         Kind::Keypad => ((r.h + 5.0).max(r.w / aspect) * 1.3, r.c + r.up * 2.0),
     };
     let dist = (h_fit * 0.5) / (fov as f64 * 0.5).tan();
@@ -863,6 +911,159 @@ pub fn restore_system(
             pp.fov = fov;
         }
         **vm = v;
+    }
+}
+
+/// An idle terminal's standby screen in the world (desktop.rs).
+#[derive(Component)]
+pub struct DgStandby;
+
+struct StandbyScreen {
+    e: Entity,
+    img: Handle<Image>,
+    base: Vec<[f32; 4]>,
+    size: (i32, i32),
+    tick: i64,
+}
+
+#[derive(Default)]
+pub struct StandbyRes {
+    gen: u64,
+    /// Terminals with a screen: actor, class, where the screen is, node name, logo texture.
+    list: Option<Vec<(usize, String, Rect3, String, String)>>,
+    shown: std::collections::HashMap<usize, StandbyScreen>,
+}
+
+/// How near (Unreal units) an idle terminal shows its standby screen, and how many at once.
+const STANDBY_NEAR: f64 = 1100.0;
+const STANDBY_MAX: usize = 6;
+
+/// Idle terminals near the player run: a standby screen (the node's logo, a login box with a blinking caret, the
+/// clock) on the monitor, redrawn as the caret blinks. Not the security terminals (folded shut until used) and not
+/// the one in use (its live desktop is there).
+#[allow(clippy::too_many_arguments)]
+pub fn standby_system(
+    mut commands: Commands,
+    vtime: Res<Time>,
+    level: Res<LevelRes>,
+    cam: Single<&GlobalTransform, (With<FlyCam>, Without<SkyCam>)>,
+    (mut images, mut meshes, mut materials, mut hud, mut assets): (
+        ResMut<Assets<Image>>,
+        ResMut<Assets<Mesh>>,
+        ResMut<Assets<StandardMaterial>>,
+        ResMut<crate::classic_hud::ClassicHud>,
+        ResMut<crate::weapons::RuntimeAssets>,
+    ),
+    mut res: Local<StandbyRes>,
+) {
+    let _prof = crate::prof::scope("diegetic::standby_system");
+    let lvl = &level.0;
+    let new_map = crate::loader::new_map(&mut res.gen);
+    if new_map || !enabled() {
+        for (_, sc) in res.shown.drain() {
+            commands.entity(sc.e).despawn();
+            images.remove(&sc.img);
+        }
+        if new_map {
+            res.list = None;
+        }
+        if !enabled() {
+            return;
+        }
+    }
+    if res.list.is_none() {
+        let mut list = Vec::new();
+        for (i, a) in lvl.actors.iter().enumerate() {
+            if !matches!(a.class.as_str(), "ComputerPersonal" | "ComputerPublic" | "ATM") {
+                continue;
+            }
+            let (Some(def), Some(mi)) = (screen_def(&a.class), mesh_actor_of(lvl, i)) else { continue };
+            let ma = &lvl.mesh_actors[mi];
+            let sc = draw_scale(a);
+            let rect = Rect3::new(to_world(ma, sc, def.bl), to_world(ma, sc, def.br), to_world(ma, sc, def.tl)).with_tr(def.tr.map(|t| to_world(ma, sc, t)));
+            let (name, logo) = crate::computers::node_name_logo(lvl, i, &mut assets);
+            list.push((i, a.class.clone(), rect, name, logo));
+        }
+        res.list = Some(list);
+    }
+    let eye = ue(cam.translation());
+    let fwd = ue(cam.translation() + *cam.forward()) - eye;
+    let busy = SESSION.lock().ok().and_then(|s| s.as_ref().filter(|s| s.kind == Kind::Computer && s.phase == Phase::Active).map(|s| s.actor));
+    let mut want: Vec<(f64, usize)> = Vec::new();
+    for (k, (actor, _, rect, _, _)) in res.list.as_ref().unwrap().iter().enumerate() {
+        if Some(*actor) == busy || crate::scriptworld::is_hidden(*actor) {
+            continue;
+        }
+        let to = rect.c - eye;
+        let d = to.length();
+        if d > STANDBY_NEAR || rect.n.dot(-to) <= 0.0 || (d > 150.0 && to.dot(fwd) < -0.2 * d) {
+            continue;
+        }
+        want.push((d, k));
+    }
+    want.sort_by(|a, b| a.0.total_cmp(&b.0));
+    want.truncate(STANDBY_MAX);
+    let keep: Vec<usize> = want.iter().map(|w| res.list.as_ref().unwrap()[w.1].0).collect();
+    let gone: Vec<usize> = res.shown.keys().copied().filter(|a| !keep.contains(a)).collect();
+    for a in gone {
+        if let Some(sc) = res.shown.remove(&a) {
+            commands.entity(sc.e).despawn();
+            images.remove(&sc.img);
+        }
+    }
+    if want.is_empty() {
+        return;
+    }
+    let secs = vtime.elapsed_secs_f64();
+    let tick = (secs * 2.0).floor() as i64;
+    let fonts = (hud.font(&mut assets, "FontMenuSmall"), hud.font(&mut assets, "FontMenuHeaders"), hud.font(&mut assets, "FontMenuTitle"));
+    let (Some(small), Some(headers), Some(title)) = fonts else { return };
+    for (_, k) in want {
+        let (actor, class, rect, name, logo_name) = res.list.as_ref().unwrap()[k].clone();
+        let logo = if logo_name.is_empty() { None } else { hud.tex(&mut assets, &logo_name) };
+        let draw = |base: &[[f32; 4]], size: (i32, i32)| {
+            let mut c = crate::uicanvas::Canvas::new(size.0, size.1, 1);
+            c.px.copy_from_slice(base);
+            crate::desktop::standby_over(&mut c, &class, &small, &headers, &title, logo.as_ref(), &name, secs);
+            let mut img = Image::new(
+                bevy::render::render_resource::Extent3d { width: size.0 as u32, height: size.1 as u32, depth_or_array_layers: 1 },
+                bevy::render::render_resource::TextureDimension::D2,
+                c.to_rgba8(),
+                TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::default(),
+            );
+            img.sampler = bevy::image::ImageSampler::linear();
+            img
+        };
+        match res.shown.get_mut(&actor) {
+            Some(sc) => {
+                if sc.tick != tick {
+                    sc.tick = tick;
+                    let img = draw(&sc.base, sc.size);
+                    if let Some(mut im) = images.get_mut(&sc.img) {
+                        *im = img;
+                    }
+                }
+            }
+            None => {
+                let size = crate::desktop::standby_size(rect.w / rect.h.max(1e-3));
+                let base = crate::desktop::standby_base(size.0, size.1, &name).px;
+                let h = images.add(draw(&base, size));
+                let mat = materials.add(StandardMaterial { base_color_texture: Some(h.clone()), unlit: true, cull_mode: None, double_sided: true, ..default() });
+                let lift = 0.3;
+                let (mesh, tf) = match rect.quad {
+                    Some(_) => (screen_mesh(&rect, lift), Transform::IDENTITY),
+                    None => (quad_mesh(1.0, 1.0), quad_tf(&rect, rect.c, lift).with_scale(Vec3::new(rect.w as f32 / 52.5, rect.h as f32 / 52.5, 1.0))),
+                };
+                let e = commands
+                    .spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat), tf, Visibility::Visible, DgStandby, bevy::light::NotShadowCaster, bevy::light::NotShadowReceiver))
+                    .id();
+                if env_on!("DXVIEW_DGLOG") {
+                    println!("DG standby {} {class} at {:?} n {:?} {:.1} x {:.1} tf {:?}", lvl.actors[actor].name, rect.c, rect.n, rect.w, rect.h, tf);
+                }
+                res.shown.insert(actor, StandbyScreen { e, img: h, base, size, tick });
+            }
+        }
     }
 }
 

@@ -105,7 +105,7 @@ fn roll(kind: u8, w: Vec3, u: Vec3, base: f32, t: f32) -> f32 {
             let top = 0.35 + 1.9 * swell;
             let h = w.y - base;
             let layer = (1.0 - smooth(top * 0.3, top, h)) * smooth(-0.25, 0.1, h);
-            edge(u.x) * edge(u.z) * layer * smooth(0.28, 0.72, n) * 1.8
+            edge(u.x) * edge(u.z) * (1.0 - smooth(0.6, 0.95, u.y)) * layer * smooth(0.28, 0.72, n) * 1.8
         }
         1 => {
             // Smoke under a ceiling, curling as it drifts.
@@ -122,6 +122,14 @@ fn roll(kind: u8, w: Vec3, u: Vec3, base: f32, t: f32) -> f32 {
     }
 }
 
+/// Densities are stored as R8Unorm over 0..DENS_MAX (filterable everywhere; 32-bit float textures can't be
+/// sampled with filtering on every GPU, and a fog box whose texture failed showed as a flat grey slab), so the
+/// volumes' density factors are DENS_MAX times their own.
+const DENS_MAX: f32 = 2.0;
+fn dens_byte(v: f32) -> u8 {
+    ((v / DENS_MAX).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 /// Recompute one fog box's density texture for time `t`.
 fn refill(img: &mut Image, f: &DriftFog, tf: &Transform, t: f32) {
     let size = tf.scale;
@@ -133,7 +141,7 @@ fn refill(img: &mut Image, f: &DriftFog, tf: &Transform, t: f32) {
             for x in 0..n.x {
                 let u = Vec3::new((x as f32 + 0.5) / n.x as f32, (y as f32 + 0.5) / n.y as f32, (z as f32 + 0.5) / n.z as f32);
                 let w = min + u * size;
-                data.extend_from_slice(&roll(f.kind, w, u, f.base, t).max(0.0).to_le_bytes());
+                data.push(dens_byte(roll(f.kind, w, u, f.base, t)));
             }
         }
     }
@@ -161,7 +169,7 @@ fn density_image(n: (u32, u32, u32), f: impl Fn(f32, f32, f32) -> f32) -> Image 
         for y in 0..n.1 {
             for x in 0..n.0 {
                 let v = f((x as f32 + 0.5) / n.0 as f32, (y as f32 + 0.5) / n.1 as f32, (z as f32 + 0.5) / n.2 as f32);
-                data.extend_from_slice(&v.max(0.0).to_le_bytes());
+                data.push(dens_byte(v));
             }
         }
     }
@@ -169,7 +177,7 @@ fn density_image(n: (u32, u32, u32), f: impl Fn(f32, f32, f32) -> f32) -> Image 
         bevy::render::render_resource::Extent3d { width: n.0, height: n.1, depth_or_array_layers: n.2 },
         bevy::render::render_resource::TextureDimension::D3,
         data,
-        bevy::render::render_resource::TextureFormat::R32Float,
+        bevy::render::render_resource::TextureFormat::R8Unorm,
         bevy::asset::RenderAssetUsages::RENDER_WORLD,
     );
     img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
@@ -314,7 +322,7 @@ pub fn shafts_system(
             let tex = fog_image(&mut images, hn);
             commands.spawn((
                 FogVolume {
-                    density_factor: 0.006,
+                    density_factor: 0.006 * DENS_MAX,
                     density_texture: Some(tex.clone()),
                     absorption: 0.01,
                     scattering: 0.6,
@@ -558,7 +566,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
         commands.spawn((
             FogVolume {
                 fog_color: Color::srgb(0.7, 0.76, 0.74),
-                density_factor: 0.11,
+                density_factor: 0.11 * DENS_MAX,
                 density_texture: Some(tex.clone()),
                 absorption: 0.03,
                 scattering: 0.5,
@@ -580,7 +588,7 @@ fn spawn_local_fog(commands: &mut Commands, images: &mut Assets<Image>, lvl: &dx
         commands.spawn((
             FogVolume {
                 fog_color: Color::srgb(0.8, 0.76, 0.7),
-                density_factor: 0.035,
+                density_factor: 0.035 * DENS_MAX,
                 density_texture: Some(tex.clone()),
                 absorption: 0.02,
                 scattering: 0.6,

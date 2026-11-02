@@ -4833,6 +4833,11 @@ fn hear_noises(npc: &mut Npc, cx: &HearCx) {
                     if n.maker == Some(Target::Pawn(npc.blocker)) {
                         continue;
                     }
+                    // Only people who'd fight the player go to look: a pot thrown in UNATCO HQ sent Manderley
+                    // downstairs, away from the desk his briefing needs.
+                    if !npc.hates("Player") {
+                        continue;
+                    }
                     if npc.state == NpcState::Idle {
                         npc.set_seek_location(n.pos, SeekKind::Sound, false);
                         npc.enter_seeking();

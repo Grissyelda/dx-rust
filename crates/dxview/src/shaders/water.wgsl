@@ -234,8 +234,21 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // The swell's slopes at the height the vertices move by (far.w metres per unit, more in a storm, when the wind
     // also roughens the short waves).
     let storm = water.m.z;
-    let g = swell_grad_lod(p, t, fp) * max(water.far.w, 0.16) * 1.12 * calm
+    var g = swell_grad_lod(p, t, fp) * max(water.far.w, 0.16) * 1.12 * calm
         + (detail_lod(p, t, fp) * (1.0 + storm * 1.6) + rain_rings(p, t, water.m.z)) * fine;
+    // Far out (the statue's top, the open bay) the waves above all average out and the sea went a flat grey sheet:
+    // there a drifting ripple pattern whose size grows with the distance (about the same size on screen, like the
+    // original's animated water texture) keeps the surface moving and breaks up the reflection.
+    let far_k = smoothstep(45.0, 160.0, d_eye);
+    if (far_k > 0.0) {
+        let sc = 0.22 / (1.0 + d_eye / 55.0);
+        let q = p * sc + vec2<f32>(t * 0.035, -t * 0.026);
+        let q2 = p * sc * 2.3 - vec2<f32>(t * 0.05, t * 0.031);
+        let e = 0.35;
+        let gx = (vnoise(q + vec2<f32>(e, 0.0)) - vnoise(q - vec2<f32>(e, 0.0))) + 0.5 * (vnoise(q2 + vec2<f32>(e, 0.0)) - vnoise(q2 - vec2<f32>(e, 0.0)));
+        let gy = (vnoise(q + vec2<f32>(0.0, e)) - vnoise(q - vec2<f32>(0.0, e))) + 0.5 * (vnoise(q2 + vec2<f32>(0.0, e)) - vnoise(q2 - vec2<f32>(0.0, e)));
+        g += vec2<f32>(gx, gy) * (0.22 + 0.25 * storm) * far_k;
+    }
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     let up = select(-1.0, 1.0, pbr_input.world_normal.y >= 0.0);
     let n = normalize(vec3<f32>(-g.x, up, -g.y));
@@ -257,7 +270,7 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // down with every crossing wave at shallow angles - a dark plaid sliding over the water. The waves still show
     // in the light, the glints and the bent reflection.
     let ndv_flat = clamp(abs(v.y), 0.0, 1.0);
-    let ndv = mix(ndv_flat, ndv_n, 0.2 * calm * fine + 0.05);
+    let ndv = mix(ndv_flat, ndv_n, 0.2 * calm * fine + 0.05 + 0.25 * far_k);
     let fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
     // How much water the eye looks through to the scene behind (metres along the view).
     var depth = 1000.0;
@@ -274,7 +287,7 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         var uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
         uv.x = 1.0 - uv.x;
         // Waves bend the reflection, less far away (where a pixel spans more water).
-        uv += vec2<f32>(-g.x, g.y) * water.m.w / (1.0 + dist * 0.08) * (0.4 + 0.6 * ndv_flat);
+        uv += vec2<f32>(-g.x, g.y) * water.m.w * (1.0 / (1.0 + dist * 0.08) + 0.04 * far_k) * (0.4 + 0.6 * ndv_flat);
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
         refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.5;
     }
@@ -283,6 +296,24 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // Physically 2% straight down; a little more than Schlick at middle angles reads better.
     let k_refl = clamp(fres + 0.12 * pow(1.0 - ndv, 2.0), 0.0, 1.0);
     var col = mix(body, refl, k_refl);
+    // Far out the modern surface has nothing left to show (its waves average out to a flat sheet): it hands over
+    // to the original's animated water picture, lit by its lightmap, under the same reflection - so the far bay
+    // still moves and there's no line where the near water's detail ends.
+    // (Only the level's water sheets and the open sea carry the picture's UVs; the wave grid round the eye, out to
+    // 150 m, has none.)
+#ifdef VERTEX_UVS_A
+    let far_tex = smoothstep(110.0, 220.0, d_eye) * 0.75;
+    if (far_tex > 0.0) {
+        // Lit exactly as the Classic water is (texture, lightmap and lamps; the classic path below).
+        // Its picture spread much larger than up close (1/12 the UV rate): at this range the original's tile is
+        // a few pixels and filters down to one flat grey; enlarged, its animated ripples still show and move.
+        var in_far = in;
+        in_far.uv = in.uv * 0.083;
+        let cp = pbr_input_from_standard_material(in_far, is_front);
+        let c_lit = apply_pbr_lighting(cp).rgb * water.t.z;
+        col = mix(col, c_lit + refl * k_refl * 0.6, far_tex);
+    }
+#endif
     // Foam on the crests: where the swell peaks, broken up by drifting noise, thinning out with distance.
     let crest = f.x / 1.99;
     // (the crest is the whole field; fine)

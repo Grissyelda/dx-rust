@@ -540,7 +540,11 @@ pub fn mesh_parts(
         for (i, id) in part.vert_ids.iter().enumerate() {
             if let Some(s) = sums.get(id) {
                 let l = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
-                if l > 1e-9 {
+                // Not where the faces round the vertex point opposite ways (a sheet modelled with a top and a bottom
+                // on the same vertices - newspapers): the sum is a sliver pointing anywhere, often into the face, and
+                // the paper lit pitch black. Those keep their face normal.
+                let f = part.normals[i];
+                if l > 1e-9 && (s[0] * f[0] + s[1] * f[1] + s[2] * f[2]) / l > 0.2 {
                     part.normals[i] = [s[0] / l, s[1] / l, s[2] / l];
                 }
             }
