@@ -705,7 +705,8 @@ impl eframe::App for Launcher {
             return;
         }
         // Pixel-exact: one egui point per physical pixel, the canvas carries its own whole-number scale.
-        if ctx.pixels_per_point() != 1.0 {
+        // macOS sizes windows in points, so there the canvas is drawn in points and a Retina display doubles it.
+        if !cfg!(target_os = "macos") && ctx.pixels_per_point() != 1.0 {
             ctx.set_pixels_per_point(1.0);
         }
         let (w, h) = Self::size();
