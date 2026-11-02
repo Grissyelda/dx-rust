@@ -9,13 +9,16 @@ VERSION="${VERSION#v}"
 TOOLCHAIN=()
 [ -n "$RUST_TOOLCHAIN" ] && TOOLCHAIN=("+$RUST_TOOLCHAIN")
 
-cargo "${TOOLCHAIN[@]}" build --release -p dxview
-(cd crates/dxlauncher && cargo "${TOOLCHAIN[@]}" build --release)
+# Own build folders, as in BUILD_RELEASE.bat: what is copied below always comes from these two builds, whatever
+# CARGO_TARGET_DIR is set to.
+ROOT="$PWD"
+CARGO_TARGET_DIR="$ROOT/target/dist-build" cargo "${TOOLCHAIN[@]}" build --release -p dxview
+(cd crates/dxlauncher && CARGO_TARGET_DIR="$ROOT/target/dist-launcher" cargo "${TOOLCHAIN[@]}" build --release)
 
 APP="dist/DX RUST.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/dxview crates/dxlauncher/target/release/dxlauncher "$APP/Contents/MacOS/"
+cp target/dist-build/release/dxview target/dist-launcher/release/dxlauncher "$APP/Contents/MacOS/"
 sed "s/VERSION/$VERSION/g" tools/macos/Info.plist > "$APP/Contents/Info.plist"
 cp LICENSE README.md THIRD_PARTY.md "$APP/Contents/Resources/"
 # Relief maps for Remastered Lighting: see BUILD_RELEASE.bat. The game looks for them beside its executable.
