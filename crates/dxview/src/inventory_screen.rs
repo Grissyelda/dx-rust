@@ -53,8 +53,8 @@ pub fn open_bot(e: Entity, medic: bool) {
 /// HUDMedBot*Screen / HUDRechargeWindow.DestroyWindow: the bot lowers its arm and goes back to its orders.
 fn release_bot(npcs: &mut Query<&mut crate::ai::Npc>, e: Entity) {
     if let Ok(mut n) = npcs.get_mut(e) {
-        // (Transcended: an EMP-disabled bot stays down - FollowOrders only if EMPHitPoints > 0.)
-        if crate::transcended::fixes() && n.emp_hp <= 0.0 {
+        // (Optional Fixes: an EMP-disabled bot stays down - FollowOrders only if EMPHitPoints > 0.)
+        if crate::optfixes::fixes() && n.emp_hp <= 0.0 {
             return;
         }
         n.service_pause = 0.001;
@@ -1160,8 +1160,8 @@ pub fn inventory_screen_system(
     } else {
         None
     };
-    // Transcended: a bot's screen closes when the bot dies or is disabled (HUDMedBot*Screen.Tick PopWindow).
-    let bot_gone = crate::transcended::fixes()
+    // Optional Fixes: a bot's screen closes when the bot dies or is disabled (HUDMedBot*Screen.Tick PopWindow).
+    let bot_gone = crate::optfixes::fixes()
         && st.open
         && st.bot.is_some_and(|(e, _)| npcs.get(e).map_or(true, |n| n.state == crate::ai::NpcState::Dead || (n.hp_body.robot && n.emp_hp <= 0.0)));
     let mut toggle = (st.open && binds.keys.just_pressed(KeyCode::Escape) && !st.persona.modal())

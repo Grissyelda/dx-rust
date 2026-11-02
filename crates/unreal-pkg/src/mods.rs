@@ -23,12 +23,9 @@ pub enum ModKind {
     /// the Parallax Occlusion Mapping addon): read by dx-level's relief module for remastered lighting, never as
     /// colour textures.
     ReliefMaps,
-    /// A few files used in place of the game's while a setting asks for them (Confix: its conversation packages
-    /// only - DeusExConText / DeusExConAudio* / DeusExConversations - never its DeusEx.u).
+    /// A few files used in place of the game's while a setting asks for them (corrected conversation packages
+    /// only - DeusExConText / DeusExConAudio* / DeusExConversations - never a DeusEx.u).
     ConFiles,
-    /// Not read as packages at all: its fixes are ported to Rust by hand and the folder is only checked for
-    /// (Transcended).
-    Fixes,
 }
 
 /// The file-name prefixes a ConFiles mod supplies.
@@ -104,18 +101,11 @@ pub const MODS: &[ModDef] = &[
         help: "Normal and height maps (the Parallax Occlusion Mapping addon): choose its folder; used by Remastered Lighting",
     },
     ModDef {
-        id: "confix",
-        name: "Confix",
+        id: "confiles",
+        name: "Conversation Fixes",
         kind: ModKind::ConFiles,
         marker: "System/ConSys.u",
-        help: "Conversation fixes (Confix): choose its folder; switch them in Settings > Enhancements (Confix Fixes)",
-    },
-    ModDef {
-        id: "transcended",
-        name: "Transcended",
-        kind: ModKind::Fixes,
-        marker: "Mods/Transcended/System/DeusEx.u",
-        help: "Transcended's vanilla+ fixes are built in (Settings > Enhancements); its folder is only checked for",
+        help: "Corrected conversation files: choose their folder; used while Optional Fixes is on (Settings > Enhancements)",
     },
     ModDef {
         id: "gmdx",
@@ -207,8 +197,6 @@ fn hints(id: &str) -> &'static [&'static str] {
         "augmentique" => &["augmentique"],
         "precipitation" => &["precipitation", "gmdx"],
         "relief" => &["parallax", "relief", "pom"],
-        "confix" => &["confix"],
-        "transcended" => &["transcended"],
         "gmdx" => &["gmdx"],
         _ => &[],
     }

@@ -133,7 +133,7 @@ mod ragdoll;
 mod gore;
 mod bodyfx;
 mod healui;
-mod transcended;
+mod optfixes;
 mod alertui;
 mod hudfade;
 mod upscale;
@@ -682,9 +682,9 @@ fn main() {
         }
     }
     unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
-    unreal_pkg::paths::set_picks_on(settings::get("ConfixFixes") > 0.5);
+    unreal_pkg::paths::set_picks_on(settings::get("OptionalFixes") > 0.5);
     consys::warm_db(PathBuf::from(&root).join("System"));
-    dx_level::skincolor::TR_FIXES.store(crate::transcended::fixes(), std::sync::atomic::Ordering::Relaxed);
+    dx_level::skincolor::OPT_FIXES.store(crate::optfixes::fixes(), std::sync::atomic::Ordering::Relaxed);
     hdtp::apply_dds_filter();
     travel::init_lddp();
     hdtp::init(&PathBuf::from(&root));
@@ -1034,8 +1034,8 @@ fn main() {
                 bodyfx::glow_system.after(bodyfx::fp_body_system),
                 bodyfx::heal_label_system,
                 healui::heal_ui_system.before(weapons::weapon_system),
-                transcended::weapon_pointing_system.before(ai::npc_system),
-                transcended::unconscious_death_system.after(explosion::explosion_system),
+                optfixes::weapon_pointing_system.before(ai::npc_system),
+                optfixes::unconscious_death_system.after(explosion::explosion_system),
                 bodyfx::wounds_system.after(ai::npc_system),
             ),
         )

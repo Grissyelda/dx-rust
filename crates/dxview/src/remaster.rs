@@ -109,9 +109,8 @@ pub const PRESET: &[(&str, f32)] = &[
     ("DdsItems", 1.0),
     ("DdsWorld", 0.0),
     ("VisAttach", 1.0),
-    ("ConfixFixes", 1.0),
-    // Transcended's bug fixes (its bigger changes stay as the player set them).
-    ("TranscendedFixes", 1.0),
+    // The optional bug fixes (the bigger gameplay changes stay as the player set them).
+    ("OptionalFixes", 1.0),
 ];
 
 /// The visual mods' settings and the mod each needs.
@@ -123,7 +122,6 @@ const MOD_KEYS: &[(&str, &str)] = &[
     ("DdsItems", "helios"),
     ("DdsWorld", "helios"),
     ("VisAttach", "visibleattachments"),
-    ("ConfixFixes", "confix"),
 ];
 
 /// Keys that only exist with a mod installed (left alone without it).

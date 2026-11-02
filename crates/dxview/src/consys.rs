@@ -466,7 +466,7 @@ pub fn look_targets(out: &mut Vec<(usize, DVec3)>) {
 }
 
 /// The conversation database, parsed once per session (every map used to parse all of DeusExConText.u again:
-/// 100-180 ms on each arrival). Keyed by the file found (Confix's own when Confix Fixes is on).
+/// 100-180 ms on each arrival). Keyed by the file found (the corrected conversation files' own while Optional Fixes is on).
 /// Parses the conversations on a thread of their own at start-up (100-180 ms on the first map otherwise).
 pub fn warm_db(sys: PathBuf) {
     std::thread::spawn(move || {
@@ -1537,8 +1537,8 @@ impl ConState {
     /// DataLinkPlay.AbortAndSaveHistory: run the rest silently.
     fn abort_link_saving_history(&mut self, flags: &mut FlagBase) {
         self.abort_one_link(flags);
-        // Transcended: the queued infolinks' events run too (flags, triggers, transfers) instead of waiting.
-        if crate::transcended::fixes() {
+        // Optional Fixes: the queued infolinks' events run too (flags, triggers, transfers) instead of waiting.
+        if crate::optfixes::fixes() {
             let mut guard = 0;
             while self.link.is_some() && guard < 16 {
                 guard += 1;
@@ -2747,8 +2747,8 @@ pub fn consys_system(
         .map(|mut q| std::mem::take(&mut *q))
         .unwrap_or_default()
     {
-        // Transcended: no bark with the head under water (scuba divers excepted).
-        if crate::transcended::fixes() {
+        // Optional Fixes: no bark with the head under water (scuba divers excepted).
+        if crate::optfixes::fixes() {
             if let Some(a) = st.actors.get(&Who::Actor(b)) {
                 let head = a.pos + DVec3::Z * a.eye;
                 if !fold(&a.bind).contains("scuba") && crate::actors::water_at(lvl, head).is_some() {

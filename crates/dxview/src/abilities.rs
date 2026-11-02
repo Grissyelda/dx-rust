@@ -601,7 +601,7 @@ pub fn aug_defense_system(
     mut t: Local<(f32, f32)>,
 ) {
     let _prof = crate::prof::scope("abilities::aug_defense_system");
-    let tr = crate::transcended::fixes();
+    let tr = crate::optfixes::fixes();
     let Some(range) = aug("AugDefense") else {
         *t = (0.0, 0.0);
         set_defense_target(None);
@@ -631,7 +631,7 @@ pub fn aug_defense_system(
         {
             continue;
         }
-        // Transcended: not the rockets of pawns friendly to the player (allied bots), and only in sight
+        // Optional Fixes: not the rockets of pawns friendly to the player (allied bots), and only in sight
         // (FastTrace from the projectile to the player).
         if tr {
             let friendly = p.from.is_some_and(|b| npcs.iter().any(|n| n.blocker == b && !n.hates("Player")));

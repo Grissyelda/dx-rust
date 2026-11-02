@@ -12,8 +12,8 @@ static ADDONS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 /// High-resolution texture packs (mods::ModKind::HdTextures), used texture by texture while switched on.
 static HD_TEX: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 static HD_TEX_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-/// Mods used file by file (mods::ModKind::ConFiles: Confix): (folder, file-name prefixes, lower case). Their files
-/// win over the overlays and the game's while `PICKS_ON` (the ConfixFixes setting) is set.
+/// Mods used file by file (mods::ModKind::ConFiles: corrected conversation files): (folder, file-name prefixes, lower case). Their files
+/// win over the overlays and the game's while `PICKS_ON` (the OptionalFixes setting) is set.
 static PICKS: RwLock<Vec<(PathBuf, Vec<String>)>> = RwLock::new(Vec::new());
 static PICKS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

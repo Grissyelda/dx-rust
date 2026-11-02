@@ -131,19 +131,19 @@ pub fn apply(classes: &mut ClassDb, class: &str, props: &mut Vec<Property>) {
                 props.push(Property { name: name.clone(), index: *index, value: v.clone() });
             }
         }
-        if TR_FIXES.load(std::sync::atomic::Ordering::Relaxed) {
-            transcended(&c, skin, props);
+        if OPT_FIXES.load(std::sync::atomic::Ordering::Relaxed) {
+            optional_fixes(&c, skin, props);
         }
         return;
     }
 }
 
-/// Transcended's fixes to these switches (set by the game when its TranscendedFixes setting is on).
-pub static TR_FIXES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Optional fixes to these switches (set by the game when its OptionalFixes setting is on).
+pub static OPT_FIXES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// ChairLeather / CouchLeather gave every colour Tex1 (Tex2..Tex5 exist); CeilingFan's white and wood-plastic
 /// fans break into plastic, not wood.
-fn transcended(class: &str, skin: usize, props: &mut Vec<Property>) {
+fn optional_fixes(class: &str, skin: usize, props: &mut Vec<Property>) {
     if (class.eq_ignore_ascii_case("ChairLeather") || class.eq_ignore_ascii_case("CouchLeather")) && (1..=4).contains(&skin) {
         for p in props.iter_mut().filter(|p| p.name.eq_ignore_ascii_case("Skin")) {
             if let Value::Path(s) = &mut p.value {

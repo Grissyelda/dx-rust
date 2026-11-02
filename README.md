@@ -43,7 +43,6 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
     Settings;
   - **Visible Attachments** (scopes, lasers and silencers drawn on the weapons);
   - **Augmentique** (outfits for JC and the people of the world, and weapon skins);
-  - **Confix** (corrected conversations and speech);
   - **GMDX: Augmented Edition** (perks bought with skill points on the Skills screen, and its fixes and
     quality-of-life options);
   - **Helios** texture packs (repainted characters, items and world);
@@ -123,7 +122,7 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
    [HDTP](https://www.moddb.com/mods/project-hdtp),
    [New Vision](https://www.moddb.com/mods/deus-ex-new-vision),
    [Augmentique](https://www.moddb.com/mods/augmentique),
-   [GMDX](https://www.moddb.com/mods/gmdx) (Augmented Edition), [Confix](https://www.moddb.com/mods/confix),
+   [GMDX](https://www.moddb.com/mods/gmdx) (Augmented Edition),
    Visible Attachments, Helios and Precipitation.
 2. On the launcher's **Mods** page, click *Mod Assets Folder...* and choose the folder holding them all (each mod in
    its own folder inside it), or click a mod's own button and choose its folder. Right-click to turn one off again.

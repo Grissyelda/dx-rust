@@ -120,10 +120,10 @@ pub fn mission_system(
                 fl.set(f, FlagValue::Bool(v), 0);
             }
         }
-        // Confix's conversations without Lay D Denton: its Morpheus is LDDP's edited one unless LDDPOGMorpheus,
-        // and the vanilla M04PlayerLikesUNATCO (Confix's M04PaulBetrayal) waits for a flag nothing sets - both
-        // set here so the original's conversations play.
-        if crate::settings::get("ConfixFixes") > 0.5 && unreal_pkg::mods::active("confix").is_some() {
+        // Corrected conversation files without Lay D Denton: their Morpheus is LDDP's edited one unless
+        // LDDPOGMorpheus, and M04PlayerLikesUNATCO (their M04PaulBetrayal) waits for a flag nothing sets - both set
+        // here so the original's conversations play.
+        if crate::settings::get("OptionalFixes") > 0.5 && unreal_pkg::mods::active("confiles").is_some() {
             if !crate::travel::lddp() {
                 fl.set("LDDPOGMorpheus", FlagValue::Bool(true), 0);
             }

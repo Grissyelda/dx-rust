@@ -3820,8 +3820,8 @@ pub fn npc_system(
             }
         }
         // Animal.Wandering.Tick / FrightenedByPawn (startle_check).
-        // (Transcended: an EMP-disabled cleaner bot doesn't run - CleanerBot.FleeFromPawn needs EMPHitPoints > 0.)
-        let cleaner_dead = npc.cleaner && npc.emp_hp <= 0.0 && crate::transcended::fixes();
+        // (Optional Fixes: an EMP-disabled cleaner bot doesn't run - CleanerBot.FleeFromPawn needs EMPHitPoints > 0.)
+        let cleaner_dead = npc.cleaner && npc.emp_hp <= 0.0 && crate::optfixes::fixes();
         if npc.flee_big && !cleaner_dead && !stunned_now && matches!(npc.state, NpcState::Idle | NpcState::Seeking) {
             let player_move = (!ph.dead).then_some((player_center, player.body.velocity));
             startle_check(npc, lvl, &me, pawns, player_move, dt);
@@ -4229,8 +4229,8 @@ pub fn npc_system(
         if !running {
             params.ground_speed *= npc.walk_frac;
         }
-        // Transcended (setting TrNpcLimp): people (not animals or robots) limp on a crippled leg.
-        if crate::transcended::npc_limp() && !npc.animal && !npc.hp_body.robot {
+        // Optional (setting NpcLimp): people (not animals or robots) limp on a crippled leg.
+        if crate::optfixes::npc_limp() && !npc.animal && !npc.hp_body.robot {
             let legs = npc.hp_body.parts[4..6].iter().filter(|&&h| h < 1.0).count();
             params.ground_speed *= [1.0, 0.85, 0.7][legs];
         }
@@ -4402,8 +4402,8 @@ pub fn npc_system(
             }
             continue;
         }
-        // Transcended: Jaime and the WIB have no *2H sequences (JaimeReyes / WIB.HasTwoHandedWeapon False).
-        let two = npc.two_handed() && !crate::transcended::no_two_handed(&level.0.actors[npc.actor].class);
+        // Optional Fixes: Jaime and the WIB have no *2H sequences (JaimeReyes / WIB.HasTwoHandedWeapon False).
+        let two = npc.two_handed() && !crate::optfixes::no_two_handed(&level.0.actors[npc.actor].class);
         let melee_w = npc.weapon.as_ref().map_or(false, |w| w.hand_to_hand);
         // Pawns run normally with a knife (PlayRunningAndFiring with bHandToHand).
         let firing = firing && !(melee_w && speed > 20.0);
@@ -4947,11 +4947,11 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
         npc.orders_failed = false;
     } else if npc.should_flee()
         || (npc.weapon.is_none() && !npc.arsenal.is_empty())
-        || npc.should_drop_weapon() && npc.weapon.is_some() && !crate::transcended::never_drops_weapon(&cx.lvl.actors[npc.actor].class)
+        || npc.should_drop_weapon() && npc.weapon.is_some() && !crate::optfixes::never_drops_weapon(&cx.lvl.actors[npc.actor].class)
     {
         // HandleEnemy: drop the gun if an arm is gone (ShouldDropWeapon), then run if badly hurt
         // (bCriticalDamage) or out of ammo.
-        if npc.should_drop_weapon() && !crate::transcended::never_drops_weapon(&cx.lvl.actors[npc.actor].class) {
+        if npc.should_drop_weapon() && !crate::optfixes::never_drops_weapon(&cx.lvl.actors[npc.actor].class) {
             if let Some(w) = npc.weapon.take() {
                 weapon_drops.0.push((
                     w.class.clone(),
@@ -5739,10 +5739,10 @@ impl Senses<'_> {
     fn valid_enemy(&self, npc: &Npc, t: Target) -> bool {
         match t {
             Target::Player => !self.player_dead && npc.hates("Player"),
-            // Transcended: an EMP-disabled robot is never taken as an enemy (SetEnemy / CheckCycle).
+            // Optional Fixes: an EMP-disabled robot is never taken as an enemy (SetEnemy / CheckCycle).
             Target::Pawn(b) => {
                 b != npc.blocker
-                    && self.snap_of(b).is_some_and(|p| !p.dead && !(p.disabled && crate::transcended::fixes()))
+                    && self.snap_of(b).is_some_and(|p| !p.dead && !(p.disabled && crate::optfixes::fixes()))
                     && self.hostile(npc, t)
             }
         }
@@ -6095,9 +6095,9 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
     // Animals can't be knocked out: a baton or tranquilizer dart kills them. In water nobody is
     // only unconscious (DeusExCarcass: "you will die in water every time").
     let in_water = crate::actors::water_at(lvl, me_center_of(&blockers, npc.blocker)).is_some();
-    // Transcended: dying while on fire is burning to death, not falling unconscious (Died: ExtinguishFire, bStunned
+    // Optional Fixes: dying while on fire is burning to death, not falling unconscious (Died: ExtinguishFire, bStunned
     // cleared).
-    let burning = npc.on_fire.is_some() && crate::transcended::fixes();
+    let burning = npc.on_fire.is_some() && crate::optfixes::fixes();
     let knocked_out = knocked_out && !npc.animal && !in_water && !burning;
     if in_water && !npc.hp_body.robot {
         if let Some(Value::Path(c)) = find(&lvl.actors[npc.actor].props, "CarcassType") {

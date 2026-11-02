@@ -211,8 +211,8 @@ pub fn grenade_system(
     ph: Res<crate::ai::PlayerHealth>,
 ) {
     let _prof = crate::prof::scope("grenades::grenade_system");
-    // Transcended (setting TrRadarCloak): placed mines miss a radar-cloaked player (Radar Transparency or camo).
-    let radar_cloaked = crate::transcended::radar_cloak() && (ph.camo || crate::abilities::aug("AugRadarTrans").is_some());
+    // Optional (setting RadarCloak): placed mines miss a radar-cloaked player (Radar Transparency or camo).
+    let radar_cloaked = crate::optfixes::radar_cloak() && (ph.camo || crate::abilities::aug("AugRadarTrans").is_some());
     let lvl = &level.0;
     // New grenades.
     for (class, pos, dir, from, wall) in throws.0.drain(..) {

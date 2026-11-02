@@ -379,9 +379,9 @@ pub fn deco_damage_system(
         ) {
             continue;
         }
-        // Transcended: the riot prod's 'Stunned' doesn't break crates (except explosive ones). (Its own list
+        // Optional Fixes: the riot prod's 'Stunned' doesn't break crates (except explosive ones). (Its own list
         // drops 'Shocked', a slip in the mod; it stays ignored here.)
-        if hit.damage_type == "Stunned" && crate::transcended::fixes() && !flag(p, "bExplosive") {
+        if hit.damage_type == "Stunned" && crate::optfixes::fixes() && !flag(p, "bExplosive") {
             continue;
         }
         let max = fv(p, "HitPoints", 20.0).max(1.0);
@@ -994,8 +994,8 @@ pub fn flare_system(
     if *seed == 0 {
         *seed = 0xF1A2E;
     }
-    // Transcended (setting TrLongFlares): a flare burns 360 s.
-    let burn = if crate::transcended::long_flares() { 360.0 } else { 30.0 };
+    // Optional (setting LongFlares): a flare burns 360 s.
+    let burn = if crate::optfixes::long_flares() { 360.0 } else { 30.0 };
     for (pos, vel) in throws.0.drain(..) {
         let d = assets.classes.defaults("Flare");
         let Some(mesh) = path(&d, "Mesh") else {

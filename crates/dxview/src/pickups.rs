@@ -524,9 +524,9 @@ pub fn frob_system(
                 hud.time_left = 2.0;
                 return;
             }
-            // Transcended (setting TrNoisyObjects): a door with sounds makes a noise when used.
+            // Optional (setting NoisyObjects): a door with sounds makes a noise when used.
             if unreal_pkg::props::find(&level.actors[level.movers[idx].actor].props, "OpeningSound").is_some() {
-                crate::transcended::object_noise(mv.rt[idx].location, 128.0);
+                crate::optfixes::object_noise(mv.rt[idx].location, 128.0);
             }
             if let Some(msg) =
                 movers::frob(level, &mut mv, idx, player.body.location, player.unlock_all)

@@ -373,7 +373,7 @@ pub fn achievements_system(
     if fl("SimonsInterrogating3_Played") {
         unlock("sawnothing");
     }
-    // (Confix renames Everett's Ray conversation to AJumper2xMechanic.)
+    // (The corrected conversation files rename Everett's Ray conversation to AJumper2xMechanic.)
     if fl("TalkAboutRay_Played") || fl("AJumper21Mechanic_Played") || fl("AJumper22Mechanic_Played") || fl("AJumper23Mechanic_Played") {
         unlock("dibbuk");
     }

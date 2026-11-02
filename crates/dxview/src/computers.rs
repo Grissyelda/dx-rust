@@ -1010,9 +1010,9 @@ impl Term {
         let (a, p) = (acct.get().to_uppercase(), pin.get().to_uppercase());
         let d = self.d(wx);
         // ProcessLogin left userIndex at 0 for an unknown account, so account 0's PIN logged in with any number;
-        // Transcended starts it at -1.
+        // Optional Fixes start it at -1.
         let found = d.accounts.iter().position(|x| x.number.to_uppercase() == a);
-        let idx = if crate::transcended::fixes() { found.unwrap_or(usize::MAX) } else { found.unwrap_or(0) };
+        let idx = if crate::optfixes::fixes() { found.unwrap_or(usize::MAX) } else { found.unwrap_or(0) };
         let ok = d.accounts.get(idx).is_some_and(|x| x.pin.to_uppercase() == p);
         if ok {
             self.user = String::new();
@@ -1913,8 +1913,8 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
             let n = if i == 3 { 4 } else { 2 };
             // ButtonActivated / ButtonActivatedRight both cycle to the next value first (the subclasses call
             // Super.ButtonActivated either way), then act.
-            // Transcended: the turret choice's right click (ButtonActivatedRight) steps back.
-            s.values[i] = if right && i == 3 && crate::transcended::fixes() { (s.values[i] + n - 1) % n } else { (s.values[i] + 1) % n };
+            // Optional Fixes: the turret choice's right click (ButtonActivatedRight) steps back.
+            s.values[i] = if right && i == 3 && crate::optfixes::fixes() { (s.values[i] + n - 1) % n } else { (s.values[i] + 1) % n };
             let v = wx.data.get(&actor).unwrap().views[s.sel].clone();
             match i {
                 0 => {

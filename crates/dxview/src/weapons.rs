@@ -138,8 +138,8 @@ pub fn apply_mods(w: &mut WeaponStats, m: &ModState) {
         w.reload_count += diff * steps;
     }
     w.accurate_range += w.accurate_range * m.range;
-    // Transcended: the range mod also raises MaxRange (the longest shots were still cut short at it).
-    if crate::transcended::fixes() {
+    // Optional Fixes: the range mod also raises MaxRange (the longest shots were still cut short at it).
+    if crate::optfixes::fixes() {
         w.max_range += w.max_range * m.range;
     }
     w.reload_time = (w.reload_time + w.reload_time * m.reload).max(0.0);
@@ -2899,8 +2899,8 @@ pub fn weapon_system(
         h.flame_shots = 0;
     }
 
-    // Transcended: a conversation turns the laser off (a stray dot stayed on the speakers).
-    if h.lasing && crate::transcended::fixes() && crate::consys::third_person() {
+    // Optional Fixes: a conversation turns the laser off (a stray dot stayed on the speakers).
+    if h.lasing && crate::optfixes::fixes() && crate::consys::third_person() {
         h.lasing = false;
     }
     // ToggleLaser (']'): only with a laser mod fitted.

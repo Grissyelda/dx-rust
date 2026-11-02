@@ -50,18 +50,16 @@
 - Linux: starting in fullscreen no longer crashes when the window opens before the monitor is known (it opens
   windowed and switches to fullscreen a moment later).
 
-### Mods folder, Confix and Transcended, healing by body part (November 2)
+### Mods folder, optional fixes, healing by body part (November 2)
 - One folder for all your mods: on the launcher's Mods page, Mod Assets Folder... takes a folder holding each mod in
   its own folder (Lay D Denton, HDTP, New Vision, Helios, the Parallax Occlusion addon, Augmentique, Visible
-  Attachments, GMDX: Augmented Edition (and its Precipitation), Confix and Transcended) and sets them all up.
-- Confix support: with Confix installed, Confix Conversation Fixes (Settings > Enhancements, on in Modern) uses its
-  corrected conversations and speech - typos, wrong flags, broken item transfers and missing lines fixed.
-- Transcended Fixes (Fixes, on in Modern): bugs fixed the way the Transcended mod fixes them - misnamed mission flags
+  Attachments, GMDX: Augmented Edition and its Precipitation) and sets them all up.
+- Optional Fixes (Fixes, on in Modern): misnamed mission flags
   (the Hong Kong ROM, the ship breach, the Vandenberg hazlab troops, Aimee's goal, the Karkian tank, Jock in Area 51),
   the ATM accepting any account number with the first account's PIN, EMP'd robots still attacked, bot screens
   staying open after the bot is destroyed, the laser left on in conversations, the riot prod breaking crates, people
   set alight dying "unconscious", barks under water, leather chair and couch colours, and more.
-- Transcended's bigger changes as separate options (all off): Unconscious Bodies Can Die, Using Things Makes Noise,
+- Bigger changes as separate options (all off): Unconscious Bodies Can Die, Using Things Makes Noise,
   People Mind A Pointed Gun, Thermoptic Camo Fools Machines, Wounded Legs Slow People, Stronger Gunther And Simons,
   Long-Burning Flares.
 - Diegetic Healing: with a medkit in hand, hold Alt (controller: LT) to bring up your body; move the little medkit
