@@ -848,6 +848,9 @@ impl Enhance {
             c.key = "Upscaling".into();
             c.label = "Upscaling".into();
             c.help = "Native AA smooths edges with temporal antialiasing at full resolution. Quality, Balanced, Performance and Ultra Performance draw the world at 1/1.5, 1/1.7, 1/2 or 1/3 the window's size and upscale it with an edge-aware filter (AMD FSR 1) and sharpening - more frames on slower graphics cards. The weapon, HUD and menus always stay at full resolution.".into();
+            if cfg!(target_os = "macos") {
+                c.help.push_str(" On a Mac there is no temporal antialiasing: Native AA only sharpens.");
+            }
             c.kind = ChoiceKind::Enum(crate::upscale::NAMES.iter().map(|s| s.to_string()).collect());
             c.value = crate::settings::get("Upscaling");
             c.saved = c.value;

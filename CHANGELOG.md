@@ -8,6 +8,8 @@
   `download_depot` command writes, and in the usual folders.
 - An app bundle keeps settings and saves in Application Support.
 - The mouse is released when the game loses focus, and the window keeps its size on a Retina display.
+- Upscaling works without temporal antialiasing on macOS, because Metal can't draw the skeletal bodies with its
+  motion vectors. Native AA only sharpens there.
 
 ### Upscaling, shadows, grass and trees (November 2)
 - Upscaling (Settings > Enhancements > Display): Off, Native AA (temporal antialiasing at full resolution plus a light

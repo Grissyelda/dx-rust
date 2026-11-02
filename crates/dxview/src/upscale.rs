@@ -10,6 +10,11 @@
 //!   licence - see THIRD_PARTY.md), then RCAS sharpens it (Bevy's ContrastAdaptiveSharpening is RCAS). The view
 //!   model, the heat view, the HUD and every screen stay at the window's own resolution.
 //!
+//! macOS has no TAA. Its motion-vector prepass makes a skeletal body with morph targets need more buffers in the vertex
+//! stage than wgpu's Metal backend allows (16): the pipeline fails and Bevy quits the game. The prepass can't be taken
+//! off a running camera safely, and Skeletal Characters can change in play (the Classic / Modern switch), so TAA stays
+//! off there. Native AA is its sharpen alone, and the upscaled modes are EASU and RCAS without the temporal blend.
+//!
 //! The world camera keeps the window's logical size (its image's scale factor is divided by the same ratio), so
 //! world_to_viewport / viewport_to_world on it still speak window coordinates.
 
@@ -142,7 +147,7 @@ pub fn upscale_system(
         if std::mem::discriminant(&cam.output_mode) != std::mem::discriminant(&out) {
             cam.output_mode = out;
         }
-        let taa = m >= 1;
+        let taa = m >= 1 && !cfg!(target_os = "macos");
         if taa && !has_taa {
             commands.entity(e).insert((TemporalAntiAliasing::default(), Msaa::Off));
         } else if !taa && has_taa {

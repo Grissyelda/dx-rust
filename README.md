@@ -135,7 +135,8 @@ Settings and saves are in `~/Library/Application Support/DX RUST`. Resolutions a
 Retina display draws twice as many pixels in each direction. On the heaviest street map an M2 Max holds 60 fps in
 Classic at 3840x2160 pixels and in Modern at 2560x1440 pixels (a 1280x720 window on Retina), so choose a smaller size
 for Modern if the frame rate is low. macOS uses some function keys itself: turn on *Use F1, F2, etc. keys as standard function keys* in System Settings, or bind
-the augmentations to other keys. gilrs has no rumble on macOS, so only a DualSense rumbles there (it uses HID).
+the augmentations to other keys. gilrs has no rumble on macOS, so only a DualSense rumbles there (it uses HID). Upscaling has no
+temporal antialiasing on macOS, so *Native AA* only sharpens there.
 
 ### Mods (optional)
 1. Download the mods you want and unzip each one into its own folder:
