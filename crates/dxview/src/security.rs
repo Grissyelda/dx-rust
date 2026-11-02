@@ -716,7 +716,8 @@ pub fn security_system(
     let me = player.body.location;
     let me_h = player.params.height;
     let detectable = !ph.dead && !player.noclip && !crate::consys::third_person();
-    let radar_trans = crate::abilities::aug("AugRadarTrans").is_some();
+    // (Transcended, setting TrRadarCloak: Thermoptic camo also counts - bRadarCloaked.)
+    let radar_trans = crate::abilities::aug("AugRadarTrans").is_some() || (ph.camo && crate::transcended::radar_cloak());
     let player_cyl = Cylinder { center: me, radius: player.params.radius, height: me_h, actor: usize::MAX };
     let player_yaw = {
         let f = cam.forward().as_vec3();
@@ -1189,7 +1190,7 @@ pub fn security_system(
                 // player) beeps and triggers Event.
                 if Some(who) != l.last_hit {
                     let relevant = match who {
-                        Broke::Player => !ph.camo,
+                        Broke::Player => !(ph.camo || (crate::transcended::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
                         Broke::Blocker(b) => {
                             let a = &lvl.actors[blockers.list[b].actor];
                             let pawn = find(&a.props, "GroundSpeed").is_some();
@@ -1215,7 +1216,7 @@ pub fn security_system(
                 }
             } else if !l.no_alarm && hit_now.is_some() && hit_now != l.last_hit {
                 let relevant = match hit_now.unwrap() {
-                    Broke::Player => !ph.camo,
+                    Broke::Player => !(ph.camo || (crate::transcended::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
                     Broke::Blocker(b) => {
                         let a = &lvl.actors[blockers.list[b].actor];
                         let pawn = find(&a.props, "GroundSpeed").is_some();

@@ -533,7 +533,10 @@ fn m02_timer(c: &mut Ctx, map: &str) {
                     c.set("MS_DL_Played", true, 3);
                 }
             }
-            if !c.b("ShantyTownSecure") && c.count("Terrorist", Some("ShantyTerrorists")) == 0 {
+            // Transcended: the map's terrorists are tagged ShantyTerrorist; the script only counted the misspelt tag.
+            let shanty = c.count("Terrorist", Some("ShantyTerrorists"))
+                + if crate::transcended::fixes() { c.count("Terrorist", Some("ShantyTerrorist")) } else { 0 };
+            if !c.b("ShantyTownSecure") && shanty == 0 {
                 c.setd("ShantyTownSecure", true);
             }
         }
@@ -928,7 +931,9 @@ fn m06_first(c: &mut Ctx, map: &str) {
             }
         }
         "06_HONGKONG_WANCHAI_CANAL" => {
-            if !c.b("Supervisor01_Dead") && c.b("HaveROM") {
+            // Transcended: the flag is Have_ROM ("HaveROM" is never set, so this never ran).
+            let rom = c.b("HaveROM") || (crate::transcended::fixes() && c.b("Have_ROM"));
+            if !c.b("Supervisor01_Dead") && rom {
                 c.hide(ActorSel::class_tag("DeusExCarcass", "John_Smith_Body"), false);
             }
         }
@@ -1269,7 +1274,8 @@ fn m08_timer(c: &mut Ctx, map: &str) {
 fn m09_first(c: &mut Ctx, map: &str) {
     match map {
         "09_NYC_SHIP" => {
-            if c.b("ShipBreech") {
+            // Transcended: the flag set on the breach is MS_ShipBreeched ("ShipBreech" is never set).
+            if c.b("ShipBreech") || (crate::transcended::fixes() && c.b("MS_ShipBreeched")) {
                 for t in ["SewerGrate", "FrontDoor"] {
                     for i in c.mover_ids(t) {
                         let info = &c.lvl.movers[i];
@@ -1410,6 +1416,11 @@ fn m10_timer(c: &mut Ctx, map: &str) {
             if !c.b("SewerGreaselsDead") && c.count("Greasel", Some("SewerGreasel")) == 0 {
                 c.set("SewerGreaselsDead", true, 11);
             }
+            // Transcended: Aimee's goal is completed if she dies (else it stays open forever).
+            if crate::transcended::fixes() && !c.b("MS_AimeeDead") && !c.pawns.iter().any(|p| p.bind.eq_ignore_ascii_case("aimee")) {
+                c.goal("KillGreasels");
+                c.set("MS_AimeeDead", true, 11);
+            }
             if !c.b("defoequestcomplete") && c.count("ScriptedPawn", Some("mj12metroguards")) == 0 {
                 c.set("defoequestcomplete", true, 11);
             }
@@ -1547,8 +1558,16 @@ fn m12_timer(c: &mut Ctx, map: &str) {
                     _ => {}
                 }
             }
+            // Transcended: the map put these names in BindName, not Tag.
+            let by_bind = |c: &Ctx| {
+                c.pawns.iter().filter(|p| {
+                    crate::classtree::is_a(&p.class, "MJ12Troop")
+                        && (p.bind.eq_ignore_ascii_case("MJ12_hazlab_troop1") || p.bind.eq_ignore_ascii_case("MJ12_hazlab_troop2"))
+                }).count()
+            };
+            let hazlab = if crate::transcended::fixes() { by_bind(c) } else { 0 };
             if !c.b("CapturedScientistRescued")
-                && c.count("MJ12Troop", Some("MJ12_hazlab_troop1")) + c.count("MJ12Troop", Some("MJ12_hazlab_troop2")) == 0
+                && c.count("MJ12Troop", Some("MJ12_hazlab_troop1")) + c.count("MJ12Troop", Some("MJ12_hazlab_troop2")) + hazlab == 0
             {
                 c.set("CapturedScientistRescued", true, 14);
             }
@@ -1590,6 +1609,11 @@ fn m14_first(c: &mut Ctx, map: &str) {
 fn m14_timer(c: &mut Ctx, map: &str) {
     match map {
         "14_VANDENBERG_SUB" => {
+            // Transcended: the conversations check the misspelt TankKharkian_Dead.
+            if crate::transcended::fixes() && !c.b("MS_TankKarkian") && c.b("TankKarkian_Dead") {
+                c.set("TankKharkian_Dead", true, 15);
+                c.set("MS_TankKarkian", true, 15);
+            }
             if !c.b("MS_DestroySub") && c.b("DL_downloaded_Played") {
                 c.destroy_actors(ActorSel::class_tag("MiniSub", "MiniSub2"));
                 c.destroy_actors(ActorSel::tag("welding_stuff"));
@@ -1646,7 +1670,9 @@ const UC_SPAWNS: [(&str, &str, &str, &str); 12] = [
 ];
 
 fn m15_first(c: &mut Ctx, map: &str) {
-    if map == "15_AREA51_BUNKER" && !c.b("Ray_dead") {
+    // Transcended: if Everett's mechanic dealt with the bomb, Jock doesn't still die.
+    let spared = crate::transcended::fixes() && c.b("EverettMechanicComment");
+    if map == "15_AREA51_BUNKER" && !c.b("Ray_dead") && !spared {
         c.vehicle(ActorSel::class_tag("BlackHelicopter", "heli_sabotaged"), true);
         c.vehicle(ActorSel::class_tag("BlackHelicopter", "UN_BlackHeli"), false);
         c.trigger("InterpolateTrigger");

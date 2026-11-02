@@ -84,6 +84,8 @@ enum Wid {
     Res,
     /// The main page's Mods... row.
     Mod,
+    /// The Mods page's Mod Assets Folder... row (one folder holding every mod).
+    Assets,
     Play,
     Quit,
     Save,
@@ -95,8 +97,8 @@ enum Wid {
     Next,
 }
 
-/// Mods shown per page (the window's five rows).
-const MODS_PER_PAGE: usize = 5;
+/// Mods shown per page (the window's five rows, the first being the Mod Assets folder).
+const MODS_PER_PAGE: usize = 4;
 
 type Rect = (i32, i32, i32, i32);
 
@@ -108,6 +110,9 @@ struct Launcher {
     game: String,
     /// Each supported mod's folder and whether it's on (unreal_pkg::mods; launcher.txt Mod.<id> / ModOn.<id>).
     mods: Vec<unreal_pkg::mods::ModSetting>,
+    /// One folder holding every mod in its own folder (launcher.txt ModAssets=), and how many mods it held.
+    assets: String,
+    assets_found: usize,
     /// None = the main page, Some(n) = page n of the Mods page.
     mods_page: Option<usize>,
     mode: usize,
@@ -145,8 +150,17 @@ impl Launcher {
         let mode = get("DisplayMode").map(|v| v.round() as usize).unwrap_or(1).min(2);
         let res = get("Resolution").filter(|v| *v >= 0.0).map(|v| v as usize).unwrap_or(10).min(RESOLUTIONS.len() - 1);
         let mods = unreal_pkg::mods::from_lines(&lk);
+        let mut assets = lk.iter().find(|(k, _)| k == "ModAssets").map(|(_, v)| v.clone()).unwrap_or_default();
+        // A MOD ASSETS folder beside the launcher (or a few folders up) is offered when no mods are set up yet.
+        if assets.is_empty() && mods.is_empty() {
+            if let Some(p) = unreal_pkg::mods::find_assets_near(&dir) {
+                assets = p.display().to_string();
+            }
+        }
         let mut l = Launcher {
             mods,
+            assets: String::new(),
+            assets_found: 0,
             mods_page: std::env::var("DXL_MODS_PAGE").ok().and_then(|v| v.parse().ok()),
             cur: game.chars().count(),
             game,
@@ -165,7 +179,31 @@ impl Launcher {
             found: Default::default(),
         };
         l.try_art();
+        if !assets.is_empty() {
+            l.apply_assets(&assets, false);
+        }
         l
+    }
+
+    /// Use one folder holding every mod: each mod found in it is set up and on (`replace`: mods set up from other
+    /// folders move to this one; else only the ones not set up yet are added).
+    fn apply_assets(&mut self, dir: &str, replace: bool) {
+        let found = unreal_pkg::mods::scan(Path::new(dir));
+        self.assets = dir.to_string();
+        self.assets_found = found.len();
+        for (m, p) in &found {
+            if replace || !self.mods.iter().any(|s| s.id == m.id) {
+                self.mods.retain(|s| s.id != m.id);
+                self.mods.push(unreal_pkg::mods::ModSetting { id: m.id, path: p.display().to_string(), on: true });
+            }
+        }
+        if replace {
+            self.status = if found.is_empty() {
+                "No supported mods found in that folder (each mod should be in its own folder inside it).".into()
+            } else {
+                format!("Found {}: {}", found.len(), found.iter().map(|(m, _)| m.name).collect::<Vec<_>>().join(", "))
+            };
+        }
     }
 
     /// Load the menu art once the folder is a Deus Ex install.
@@ -187,9 +225,12 @@ impl Launcher {
         let mut lk = vec![("GamePath".to_string(), self.game.clone())];
         // Keep lines the launcher doesn't edit (DiscordAppId and the like).
         for (k, v) in read_kv(&dir.join("launcher.txt")) {
-            if k != "GamePath" && k != "LDDPPath" && k != "ModPath" && !k.starts_with("Mod.") && !k.starts_with("ModOn.") {
+            if k != "GamePath" && k != "LDDPPath" && k != "ModPath" && k != "ModAssets" && !k.starts_with("Mod.") && !k.starts_with("ModOn.") {
                 lk.push((k, v));
             }
+        }
+        if !self.assets.is_empty() {
+            lk.push(("ModAssets".to_string(), self.assets.clone()));
         }
         lk.extend(unreal_pkg::mods::to_lines(&self.mods));
         if let Err(e) = write_kv(&dir.join("launcher.txt"), "DX RUST launcher", &lk) {
@@ -316,6 +357,7 @@ impl Launcher {
             Some(Wid::Mode) => "Change how the game's window is shown",
             Some(Wid::Res) => "Change the video resolution",
             Some(Wid::Mod) => "Choose the mods to play with (Lay D Denton, HDTP, New Vision and others)",
+            Some(Wid::Assets) => "Choose one folder holding all your mods, each in its own folder (right click forgets it)",
             Some(Wid::ModPick(i)) => unreal_pkg::mods::MODS[i].help,
             Some(Wid::ModToggle(_)) => "Turn this mod on or off (right click on its name forgets the folder)",
             Some(Wid::Back) => "Back to the launcher",
@@ -374,6 +416,13 @@ impl Launcher {
         let page = self.mods_page;
         let n_mods = unreal_pkg::mods::MODS.len();
         let pages = n_mods.div_ceil(MODS_PER_PAGE).max(1);
+        let assets_label = if self.assets.is_empty() {
+            "None".to_string()
+        } else if self.assets_found == 0 {
+            "Not Found".to_string()
+        } else {
+            format!("{} Found", self.assets_found)
+        };
         let mod_rows: Vec<(usize, String)> = match page {
             Some(p) => (p * MODS_PER_PAGE..((p + 1) * MODS_PER_PAGE).min(n_mods)).map(|i| (i, self.mod_label(i))).collect(),
             None => Vec::new(),
@@ -471,10 +520,17 @@ impl Launcher {
                 hits.push((Wid::Mod, (cx + ROW_X, row_y(4), INFO_X + INFO_W, 19), true));
             }
         } else {
-            // The Mods page: one row per mod - its folder button and On / Off.
+            // The Mods page: the Mod Assets folder, then one row per mod - its folder button and On / Off.
+            {
+                let y = row_y(0);
+                action_button(&mut c, a, cx + ROW_X, y, LABEL_W, "Mod Assets Folder...", stof(Wid::Assets));
+                hits.push((Wid::Assets, (cx + ROW_X, y, LABEL_W, 19), true));
+                let vcol = if assets_label == "Not Found" { [255, 0, 0] } else { a.btn(0) };
+                info_button(&mut c, a, cx + ROW_X + INFO_X, y, INFO_W, &assets_label, vcol);
+            }
             for (row, (i, label)) in mod_rows.iter().enumerate() {
                 let m = &unreal_pkg::mods::MODS[*i];
-                let y = row_y(row as i32);
+                let y = row_y(row as i32 + 1);
                 action_button(&mut c, a, cx + ROW_X, y, LABEL_W, &format!("{}...", m.name), stof(Wid::ModPick(*i)));
                 hits.push((Wid::ModPick(*i), (cx + ROW_X, y, LABEL_W, 19), true));
                 let vcol = match label.as_str() {
@@ -557,6 +613,15 @@ impl Launcher {
             Wid::Res => self.res = (self.res + if back { RESOLUTIONS.len() - 1 } else { 1 }) % RESOLUTIONS.len(),
             Wid::Mod => self.mods_page = Some(0),
             Wid::Back => self.mods_page = None,
+            Wid::Assets if back => {
+                self.assets.clear();
+                self.assets_found = 0;
+            }
+            Wid::Assets => {
+                if let Some(p) = rfd::FileDialog::new().set_title("The folder holding your mods").pick_folder() {
+                    self.apply_assets(&p.display().to_string(), true);
+                }
+            }
             Wid::Next => self.mods_page = self.mods_page.map(|p| p + 1),
             Wid::Prev => self.mods_page = self.mods_page.map(|p| p.saturating_sub(1)),
             Wid::ModPick(i) if back => {

@@ -70,6 +70,7 @@ impl Plugin for RagdollPlugin {
             .init_resource::<RagWorld>()
             .add_systems(Update, (player_body_system.before(start_system), start_system.after(crate::skeletal::pose_system)))
             .add_systems(PostUpdate, drive_system.before(bevy::transform::TransformSystems::Propagate))
+            .add_systems(Update, follow_movers_system)
             .add_systems(First, pause_system);
         // Avian puts dozens of small systems in FixedPostUpdate. Handed out one by one to worker threads they cost
         // close to a millisecond a frame in scheduling alone, idle or not; run in order on one thread they're
@@ -177,7 +178,13 @@ pub struct RagWorld {
     tris: HashMap<(i32, i32, i32), Vec<[Vec3; 3]>>,
     built: bool,
     spawned: HashMap<(i32, i32, i32), Entity>,
+    /// Decorations (by blocker) and mover pieces (by mesh entity) given a collider already.
+    extra: std::collections::HashSet<(u8, u64)>,
 }
+
+/// A collider that copies a mover piece's place each frame (doors swing; the ragdoll mustn't fall through one).
+#[derive(Component)]
+pub struct RagMover(pub Entity);
 
 fn cell_of(p: Vec3) -> (i32, i32, i32) {
     ((p.x / CELL).floor() as i32, (p.y / CELL).floor() as i32, (p.z / CELL).floor() as i32)
@@ -262,6 +269,11 @@ pub fn start_system(
     gts: Query<&GlobalTransform>,
     tfs: Query<&Transform>,
     mut map_gen: Local<u64>,
+    blockers: Res<crate::actors::Blockers>,
+    movers: Option<Res<crate::movers::Movers>>,
+    kids: Query<&Children>,
+    mover_meshes: Query<(&Mesh3d, &GlobalTransform)>,
+    mesh_assets: Res<Assets<Mesh>>,
 ) {
     if crate::loader::new_map(&mut map_gen) {
         *world = RagWorld { generation: *map_gen, ..default() };
@@ -328,7 +340,49 @@ pub fn start_system(
             })
             .min_by(|x, y| x.1.total_cmp(&y.1))
             .map_or(1, |x| x.0);
-        world.ensure(&mut commands, segs[0].0, 3.0);
+        world.ensure(&mut commands, segs[0].0, 6.0);
+        // Things in the world besides the map: decorations (their collision cylinders) and movers (doors, lifts:
+        // their pieces' meshes, following them as they move).
+        let c0 = segs[0].0;
+        for (bi, c) in blockers.list.iter().enumerate() {
+            if c.radius <= 2.0 || !blockers.deco.contains_key(&bi) || world.extra.contains(&(0, bi as u64)) {
+                continue;
+            }
+            let at = Vec3::from(dx_level::ue_to_bevy([c.center.x as f32, c.center.y as f32, c.center.z as f32]));
+            if at.distance(c0) > 6.0 {
+                continue;
+            }
+            world.extra.insert((0, bi as u64));
+            let m = dx_level::METERS_PER_UNIT;
+            commands.spawn((
+                RigidBody::Static,
+                Collider::cylinder(c.radius as f32 * m, c.height as f32 * 2.0 * m),
+                CollisionLayers::new(LAYER_WORLD, LAYER_RAG),
+                Friction::new(0.9),
+                Transform::from_translation(at),
+            ));
+        }
+        if let Some(mv) = movers.as_ref() {
+            for root in &mv.entities {
+                let Ok(ch) = kids.get(*root) else { continue };
+                for c in ch.iter() {
+                    let Ok((mh, gt)) = mover_meshes.get(c) else { continue };
+                    if world.extra.contains(&(1, c.to_bits())) || gt.translation().distance(c0) > 12.0 {
+                        continue;
+                    }
+                    let Some(col) = mesh_assets.get(&mh.0).and_then(mesh_trimesh) else { continue };
+                    world.extra.insert((1, c.to_bits()));
+                    commands.spawn((
+                        RigidBody::Kinematic,
+                        col,
+                        CollisionLayers::new(LAYER_WORLD, LAYER_RAG),
+                        Friction::new(0.9),
+                        gt.compute_transform(),
+                        RagMover(c),
+                    ));
+                }
+            }
+        }
         for (i, p) in PARTS.iter().enumerate() {
             let (a, b) = segs[i];
             let len = a.distance(b).max(0.02);
@@ -357,8 +411,12 @@ pub fn start_system(
             let body = commands
                 .spawn((
                     RigidBody::Dynamic,
-                    Collider::capsule(p.radius, (len - 2.0 * p.radius).max(0.01)),
+                    // A little fatter than the bones (the clothes and flesh round them): the drawn body stays out of
+                    // walls and floors, not just its skeleton.
+                    Collider::capsule(p.radius * 1.2, (len - 2.4 * p.radius).max(0.01)),
                     CollisionLayers::new(LAYER_RAG, LAYER_WORLD),
+                    // Swept collision: a fast limb can't tunnel through a thin floor or wall between two steps.
+                    SweptCcd::default(),
                     Friction::new(0.8),
                     Restitution::new(0.0),
                     LinearDamping(0.15),
@@ -611,4 +669,31 @@ pub fn player_body_system(
     commands.entity(root).insert((s, PlayerBody));
     *st = Some((root, 0, flat));
     PLAYER_ON.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Mover pieces' colliders follow the pieces (a door swinging shut pushes a body; one opening lets it through).
+fn follow_movers_system(mut q: Query<(&RagMover, &mut Transform)>, gts: Query<&GlobalTransform, Without<RagMover>>) {
+    for (m, mut tf) in &mut q {
+        if let Ok(g) = gts.get(m.0) {
+            let want = g.compute_transform();
+            if *tf != want {
+                *tf = want;
+            }
+        }
+    }
+}
+
+/// A triangle-mesh collider from a mesh's positions and indices.
+fn mesh_trimesh(m: &Mesh) -> Option<Collider> {
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = m.attribute(Mesh::ATTRIBUTE_POSITION) else { return None };
+    let idx: Vec<u32> = match m.indices()? {
+        bevy::mesh::Indices::U32(v) => v.clone(),
+        bevy::mesh::Indices::U16(v) => v.iter().map(|&i| i as u32).collect(),
+    };
+    if idx.len() < 3 {
+        return None;
+    }
+    let verts: Vec<Vec3> = p.iter().map(|v| Vec3::from(*v)).collect();
+    let tris: Vec<[u32; 3]> = idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+    Some(Collider::trimesh(verts, tris))
 }

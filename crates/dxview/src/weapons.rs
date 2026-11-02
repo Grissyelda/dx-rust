@@ -138,6 +138,10 @@ pub fn apply_mods(w: &mut WeaponStats, m: &ModState) {
         w.reload_count += diff * steps;
     }
     w.accurate_range += w.accurate_range * m.range;
+    // Transcended: the range mod also raises MaxRange (the longest shots were still cut short at it).
+    if crate::transcended::fixes() {
+        w.max_range += w.max_range * m.range;
+    }
     w.reload_time = (w.reload_time + w.reload_time * m.reload).max(0.0);
     w.recoil = (w.recoil + w.recoil * m.recoil).max(0.0);
     w.has_scope |= m.scope;
@@ -462,7 +466,7 @@ pub struct Held {
     /// Diegetic Scope: the rifle's scope eyepiece (centre in the model's own space, Unreal view axes, scaled) and
     /// its radius - the eye is put on its axis and the lens drawn in it. None: no scope tube found (the model is
     /// hidden while scoped, the lens drawn by itself).
-    pub scope_eye: Option<([f32; 3], f32)>,
+    pub scope_eye: Option<ScopeEye>,
     /// The view model's vertex positions as last drawn, per part (camera space), and a tween from such a pose into
     /// the current sequence (positions, seconds so far).
     pub shown: Vec<Vec<[f32; 3]>>,
@@ -475,59 +479,173 @@ const VIEW_TWEEN: f32 = 0.1;
 /// How far under the line of sight (units) an original view model's barrel sits down the sights.
 const SIGHT_DROP: f32 = 1.7;
 
-/// A scope's radius over the eye's distance from its eyepiece: the lens fills about 0.45 of the view model camera's
-/// half height, with the tube and the rifle in view round it.
-pub const SCOPE_EYE_K: f32 = 0.21;
+/// A scope's radius over the eye's distance from its eyepiece: the lens fills about a quarter of the view model
+/// camera's height, with the tube and the rifle in view round it (0.21 was too big).
+pub const SCOPE_EYE_K: f32 = 0.13;
+/// The nearest the scope's rearmost part (HDTP's eyecup) may come to the eye, units.
+const SCOPE_EYE_GAP: f32 = 3.0;
+
+/// The rifle's scope eyepiece (see `Held::scope_eye`): where it is at rest (model space, Unreal view axes, scaled)
+/// and its radius, and which view-model vertices make its rim and the next ring forward along the tube, so the lens
+/// can follow the posed model every frame (recoil, the idle sway, reloading).
+#[derive(Clone, Debug)]
+pub struct ScopeEye {
+    pub rest: [f32; 3],
+    pub radius: f32,
+    /// The rearmost point of the scope round its axis (an eyecup flares out behind the eyepiece ring), scaled.
+    pub back: f32,
+    /// The tube's direction forward (model space, Unreal view axes, unit): the view model holds the rifle angled
+    /// toward the middle of the view, so looking down the scope turns it to point straight ahead.
+    pub axis: [f32; 3],
+    /// (part, vertex within the part) of the eyepiece rim and of the ring in front of it.
+    pub rim: Vec<(usize, usize)>,
+    pub front: Vec<(usize, usize)>,
+}
+
+/// The turn that points a scope's tube straight down the view (camera -Z).
+fn scope_turn(se: &ScopeEye) -> Quat {
+    let fwd = Vec3::from(view_to_cam(se.axis)).normalize_or(Vec3::NEG_Z);
+    Quat::from_rotation_arc(fwd, Vec3::NEG_Z)
+}
+
+fn se_rest(se: Option<&ScopeEye>) -> [f32; 3] {
+    se.map_or([0.0; 3], |s| s.rest)
+}
+
+impl ScopeEye {
+    /// The eyepiece's centre, its outward axis (toward the eye) and radius in the view model's own space from the
+    /// pose last drawn (`Held::shown`, camera axes, metres); None before the first pose.
+    pub fn posed(&self, shown: &[Vec<[f32; 3]>]) -> Option<(Vec3, Vec3, f32)> {
+        let avg = |list: &[(usize, usize)]| -> Option<Vec3> {
+            let mut s = Vec3::ZERO;
+            for &(pi, vi) in list {
+                s += Vec3::from(*shown.get(pi)?.get(vi)?);
+            }
+            Some(s / list.len().max(1) as f32)
+        };
+        let c = avg(&self.rim)?;
+        // Without a ring in front, the gun's own axis (camera +Z = back toward the eye).
+        let axis = if self.front.is_empty() { Vec3::Z } else { (c - avg(&self.front)?).normalize_or(Vec3::Z) };
+        let r = self.rim.iter().filter_map(|&(pi, vi)| shown.get(pi)?.get(vi)).map(|p| (Vec3::from(*p) - c).reject_from(axis).length()).sum::<f32>()
+            / self.rim.len().max(1) as f32;
+        Some((c, axis, r))
+    }
+}
 
 /// See `Held::scope_eye`. The scope is the tube on top of the model: its vertices come in rings across the barrel's
 /// axis (the original's hexagonal tube; HDTP's denser one). Rings are vertices in the top band of the mesh grouped by
-/// their distance along the gun; the rearmost ring of a plausible size is the eyepiece.
-fn scope_eyepiece(am: &AnimMesh, parts: &[MeshPart], scale: f32) -> Option<([f32; 3], f32)> {
+/// their distance along the gun. The tube's own radius is the commonest ring size; the eyepiece is the rearmost ring
+/// of about that size (HDTP's model has a wider eyecup flare and mount behind it, which made a huge lens), and the
+/// ring before it gives the tube's axis.
+fn scope_eyepiece(am: &AnimMesh, parts: &[MeshPart], scale: f32) -> Option<ScopeEye> {
     let seq = ["Still", "Idle1", "Idle"]
         .iter()
         .find_map(|n| am.seqs.iter().find(|s| s.name.eq_ignore_ascii_case(n)))
         .or_else(|| am.seqs.iter().find(|s| !s.name.eq_ignore_ascii_case("All")))?;
     let (start, frames) = (seq.start_frame.max(0) as usize, seq.num_frames.max(1) as usize);
-    let mut ids: Vec<u32> = parts.iter().filter(|p| p.class != SurfaceClass::Translucent).flat_map(|p| p.vert_ids.iter().copied()).collect();
-    ids.sort_unstable();
-    ids.dedup();
-    let pts: Vec<Vec3> = ids
-        .iter()
+    // Mesh vertex -> its first (part, index) in the drawn parts.
+    let mut at: std::collections::HashMap<u32, (usize, usize)> = std::collections::HashMap::new();
+    for (pi, p) in parts.iter().enumerate() {
+        if p.class == SurfaceClass::Translucent {
+            continue;
+        }
+        for (vi, &v) in p.vert_ids.iter().enumerate() {
+            at.entry(v).or_insert((pi, vi));
+        }
+    }
+    let pts: Vec<(u32, Vec3)> = at
+        .keys()
         .map(|&v| {
             let p = am.sample(start, frames, 0.0, v as usize);
-            Vec3::new(p[0], p[1], p[2])
+            (v, Vec3::new(p[0], p[1], p[2]))
         })
         .collect();
-    let top = pts.iter().fold(f32::MIN, |a, p| a.max(p.z));
-    // The top band (a scope is at most ~5 units across in the original's scale).
-    let band: Vec<Vec3> = pts.iter().copied().filter(|p| p.z > top - 6.0).collect();
+    let top = pts.iter().fold(f32::MIN, |a, p| a.max(p.1.z));
+    // The top band (a scope is at most ~6 units across at the original's scale).
+    let band: Vec<(u32, Vec3)> = pts.iter().copied().filter(|p| p.1.z > top - 6.5).collect();
     if band.len() < 8 {
         return None;
     }
-    let mut ys: Vec<f32> = band.iter().map(|p| p.y).collect();
+    let mut ys: Vec<f32> = band.iter().map(|p| p.1.y).collect();
     ys.sort_by(f32::total_cmp);
     let ymid = ys[ys.len() / 2];
-    let mut band: Vec<Vec3> = band.into_iter().filter(|p| (p.y - ymid).abs() < 5.0).collect();
-    band.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let mut band: Vec<(u32, Vec3)> = band.into_iter().filter(|p| (p.1.y - ymid).abs() < 5.0).collect();
+    band.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
     // Rings: runs of vertices within 0.6 units of each other along the gun.
-    let mut rings: Vec<Vec<Vec3>> = Vec::new();
+    let mut rings: Vec<Vec<(u32, Vec3)>> = Vec::new();
     for p in band {
         match rings.last_mut() {
-            Some(r) if p.x - r.last().unwrap().x < 0.6 => r.push(p),
+            Some(r) if p.1.x - r.last().unwrap().1.x < 0.6 => r.push(p),
             _ => rings.push(vec![p]),
         }
     }
-    for r in rings.iter().filter(|r| r.len() >= 5) {
-        let c = r.iter().fold(Vec3::ZERO, |a, p| a + *p) / r.len() as f32;
-        let rad = r.iter().map(|p| ((p.y - c.y).powi(2) + (p.z - c.z).powi(2)).sqrt()).sum::<f32>() / r.len() as f32;
-        // Round enough: no vertex far from the mean radius.
-        let round = r.iter().all(|p| (((p.y - c.y).powi(2) + (p.z - c.z).powi(2)).sqrt() - rad).abs() < rad * 0.6);
-        if (0.6..5.0).contains(&rad) && round {
-            let x = r.iter().fold(f32::MAX, |a, p| a.min(p.x));
-            return Some(([x * scale, c.y * scale, c.z * scale], rad * scale));
+    // Round rings with their centre and radius.
+    let cands: Vec<(Vec3, f32, &Vec<(u32, Vec3)>)> = rings
+        .iter()
+        .filter(|r| r.len() >= 5)
+        .filter_map(|r| {
+            let c = r.iter().fold(Vec3::ZERO, |a, p| a + p.1) / r.len() as f32;
+            let rad = r.iter().map(|p| ((p.1.y - c.y).powi(2) + (p.1.z - c.z).powi(2)).sqrt()).sum::<f32>() / r.len() as f32;
+            let round = r.iter().all(|p| (((p.1.y - c.y).powi(2) + (p.1.z - c.z).powi(2)).sqrt() - rad).abs() < rad * 0.6);
+            ((0.5..6.0).contains(&rad) && round).then_some((c, rad, r))
+        })
+        .collect();
+    if env_on!("DXVIEW_SCOPELOG") {
+        for (c, rad, r) in &cands {
+            println!("SCOPE ring x {:.2} y {:.2} z {:.2} r {:.2} n {}", c.x, c.y, c.z, rad, r.len());
         }
     }
-    None
+    if cands.is_empty() {
+        return None;
+    }
+    let mut radii: Vec<f32> = cands.iter().map(|c| c.1).collect();
+    radii.sort_by(f32::total_cmp);
+    let tube = radii[radii.len() / 2];
+    let i = cands.iter().position(|c| c.1 > tube * 0.7 && c.1 < tube * 1.35)?;
+    let (c, rad, rim) = &cands[i];
+    let front = cands.get(i + 1).map(|f| f.2).filter(|f| (f[0].1.x - rim[0].1.x).abs() > 0.3);
+    let to = |r: &Vec<(u32, Vec3)>| r.iter().filter_map(|p| at.get(&p.0).copied()).collect::<Vec<_>>();
+    let x = rim.iter().fold(f32::MAX, |a, p| a.min(p.1.x));
+    // Without a ring in front: the gun's own axis (a point a little forward on it).
+    let front_list = match front {
+        Some(f) => to(f),
+        None => Vec::new(),
+    };
+    // The rearmost part of the scope round the eyepiece's axis (HDTP's eyecup sits behind the ring found).
+    let back = pts
+        .iter()
+        .filter(|p| ((p.1.y - c.y).powi(2) + (p.1.z - c.z).powi(2)).sqrt() < rad * 1.6 && p.1.x < x + 0.01 && p.1.x > x - 12.0)
+        .fold(x, |a, p| a.min(p.1.x));
+    if env_on!("DXVIEW_SCOPELOG") {
+        println!("SCOPE back {back:.2} ring x {x:.2}");
+    }
+    // The tube's axis: a straight line fitted through the centres of the rings of about the tube's size.
+    let tube_rings: Vec<Vec3> = cands.iter().filter(|r| r.1 > tube * 0.6 && r.1 < tube * 1.6).map(|r| r.0).collect();
+    let axis = if tube_rings.len() >= 2 {
+        let n = tube_rings.len() as f32;
+        let mx = tube_rings.iter().map(|p| p.x).sum::<f32>() / n;
+        let my = tube_rings.iter().map(|p| p.y).sum::<f32>() / n;
+        let mz = tube_rings.iter().map(|p| p.z).sum::<f32>() / n;
+        let sxx = tube_rings.iter().map(|p| (p.x - mx).powi(2)).sum::<f32>().max(1e-3);
+        let sy = tube_rings.iter().map(|p| (p.x - mx) * (p.y - my)).sum::<f32>() / sxx;
+        let sz = tube_rings.iter().map(|p| (p.x - mx) * (p.z - mz)).sum::<f32>() / sxx;
+        // At most 20 degrees off the gun's own axis (a stray ring can't swing it far).
+        let lim = 20f32.to_radians().tan();
+        Vec3::new(1.0, sy.clamp(-lim, lim), sz.clamp(-lim, lim)).normalize()
+    } else {
+        Vec3::X
+    };
+    if env_on!("DXVIEW_SCOPELOG") {
+        println!("SCOPE axis {axis:?} from {} rings", tube_rings.len());
+    }
+    Some(ScopeEye {
+        rest: [x * scale, c.y * scale, c.z * scale],
+        radius: rad * scale,
+        back: back * scale,
+        axis: axis.to_array(),
+        rim: to(rim),
+        front: front_list,
+    })
 }
 
 /// See `Held::sight`.
@@ -2288,12 +2406,16 @@ pub fn weapon_system(
         }
     }
     // Diegetic Scope on a model with its scope found: the eye on the scope's axis, the eyepiece in front of it.
-    let scoped_eye = h.scope_eye.filter(|_| zoom.0.is_some() && crate::scope::setting_on() && !crate::thirdperson::active());
-    if let Some((e, r)) = scoped_eye {
-        off = [r / SCOPE_EYE_K - e[0], -e[1], -e[2]];
-    }
+    let scoped_eye = h.scope_eye.clone().filter(|_| zoom.0.is_some() && crate::scope::setting_on() && !crate::thirdperson::active());
     root.translation = Vec3::from(view_to_cam(off));
     root.rotation = Quat::IDENTITY;
+    // Down the scope: the rifle turned so its tube points straight ahead, the eyepiece centred in front of the eye.
+    if let Some(se) = scoped_eye.as_ref() {
+        let q = scope_turn(se);
+        let ahead = (se.radius / SCOPE_EYE_K).max(SCOPE_EYE_GAP + (se.rest[0] - se.back)) * METERS_PER_UNIT;
+        root.rotation = q;
+        root.translation = Vec3::new(0.0, 0.0, -ahead) - q * Vec3::from(view_to_cam(se.rest));
+    }
     // GMDX (Sarge) CalcDrawOffset "Viewmodel Inertia" (setting WeaponInertia): the weapon trails the view when you
     // turn. Ours lags the view's rotation (eased by time, so it's smooth at any frame rate) and turns the weapon
     // about the eye by the difference, at most 6 degrees; not while zoomed or reloading, and a new weapon starts
@@ -2329,10 +2451,9 @@ pub fn weapon_system(
         root.rotation = r * root.rotation;
     }
     // Where the diegetic scope's lens goes (scope.rs): the eyepiece, in the view model camera's space.
-    crate::scope::set_lens(scoped_eye.map(|(e, r)| {
-        let c = root.translation + root.rotation * Vec3::from(view_to_cam(e));
-        (c, root.rotation, r * METERS_PER_UNIT)
-    }));
+    // Where the diegetic scope's lens goes (scope.rs): in the eyepiece as posed now (it follows the shot's kick, the
+    // idle sway and the reload), in the view model camera's space. Set after the pose below.
+    let lens_eye = scoped_eye;
 
     h.clip.t += dt;
     h.timer -= dt;
@@ -2574,7 +2695,9 @@ pub fn weapon_system(
         } else {
             Vec3::ONE
         };
-        if locked && mouse.just_pressed(MouseButton::Left) && h.state == WState::Idle {
+        // Diegetic Healing (healui.rs): a click on a part of the body overlay uses the medkit on it.
+        let heal_pick = crate::healui::take_use();
+        if h.state == WState::Idle && (heal_pick || (locked && mouse.just_pressed(MouseButton::Left) && !crate::healui::active())) {
             let class = h.stats.class.clone();
             let r = activate_pickup(
                 &class,
@@ -2648,6 +2771,10 @@ pub fn weapon_system(
         h.flame_shots = 0;
     }
 
+    // Transcended: a conversation turns the laser off (a stray dot stayed on the speakers).
+    if h.lasing && crate::transcended::fixes() && crate::consys::third_person() {
+        h.lasing = false;
+    }
     // ToggleLaser (']'): only with a laser mod fitted.
     if keys.just_pressed(KeyCode::BracketRight) && h.stats.has_laser {
         h.lasing = !h.lasing;
@@ -2958,6 +3085,36 @@ pub fn weapon_system(
 
     pose_view_model(h, &mut meshes, dt);
     light_view_model(h, &mut meshes, &level.0, cam.translation, dt);
+    crate::scope::set_lens(lens_eye.as_ref().and_then(|se| se.posed(&h.shown)).map(|(c, axis, r)| {
+        let axis = root.rotation * axis;
+        if env_on!("DXVIEW_SCOPELOG") {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 {
+                println!(
+                    "SCOPE posed c {:?} rest {:?} r {:.4} axis {:?} root {:?} lens {:?} start {} t {:.2}",
+                    c,
+                    view_to_cam([se_rest(lens_eye.as_ref())[0], se_rest(lens_eye.as_ref())[1], se_rest(lens_eye.as_ref())[2]]),
+                    r,
+                    axis,
+                    root.translation,
+                    root.translation + root.rotation * c,
+                    h.clip.start,
+                    h.clip.t
+                );
+            }
+        }
+        // The lens sits at the scope's rear end (the original's closed eyepiece cap, HDTP's eyecup), facing along
+        // the gun (the next ring forward isn't on the same centre line, so its tilt isn't used).
+        let _ = axis;
+        let pull = lens_eye.as_ref().map_or(0.0, |se| (se.rest[0] - se.back) * METERS_PER_UNIT) + 0.002;
+        // Toward the eye along the tube (in the model's space), the disc facing back along it.
+        let back_dir = lens_eye.as_ref().map_or(Vec3::Z, |se| -Vec3::from(view_to_cam(se.axis)).normalize_or(Vec3::NEG_Z));
+        (
+            root.translation + root.rotation * (c + back_dir * pull),
+            root.rotation * Quat::from_rotation_arc(Vec3::Z, back_dir),
+            r,
+        )
+    }));
 
     let clip_now = *clips.0.get(&h.stats.class).unwrap_or(&0);
     ammo_text.0 = match (h.stats.hand_to_hand || h.stats.reload_count == 0, pool) {
@@ -3477,12 +3634,15 @@ pub fn activate_pickup(
         "MedKit" => {
             // HealPlayer(healAmount, bUseMedicineSkill): x the Medicine skill's value.
             let n = (d.unwrap_or(30.0) * crate::abilities::skill("SkillMedicine")).floor();
-            // Diegetic Healing (bodyfx.rs): on the part looked at (or the head, looking anywhere else).
-            let part = if crate::bodyfx::diegetic_heal() { crate::bodyfx::aimed_part().unwrap_or(crate::ai::P_HEAD) } else { crate::ai::P_TORSO };
-            if crate::bodyfx::diegetic_heal() {
-                ph.heal_part(part, n);
-            } else {
-                heal(ph, n);
+            // Diegetic Healing (healui.rs): on the part picked on the body overlay; a plain use spreads the points
+            // the original's way (HealPlayer).
+            let picked = crate::healui::take_part();
+            let part = picked.unwrap_or(crate::ai::P_TORSO);
+            match picked {
+                Some(p) => {
+                    ph.heal_part(p, n);
+                }
+                None => heal(ph, n),
             }
             crate::bodyfx::healed(part);
             // HealPlayer with the Medicine skill: MedicalHiss.

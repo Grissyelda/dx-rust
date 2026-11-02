@@ -421,7 +421,8 @@ pub fn heal_label_system(
     mut q: Query<(&mut Text, &mut Visibility), With<HealLabel>>,
 ) {
     let medkit = weapons.held.as_ref().is_some_and(|h| h.stats.class == "MedKit");
-    let show = medkit && diegetic_heal() && FP_SHOWN.load(std::sync::atomic::Ordering::Relaxed);
+    // (The aimed "Treat <part>" label gave way to the Alt body overlay, healui.rs.)
+    let show = false && medkit && FP_SHOWN.load(std::sync::atomic::Ordering::Relaxed);
     if q.is_empty() {
         commands.spawn((
             Text::new(""),
@@ -491,30 +492,146 @@ const AUG_GLOWS: &[(&str, &[&str])] = &[
     ("AugDrone", &["DEF-spine.006"]),
 ];
 
+/// Each aug's own glow colour (linear, past white so the bloom catches it): the eye augs tint the eyes and the light
+/// streaming from them, the others glow where they sit.
+fn aug_colour(aug: &str) -> Vec3 {
+    match aug {
+        "AugVision" => Vec3::new(0.35, 1.6, 0.45),
+        "AugTarget" => Vec3::new(1.8, 0.25, 0.2),
+        "AugLight" => Vec3::new(1.9, 1.6, 1.05),
+        "AugDrone" => Vec3::new(0.3, 1.3, 1.9),
+        "AugSpeed" => Vec3::new(0.4, 1.0, 2.0),
+        "AugStealth" => Vec3::new(0.55, 0.45, 1.6),
+        "AugMuscle" => Vec3::new(2.0, 0.85, 0.2),
+        "AugCombat" => Vec3::new(2.0, 0.35, 0.15),
+        "AugBallistic" => Vec3::new(1.3, 1.3, 1.4),
+        "AugEMP" => Vec3::new(0.5, 0.8, 2.0),
+        "AugShield" => Vec3::new(2.0, 0.6, 0.15),
+        "AugEnviro" => Vec3::new(1.6, 1.8, 0.3),
+        "AugHealing" => Vec3::new(0.3, 2.0, 0.5),
+        "AugDefense" => Vec3::new(1.9, 1.3, 0.3),
+        "AugCloak" => Vec3::new(0.6, 0.9, 1.3),
+        "AugRadarTrans" => Vec3::new(1.2, 0.5, 1.8),
+        "AugPower" => Vec3::new(1.9, 1.7, 0.4),
+        "AugAqualung" => Vec3::new(0.25, 1.1, 2.0),
+        "AugHeartLung" => Vec3::new(2.0, 0.3, 0.45),
+        _ => Vec3::new(1.4, 0.9, 0.4),
+    }
+}
+
+fn eye_aug(aug: &str) -> bool {
+    matches!(aug, "AugVision" | "AugTarget" | "AugLight" | "AugDrone")
+}
+
+/// A soft round glow (white, alpha from the centre out) for the aug glows and the eye light.
+fn soft_image() -> Image {
+    let n = 64u32;
+    let mut px = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let (dx, dy) = ((x as f32 + 0.5) / n as f32 * 2.0 - 1.0, (y as f32 + 0.5) / n as f32 * 2.0 - 1.0);
+            let a = (-(dx * dx + dy * dy) * 4.0).exp() * (1.0 - (dx * dx + dy * dy).sqrt()).max(0.0);
+            let v = (a.min(1.0) * 255.0) as u8;
+            px.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    Image::new(
+        bevy::render::render_resource::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        px,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// A leaf (pointed oval with a midrib, alpha cut) for the healing effect.
+fn leaf_image() -> Image {
+    let n = 48u32;
+    let mut px = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let u = (y as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+            let v = (x as f32 + 0.5) / n as f32 * 2.0 - 1.0;
+            let w = (1.0 - u * u).max(0.0) * 0.55;
+            if v.abs() >= w {
+                continue;
+            }
+            let rib = if v.abs() < 0.05 { 1.25 } else { 1.0 };
+            let k = (0.75 + 0.25 * (1.0 - v.abs() / w.max(1e-3))) * rib;
+            let i = ((y * n + x) * 4) as usize;
+            px[i] = (0.35 * k * 255.0).min(255.0) as u8;
+            px[i + 1] = (0.95 * k * 255.0).min(255.0) as u8;
+            px[i + 2] = (0.4 * k * 255.0).min(255.0) as u8;
+            px[i + 3] = 255;
+        }
+    }
+    Image::new(
+        bevy::render::render_resource::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        px,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// A healing leaf rising from where the medicine went: drifting up and out, turning, fading.
+#[derive(Component)]
+pub struct HealLeaf {
+    vel: Vec3,
+    spin: Vec3,
+    t: f32,
+    life: f32,
+    size: f32,
+}
+
+#[derive(Default)]
+pub struct GlowAssets {
+    quad: Handle<Mesh>,
+    cone: Handle<Mesh>,
+    leaf: Handle<StandardMaterial>,
+    soft: Handle<Image>,
+    /// One material per aug colour (soft glow), and one for the eye light streaming forward.
+    by_aug: HashMap<&'static str, (Handle<StandardMaterial>, Handle<StandardMaterial>)>,
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn glow_system(
     mut commands: Commands,
     time: Res<Time>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     bodies: Query<(&SkelBody, Has<FpBody>, Has<crate::skeletal::MirrorSkel>)>,
-    mut glows: Query<(Entity, &mut FpGlow, &mut Transform, &MeshMaterial3d<StandardMaterial>)>,
+    mut glows: Query<(Entity, &mut FpGlow, &mut Transform, &ChildOf), Without<HealLeaf>>,
+    mut leaves: Query<(Entity, &mut HealLeaf, &mut Transform, &MeshMaterial3d<StandardMaterial>), Without<FpGlow>>,
     mut ph: ResMut<crate::ai::PlayerHealth>,
-    mut assets: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>, Handle<StandardMaterial>)>>,
+    mut assets: Local<Option<GlowAssets>>,
     mut active: Local<HashMap<(Entity, &'static str, usize), Entity>>,
     gts: Query<&GlobalTransform>,
+    cam: Single<&GlobalTransform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
+    mut seed: Local<u32>,
 ) {
     let dt = time.delta_secs();
-    let (sphere, aug_mat, heal_mat) = assets
-        .get_or_insert_with(|| {
-            let add = |c: Color| StandardMaterial { base_color: c, unlit: true, alpha_mode: AlphaMode::Add, ..default() };
-            (
-                meshes.add(Sphere::new(1.0).mesh().ico(2).unwrap()),
-                materials.add(add(Color::srgba(1.0, 0.55, 0.15, 1.0))),
-                materials.add(add(Color::srgba(0.3, 1.0, 0.55, 1.0))),
-            )
-        })
-        .clone();
+    let ga = assets.get_or_insert_with(|| {
+        let soft = images.add(soft_image());
+        let leaf_tex = images.add(leaf_image());
+        GlowAssets {
+            quad: meshes.add(Rectangle::new(1.0, 1.0)),
+            // The eye light: a cone pointing forward from the eye (tip at the eye, opening ahead), drawn additively.
+            cone: meshes.add(Cone { radius: 1.0, height: 1.0 }.mesh().resolution(12)),
+            leaf: materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(leaf_tex),
+                unlit: true,
+                alpha_mode: AlphaMode::Mask(0.5),
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            }),
+            soft,
+            by_aug: HashMap::new(),
+        }
+    });
     let healed: Vec<usize> = HEALED.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default();
     if !healed.is_empty() {
         // The screen: a soft green pulse.
@@ -522,9 +639,14 @@ pub fn glow_system(
         ph.flash_color = [0.25, 0.9, 0.5];
     }
     let glows_on = on("AugGlows");
-    // (key, bone, radius, offset, layer: each body's glows only on its own layer - the mirror body's head is at the
-    // camera in first person)
-    let mut want: Vec<((Entity, &'static str, usize), Entity, f32, Vec3, usize)> = Vec::new();
+    let third = crate::thirdperson::active();
+    let cam_rot = cam.compute_transform().rotation;
+    let mut rnd = || {
+        *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (*seed >> 8) as f32 / 16_777_216.0
+    };
+    // (key, bone, scale, offset, rotation, layer, eye light?)
+    let mut want: Vec<((Entity, &'static str, usize), Entity, Vec3, Vec3, Quat, usize, bool)> = Vec::new();
     for (s, is_fp, is_mirror) in &bodies {
         if !is_fp && !is_mirror {
             continue;
@@ -537,29 +659,51 @@ pub fn glow_system(
                     continue;
                 }
                 for (k, bn) in bones.iter().enumerate() {
-                    // The first-person body has no head, neck or arms: a glow there sat on the camera (the flashlight
-                    // aug's "eyes" filled the view with two orange balls).
+                    // The first-person body has no head, neck or arms: a glow there would sit on the camera.
                     if is_fp && fp_dropped(bn) {
                         continue;
                     }
                     let Some(b) = bone(bn) else { continue };
                     if *bn != "DEF-spine.006" {
-                        want.push(((s.root, *aug, k), b, 0.06, Vec3::ZERO, layer));
+                        want.push(((s.root, *aug, k), b, Vec3::splat(0.07), Vec3::ZERO, Quat::IDENTITY, layer, false));
                         continue;
                     }
-                    // The eyes: in front of the head, either side (the body's forward is glTF +Z).
+                    // The eyes: a bright iris and the aug's light streaming forward out of each one.
                     let (Ok(rg), Ok(hg)) = (gts.get(s.root), gts.get(b)) else { continue };
                     let a = rg.affine();
                     let fwd = a.transform_vector3(Vec3::Z).normalize_or_zero();
                     let up = a.transform_vector3(Vec3::Y).normalize_or_zero();
                     let lat = a.transform_vector3(Vec3::X).normalize_or_zero();
+                    let inv = hg.affine().inverse();
+                    let hrot = hg.compute_transform().rotation;
                     for (j, side) in [-1.0f32, 1.0].iter().enumerate() {
-                        let p = hg.translation() + fwd * 0.085 + up * 0.06 + lat * 0.032 * side;
-                        let local = hg.affine().inverse().transform_point3(p);
-                        want.push(((s.root, *aug, k * 2 + j), b, 0.018, local, layer));
+                        let eye = hg.translation() + fwd * 0.082 + up * 0.06 + lat * 0.032 * side;
+                        let local = inv.transform_point3(eye);
+                        // The iris: a small soft spot facing the way the head does.
+                        want.push(((s.root, *aug, k * 4 + j), b, Vec3::splat(0.022), local, hrot.inverse() * Quat::from_rotation_arc(Vec3::Z, fwd), layer, false));
+                        // The light: a cone with its tip at the eye, 0.32 m long, opening forward (Bevy's cone points
+                        // up its +Y with the tip at +height/2: turned to point back at the eye from ahead).
+                        let len = if *aug == "AugLight" { 0.42 } else { 0.3 };
+                        let rot_w = Quat::from_rotation_arc(Vec3::Y, -fwd);
+                        let centre = eye + fwd * (len * 0.5);
+                        want.push((
+                            (s.root, *aug, k * 4 + 2 + j),
+                            b,
+                            Vec3::new(0.035, len, 0.035),
+                            inv.transform_point3(centre),
+                            hrot.inverse() * rot_w,
+                            layer,
+                            true,
+                        ));
                     }
                 }
             }
+        }
+        // Healing: leaves rising from the part treated - on the body you see (third person: JC's; first person:
+        // the first-person body, not its missing head).
+        let shown = if third { is_mirror } else { is_fp };
+        if !shown {
+            continue;
         }
         for part in &healed {
             let bn = match *part {
@@ -570,20 +714,31 @@ pub fn glow_system(
                 crate::ai::P_LEG_L => "DEF-shin.L",
                 _ => "DEF-shin.R",
             };
-            if let Some(b) = bone(bn).filter(|_| !(is_fp && fp_dropped(bn))) {
+            if is_fp && bn == "DEF-spine.006" {
+                continue;
+            }
+            let Some(at) = bone(bn).and_then(|b| gts.get(b).ok()).map(|g| g.translation()) else { continue };
+            for _ in 0..14 {
+                let off = Vec3::new(rnd() - 0.5, rnd() * 0.5 - 0.15, rnd() - 0.5) * 0.25;
+                let out = Vec3::new(off.x, 0.0, off.z).normalize_or(Vec3::X);
                 commands.spawn((
-                    Mesh3d(sphere.clone()),
-                    MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgba(0.3, 1.0, 0.55, 1.0), unlit: true, alpha_mode: AlphaMode::Add, ..default() })),
-                    Transform::from_scale(Vec3::splat(0.12)),
-                    FpGlow { t: 0.0, life: Some(0.9), aug: None },
+                    Mesh3d(ga.quad.clone()),
+                    MeshMaterial3d(ga.leaf.clone()),
+                    Transform::from_translation(at + off).with_rotation(cam_rot * Quat::from_rotation_z(rnd() * 6.28)).with_scale(Vec3::splat(0.0)),
+                    HealLeaf {
+                        vel: Vec3::Y * (0.35 + rnd() * 0.35) + out * (0.05 + rnd() * 0.12),
+                        spin: Vec3::new(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5) * 6.0,
+                        t: -rnd() * 0.25,
+                        life: 1.1 + rnd() * 0.6,
+                        size: 0.035 + rnd() * 0.025,
+                    },
                     bevy::light::NotShadowCaster,
-                    RenderLayers::layer(layer),
-                    ChildOf(b),
+                    bevy::light::NotShadowReceiver,
                 ));
             }
         }
     }
-    // Aug glows: one per (body, aug, bone), kept while the aug runs.
+    // Aug glows: one per (body, aug, piece), kept while the aug runs.
     let keys: std::collections::HashSet<(Entity, &'static str, usize)> = want.iter().map(|w| w.0).collect();
     active.retain(|k, e| {
         let keep = keys.contains(k);
@@ -592,15 +747,45 @@ pub fn glow_system(
         }
         keep
     });
-    for (k, bone, r, at, layer) in want {
-        if active.contains_key(&k) {
+    for (k, bone, scale, at, rot, layer, beam) in want {
+        if let Some(e) = active.get(&k) {
+            // Keep the eye pieces where the eyes are (the head turns under them).
+            if let Ok((_, _, mut t, _)) = glows.get_mut(*e) {
+                t.translation = at;
+                t.rotation = rot;
+                if beam {
+                    t.scale = scale;
+                }
+            }
             continue;
         }
+        let soft = ga.soft.clone();
+        let (glow_mat, beam_mat) = ga
+            .by_aug
+            .entry(k.1)
+            .or_insert_with(|| {
+                let c = aug_colour(k.1);
+                let col = Color::LinearRgba(LinearRgba::rgb(c.x, c.y, c.z));
+                let beam_c = c * 0.18;
+                (
+                    materials.add(StandardMaterial { base_color: col, base_color_texture: Some(soft), unlit: true, alpha_mode: AlphaMode::Add, ..default() }),
+                    materials.add(StandardMaterial {
+                        base_color: Color::LinearRgba(LinearRgba::rgb(beam_c.x, beam_c.y, beam_c.z)),
+                        unlit: true,
+                        alpha_mode: AlphaMode::Add,
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    }),
+                )
+            })
+            .clone();
+        let (mesh, mat) = if beam { (ga.cone.clone(), beam_mat) } else { (ga.quad.clone(), glow_mat) };
         let e = commands
             .spawn((
-                Mesh3d(sphere.clone()),
-                MeshMaterial3d(aug_mat.clone()),
-                Transform::from_translation(at).with_scale(Vec3::splat(r)),
+                Mesh3d(mesh),
+                MeshMaterial3d(mat),
+                Transform::from_translation(at).with_rotation(rot).with_scale(scale),
                 FpGlow { t: 0.0, life: None, aug: Some(k.1) },
                 bevy::light::NotShadowCaster,
                 RenderLayers::layer(layer),
@@ -609,27 +794,34 @@ pub fn glow_system(
             .id();
         active.insert(k, e);
     }
-    let _ = heal_mat;
-    for (e, mut g, mut t, m) in &mut glows {
+    for (_e, mut g, mut t, parent) in &mut glows {
         g.t += dt;
-        match g.life {
-            Some(life) => {
-                let k = (g.t / life).min(1.0);
-                // Swells and fades.
-                t.scale = Vec3::splat(0.08 + 0.12 * k);
-                if let Some(mut mat) = materials.get_mut(&m.0) {
-                    mat.base_color = Color::srgba(0.3 * (1.0 - k), 1.0 * (1.0 - k), 0.55 * (1.0 - k), 1.0);
-                }
-                if g.t >= life {
-                    commands.entity(e).despawn();
-                }
+        if g.life.is_none() && t.scale.y == t.scale.x {
+            // The round glows: a slow pulse, facing the camera.
+            if let Ok(pg) = gts.get(parent.parent()) {
+                t.rotation = pg.compute_transform().rotation.inverse() * cam_rot;
             }
-            None => {
-                // A slow pulse (the parent bone's scale is ~1).
-                let p = 0.85 + 0.15 * (g.t * 3.0).sin();
-                let base = if g.aug.is_some_and(|a| matches!(a, "AugVision" | "AugTarget" | "AugLight" | "AugDrone")) { 0.018 } else { 0.06 };
-                t.scale = Vec3::splat(base * p);
-            }
+            let p = 0.85 + 0.15 * (g.t * 3.0).sin();
+            let base = if g.aug.is_some_and(eye_aug) && t.scale.x < 0.05 { 0.022 } else { 0.07 };
+            t.scale = Vec3::splat(base * p);
         }
+    }
+    // Leaves: rise, spread, turn, grow in and shrink away.
+    for (e, mut l, mut t, _m) in &mut leaves {
+        l.t += dt;
+        if l.t < 0.0 {
+            continue;
+        }
+        let k = l.t / l.life;
+        if k >= 1.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        l.vel *= 1.0 - 0.6 * dt;
+        t.translation += l.vel * dt;
+        let spin = l.spin * dt;
+        t.rotation = t.rotation * Quat::from_euler(EulerRot::XYZ, spin.x, spin.y, spin.z);
+        let grow = (k / 0.15).min(1.0) * (1.0 - ((k - 0.6) / 0.4).max(0.0));
+        t.scale = Vec3::splat(l.size * grow.max(0.0));
     }
 }

@@ -299,6 +299,13 @@ pub fn camera_delay(delay: f32) -> f32 {
 
 static NOISES: Mutex<Vec<Noise>> = Mutex::new(Vec::new());
 
+/// A noise made outside the systems that hold the Noises resource (heard by the NPCs next frame).
+pub fn push_noise(n: Noise) {
+    if let Ok(mut q) = NOISES.lock() {
+        q.push(n);
+    }
+}
+
 /// A camera beeping at the player: guards within 1024 of the player hear where they are (bHardcoreAI1).
 pub fn camera_spotted(player_pos: DVec3) {
     if !on() {

@@ -115,6 +115,17 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("FixBlastDoors", 0.0),
     ("FixGibLoot", 0.0),
     ("FixCarryJump", 0.0),
+    // Confix's conversation packages in place of the game's (needs the mod; on in the Modern preset).
+    ("ConfixFixes", 0.0),
+    // Transcended's bug fixes (on in the Modern preset) and its bigger changes (all off).
+    ("TranscendedFixes", 0.0),
+    ("TrUnconsciousDeath", 0.0),
+    ("TrNoisyObjects", 0.0),
+    ("TrWeaponPointing", 0.0),
+    ("TrRadarCloak", 0.0),
+    ("TrNpcLimp", 0.0),
+    ("TrBossResist", 0.0),
+    ("TrLongFlares", 0.0),
     // GMDX quality of life (all off).
     ("ToolCounts", 0.0),
     ("ItemCounts", 0.0),

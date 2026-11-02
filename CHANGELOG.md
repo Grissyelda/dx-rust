@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Mods folder, Confix and Transcended, healing by body part (November 2)
+- One folder for all your mods: on the launcher's Mods page, Mod Assets Folder... takes a folder holding each mod in
+  its own folder (Lay D Denton, HDTP, New Vision, Helios, the Parallax Occlusion addon, Augmentique, Visible
+  Attachments, GMDX: Augmented Edition (and its Precipitation), Confix and Transcended) and sets them all up.
+- Confix support: with Confix installed, Confix Conversation Fixes (Settings > Enhancements, on in Modern) uses its
+  corrected conversations and speech - typos, wrong flags, broken item transfers and missing lines fixed.
+- Transcended Fixes (Fixes, on in Modern): bugs fixed the way the Transcended mod fixes them - misnamed mission flags
+  (the Hong Kong ROM, the ship breach, the Vandenberg hazlab troops, Aimee's goal, the Karkian tank, Jock in Area 51),
+  the ATM accepting any account number with the first account's PIN, EMP'd robots still attacked, bot screens
+  staying open after the bot is destroyed, the laser left on in conversations, the riot prod breaking crates, people
+  set alight dying "unconscious", barks under water, leather chair and couch colours, and more.
+- Transcended's bigger changes as separate options (all off): Unconscious Bodies Can Die, Using Things Makes Noise,
+  People Mind A Pointed Gun, Thermoptic Camo Fools Machines, Wounded Legs Slow People, Stronger Gunther And Simons,
+  Long-Burning Flares.
+- Diegetic Healing: with a medkit in hand, hold Alt (controller: LT) to bring up your body; move the little medkit
+  over a part and click (A) to treat it - one medkit per use, without opening the inventory.
+- Aug glows: each running augmentation glows in its own colour; vision augs shine from the eyes. Healing sends green
+  leaves drifting up from the treated part.
+- Third person: weapons stay the right way up while aiming and moving; leaning bends the body instead of sliding it.
+- The rifle's diegetic scope follows the gun (recoil, sway, idle animations) and fits its eyepiece, HDTP's too.
+- Storm water no longer tears open into flat triangles; coats swing more naturally; ragdolls can't pass through
+  walls, doors or furniture.
+
 ### Upscaling, shadows, grass and trees (November 2)
 - Upscaling (Settings > Enhancements > Display): Off, Native AA (temporal antialiasing at full resolution plus a light
   sharpen), and Quality / Balanced / Performance / Ultra Performance, which draw the world at 1/1.5, 1/1.7, 1/2 or

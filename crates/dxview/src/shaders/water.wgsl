@@ -320,7 +320,10 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     if (water.far.w > 0.0 && abs(out.world_normal.y) > 0.7) {
         // Full near the eye, flat far away (where a vertex is many waves apart and the far sea meets the map's).
         let de = length(view.world_position.xz - wp.xz);
-        let k = 1.0 - smoothstep(90.0, 220.0, de);
+        // In a storm the swell runs on much farther (flattened close by, the far flat sea showed in the troughs as
+        // pale triangles).
+        let st = water.m.z;
+        let k = 1.0 - smoothstep(90.0 + 400.0 * st, 220.0 + 700.0 * st, de);
         wp.y += swell_h(wp.xz, globals.time) * water.far.w * k;
     }
 #endif

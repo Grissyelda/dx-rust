@@ -1925,8 +1925,8 @@ fn draw_augs(
 // ------------------------------------------------------------------------------------------------ health
 
 /// Region order on the screen (head, torso, right arm, left arm, right leg, left leg) -> PlayerHealth parts.
-const PARTS: [usize; 6] = [P_HEAD, P_TORSO, P_ARM_R, P_ARM_L, P_LEG_R, P_LEG_L];
-const PART_RECTS: [(i32, i32, i32, i32); 6] = [
+pub(crate) const PARTS: [usize; 6] = [P_HEAD, P_TORSO, P_ARM_R, P_ARM_L, P_LEG_R, P_LEG_L];
+pub(crate) const PART_RECTS: [(i32, i32, i32, i32); 6] = [
     (141, 42, 40, 54),
     (133, 98, 56, 73),
     (90, 131, 28, 65),
@@ -1942,7 +1942,7 @@ const REGIONS: [(i32, i32); 6] = [
     (24, 347),
     (222, 347),
 ];
-const PART_TITLES: [(&str, &str); 6] = [
+pub(crate) const PART_TITLES: [(&str, &str); 6] = [
     ("HealthLocationHead", "Head"),
     ("HealthLocationTorso", "Torso"),
     ("HealthLocationRightArm", "Right Arm"),

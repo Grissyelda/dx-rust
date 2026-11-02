@@ -19,6 +19,14 @@ pub fn damage_scale(class: &str, damage_type: &str) -> f32 {
         };
     }
     if is_a(class, "GuntherHermann") || is_a(class, "WaltonSimons") {
+        // Transcended (setting TrBossResist): no tear gas or halon, a third of explosions.
+        if crate::transcended::boss_resist() {
+            match damage_type {
+                "TearGas" | "HalonGas" => return 0.0,
+                "Exploded" => return 0.33,
+                _ => {}
+            }
+        }
         return match damage_type {
             "Flamed" | "Burned" | "Stunned" | "KnockedOut" => 0.0,
             "TearGas" | "PoisonGas" | "HalonGas" | "Radiation" | "Shocked" | "Poison" | "PoisonEffect" => 0.1,

@@ -1482,6 +1482,18 @@ impl ConState {
 
     /// DataLinkPlay.AbortAndSaveHistory: run the rest silently.
     fn abort_link_saving_history(&mut self, flags: &mut FlagBase) {
+        self.abort_one_link(flags);
+        // Transcended: the queued infolinks' events run too (flags, triggers, transfers) instead of waiting.
+        if crate::transcended::fixes() {
+            let mut guard = 0;
+            while self.link.is_some() && guard < 16 {
+                guard += 1;
+                self.abort_one_link(flags);
+            }
+        }
+    }
+
+    fn abort_one_link(&mut self, flags: &mut FlagBase) {
         let Some(l) = self.link.as_mut() else { return };
         l.silent = true;
         crate::sound::stop(crate::sound::PLAYER, crate::sound::slot::TALK);
@@ -2671,6 +2683,15 @@ pub fn consys_system(
         .map(|mut q| std::mem::take(&mut *q))
         .unwrap_or_default()
     {
+        // Transcended: no bark with the head under water (scuba divers excepted).
+        if crate::transcended::fixes() {
+            if let Some(a) = st.actors.get(&Who::Actor(b)) {
+                let head = a.pos + DVec3::Z * a.eye;
+                if !fold(&a.bind).contains("scuba") && crate::actors::water_at(lvl, head).is_some() {
+                    continue;
+                }
+            }
+        }
         st.start_bark(
             fl,
             &|a, b| lvl.collision.trace(a, b, DVec3::ZERO).fraction >= 1.0,

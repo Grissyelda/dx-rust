@@ -690,6 +690,15 @@ impl Enhance {
             ("FixBlastDoors", "Fixes", "Explosions Break Strong Doors", "An explosion is dealt in five rings, so in the original no ring of even a big blast could beat a sturdy door's damage threshold. With this, a blast strong enough as a whole damages the door (GMDX fix; changes the balance)."),
             ("FixGibLoot", "Fixes", "Gibbed Bodies Drop Their Weapons", "Someone blown apart throws out the weapons they carried instead of losing them (GMDX / G-Flex fix; changes the balance)."),
             ("FixCarryJump", "Fixes", "Muscle Aug Jumps While Carrying", "With the Microfibral Muscle aug on you can jump while carrying heavier things, as the aug was meant to allow (GMDX fix; changes the balance)."),
+            // Transcended (ported by hand; the mod itself isn't needed).
+            ("TranscendedFixes", "Fixes", "Transcended Fixes", "Dozens of the original's bugs fixed as the Transcended mod does: misnamed mission flags (the Hong Kong ROM, the ship breach, the Vandenberg hazlab, Aimee's goal, Jock in Area 51), the ATM account-0 login, EMP'd robots taken as enemies, bot screens left open, the laser left on in conversations, the riot prod breaking crates, burning people left unconscious, barks under water, leather chair colours and more."),
+            ("TrUnconsciousDeath", "Gameplay", "Unconscious Bodies Can Die", "Someone knocked out can still be killed: an explosion, fire or gas that reaches the body finishes them (Transcended; changes the balance)."),
+            ("TrNoisyObjects", "AI", "Using Things Makes Noise", "Doors, buttons, switches, lamps, taps and machines you use make a noise guards nearby hear (Transcended's Noisy Object Usage)."),
+            ("TrWeaponPointing", "AI", "People Mind A Pointed Gun", "Friendly and neutral people you point a drawn weapon at, close up and in their view, complain (Transcended)."),
+            ("TrRadarCloak", "Gameplay", "Thermoptic Camo Fools Machines", "Thermoptic camo also hides you from cameras, turrets, laser beams and mines, as Radar Transparency does; Cloak and Radar Transparency together get you through beams (Transcended; changes the balance)."),
+            ("TrNpcLimp", "AI", "Wounded Legs Slow People", "People with a crippled leg walk at 85% speed, with both legs crippled 70% (Transcended)."),
+            ("TrBossResist", "Gameplay", "Stronger Gunther And Simons", "Gunther and Walton Simons shrug off tear gas and halon and take a third of explosive damage (Transcended; changes the balance)."),
+            ("TrLongFlares", "Gameplay", "Long-Burning Flares", "Flares burn for six minutes instead of thirty seconds (Transcended)."),
             // GMDX quality of life.
             ("ToolCounts", "Interface", "Tools Owned / Needed", "Locks and devices show how many lockpicks or multitools you have against how many they need, as 2/3 picks (GMDX)."),
             ("ItemCounts", "Interface", "Item Count Labels", "A stack of items lying about shows how many there are, as Medkit (3) (GMDX)."),
@@ -756,6 +765,7 @@ impl Enhance {
             ("DdsItems", "helios", "Helios Items And Decorations", "Helios's textures on items and decorations that keep their original models (HDTP's models keep their own). Changes take effect when the next map loads."),
             ("DdsWorld", "helios", "DDS World Textures", "Other DDS texture packs found beside Helios for walls, floors and the rest of the world (used in place of New Vision's where both have one). Changes take effect when the next map loads."),
             ("VisAttach", "visibleattachments", "Weapon Mods Shown (Visible Attachments)", "Scopes, silencers and lasers you fit show on the weapon. Changes take effect when the next map loads."),
+            ("ConfixFixes", "confix", "Confix Conversation Fixes", "Conversations from the Confix mod: typos, wrong speakers, missing lines and broken flag checks fixed. Only its conversation files are used. Changes take effect when the next map loads."),
         ] {
             if unreal_pkg::mods::active(id).is_none() {
                 continue;

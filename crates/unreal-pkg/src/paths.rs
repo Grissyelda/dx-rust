@@ -12,6 +12,34 @@ static ADDONS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 /// High-resolution texture packs (mods::ModKind::HdTextures), used texture by texture while switched on.
 static HD_TEX: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
 static HD_TEX_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// Mods used file by file (mods::ModKind::ConFiles: Confix): (folder, file-name prefixes, lower case). Their files
+/// win over the overlays and the game's while `PICKS_ON` (the ConfixFixes setting) is set.
+static PICKS: RwLock<Vec<(PathBuf, Vec<String>)>> = RwLock::new(Vec::new());
+static PICKS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Folders whose files named with one of these prefixes replace the game's (see PICKS).
+pub fn set_picks(picks: Vec<(PathBuf, Vec<String>)>) {
+    if let Ok(mut p) = PICKS.write() {
+        *p = picks.into_iter().filter(|(d, _)| d.is_dir()).map(|(d, v)| (d, v.iter().map(|x| x.to_ascii_lowercase()).collect())).collect();
+    }
+}
+
+pub fn set_picks_on(on: bool) {
+    PICKS_ON.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn has_picks() -> bool {
+    PICKS.read().map(|p| !p.is_empty()).unwrap_or(false)
+}
+
+fn in_picks(parent: &Path, name: &str) -> Option<PathBuf> {
+    if !PICKS_ON.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let p = PICKS.read().ok()?;
+    let lower = name.to_ascii_lowercase();
+    p.iter().filter(|(_, pre)| pre.iter().any(|x| lower.starts_with(x.as_str()))).find_map(|(d, _)| ci_in(&d.join(parent), name))
+}
 
 /// The game folder and the overlay folders, highest priority first.
 pub fn set(game_root: &Path, overlays: Vec<PathBuf>) {
@@ -76,6 +104,13 @@ fn ci_in(dir: &Path, name: &str) -> Option<PathBuf> {
 pub fn resolve(path: &Path) -> PathBuf {
     let g = STATE.read();
     let Some((root, ovs)) = g.as_ref().ok().and_then(|g| g.as_ref()) else { return path.to_path_buf() };
+    if let Ok(rel) = path.strip_prefix(root) {
+        if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
+            if let Some(p) = in_picks(parent, &name.to_string_lossy()) {
+                return p;
+            }
+        }
+    }
     if ovs.is_empty() {
         if path.exists() {
             return path.to_path_buf();

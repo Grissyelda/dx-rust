@@ -472,9 +472,13 @@ pub fn frob_target_system(
                 best = Some(h);
                 break;
             }
-        } else if r < min_size {
-            min_size = r;
-            best = Some(h);
+        } else {
+            // Transcended: the smallest by volume (CollisionRadius^2 x CollisionHeight), not radius alone.
+            let size = if crate::transcended::fixes() { h.ext.x * h.ext.x * h.ext.z } else { r };
+            if size < min_size {
+                min_size = size;
+                best = Some(h);
+            }
         }
     }
     HAS_TARGET.store(best.is_some(), std::sync::atomic::Ordering::Relaxed);

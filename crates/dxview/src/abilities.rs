@@ -596,9 +596,12 @@ pub fn aug_defense_system(
     time: Res<Time>,
     player: Res<crate::Player>,
     mut q: Query<&mut crate::projectiles::Projectile>,
+    npcs: Query<&crate::ai::Npc>,
+    level: Res<crate::LevelRes>,
     mut t: Local<(f32, f32)>,
 ) {
     let _prof = crate::prof::scope("abilities::aug_defense_system");
+    let tr = crate::transcended::fixes();
     let Some(range) = aug("AugDefense") else {
         *t = (0.0, 0.0);
         set_defense_target(None);
@@ -627,6 +630,14 @@ pub fn aug_defense_system(
             || p.life <= 0.0
         {
             continue;
+        }
+        // Transcended: not the rockets of pawns friendly to the player (allied bots), and only in sight
+        // (FastTrace from the projectile to the player).
+        if tr {
+            let friendly = p.from.is_some_and(|b| npcs.iter().any(|n| n.blocker == b && !n.hates("Player")));
+            if friendly || level.0.collision.trace(p.pos, me, bevy::math::DVec3::ZERO).fraction < 0.999 {
+                continue;
+            }
         }
         let d = p.pos.distance(me);
         if best.as_ref().is_none_or(|b| d < b.0) {

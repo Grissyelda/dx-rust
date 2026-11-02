@@ -291,10 +291,11 @@ pub fn scope_system(
         *g = match lens {
             // In the rifle's eyepiece: just in front of its rear cap (the original's eyepiece is a closed face, which
             // hid a lens set inside the tube), a little smaller than the tube.
+            // The tube disc (k 1) is shrunk so its outer edge is the eyepiece's rim: the scope's own tube frames it.
             Some((c, rot, rad)) => Transform {
-                translation: c + rot * Vec3::new(0.0, 0.0, 0.003 + lift),
+                translation: c + rot * Vec3::new(0.0, 0.0, lift),
                 rotation: rot,
-                scale: Vec3::splat(rad * 0.94),
+                scale: Vec3::splat(if k.0 == 1 { rad * 0.95 / RIM } else { rad * 0.93 }),
             },
             None => Transform::from_xyz(0.0, 0.0, -LENS_D + lift).with_scale(Vec3::splat(r)),
         };

@@ -108,6 +108,9 @@ const STORM_WAVE: (f32, f32, f32, f32) = (0.55, 31.0, 3.4, 1.1);
 
 /// How stormy it is, 0..1: the rain (weather.rs), in the steps the water materials are updated in.
 pub fn storm() -> f32 {
+    if let Some(v) = env_val!("DXVIEW_STORM").and_then(|v| v.parse::<f32>().ok()) {
+        return v.clamp(0.0, 1.0);
+    }
     ((crate::weather::density() / 14.0).clamp(0.0, 1.0) * 50.0).round() / 50.0
 }
 
@@ -288,9 +291,21 @@ pub fn tessellate(
 ) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 2]>, Vec<u32>) {
     let (mut p, mut n, mut u, mut u1) = (pos.to_vec(), nrm.to_vec(), uv.to_vec(), uv1.to_vec());
     let mut out = Vec::new();
+    // Every triangle split the same way: a sheet too big for the vertex budget at `max` gets a coarser `max` for all
+    // of it (stopping half way left whole stretches as big flat triangles that the storm swell's troughs dipped under:
+    // flat grey slivers across the sea). Halving splits leave triangles about max^2 / 4.
+    let area: f32 = idx
+        .chunks_exact(3)
+        .map(|t| {
+            let (a, b, c) = (Vec3::from(pos[t[0] as usize]), Vec3::from(pos[t[1] as usize]), Vec3::from(pos[t[2] as usize]));
+            (b - a).cross(c - a).length() * 0.5
+        })
+        .sum();
+    const TRI_BUDGET: f32 = 700_000.0;
+    let max = max.max((area * 4.0 / TRI_BUDGET).sqrt());
     let mut mids: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
     let mut stack: Vec<[u32; 3]> = idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
-    let budget = 400_000usize;
+    let budget = 2_000_000usize;
     while let Some(t) = stack.pop() {
         let d = |a: u32, b: u32, p: &Vec<[f32; 3]>| Vec3::from(p[a as usize]).distance(Vec3::from(p[b as usize]));
         let e = [d(t[0], t[1], &p), d(t[1], t[2], &p), d(t[2], t[0], &p)];
@@ -687,7 +702,7 @@ pub fn backing_mesh(positions: &[[f32; 3]], indices: &[u32]) -> Mesh {
 
 pub fn backing_material() -> StandardMaterial {
     StandardMaterial {
-        base_color: Color::linear_rgb(0.004, 0.012, 0.018),
+        base_color: if env_on!("DXVIEW_BACKING_DEBUG") { Color::linear_rgb(1.0, 0.0, 1.0) } else { Color::linear_rgb(0.004, 0.012, 0.018) },
         unlit: true,
         double_sided: true,
         cull_mode: None,

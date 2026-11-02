@@ -23,7 +23,16 @@ pub enum ModKind {
     /// the Parallax Occlusion Mapping addon): read by dx-level's relief module for remastered lighting, never as
     /// colour textures.
     ReliefMaps,
+    /// A few files used in place of the game's while a setting asks for them (Confix: its conversation packages
+    /// only - DeusExConText / DeusExConAudio* / DeusExConversations - never its DeusEx.u).
+    ConFiles,
+    /// Not read as packages at all: its fixes are ported to Rust by hand and the folder is only checked for
+    /// (Transcended).
+    Fixes,
 }
+
+/// The file-name prefixes a ConFiles mod supplies.
+pub const CON_FILES: &[&str] = &["DeusExConText", "DeusExConAudio", "DeusExConversations"];
 
 #[derive(Clone, Copy, Debug)]
 pub struct ModDef {
@@ -93,6 +102,20 @@ pub const MODS: &[ModDef] = &[
         kind: ModKind::ReliefMaps,
         marker: "",
         help: "Normal and height maps (the Parallax Occlusion Mapping addon): choose its folder; used by Remastered Lighting",
+    },
+    ModDef {
+        id: "confix",
+        name: "Confix",
+        kind: ModKind::ConFiles,
+        marker: "System/ConSys.u",
+        help: "Conversation fixes (Confix): choose its folder; switch them in Settings > Enhancements (Confix Fixes)",
+    },
+    ModDef {
+        id: "transcended",
+        name: "Transcended",
+        kind: ModKind::Fixes,
+        marker: "Mods/Transcended/System/DeusEx.u",
+        help: "Transcended's vanilla+ fixes are built in (Settings > Enhancements); its folder is only checked for",
     },
     ModDef {
         id: "gmdx",
@@ -167,6 +190,49 @@ pub fn locate(m: &ModDef, dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_dir() && ok(p))
 }
 
+/// Folder names that hint at each mod (lower case), for `scan`: a folder named like the mod is tried first.
+fn hints(id: &str) -> &'static [&'static str] {
+    match id {
+        "lddp" => &["lay_d", "lay d", "lddp", "femjc"],
+        "visibleattachments" => &["visible"],
+        "hdtp" => &["hdtp"],
+        "newvision" => &["new vision", "newvision", "new_vision"],
+        "helios" => &["textures", "helios"],
+        "augmentique" => &["augmentique"],
+        "precipitation" => &["precipitation", "gmdx"],
+        "relief" => &["parallax", "relief", "pom"],
+        "confix" => &["confix"],
+        "transcended" => &["transcended"],
+        "gmdx" => &["gmdx"],
+        _ => &[],
+    }
+}
+
+/// One folder holding many mods (each in its own folder inside, as unpacked): where each supported mod is.
+/// Folders named like the mod are tried first, then every other folder; a folder already taken by one mod is
+/// still offered to the others (GMDX Augmented's System folder also carries Precipitation).
+pub fn scan(dir: &Path) -> Vec<(&'static ModDef, PathBuf)> {
+    let mut subs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .unwrap_or_default();
+    subs.sort();
+    let mut out = Vec::new();
+    for m in MODS {
+        let name_of = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let (mut named, rest): (Vec<&PathBuf>, Vec<&PathBuf>) =
+            subs.iter().partition(|p| hints(m.id).iter().any(|h| name_of(p).contains(h)));
+        named.sort_by_key(|p| hints(m.id).iter().position(|h| name_of(p).contains(h)).unwrap_or(99));
+        // The Helios pack is a bare Textures folder: never search the other mods' folders for it (New Vision has
+        // a Textures folder of packages, not of DDS files, but HDTP or others might ship DDS files).
+        // New Vision's marker is a game texture package, so only a folder named like it counts.
+        let rest = if matches!(m.kind, ModKind::DdsTextures | ModKind::ReliefMaps | ModKind::HdTextures) { Vec::new() } else { rest };
+        if let Some(p) = named.into_iter().chain(rest).find_map(|p| locate(m, p)) {
+            out.push((m, p));
+        }
+    }
+    out
+}
+
 fn dir_has_dds(d: &Path) -> bool {
     std::fs::read_dir(d).ok().is_some_and(|rd| {
         rd.flatten().any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("dds")))
@@ -198,6 +264,38 @@ pub fn from_lines(lines: &[(String, String)]) -> Vec<ModSetting> {
         out.push(ModSetting { id: m.id, path, on });
     }
     out
+}
+
+/// launcher.txt's `ModAssets=` folder (one folder holding every mod, each in its own folder): the mods found in
+/// it that have no line of their own are added, on.
+pub fn add_assets(lines: &[(String, String)], mods: &mut Vec<ModSetting>) {
+    let Some(dir) = lines.iter().find(|(k, _)| k.eq_ignore_ascii_case("ModAssets")).map(|(_, v)| v.clone()) else { return };
+    if dir.trim().is_empty() {
+        return;
+    }
+    for (m, p) in scan(Path::new(dir.trim())) {
+        if !mods.iter().any(|s| s.id == m.id) {
+            mods.push(ModSetting { id: m.id, path: p.display().to_string(), on: true });
+        }
+    }
+}
+
+/// A "MOD ASSETS" folder (any case, spaces or underscores) beside `dir` or up to three folders above it.
+pub fn find_assets_near(dir: &Path) -> Option<PathBuf> {
+    let mut d = Some(dir);
+    for _ in 0..4 {
+        let cur = d?;
+        if let Ok(rd) = std::fs::read_dir(cur) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_ascii_lowercase().replace(['_', '-'], " ");
+                if e.path().is_dir() && (n == "mod assets" || n == "modassets") {
+                    return Some(e.path());
+                }
+            }
+        }
+        d = cur.parent();
+    }
+    None
 }
 
 /// launcher.txt lines for these settings.
@@ -241,6 +339,12 @@ pub fn activate(list: &[(&'static ModDef, PathBuf)]) {
     let addons = list.iter().filter(|(m, _)| m.kind == ModKind::Addon).map(|(_, p)| p.clone()).collect();
     let hd = list.iter().filter(|(m, _)| m.kind == ModKind::HdTextures).map(|(_, p)| p.clone()).collect();
     crate::paths::set_addons(addons, hd);
+    let picks = list
+        .iter()
+        .filter(|(m, _)| m.kind == ModKind::ConFiles)
+        .map(|(_, p)| (p.clone(), CON_FILES.iter().map(|s| s.to_string()).collect()))
+        .collect();
+    crate::paths::set_picks(picks);
     let dds: Vec<PathBuf> = list.iter().filter(|(m, _)| m.kind == ModKind::DdsTextures).map(|(_, p)| p.clone()).collect();
     if !dds.is_empty() {
         let n = crate::paths::set_dds(&dds);
@@ -251,4 +355,16 @@ pub fn activate(list: &[(&'static ModDef, PathBuf)]) {
 /// The folder of an enabled mod.
 pub fn active(id: &str) -> Option<PathBuf> {
     ACTIVE.read().ok()?.iter().find(|(i, _)| *i == id).map(|(_, p)| p.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    /// MOD_ASSETS=<folder> cargo test -p unreal-pkg scan_assets -- --nocapture
+    #[test]
+    fn scan_assets() {
+        let Ok(dir) = std::env::var("MOD_ASSETS") else { return };
+        for (m, p) in super::scan(std::path::Path::new(&dir)) {
+            println!("{} = {}", m.id, p.display());
+        }
+    }
 }

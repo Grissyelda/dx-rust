@@ -368,7 +368,8 @@ pub fn achievements_system(
     if fl("SimonsInterrogating3_Played") {
         unlock("sawnothing");
     }
-    if fl("TalkAboutRay_Played") {
+    // (Confix renames Everett's Ray conversation to AJumper2xMechanic.)
+    if fl("TalkAboutRay_Played") || fl("AJumper21Mechanic_Played") || fl("AJumper22Mechanic_Played") || fl("AJumper23Mechanic_Played") {
         unlock("dibbuk");
     }
     if fl("M12MeetSandraRenton_Played") {

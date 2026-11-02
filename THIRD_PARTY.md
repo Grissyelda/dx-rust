@@ -63,12 +63,18 @@ The Lay D Denton Project belongs to its authors and is supported with their perm
 its files: it reads them from the folder the player chooses.
 
 ## Other supported mods
-HDTP, New Vision, Visible Attachments, Augmentique and GMDX: Augmented Edition belong to their authors. DX RUST
+HDTP, New Vision, Visible Attachments, Augmentique, GMDX: Augmented Edition, Confix (Maiden_China) and Deus Ex:
+Transcended (Hawkbird) belong to their authors. DX RUST
 includes none of their files: it reads them from the folders the player chooses. Where a mod's behaviour is
 supported, it was rewritten in Rust from the mod's source:
 - GMDX AE's perks (Perk / PerkSystem and their effects), viewmodel inertia, the Dragon's Tooth energy cost, and
   the bugfixes and quality-of-life options listed in Settings > Enhancements;
-- Augmentique's outfit, NPC outfit and weapon skin rules.
+- Augmentique's outfit, NPC outfit and weapon skin rules;
+- Transcended's vanilla+ bug fixes and a few of its gameplay changes (Settings > Enhancements: Transcended Fixes
+  and the Tr* options). None of Transcended's files are read.
+
+Confix's conversation files (text and speech) are read from the player's Confix folder, in place of the game's,
+while the Confix Fixes option is on.
 
 The only exception is Augmentique's outfit lists, which exist only as script code in the mod's own package. A small
 interpreter reads them from the player's copy when the game starts, as data.

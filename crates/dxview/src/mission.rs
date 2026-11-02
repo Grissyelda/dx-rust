@@ -120,6 +120,15 @@ pub fn mission_system(
                 fl.set(f, FlagValue::Bool(v), 0);
             }
         }
+        // Confix's conversations without Lay D Denton: its Morpheus is LDDP's edited one unless LDDPOGMorpheus,
+        // and the vanilla M04PlayerLikesUNATCO (Confix's M04PaulBetrayal) waits for a flag nothing sets - both
+        // set here so the original's conversations play.
+        if crate::settings::get("ConfixFixes") > 0.5 && unreal_pkg::mods::active("confix").is_some() {
+            if !crate::travel::lddp() {
+                fl.set("LDDPOGMorpheus", FlagValue::Bool(true), 0);
+            }
+            fl.set("Enable_UNATCO_Storyline", FlagValue::Bool(true), 0);
+        }
         // Augmentique (OutfitManager.Setup): finishing the game or the training makes this playthrough's outfits
         // permanent; the outfit worn has its JCOutfits_Equipped_ flag.
         if crate::augmentique::active() {

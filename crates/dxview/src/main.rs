@@ -132,6 +132,8 @@ mod skeletal;
 mod ragdoll;
 mod gore;
 mod bodyfx;
+mod healui;
+mod transcended;
 mod alertui;
 mod hudfade;
 mod upscale;
@@ -593,7 +595,10 @@ fn main() {
     // Denton's older LDDPPath= still counts). Overlays (Lay D Denton) are laid over the game folder, addons searched
     // after it, HD texture packs used texture by texture. DXVIEW_MOD (';'-separated folders) adds overlays for tests.
     let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or_default();
-    let mod_settings = unreal_pkg::mods::from_lines(&unreal_pkg::mods::read_launcher_txt(&exe_dir.join("launcher.txt")));
+    let launcher_lines = unreal_pkg::mods::read_launcher_txt(&exe_dir.join("launcher.txt"));
+    let mut mod_settings = unreal_pkg::mods::from_lines(&launcher_lines);
+    // ModAssets=<folder>: one folder holding every mod (the launcher's Mod Assets row).
+    unreal_pkg::mods::add_assets(&launcher_lines, &mut mod_settings);
     let mut enabled = unreal_pkg::mods::enabled(&mod_settings);
     // DXVIEW_NO_MODS=1: the launcher's mods are left out (profile runs of the plain game).
     if env_on!("DXVIEW_NO_MODS") {
@@ -674,6 +679,8 @@ fn main() {
         }
     }
     unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
+    unreal_pkg::paths::set_picks_on(settings::get("ConfixFixes") > 0.5);
+    dx_level::skincolor::TR_FIXES.store(crate::transcended::fixes(), std::sync::atomic::Ordering::Relaxed);
     hdtp::apply_dds_filter();
     travel::init_lddp();
     hdtp::init(&PathBuf::from(&root));
@@ -1019,6 +1026,9 @@ fn main() {
                 bodyfx::fp_body_system.after(skeletal::mirror_skel_system),
                 bodyfx::glow_system.after(bodyfx::fp_body_system),
                 bodyfx::heal_label_system,
+                healui::heal_ui_system.before(weapons::weapon_system),
+                transcended::weapon_pointing_system.before(ai::npc_system),
+                transcended::unconscious_death_system.after(explosion::explosion_system),
                 bodyfx::wounds_system.after(ai::npc_system),
             ),
         )
@@ -1943,7 +1953,8 @@ fn fly(
     }
     let free_cam = thirdperson::free();
     let mut looked = false;
-    if cursor.grab_mode == CursorGrabMode::Locked {
+    // While the Diegetic Healing overlay is up, the mouse / right stick move its medkit cursor instead.
+    if cursor.grab_mode == CursorGrabMode::Locked && !healui::active() {
         // MouseSensitivity (default 3) scales the look; Invert Mouse flips the pitch.
         let k = 0.0022 * crate::settings::mouse_sensitivity() / 3.0;
         let inv = if crate::settings::invert_mouse() { -1.0 } else { 1.0 };

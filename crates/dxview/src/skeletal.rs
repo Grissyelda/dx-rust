@@ -1099,6 +1099,14 @@ static BODY_WEAPON_TURN: std::sync::Mutex<Option<HashMap<usize, Mat3>>> = std::s
 /// between them (identity when they already agree) is kept and applied to every frame after.
 fn weapon_fix(s: &mut SkelBody, mesh: &dx_level::actors::AnimMesh, start: usize, frames: usize, f: f32) {
     let Some(w) = s.weapon else { return };
+    // The weapon's turn from the original mesh at this very frame (its special face is what the original holds the
+    // gun by); the place from the rebuilt hand. A single turn measured in one pose and kept held the gun upside
+    // down or sideways in the others (aiming, running): the remodel's weapon triangle doesn't turn like the
+    // original's from pose to pose.
+    if let Some(v) = mesh.weapon_coords(start, frames, f) {
+        s.weapon = Some([w[0], v[1], v[2], v[3]]);
+        return;
+    }
     let axes = |w: &[[f32; 3]; 4]| Mat3::from_cols(Vec3::from(w[1]), Vec3::from(w[2]), Vec3::from(w[3]));
     if s.weapon_turn.is_none() {
         let key = s.body as *const Body as usize;
@@ -1309,6 +1317,7 @@ pub fn mirror_skel_system(
     mut tfs: Query<&mut Transform, Without<SkelBody>>,
     mut vis: Query<&mut Visibility, Without<SkelBody>>,
     hidden: Query<(), With<HiddenPart>>,
+    player: Res<crate::Player>,
 ) {
     let on = enabled();
     let Some(b) = body.0.as_ref() else {
@@ -1346,6 +1355,9 @@ pub fn mirror_skel_system(
         MIRROR_ON.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some((seq, start, frames, f, looped)) = b.cur.clone() {
             advance(&mut s, &seq, start, frames, f, looped, dt);
+            // DXVIEW_LEAN=<units>: a fixed lean for screenshots (the player isn't moved).
+            let lean = env_val!("DXVIEW_LEAN").and_then(|v| v.parse::<f32>().ok()).unwrap_or(player.lean as f32);
+            apply_lean(&mut s, lean);
             weapon_fix(&mut s, &b.mesh, start, frames, f);
             if crate::bodyfx::hurt_on() {
                 apply_hurt(&mut s, &crate::bodyfx::hurt_fracs(&ph.parts, &[100.0; 6]));
@@ -1602,6 +1614,60 @@ fn relaxed(rig: &Rig, female: bool) -> &'static [Trs] {
 
 /// Hurt Poses: `frac` = parts' health 0..1 (head, torso, left arm, right arm, left leg, right leg). A badly hurt
 /// arm hangs (its bones sag toward the relaxed pose); a hurt leg stiffens (the knee barely bends: a limp).
+/// Leaning (Q / E): the original slides the whole player sideways (`Player::lean` units, along his right). A body
+/// sliding about looked silly, so the rebuilt body keeps its feet where they were and bends at the hips instead: the
+/// skeleton is moved back by the lean and everything above the hips turned about them (more the higher it sits: the
+/// waist a little, the chest and head fully) so the head ends up where the eyes went. `lean` = units to the right.
+pub fn apply_lean(s: &mut SkelBody, lean: f32) {
+    if lean.abs() < 0.05 {
+        return;
+    }
+    let from_ue = s.to_ue.inverse();
+    // The slide in the rig's own space, and the rig's up and forward.
+    let lat = from_ue.transform_vector3(Vec3::new(0.0, lean, 0.0));
+    let up = from_ue.transform_vector3(Vec3::Z).normalize_or(Vec3::Y);
+    let fwd = from_ue.transform_vector3(Vec3::X).normalize_or(Vec3::Z);
+    let mut g = std::mem::take(&mut s.gmat);
+    globals(s.rig, &s.pose, &mut g);
+    let height = |m: &Mat4| m.w_axis.truncate().dot(up);
+    let find = |n: &str| s.rig.names.iter().position(|x| x == n);
+    let (Some(hips), Some(head)) = (find("DEF-spine").or_else(|| find("DEF-pelvis.L")), find("DEF-spine.006").or_else(|| find("DEF-spine.005"))) else {
+        s.gmat = g;
+        return;
+    };
+    let pivot = g[hips].w_axis.truncate() - lat;
+    let (h0, h1) = (height(&g[hips]), height(&g[head]));
+    let span = (h1 - h0).max(1e-3);
+    // The angle that carries the head the slide's length sideways, toward the slide - at most 22 degrees (a
+    // person leans round a corner from the waist; past that the body slid with the camera looked like a fold).
+    let ang = (lat.length() / span).clamp(-0.95, 0.95).asin().min(22f32.to_radians());
+    let sign = if fwd.cross(up).dot(lat) >= 0.0 { 1.0 } else { -1.0 };
+    let mut ng: Vec<Mat4> = Vec::with_capacity(g.len());
+    for m in &g {
+        let moved = Mat4::from_translation(-lat) * *m;
+        let h = height(m);
+        let w = ((h - h0) / (span * 0.75)).clamp(0.0, 1.0);
+        let w = w * w * (3.0 - 2.0 * w);
+        if w <= 0.0 {
+            ng.push(moved);
+            continue;
+        }
+        let r = Mat4::from_translation(pivot) * Mat4::from_axis_angle(fwd, sign * ang * w) * Mat4::from_translation(-pivot);
+        ng.push(r * moved);
+    }
+    // Back to each bone's own (parent-relative) transform.
+    for i in 0..s.pose.len() {
+        let local = match s.rig.parent[i] {
+            Some(p) => ng[p].inverse() * ng[i],
+            None => ng[i],
+        };
+        let (sc, r, t) = local.to_scale_rotation_translation();
+        s.pose[i] = Trs { t, r, s: sc };
+    }
+    s.gmat = g;
+    s.weapon = weapon_frame(s);
+}
+
 pub fn apply_hurt(s: &mut SkelBody, frac: &[f32; 6]) {
     let rel = relaxed(s.rig, s.body.female);
     let names = &s.rig.names;
@@ -1665,8 +1731,8 @@ fn coat_bones(rig: &Rig) -> &'static [(usize, f32)] {
 fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
     const STEP: f32 = 1.0 / 120.0;
     /// Spring toward the animated pose (rad/s natural frequency ~ 2 pi x 2.6 Hz) and its damping per second.
-    const K: f32 = 270.0;
-    const DAMP: f32 = 7.0;
+    const K: f32 = 230.0;
+    const DAMP: f32 = 5.5;
     /// Past SOFT the swing is pulled back harder; HARD it never passes (radians off the animated direction).
     const SOFT: f32 = 0.3;
     const HARD: f32 = 0.75;
@@ -1700,8 +1766,25 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
     s.cloth_clock += dt;
     let clock = s.cloth_clock;
     let decay = (1.0 - DAMP * STEP).max(0.0);
-    let spring = K * STEP * STEP;
+    // How far down the coat each bone hangs (0 at the collar): the hem is looser and trails more than the yoke, so
+    // the coat bends along its length instead of swinging as stiff panels.
+    let depth: Vec<f32> = bones
+        .iter()
+        .map(|&(i, _)| {
+            let mut d = 0.0;
+            let mut p = rig.parent[i];
+            while let Some(q) = p {
+                if !bones.iter().any(|b| b.0 == q) {
+                    break;
+                }
+                d += 1.0;
+                p = rig.parent[q];
+            }
+            d
+        })
+        .collect();
     for (k, &(i, len)) in bones.iter().enumerate() {
+        let spring = K / (1.0 + depth[k] * 0.7) * STEP * STEP;
         let parent = rig.parent[i].map_or(Mat4::IDENTITY, |p| g[p]);
         let anim = parent * s.pose[i].mat();
         let head_r = anim.w_axis.truncate();
@@ -1720,6 +1803,11 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
             continue;
         }
         let (head0, goal0) = (s.cloth_head[k], s.cloth_goal[k]);
+        // Moving through the air: the coat streams back from the way the body goes (more toward the hem), so a run
+        // or a turn swings it out behind instead of the coat hanging as animated.
+        let head_vel = (head_w - head0) / dt.max(1e-3);
+        let stream = (-head_vel * (0.03 + 0.025 * depth[k])).clamp_length_max(len_w * 0.9);
+        let target_w = target_w + stream;
         // A gentle gust across the coat (each bone a little out of step), mostly sideways to the body.
         let side = world.z_axis.truncate().normalize_or(Vec3::X);
         let ph = k as f32 * 0.7;

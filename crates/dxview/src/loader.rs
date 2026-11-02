@@ -268,6 +268,8 @@ pub fn loader_system(world: &mut World) {
             *last = key;
         }
         unreal_pkg::paths::set_hd_textures_on(crate::settings::get("HDTextures") > 0.5);
+        unreal_pkg::paths::set_picks_on(crate::settings::get("ConfixFixes") > 0.5);
+        dx_level::skincolor::TR_FIXES.store(crate::transcended::fixes(), std::sync::atomic::Ordering::Relaxed);
         crate::hdtp::apply_dds_filter();
         crate::hdtp::build_layer();
         crate::visattach::apply();
