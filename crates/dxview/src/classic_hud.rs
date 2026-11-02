@@ -940,6 +940,8 @@ pub fn classic_hud_system(
         let (x, y, ww, wh, visible) = layout(w);
         // Enhancement: HUD customisation (each part hidden, sized and faded on its own).
         let (show, k, alpha) = hud_part(w);
+        // Combat HUD (hudfade.rs): the status windows fade out of combat.
+        let alpha = if matches!(w, Win::Hit | Win::Compass | Win::Ammo | Win::Belt | Win::Active) { alpha * crate::hudfade::alpha() } else { alpha };
         let visible = visible && show;
         if !visible {
             // Hidden windows keep their last image: no canvas, no upload (a hidden ConLower alone was a

@@ -10,6 +10,8 @@ pub enum Format {
     Bc2,
     Bc3,
     Bc7,
+    /// One channel (height maps), decoded to grey.
+    Bc4,
     /// Uncompressed: bytes per pixel and the R, G, B, A bit masks.
     Rgb { bpp: usize, masks: [u32; 4] },
 }
@@ -30,7 +32,7 @@ pub fn level_size(format: Format, w: u32, h: u32) -> usize {
     let bw = w.div_ceil(4) as usize;
     let bh = h.div_ceil(4) as usize;
     match format {
-        Format::Bc1 => bw * bh * 8,
+        Format::Bc1 | Format::Bc4 => bw * bh * 8,
         Format::Bc2 | Format::Bc3 | Format::Bc7 => bw * bh * 16,
         Format::Rgb { bpp, .. } => w as usize * h as usize * bpp,
     }
@@ -62,6 +64,7 @@ pub fn parse(b: &[u8]) -> Option<Dds> {
                     73..=75 => Format::Bc2,
                     76..=78 => Format::Bc3,
                     97..=99 => Format::Bc7,
+                    79..=81 => Format::Bc4,
                     28 | 29 => Format::Rgb { bpp: 4, masks: [0xff, 0xff00, 0xff0000, 0xff000000] },
                     87 | 91 => Format::Rgb { bpp: 4, masks: [0xff0000, 0xff00, 0xff, 0xff000000] },
                     _ => return None,
@@ -187,6 +190,23 @@ pub fn decode_level(format: Format, data: &[u8], w: u32, h: u32) -> Option<Vec<u
                         p[3] = a[k];
                     }
                     out[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&p);
+                }
+            }
+        }
+        Format::Bc4 => {
+            let bw = w.div_ceil(4);
+            for (bi, blk) in data.chunks_exact(8).enumerate() {
+                let (bx, by) = ((bi % bw) * 4, (bi / bw) * 4);
+                if by >= h {
+                    break;
+                }
+                // The same block as BC3's alpha.
+                let v = alpha_bc3(blk);
+                for k in 0..16 {
+                    let (x, y) = (bx + k % 4, by + k / 4);
+                    if x < w && y < h {
+                        out[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[v[k], v[k], v[k], 255]);
+                    }
                 }
             }
         }

@@ -133,6 +133,10 @@ mod ragdoll;
 mod gore;
 mod bodyfx;
 mod alertui;
+mod hudfade;
+mod upscale;
+mod grass;
+mod trees;
 mod uicanvas;
 mod weapons;
 mod wisp;
@@ -650,6 +654,24 @@ fn main() {
         if n > 0 {
             println!("dxview: relief maps for {n} textures");
         }
+        // SecondRevision's height maps for New Vision's textures: only while New Vision's textures are on (they are
+        // made from them; SecondRevision's terms). Looked for where SecondRevision installs them and beside the exe.
+        if let Some(nv) = unreal_pkg::mods::active("newvision").filter(|_| settings::get("HDTextures") > 0.5) {
+            let game = PathBuf::from(&root);
+            let mut hdirs = vec![
+                game.join("Revision").join("NewVision").join("Textures"),
+                game.join("SecondRevision").join("heightmaps").join("NewVision"),
+                nv.join("Textures"),
+                nv.clone(),
+            ];
+            if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("heightmaps").join("NewVision"))) {
+                hdirs.push(exe);
+            }
+            let n = dx_level::relief::set_heightmap_archives(&hdirs);
+            if n > 0 {
+                println!("dxview: SecondRevision height maps for {n} New Vision textures");
+            }
+        }
     }
     unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
     hdtp::apply_dds_filter();
@@ -740,7 +762,10 @@ fn main() {
         .add_plugins(prof::ProfPhasePlugin)
         .insert_resource(make_player(&level, player_params(&PathBuf::from(&root))))
         .insert_resource(pickups::GameRoot(PathBuf::from(&root)))
-        .insert_resource(LevelRes(level))
+        .insert_resource({
+            dx_level::actors::set_zone_ambient(level.collision.zone_tree(), level.zone_ambient.clone());
+            LevelRes(level)
+        })
         .add_systems(PreStartup, |mut c: Commands| {
             if let Some(cfg) = shot_cfg() {
                 c.insert_resource(cfg);
@@ -923,12 +948,17 @@ fn main() {
         .init_resource::<particles::Particles>()
         .add_systems(Update, particles::particle_system.after(devices::device_system).after(fixtures::fixture_system))
         .add_systems(Update, weather::weather_system.after(fly))
-        .add_systems(Update, (shadowlight::shadow_light_system.after(fly), shadowlight::tag_casters_system, shadowlight::no_transparent_shadows_system))
+        .add_systems(Update, (shadowlight::shadow_light_system.after(fly), shadowlight::tag_casters_system, shadowlight::assign_system.after(shadowlight::shadow_light_system).after(shadowlight::tag_casters_system), shadowlight::no_transparent_shadows_system))
         .add_systems(Update, fx::fx_system.after(fly))
         .add_systems(Update, thirdperson::toggle_system)
         .add_systems(Update, audiofx::soundscape_system)
         .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system, clouds::clouds_system, clouds::lightning_sky_system.after(clouds::clouds_system), wisp::wisp_system.after(fly)))
         .add_systems(Update, alertui::alert_ui_system.after(ai::npc_system))
+        .add_systems(Update, hudfade::hud_fade_system)
+        .add_plugins(upscale::UpscalePlugin)
+        .add_plugins(grass::GrassPlugin)
+        .add_plugins(trees::TreesPlugin)
+        .add_systems(PostUpdate, upscale::upscale_system.before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, achievements::achievements_system.after(ai::npc_system))
         .add_systems(First, (diegetic::restore_system, thirdperson::restore_system).chain())
         .add_systems(PostUpdate, (thirdperson::place_system, diegetic::place_system).chain().before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
@@ -1035,6 +1065,7 @@ fn main() {
             (
                 dynlight::aug_light_system.after(fly),
                 dynlight::brightness_key_system,
+                dynlight::glow_lights_system.before(dynlight::dynlight_system),
                 dynlight::dynlight_system
                     .after(dynlight::aug_light_system)
                     .after(projectiles::projectile_system)
@@ -1315,6 +1346,7 @@ fn setup(
         .as_ref()
         .filter(|a| !a.mask.is_empty())
         .map(|a| (images.add(relight::mask_image(a)), images.add(relight::light_image(&a.lights))));
+    grass::build(&mut commands, level, lightmap_handle.clone());
     let mut relief_mats: std::collections::HashSet<AssetId<StandardMaterial>> = Default::default();
     let relief_t0 = std::time::Instant::now();
     let mut cache: std::collections::HashMap<
@@ -1459,6 +1491,12 @@ fn setup(
                             bm.base.fog_enabled = false;
                         }
                         relight::params(b.texture.map(|i| level.textures[i].name.as_str()), &mut bm.extension.params);
+                        // DetailTexture (the Detail Textures setting switches it in the shader, q.z).
+                        if let Some(Some((d, scale))) = b.texture.and_then(|i| level.texture_detail.get(i)) {
+                            bm.extension.detail = Some(handles[*d].clone());
+                            bm.extension.params.q.y = *scale;
+                            bm.extension.params.q.z = if settings::get("DetailTextures") > 0.5 { 1.0 } else { 0.0 };
+                        }
                         if let Some((mask, lights)) = relight_imgs.as_ref() {
                             bm.extension.mask = Some(mask.clone());
                             bm.extension.lights = Some(lights.clone());
@@ -1697,7 +1735,7 @@ fn setup(
         Tonemapping::None,
         Exposure { ev100: -0.263 },
         Camera {
-            order: 0,
+            order: -4,
             // Its picture stays in the window's shared textures for the world camera to draw over; only the last
             // camera (the view model's, never switched off) copies the result to the screen.
             output_mode: bevy::camera::CameraOutputMode::Skip,
@@ -1722,7 +1760,8 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         Camera {
-            order: 1,
+            // Before the upscale (1), heat (2) and view-model (3) cameras; after reflections and camera feeds.
+            order: -3,
             clear_color: ClearColorConfig::None,
             output_mode: bevy::camera::CameraOutputMode::Skip,
             ..default()

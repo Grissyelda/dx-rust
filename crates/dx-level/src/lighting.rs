@@ -112,7 +112,19 @@ fn linear_to_srgb_gamma(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
 }
 
-pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
+/// `zone_ambient`: each BSP zone's ambient light (linear, before LIGHT_GAIN), added to every texel of the surfaces
+/// in that zone, as the engine's lightmaps start from the zone's ambient colour.
+pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb, zone_ambient: &[[f32; 3]]) -> Baked {
+    // Each surface's zone: the front zone of the first node drawing it.
+    let mut surf_zone: Vec<usize> = vec![0; model.surfaces.len()];
+    let mut zone_set = vec![false; model.surfaces.len()];
+    for n in &model.nodes {
+        let si = n.surf as usize;
+        if si < surf_zone.len() && !zone_set[si] {
+            zone_set[si] = true;
+            surf_zone[si] = (if n.zone[1] > 0 { n.zone[1] } else { n.zone[0] }).max(0) as usize;
+        }
+    }
     // Pack rectangles on shelves, tallest first.
     let mut order: Vec<usize> = (0..model.surfaces.len())
         .filter(|&i| {
@@ -201,7 +213,7 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb) -> Baked {
                 let b = ty as f32 * lm.v_scale + lm.pan[1];
                 let d = [e1[0] * a + e2[0] * b, e1[1] * a + e2[1] * b, e1[2] * a + e2[2] * b];
                 let p = [base[0] + d[0], base[1] + d[1], base[2] + d[2]];
-                let mut sum = [0.0f32; 3];
+                let mut sum = zone_ambient.get(surf_zone.get(si).copied().unwrap_or(0)).copied().unwrap_or([0.0; 3]);
                 for (k, info) in infos.iter().enumerate() {
                     let Some(l) = info else { continue };
                     // The engine filtered each 1-bit shadow mask with a 3x3 tent before lighting, which softens

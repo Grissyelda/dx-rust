@@ -162,6 +162,7 @@ impl PlayerHealth {
     /// his own frame (X forward, Y right, Z up). Gunshots are scaled by the combat difficulty; EMP only drains
     /// bioelectric energy.
     pub fn damage(&mut self, dmg: f32, damage_type: &str, offset: DVec3) {
+        crate::hudfade::note();
         // DXVIEW_GOD=1: god mode from the start (test runs).
         static ENV_GOD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if self.dead || GOD_MODE.load(std::sync::atomic::Ordering::Relaxed) || *ENV_GOD.get_or_init(|| env_on!("DXVIEW_GOD")) {

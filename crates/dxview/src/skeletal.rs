@@ -766,6 +766,9 @@ fn build(
                     ChildOf(e),
                 ))
                 .id();
+            if layers.is_none() && matches!(alpha, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+                commands.entity(me).insert(crate::shadowlight::Casts);
+            }
             if morphs {
                 commands.entity(me).insert(MeshMorphWeights::Reference(weights_ent));
             }
@@ -1450,6 +1453,8 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
         }
     }
     best.truncate(16);
+    // The zone's ambient light, as every actor's light starts from it.
+    amb += Vec3::from(dx_level::actors::zone_ambient_at(ue));
     let mut lt = ActorLights { misc: Vec4::new(best.len() as f32, dx_level::lighting::LIGHT_GAIN * scale_glow, 0.0, 0.0), ..default() };
     for (i, (_, l)) in best.iter().enumerate() {
         let bp = Vec3::from(dx_level::ue_to_bevy(l.pos));

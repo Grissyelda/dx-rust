@@ -207,7 +207,7 @@ pub fn scope_system(
         let image = images.add(image);
         let mut layers = vec![0, crate::mirror::LAYER, crate::weather::RAIN_LAYER, crate::skyfollow::LAYER];
         if crate::shadowlight::level() > 0 {
-            layers.push(crate::shadowlight::SHADOW_LAYER);
+            layers.extend_from_slice(&crate::shadowlight::SLOT_LAYERS);
         }
         commands.spawn((
             Camera3d::default(),

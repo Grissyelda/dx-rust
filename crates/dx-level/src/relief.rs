@@ -102,9 +102,136 @@ fn pick_variant(d: &Path) -> PathBuf {
     d.to_path_buf()
 }
 
+/// SecondRevision's height maps for New Vision's textures: `<Package>.heightmap`, a zip (stored) of one DDS (BC4) a
+/// texture and `<Package>.heightmap.txt` naming them ("Package.Name<TAB>file.dds<TAB>depth"). AI-made from New
+/// Vision's pictures, so (their terms, and the user's rule) only used while New Vision's textures are on - the caller
+/// indexes them only then. Key: "package/name" (lower case).
+struct Archived {
+    file: PathBuf,
+    local: u64,
+    size: u64,
+    depth: f32,
+}
+
+static ARCHIVED: RwLock<Option<HashMap<String, Archived>>> = RwLock::new(None);
+
+fn le16(b: &[u8], o: usize) -> u64 {
+    u16::from_le_bytes([b[o], b[o + 1]]) as u64
+}
+fn le32(b: &[u8], o: usize) -> u64 {
+    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as u64
+}
+
+/// A stored zip's items: (name, local header offset, size).
+fn zip_items(f: &mut std::fs::File) -> Option<Vec<(String, u64, u64)>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = f.metadata().ok()?.len();
+    let tail = len.min(66_000);
+    f.seek(SeekFrom::Start(len - tail)).ok()?;
+    let mut t = vec![0u8; tail as usize];
+    f.read_exact(&mut t).ok()?;
+    let at = (0..t.len().saturating_sub(21)).rev().find(|&i| le32(&t, i) == 0x0605_4b50)?;
+    let (count, dir_size, dir_off) = (le16(&t, at + 10), le32(&t, at + 12), le32(&t, at + 16));
+    f.seek(SeekFrom::Start(dir_off)).ok()?;
+    let mut d = vec![0u8; dir_size as usize];
+    f.read_exact(&mut d).ok()?;
+    let mut out = Vec::new();
+    let mut p = 0usize;
+    for _ in 0..count {
+        if p + 46 > d.len() || le32(&d, p) != 0x0201_4b50 {
+            break;
+        }
+        let method = le16(&d, p + 10);
+        let size = le32(&d, p + 24);
+        let (nl, xl, cl) = (le16(&d, p + 28) as usize, le16(&d, p + 30) as usize, le16(&d, p + 32) as usize);
+        let local = le32(&d, p + 42);
+        let name = String::from_utf8_lossy(&d[p + 46..(p + 46 + nl).min(d.len())]).to_string();
+        if method == 0 {
+            out.push((name, local, size));
+        }
+        p += 46 + nl + xl + cl;
+    }
+    Some(out)
+}
+
+fn zip_read(file: &Path, local: u64, size: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(file).ok()?;
+    f.seek(SeekFrom::Start(local)).ok()?;
+    let mut h = [0u8; 30];
+    f.read_exact(&mut h).ok()?;
+    if le32(&h, 0) != 0x0403_4b50 {
+        return None;
+    }
+    f.seek(SeekFrom::Start(local + 30 + le16(&h, 26) + le16(&h, 28))).ok()?;
+    let mut b = vec![0u8; size as usize];
+    f.read_exact(&mut b).ok()?;
+    Some(b)
+}
+
+/// Index every `*.heightmap` archive in these folders (see `Archived`); how many textures they cover.
+pub fn set_heightmap_archives(dirs: &[PathBuf]) -> usize {
+    let mut map: HashMap<String, Archived> = HashMap::new();
+    for d in dirs {
+        let Ok(rd) = std::fs::read_dir(d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("heightmap")) {
+                continue;
+            }
+            let Ok(mut f) = std::fs::File::open(&p) else { continue };
+            let Some(items) = zip_items(&mut f) else { continue };
+            let Some((_, l, sz)) = items.iter().find(|(n, ..)| n.to_ascii_lowercase().ends_with(".txt")) else { continue };
+            let Some(txt) = zip_read(&p, *l, *sz) else { continue };
+            for line in String::from_utf8_lossy(&txt).lines() {
+                let mut it = line.split('\t');
+                let (Some(key), Some(file), depth) = (it.next(), it.next(), it.next().and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(1.0)) else { continue };
+                if depth <= 0.0 {
+                    continue;
+                }
+                let Some((_, local, size)) = items.iter().find(|(n, ..)| n.eq_ignore_ascii_case(file.trim())) else { continue };
+                map.entry(key.trim().to_ascii_lowercase().replace('.', "/")).or_insert(Archived { file: p.clone(), local: *local, size: *size, depth });
+            }
+        }
+    }
+    let n = map.len();
+    if let Ok(mut g) = ARCHIVED.write() {
+        *g = (n > 0).then_some(map);
+    }
+    n
+}
+
+/// A texture's relief from SecondRevision's archives: the height map (white = high) as Bevy's depth map, normals
+/// from its slopes (steeper for the deeper ones).
+fn archived_maps(name: &str) -> Option<Relief> {
+    let parts: Vec<String> = name.to_ascii_lowercase().split('.').map(str::to_string).collect();
+    let key = format!("{}/{}", parts.first()?, parts.last()?);
+    let (file, local, size, depth) = {
+        let g = ARCHIVED.read().ok()?;
+        let a = g.as_ref()?.get(&key)?;
+        (a.file.clone(), a.local, a.size, a.depth)
+    };
+    let bytes = zip_read(&file, local, size)?;
+    let d = dds::parse(&bytes)?;
+    let top = dds::decode_level(d.format, d.mips.first()?, d.width, d.height)?;
+    let (w, h) = (d.width as usize, d.height as usize);
+    let height: Vec<f32> = top.chunks_exact(4).map(|p| p[0] as f32 / 255.0).collect();
+    let normal = build_mips(d.width, d.height, normals_from_height(w, h, &height, 1.6 * depth.clamp(0.25, 4.0)), true);
+    let mut dm = top;
+    for px in dm.chunks_exact_mut(4) {
+        let v = 255 - px[0];
+        px[0] = v;
+        px[1] = v;
+        px[2] = v;
+        px[3] = 255;
+    }
+    Some(Relief { width: d.width, height: d.height, normal, depth: Some(build_mips(d.width, d.height, dm, false)), packed: true })
+}
+
 /// Packs indexed.
 pub fn has_packs() -> bool {
     INDEX.read().map(|g| g.as_ref().is_some_and(|i| !i.files.is_empty())).unwrap_or(false)
+        || ARCHIVED.read().map(|g| g.is_some()).unwrap_or(false)
 }
 
 fn read_dds(p: &Path) -> Option<(u32, u32, Vec<Vec<u8>>)> {
@@ -248,6 +375,9 @@ pub fn maps_for(t: &TextureImage, generate: bool) -> Option<Relief> {
             return Some(Relief { width: w, height: h, normal, depth, packed: true });
         }
     }
+    if let Some(r) = archived_maps(&t.name) {
+        return Some(r);
+    }
     if !generate {
         return None;
     }
@@ -303,5 +433,24 @@ mod tests {
         assert!(generated_strength("CoreTexBrick.Brick.DrtyReddBrick_A").is_some());
         assert!(generated_strength("CoreTexMisc.Glass.Window_A").is_none());
         assert!(generated_strength("UNATCO.Signs.Sign_A").is_none());
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+
+    /// SecondRevision's New Vision height maps, when a copy is at SR_HEIGHTMAPS (skipped otherwise).
+    #[test]
+    fn reads_secondrevision_archives() {
+        let Some(d) = std::env::var_os("SR_HEIGHTMAPS").map(PathBuf::from) else { return };
+        let n = set_heightmap_archives(&[d]);
+        assert!(n > 100, "{n}");
+        let r = archived_maps("Airfield.Floors.747PlatSteel_A").expect("747PlatSteel_A");
+        assert_eq!((r.width, r.height), (256, 256));
+        let top = &r.depth.as_ref().unwrap()[0];
+        let lo = top.chunks_exact(4).map(|p| p[0]).min().unwrap();
+        let hi = top.chunks_exact(4).map(|p| p[0]).max().unwrap();
+        assert!(hi > lo + 40, "{lo}..{hi}");
     }
 }

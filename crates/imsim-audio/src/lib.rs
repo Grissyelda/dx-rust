@@ -300,6 +300,83 @@ impl Reverb {
     }
 }
 
+/// A zone's echo (Unreal's ZoneInfo reverb: bReverbZone with up to six Delay / Gain taps, MasterGain and CutoffHz,
+/// played by the original's Galaxy driver): the sound sent to it comes back after each tap's delay at its gain,
+/// low-passed at the cutoff, and the taps feed back a little so a room rings out instead of echoing once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EchoParams {
+    /// Tap delays (milliseconds) and gains (0..1); a zero delay or gain is unused.
+    pub delays_ms: [f32; 6],
+    pub gains: [f32; 6],
+    /// MasterGain (0..1) and the low-pass cutoff (Hz).
+    pub master: f32,
+    pub cutoff_hz: f32,
+}
+
+struct Echo {
+    buf: Vec<[f32; 2]>,
+    i: usize,
+    lp: [f32; 2],
+    /// The taps being played (eased toward `want`) and the level (0..1, for fading in / out).
+    cur: EchoParams,
+    level: f32,
+}
+
+impl Echo {
+    fn new(rate: u32) -> Echo {
+        Echo {
+            buf: vec![[0.0; 2]; (rate as usize) / 2 + 8],
+            i: 0,
+            lp: [0.0; 2],
+            cur: EchoParams { delays_ms: [0.0; 6], gains: [0.0; 6], master: 0.0, cutoff_hz: 6000.0 },
+            level: 0.0,
+        }
+    }
+
+    fn process(&mut self, rate: u32, inp: &[f32], out: &mut [f32], want: Option<EchoParams>) {
+        let frames = inp.len() / 2;
+        // Fade over ~0.3 s when the zone changes; switch the taps over once silent.
+        let target = if want.is_some_and(|w| Some(w) == Some(self.cur)) { 1.0 } else { 0.0 };
+        let step = frames as f32 / (0.3 * rate as f32);
+        self.level = if target > self.level { (self.level + step).min(1.0) } else { (self.level - step).max(0.0) };
+        if self.level <= 0.0 {
+            if let Some(w) = want {
+                if w != self.cur {
+                    self.buf.iter_mut().for_each(|b| *b = [0.0; 2]);
+                    self.lp = [0.0; 2];
+                }
+                self.cur = w;
+            }
+            if want.is_none() {
+                return;
+            }
+        }
+        let n = self.buf.len();
+        let taps: Vec<(usize, f32)> = (0..6)
+            .filter(|&k| self.cur.delays_ms[k] > 0.0 && self.cur.gains[k] > 0.0)
+            .map(|k| (((self.cur.delays_ms[k] * 0.001 * rate as f32) as usize).clamp(1, n - 1), self.cur.gains[k]))
+            .collect();
+        let a = 1.0 - (-std::f32::consts::TAU * self.cur.cutoff_hz.clamp(200.0, 20000.0) / rate as f32).exp();
+        let master = self.cur.master * self.level;
+        for f in 0..frames {
+            let mut e = [0.0f32; 2];
+            for &(d, g) in &taps {
+                let s = self.buf[(self.i + n - d) % n];
+                e[0] += s[0] * g;
+                e[1] += s[1] * g;
+            }
+            for c in 0..2 {
+                self.lp[c] += (e[c] - self.lp[c]) * a;
+            }
+            // Input plus a quarter of the echo fed back (the room rings out).
+            self.buf[self.i] = [inp[f * 2] + self.lp[0] * 0.25, inp[f * 2 + 1] + self.lp[1] * 0.25];
+            self.i = (self.i + 1) % n;
+            out[f * 2] += self.lp[0] * master;
+            out[f * 2 + 1] += self.lp[1] * master;
+        }
+    }
+}
+
 /// Music fade lengths in seconds for Unreal's EMusicTransition.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Transition {
@@ -340,6 +417,9 @@ struct State {
     reverb: Option<Reverb>,
     /// The reverb's targets (room size, damping, wet level); eased toward.
     reverb_want: (f32, f32, f32),
+    /// The listener's zone echo (None: not a reverb zone).
+    echo: Option<Echo>,
+    echo_want: Option<EchoParams>,
 }
 
 /// 4-point, 3rd-order Hermite interpolation between y1 and y2 (x 0..1).
@@ -354,7 +434,8 @@ impl State {
     fn mix(&mut self, out: &mut [f32], channels: usize) {
         let frames = out.len() / channels;
         let mut buf = vec![0.0f32; frames * 2];
-        let reverb_on = self.reverb_want.2 > 0.0 || self.reverb.as_ref().is_some_and(|r| r.wet > 1e-4);
+        let echo_on = self.echo_want.is_some() || self.echo.as_ref().is_some_and(|e| e.level > 0.0);
+        let reverb_on = self.reverb_want.2 > 0.0 || self.reverb.as_ref().is_some_and(|r| r.wet > 1e-4) || echo_on;
         let mut send = if reverb_on { vec![0.0f32; frames * 2] } else { Vec::new() };
         let rate = self.rate as f64;
         let smooth = 1.0 - (-1.0 / (0.004 * self.rate as f32)).exp();
@@ -459,7 +540,12 @@ impl State {
             }
         }
         self.voices.retain(|v| !v.done);
-        if reverb_on {
+        if echo_on {
+            let rate = self.rate;
+            let want = self.echo_want;
+            self.echo.get_or_insert_with(|| Echo::new(rate)).process(rate, &send, &mut buf, want);
+        }
+        if reverb_on && (self.reverb_want.2 > 0.0 || self.reverb.as_ref().is_some_and(|r| r.wet > 1e-4)) {
             let rate = self.rate;
             let (room, damp, wet) = self.reverb_want;
             let rv = self.reverb.get_or_insert_with(|| Reverb::new(rate));
@@ -538,6 +624,8 @@ impl Audio {
             hq: false,
             reverb: None,
             reverb_want: (0.5, 0.5, 0.0),
+            echo: None,
+            echo_want: None,
         }));
         let (tx, rx) = std::sync::mpsc::channel::<Option<u32>>();
         let st = state.clone();
@@ -629,6 +717,11 @@ impl Audio {
     /// The room reverb: room size 0..1, damping 0..1, wet level (0 = off). Eased toward.
     pub fn set_reverb(&self, room: f32, damp: f32, wet: f32) {
         self.state.lock().unwrap().reverb_want = (room.clamp(0.0, 1.0), damp.clamp(0.0, 1.0), wet.max(0.0));
+    }
+
+    /// The listener's zone echo (Unreal's reverb zones), or None. Voices feed it through their reverb send.
+    pub fn set_echo(&self, e: Option<EchoParams>) {
+        self.state.lock().unwrap().echo_want = e;
     }
 
     /// Update many voices' filter and reverb send under one lock: (id, filter, reverb).
@@ -988,6 +1081,8 @@ mod tests {
             hq: false,
             reverb: None,
             reverb_want: (0.5, 0.5, 0.0),
+            echo: None,
+            echo_want: None,
         };
         let clip = Arc::new(Clip {
             data: vec![0.5; 100],

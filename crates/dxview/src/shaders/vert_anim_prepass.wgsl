@@ -75,7 +75,9 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.color = vertex.color;
 #endif
 #ifdef MOTION_VECTOR_PREPASS
-    out.previous_world_position = out.world_position;
+    // The mesh's own move since last frame (temporal antialiasing); the pose's change isn't tracked.
+    out.previous_world_position = mesh_functions::mesh_position_local_to_world(
+        mesh_functions::get_previous_world_from_local(ii), vec4<f32>(local, 1.0));
 #endif
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     out.instance_index = ii;

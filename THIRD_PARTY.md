@@ -24,6 +24,36 @@ SurrealEngine is under the zlib licence:
        original software.
     3. This notice may not be removed or altered from any source distribution.
 
+## AMD FidelityFX Super Resolution 1
+`crates/dxview/src/shaders/easu.wgsl` is a WGSL port of the EASU (edge-adaptive spatial upsampling) pass of AMD
+FidelityFX Super Resolution 1 (ffx_fsr1.h). It is an altered version: plain texture loads instead of gathers, and a
+tone curve around it for a linear HDR picture. FidelityFX Super Resolution is under the MIT licence:
+
+    Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+    documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+    to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all copies or substantial portions
+    of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+    THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+    CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+    IN THE SOFTWARE.
+
+## SecondRevision
+Several DX RUST enhancements follow ideas from SecondRevision, a Deus Ex renderer under the zlib licence: which
+textures grow grass and the way blades are grown near the eye and thinned with distance; generated trees in place of
+the card trees; how real-time shadow lights are chosen and how much light a shadow may take away; the flashlight as
+an analytic cone. The code is our own, written in Rust and WGSL. DX RUST includes none of SecondRevision's files.
+SecondRevision's height maps for New Vision's textures are made from New Vision's pictures and are for use with Deus
+Ex and its mods only; DX RUST reads them from the player's own SecondRevision install, and only while New Vision's
+textures are on.
+
 ## Deus Ex
 Deus Ex and all of its content belong to their owners. DX RUST includes none of it: it reads the game files from
 the player's own install at run time.

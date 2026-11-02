@@ -125,6 +125,10 @@ fn bob_units() -> f64 {
 /// Vertical offset (Unreal units) and tilt (pitch, roll in Unreal rotator units) for something floating at an
 /// Unreal-space spot.
 pub fn bob(at: DVec3, t: f64) -> (f64, i32, i32) {
+    // Classic water has no swell of ours: only DeusExDecoration's own rocking moves floating things.
+    if !modern() {
+        return (0.0, 0, 0);
+    }
     let p = dx_level::ue_to_bevy([at.x as f32, at.y as f32, at.z as f32]);
     let (h, gx, gz) = swell(p[0], p[2], t as f32);
     // Slope in Unreal X (Bevy x) and Unreal Y (Bevy z), scaled down to a gentle tilt.

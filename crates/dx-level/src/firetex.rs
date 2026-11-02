@@ -95,9 +95,18 @@ pub struct FireTex {
     rising: bool,
     palette: [[u8; 4]; 256],
     seed: u32,
+    /// A water procedural (WetTexture / WaveTexture) run through the same machinery (watertex.rs).
+    pub water: Option<Box<crate::watertex::WaterSim>>,
 }
 
 impl FireTex {
+    /// A water procedural texture, stepped and drawn like a fire texture.
+    pub fn from_water(sim: crate::watertex::WaterSim) -> FireTex {
+        let mut f = FireTex::new(sim.width, sim.height, &[], [[0, 0, 0, 255]; 256], 255, false, 1);
+        f.water = Some(Box::new(sim));
+        f
+    }
+
     /// `sparks`: the texture's serialized sparks; `palette`: RGBA per heat value.
     pub fn new(width: usize, height: usize, sparks: &[[u8; 8]], palette: [[u8; 4]; 256], render_heat: u8, rising: bool, limit: usize) -> FireTex {
         let heat_loss = 1.0 - (255.0 - render_heat as f32) / 16.0;
@@ -119,6 +128,7 @@ impl FireTex {
             rising,
             palette,
             seed: 0x1234_5678,
+            water: None,
         }
     }
 
@@ -154,6 +164,10 @@ impl FireTex {
 
     /// Advance one frame.
     pub fn step(&mut self) {
+        if let Some(w) = self.water.as_mut() {
+            w.step();
+            return;
+        }
         if self.mode != Mode::Sim {
             self.frame = self.frame.wrapping_add(1);
             self.draw_procedural();
@@ -393,6 +407,10 @@ impl FireTex {
 
     /// Current frame as RGBA8 through the palette.
     pub fn rgba(&self, out: &mut Vec<u8>) {
+        if let Some(w) = self.water.as_ref() {
+            w.rgba(out);
+            return;
+        }
         out.resize(self.heat.len() * 4, 0);
         for (px, &v) in out.chunks_exact_mut(4).zip(&self.heat) {
             px.copy_from_slice(&self.palette[v as usize]);

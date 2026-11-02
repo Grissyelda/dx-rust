@@ -177,7 +177,7 @@ pub fn aim_dir(level: &dx_level::Level, eye: DVec3, fw: DVec3) -> DVec3 {
 pub fn camera_layers() -> RenderLayers {
     let mut l = vec![0, crate::mirror::LAYER, crate::weather::RAIN_LAYER, crate::skyfollow::LAYER];
     if crate::shadowlight::level() > 0 {
-        l.push(crate::shadowlight::SHADOW_LAYER);
+        l.extend_from_slice(&crate::shadowlight::SLOT_LAYERS);
     }
     if active() {
         l.push(crate::mirror::BODY_LAYER);

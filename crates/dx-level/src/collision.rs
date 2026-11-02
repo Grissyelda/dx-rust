@@ -26,6 +26,30 @@ impl Hit {
     }
 }
 
+/// The BSP's zone lookup alone (see `BspCollision::zone_tree`).
+#[derive(Clone, Default)]
+pub struct ZoneTree {
+    nodes: Vec<(DVec4, i32, i32, [i32; 2])>,
+}
+
+impl ZoneTree {
+    pub fn zone_at(&self, p: DVec3) -> i32 {
+        if self.nodes.is_empty() {
+            return 0;
+        }
+        let mut i = 0usize;
+        loop {
+            let (plane, front, back, zone) = self.nodes[i];
+            let d = plane.x * p.x + plane.y * p.y + plane.z * p.z - plane.w;
+            let (child, side) = if d >= 0.0 { (front, 1) } else { (back, 0) };
+            if child < 0 || child as usize >= self.nodes.len() {
+                return zone[side];
+            }
+            i = child as usize;
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Node {
     plane: DVec4,
@@ -133,6 +157,11 @@ impl BspCollision {
         self.planes.extend_from_slice(&planes);
         self.hulls.push(Hull { bmin, bmax, first, count: planes.len() as u32 });
         self.hulls.len() as i32 - 1
+    }
+
+    /// A copy of just what `zone_at` needs (the planes, children and zones), for lookups away from the level.
+    pub fn zone_tree(&self) -> ZoneTree {
+        ZoneTree { nodes: self.nodes.iter().map(|n| (n.plane, n.front, n.back, n.zone)).collect() }
     }
 
     /// The BSP zone a point is in (index into the model's zone list; 0 is "no zone").

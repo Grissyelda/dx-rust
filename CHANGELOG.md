@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Upscaling, shadows, grass and trees (November 2)
+- Upscaling (Settings > Enhancements > Display): Off, Native AA (temporal antialiasing at full resolution plus a light
+  sharpen), and Quality / Balanced / Performance / Ultra Performance, which draw the world at 1/1.5, 1/1.7, 1/2 or
+  1/3 the window's size, antialias it temporally and upscale it with AMD FidelityFX Super Resolution 1's
+  edge-adaptive filter (EASU, ported to WGSL) and RCAS sharpening. The weapon, HUD and menus stay at full resolution.
+- Real-time shadows reworked: shadow lights are chosen from all around you (not just ahead), lights on your own
+  floor count most, a light already shown holds its place, and each fades in and out by its rank instead of popping.
+  Every model casts from one light only (the one that lights it most), so people no longer drag three shadows. A
+  shadow only takes away light the map's own lighting gave that spot, and overlapping lights share it out, so
+  shadows are never darker than the light they block. People now receive shadows too (from other people and
+  objects, and their own arms).
+- The flashlight cone is a plain cone worked out in the shaders - a hot spot with a dim spill round it - with no
+  shadow map (no acne on walls beside you, one less shadow pass).
+- 3D Grass (Visuals: Off / Low / High): blades grow out of the lawns on the GPU, lit by the ground's own light map,
+  swaying in travelling gusts and pushed aside by whoever walks through. Grass grows on the textures
+  SecondRevision chose (the clean, light and dark green lawns and the natural grass).
+- Grown Trees (Visuals): the parks' flat card trees and bushes are replaced with grown ones - space-colonisation
+  branches, bark, clusters of leaves - four variants of each kind per map, at the original's size and place, lit by
+  the map's lights, swaying in the wind and casting shadows. The original's collision is kept.
+- Glowing Surfaces now also light their surroundings: augmentation canisters, bio cells, computer and ATM screens
+  and keypads give off a small light of their own colour.
+- With Glow And Bloom, coronas feed the bloom (a hot core at each lamp that the bloom spreads).
+- Combat HUD (Interface): out of combat the crosshair and the status displays fade away; they return at once in a
+  fight, when aiming down the sights or at an enemy, firing, hurt, badly hurt or changing weapons.
+- With New Vision's textures on, SecondRevision's height maps for them (if installed) give their walls relief.
+- Classic mode: detail textures (Display: the original renderers' close-up detail pass); zone reverb (the zones'
+  own echo settings, when the modern reverb is off); zone ambient light on walls and people; animated water, wave
+  and ice textures (WetTexture / WaveTexture drop simulations) instead of our swell and ripples on classic water.
+- Fish swim the way they face again, and the crosshair turns green over birds and fish.
+
 ### Playtest fixes (November 1, night)
 - Maps no longer pop in surface by surface: after a load the screen stays black with "LOADING" (game time and cut
   scenes held) until the new map's shaders have compiled, at most 6 seconds. The intro's first room appears whole.

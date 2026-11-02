@@ -13,6 +13,7 @@ dx-level = { path = "../dx-level" }
 imsim-core = { path = "../imsim-core" }
 unreal-pkg = { path = "../unreal-pkg" }
 imsim-audio = { path = "../imsim-audio" }
+imsim-plants = { path = "../imsim-plants" }
 glam = "0.32"
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"

@@ -601,6 +601,8 @@ pub struct SoundState {
     occl: crate::audiofx::Occluder,
     room_t: f32,
     hq_sent: Option<bool>,
+    /// The zone echo last sent to the mixer.
+    echo_sent: Option<Option<imsim_audio::EchoParams>>,
 }
 
 /// ClientSetMusic with another song (Some(package.name)) or back to the level's song and section (None).
@@ -717,6 +719,7 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
         occl: Default::default(),
         room_t: 0.0,
         hq_sent: None,
+        echo_sent: None,
     }
 }
 
@@ -787,6 +790,29 @@ pub fn sound_system(
         st.audio.set_quality(hq);
     }
     st.room_t -= dt;
+    // The original's reverb zones (ZoneInfo bReverbZone, Galaxy's echo): the listener's zone, unless the Modern
+    // room reverb replaces it.
+    let mut echo_live = false;
+    if !crate::audiofx::reverb_on() {
+        let z = level.0.collision.zone_at(ear).max(0) as usize;
+        if let Some(Some(e)) = level.0.zone_echo.get(z) {
+            echo_live = true;
+            let want = imsim_audio::EchoParams {
+                delays_ms: e.delays.map(|d| d as f32),
+                gains: e.gains.map(|g| g as f32 / 255.0),
+                master: e.master as f32 / 255.0,
+                cutoff_hz: e.cutoff_hz as f32,
+            };
+            if st.echo_sent != Some(Some(want)) {
+                st.echo_sent = Some(Some(want));
+                st.audio.set_echo(Some(want));
+            }
+        }
+    }
+    if !echo_live && st.echo_sent != Some(None) {
+        st.echo_sent = Some(None);
+        st.audio.set_echo(None);
+    }
     if st.room_t <= 0.0 {
         st.room_t = 0.5;
         if crate::audiofx::reverb_on() {
@@ -799,7 +825,7 @@ pub fn sound_system(
     let talking = st.slots.iter().any(|((_, sl), (id, _))| *sl == slot::TALK && st.audio.is_playing(*id));
     let duck_k = crate::audiofx::update_duck(talking, dt);
     let occl_on = crate::audiofx::occlusion_on();
-    let reverb_on = crate::audiofx::reverb_on();
+    let reverb_on = crate::audiofx::reverb_on() || echo_live;
     let lvl0 = &level.0;
     // (gain multiplier, filter, reverb send) for a voice.
     let fx = |occl: &mut crate::audiofx::Occluder, pos: Option<DVec3>, talk: bool| -> (f32, f32, f32) {
@@ -1089,6 +1115,7 @@ pub fn sound_system(
         .count();
     // GMDX Audio: Play Combat Music = Restricted (setting RestrictedCombatMusic): two or more attackers, so one
     // distant guard doesn't start the combat track.
+    crate::hudfade::ATTACKERS.store(attackers as u32, std::sync::atomic::Ordering::Relaxed);
     let combat = attackers >= if crate::settings::get("RestrictedCombatMusic") > 0.5 { 2 } else { 1 };
     if combat {
         st.change_timer = 0.0;

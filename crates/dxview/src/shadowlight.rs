@@ -24,8 +24,15 @@ use std::collections::HashMap;
 
 pub const SHADOW_LAYER: usize = 8;
 const SLOTS: usize = 4;
+/// Each shadow light's own layer: a caster is on exactly one of them (one shadow per model, from the light that
+/// lights it most), so a guard between three lamps doesn't trail three shadows.
+pub const SLOT_LAYERS: [usize; SLOTS] = [SHADOW_LAYER, 20, 21, 22];
 /// The shadow lights' own light is scaled down by this (so they add nothing visible); the shader scales it back.
 const ENCODE: f32 = 1.0e-4;
+/// Rank weights: the strongest chosen light's shadows at full strength, the others a little lighter.
+const RANK_WEIGHT: [f32; SLOTS] = [1.0, 0.8, 0.65, 0.5];
+/// A light already shown keeps its place unless another beats it by this much (no flicking between two alike).
+const HOLD: f32 = 0.85;
 /// How much of the blocked light a shadow takes away (the rest stands for light bounced about).
 const STRENGTH: f32 = 0.85;
 
@@ -56,7 +63,7 @@ pub struct BspShadowParams {
 /// group per material, as before.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[data(100, BspShadowParams, binding_array(111))]
-#[bindless(index_table(range(100..104), binding(110)))]
+#[bindless(index_table(range(100..106), binding(110)))]
 pub struct BspShadow {
     pub params: BspShadowParams,
     /// Remastered lighting: how much of each surface's three strongest lights reaches each lightmap texel
@@ -66,6 +73,10 @@ pub struct BspShadow {
     pub mask: Option<Handle<Image>>,
     #[texture(103, sample_type = "float", filterable = false)]
     pub lights: Option<Handle<Image>>,
+    /// The surface's DetailTexture (params.q.y = its UV scale, q.z = Detail Textures on).
+    #[texture(104)]
+    #[sampler(105)]
+    pub detail: Option<Handle<Image>>,
 }
 
 impl<'a> From<&'a BspShadow> for BspShadowParams {
@@ -100,11 +111,18 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
             },
             mask: None,
             lights: None,
+            detail: None,
         },
     }
 }
 
+pub const SPOTS_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("2c7d9a51-6e3b-4f08-8a1c-5b9e0d4f7a63");
+
 pub fn setup_bsp_shader(mut shaders: ResMut<Assets<Shader>>) {
+    let _ = shaders.insert(
+        &SPOTS_SHADER,
+        Shader::from_wgsl(include_str!("shaders/shadow_spots.wgsl"), "dxview/shadow_spots.wgsl"),
+    );
     let _ = shaders.insert(
         &BSP_SHADER,
         Shader::from_wgsl(include_str!("shaders/bsp_shadow.wgsl"), "dxview/bsp_shadow.wgsl"),
@@ -125,10 +143,19 @@ fn wanted() -> usize {
 
 /// Layers for a casting mesh part, plus `extra` (the vision aug's heat layer).
 pub fn caster_layers(extra: &[usize]) -> RenderLayers {
-    let mut l = vec![0, SHADOW_LAYER];
+    let mut l = vec![0];
     l.extend_from_slice(extra);
     RenderLayers::from_layers(&l)
 }
+
+/// A mesh part that casts (opaque or masked, not too big, not a lamp holding its light): `assign_system` puts it on
+/// the layer of the one shadow light it casts from.
+#[derive(Component)]
+pub struct Casts;
+
+/// A caster bigger than a person (a tree): its radius in Unreal units, for aiming its light's spot.
+#[derive(Component)]
+pub struct CastSize(pub f32);
 
 #[derive(Component)]
 pub struct ShadowLight {
@@ -149,6 +176,7 @@ pub struct ShadowCaster;
 struct Slot {
     light: Option<usize>,
     weight: f32,
+    target: f32,
 }
 
 #[derive(Resource, Default)]
@@ -157,6 +185,8 @@ pub struct ShadowLights {
     chosen: Vec<usize>,
     /// Per chosen light: where its spot points (Bevy axes) and the cone's half angle.
     aim: HashMap<usize, (Vec3, f32)>,
+    /// Caster root -> the light it casts from.
+    assign: HashMap<Entity, usize>,
     repick: f32,
 }
 
@@ -168,12 +198,15 @@ pub fn setup_shadow_lights(mut commands: Commands, mut meshes: ResMut<Assets<Mes
     // DXVIEW_SHADOW_CUBE="x,y,z" (Bevy metres): a plain test cube that casts.
     if let Some(p) = env_val!("DXVIEW_SHADOW_CUBE").map(str::to_owned).map(|v| v.split(',').filter_map(|x| x.trim().parse::<f32>().ok()).collect::<Vec<_>>()) {
         if p.len() == 3 {
+            let root = commands.spawn((Transform::from_xyz(p[0], p[1], p[2]), Visibility::default())).id();
             commands.spawn((
                 Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
                 MeshMaterial3d(mats.add(StandardMaterial { base_color: Color::srgb(0.8, 0.2, 0.2), unlit: true, ..default() })),
-                Transform::from_xyz(p[0], p[1], p[2]),
+                Transform::default(),
                 caster_layers(&[]),
                 ShadowCaster,
+                Casts,
+                ChildOf(root),
             ));
         }
     }
@@ -214,7 +247,13 @@ fn reach(level: &dx_level::Level, l: &dx_level::lighting::LightInfo, p: DVec3) -
     b * (1.0 - d as f32 / l.radius)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Distance with height counted twice: lights and casters on your own floor matter most.
+fn floor_dist(a: DVec3, b: DVec3) -> f64 {
+    let d = a - b;
+    (d.x * d.x + d.y * d.y + 4.0 * d.z * d.z).sqrt()
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn shadow_light_system(
     time: Res<Time>,
     level: Res<LevelRes>,
@@ -222,7 +261,10 @@ pub fn shadow_light_system(
     blockers: Res<Blockers>,
     mut st: ResMut<ShadowLights>,
     cam: Single<&Transform, (With<FlyCam>, Without<SkyCam>, Without<ShadowLight>)>,
-    mut lights: Query<(&ShadowLight, &mut SpotLight, &mut Transform, &mut Visibility)>,
+    mut lights: Query<(&ShadowLight, &mut SpotLight, &mut Transform, &mut Visibility, &mut RenderLayers), Without<Casts>>,
+    parts: Query<&ChildOf, With<Casts>>,
+    gts: Query<&GlobalTransform>,
+    sizes: Query<&CastSize>,
     mut map_gen: Local<u64>,
 ) {
     let _prof = crate::prof::scope("shadowlight::shadow_light_system");
@@ -241,106 +283,150 @@ pub fn shadow_light_system(
                 let e = dx_level::bevy_to_ue(cam.translation.to_array());
                 DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64)
             };
-            let fwd = {
-                let f = cam.forward().as_vec3();
-                DVec3::new(f.x as f64, f.z as f64, f.y as f64)
-            };
-            // Where shadows would be seen: the player, the camera, and things in front of it not far off.
-            let mut points = vec![player.body.location, eye - DVec3::new(0.0, 0.0, 30.0)];
-            let mut near: Vec<(f64, DVec3)> = blockers
-                .list
-                .iter()
-                .filter(|c| c.radius > 4.0 && c.height > 8.0)
-                .map(|c| (c.center.distance(eye), c.center))
-                .filter(|(d, c)| *d < 1800.0 && (*c - eye).dot(fwd) > 0.0)
-                .collect();
-            near.sort_by(|a, b| a.0.total_cmp(&b.0));
-            points.extend(near.into_iter().take(10).map(|(_, c)| c));
-            let third = crate::thirdperson::active();
-            let mut aims: Vec<(usize, Vec3, f32)> = Vec::new();
+            let me = player.body.location;
+            // Casters all round the player (not just in front: a shadow can fall into view from behind), nearest
+            // first, height counted double.
+            let mut roots: Vec<(f64, Entity, DVec3)> = Vec::new();
+            let mut size_of: HashMap<Entity, f32> = HashMap::new();
+            for c in &parts {
+                let r = c.parent();
+                if roots.iter().any(|(_, e, _)| *e == r) {
+                    continue;
+                }
+                let Ok(gt) = gts.get(r) else { continue };
+                let u = dx_level::bevy_to_ue(gt.translation().to_array());
+                let size = sizes.get(r).map_or(60.0, |s| s.0);
+                // About chest height of the actor's origin (pawns stand on theirs at the cylinder's middle); a
+                // tree's crown.
+                let p = DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64 + if size > 60.0 { size as f64 } else { 20.0 });
+                let d = floor_dist(p, me).min(floor_dist(p, eye));
+                if d < 2400.0 {
+                    roots.push((d, r, p));
+                    size_of.insert(r, size);
+                }
+            }
+            roots.sort_by(|a, b| a.0.total_cmp(&b.0));
+            roots.truncate(48);
+            if crate::thirdperson::active() {
+                roots.push((0.0, Entity::PLACEHOLDER, me));
+            }
             let held: Vec<usize> = st.slots.iter().filter(|s| s.weight > 0.0).filter_map(|s| s.light).collect();
+            // Lamps inside something (a lamp's own shade, a barrel fire) would shut their own light in.
+            let inside = |lp: DVec3| {
+                blockers.list.iter().any(|c| {
+                    let d = DVec3::new(lp.x - c.center.x, lp.y - c.center.y, 0.0).length();
+                    d < c.radius && (lp.z - c.center.z).abs() < c.height
+                })
+            };
             let mut scored: Vec<(f32, usize)> = lvl
                 .lights
                 .iter()
                 .enumerate()
                 .filter(|(_, l)| l.radius > 160.0)
-                .filter(|(_, l)| {
-                    let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);
-                    lp.distance(eye) < 3500.0 + l.radius as f64
-                })
                 .filter_map(|(i, l)| {
-                    let mut best = 0.0f32;
-                    // A shadow map is six extra views of the scene: only worth it when something that casts
-                    // (a pawn or decoration in front, or JC's body in third person) is in the light.
                     let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);
-                    let mut casters: Vec<DVec3> = Vec::new();
-                    for (k, p) in points.iter().enumerate() {
-                        let w = if k == 1 { 1.0 } else { 1.0 / (1.0 + p.distance(eye) as f32 / 1200.0) };
-                        let r = reach(lvl, l, *p);
-                        if r > 0.0 && (k >= 2 || (k == 0 && third)) {
-                            casters.push(*p);
-                        }
-                        best = best.max(r * w);
-                    }
-                    if casters.is_empty() {
+                    if lp.distance(me).min(lp.distance(eye)) > 3500.0 + l.radius as f64 || inside(lp) {
                         return None;
                     }
-                    // The spot: toward the casters' middle, wide enough for each (plus its size: ~60 units round).
-                    let dirs: Vec<DVec3> = casters.iter().map(|c| (*c - lp).normalize_or_zero()).collect();
-                    let mid = dirs.iter().fold(DVec3::ZERO, |a, d| a + *d).normalize_or(DVec3::NEG_Z);
-                    let half = casters
-                        .iter()
-                        .zip(&dirs)
-                        .map(|(c, d)| d.dot(mid).clamp(-1.0, 1.0).acos() + (60.0 / c.distance(lp).max(30.0)).atan())
-                        .fold(0.0f64, f64::max)
-                        .clamp(0.35, 1.1) as f32;
-                    aims.push((i, Vec3::new(mid.x as f32, mid.z as f32, mid.y as f32), half));
-                    // Hold on to the lights already shown (no flicking between two alike).
-                    if held.contains(&i) {
-                        best *= 1.3;
+                    let mut score = 0.0f32;
+                    for (k, (d, _, p)) in roots.iter().enumerate().take(16) {
+                        let r = reach(lvl, l, *p);
+                        if r > 0.0 {
+                            score += r / (1.0 + *d as f32 / 600.0) * if k == 0 { 1.2 } else { 1.0 };
+                        }
                     }
-                    (best > 0.05).then_some((best, i))
+                    if held.contains(&i) {
+                        score /= HOLD;
+                    }
+                    (score > 0.05).then_some((score, i))
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.total_cmp(&a.0));
             if env_on!("DXVIEW_SHADOWLOG") {
                 eprintln!(
-                    "SHADOW candidates {:?}",
-                    scored.iter().take(6).map(|(s, i)| (*i, *s, lvl.lights[*i].pos, lvl.lights[*i].radius)).collect::<Vec<_>>()
+                    "SHADOW candidates {:?} casters {}",
+                    scored.iter().take(6).map(|(s, i)| (*i, *s, lvl.lights[*i].pos, lvl.lights[*i].radius)).collect::<Vec<_>>(),
+                    roots.len()
                 );
             }
             st.chosen = scored.into_iter().take(n).map(|(_, i)| i).collect();
-            for (i, d, h) in aims {
-                if st.chosen.contains(&i) {
-                    st.aim.insert(i, (d, h));
+            // One shadow per model: each caster casts from the chosen light that lights it most (keeping the one it
+            // had unless another beats it clearly).
+            let old = std::mem::take(&mut st.assign);
+            let mut per: HashMap<usize, Vec<(DVec3, f32)>> = HashMap::new();
+            for (_, r, p) in &roots {
+                let mut best: Option<(f32, usize)> = None;
+                for &i in &st.chosen {
+                    let mut v = reach(lvl, &lvl.lights[i], *p);
+                    if old.get(r) == Some(&i) {
+                        v /= HOLD;
+                    }
+                    if v > 0.0 && best.is_none_or(|b| v > b.0) {
+                        best = Some((v, i));
+                    }
+                }
+                if let Some((_, i)) = best {
+                    st.assign.insert(*r, i);
+                    per.entry(i).or_default().push((*p, size_of.get(r).copied().unwrap_or(60.0)));
                 }
             }
+            // Each spot: toward its casters' middle, wide enough for each (plus its size: ~60 units round).
+            st.aim.clear();
+            for (&i, casters) in &per {
+                let l = &lvl.lights[i];
+                let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);
+                let dirs: Vec<DVec3> = casters.iter().map(|(c, _)| (*c - lp).normalize_or_zero()).collect();
+                let mid = dirs.iter().fold(DVec3::ZERO, |a, d| a + *d).normalize_or(DVec3::NEG_Z);
+                let half = casters
+                    .iter()
+                    .zip(&dirs)
+                    .map(|((c, size), d)| d.dot(mid).clamp(-1.0, 1.0).acos() + (*size as f64 / c.distance(lp).max(30.0)).atan())
+                    .fold(0.0f64, f64::max)
+                    .clamp(0.35, 1.1) as f32;
+                st.aim.insert(i, (Vec3::new(mid.x as f32, mid.z as f32, mid.y as f32), half));
+            }
+            if env_on!("DXVIEW_SHADOWLOG") {
+                eprintln!("SHADOW chosen {:?} assigned {:?}", st.chosen, per.iter().map(|(i, v)| (*i, v.len())).collect::<Vec<_>>());
+            }
+            // A chosen light nobody casts from isn't worth a shadow view.
+            let aimed: Vec<usize> = st.chosen.iter().copied().filter(|i| st.aim.contains_key(i)).collect();
+            st.chosen = aimed;
         }
     }
-    // Slots: a chosen light keeps its slot; new ones take a free slot; the rest fade out.
+    // Slots: a chosen light keeps its slot; new ones take a free slot; each eases to its rank's weight, the rest fade
+    // out (no popping).
     let chosen = st.chosen.clone();
     for s in st.slots.iter_mut() {
-        if s.light.is_some_and(|l| chosen.contains(&l)) {
-            s.weight = (s.weight + dt * 2.0).min(1.0);
-        } else {
-            s.weight = (s.weight - dt * 2.0).max(0.0);
-            if s.weight == 0.0 {
-                s.light = None;
-            }
+        s.target = match s.light.and_then(|l| chosen.iter().position(|c| *c == l)) {
+            Some(rank) => RANK_WEIGHT[rank.min(SLOTS - 1)],
+            None => 0.0,
+        };
+        let k = dt * 1.5;
+        s.weight = if s.weight < s.target { (s.weight + k).min(s.target) } else { (s.weight - k).max(s.target) };
+        if s.target == 0.0 && s.weight == 0.0 {
+            s.light = None;
         }
     }
-    for l in chosen {
-        if st.slots.iter().any(|s| s.light == Some(l)) {
+    for (rank, l) in chosen.iter().enumerate() {
+        if st.slots.iter().any(|s| s.light == Some(*l)) {
             continue;
         }
         if let Some(s) = st.slots.iter_mut().find(|s| s.light.is_none()) {
-            s.light = Some(l);
+            s.light = Some(*l);
             s.weight = 0.0;
+            s.target = RANK_WEIGHT[rank.min(SLOTS - 1)];
         }
     }
+    let third = crate::thirdperson::active();
     let gain = env_val!("DXVIEW_SHADOW_GAIN").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(1.0f32);
-    for (sl, mut pl, mut tf, mut vis) in &mut lights {
+    for (sl, mut pl, mut tf, mut vis, mut layers) in &mut lights {
         let s = st.slots[sl.slot];
+        // JC's own body in third person casts from the light that lights him most.
+        let jc = third && s.light.is_some() && st.assign.get(&Entity::PLACEHOLDER) == s.light.as_ref();
+        let want = if jc { RenderLayers::from_layers(&[SLOT_LAYERS[sl.slot], crate::mirror::BODY_LAYER]) } else { RenderLayers::layer(SLOT_LAYERS[sl.slot]) };
+        if *layers != want {
+            *layers = want;
+        }
         let aim = s.light.and_then(|i| st.aim.get(&i).copied());
         let Some(info) = s.light.and_then(|i| lvl.lights.get(i)).filter(|_| s.weight > 0.0 && n > 0) else {
             pl.intensity = 0.0;
@@ -365,6 +451,27 @@ pub fn shadow_light_system(
             pl.inner_angle = pl.outer_angle * 0.9;
         }
         *vis = Visibility::Inherited;
+    }
+}
+
+/// Puts each casting part on its light's layer (or none: then it casts nothing). The heat layer (vision aug) kept.
+pub fn assign_system(st: Res<ShadowLights>, mut parts: Query<(&ChildOf, &mut RenderLayers), With<Casts>>) {
+    let slot_of = |l: usize| st.slots.iter().position(|s| s.light == Some(l));
+    let on = level() > 0;
+    for (c, mut layers) in &mut parts {
+        let slot = if on { st.assign.get(&c.parent()).and_then(|&l| slot_of(l)) } else { None };
+        let heat = layers.intersects(&RenderLayers::layer(crate::augdisplay::HEAT_LAYER));
+        let mut want = vec![0];
+        if let Some(k) = slot {
+            want.push(SLOT_LAYERS[k]);
+        }
+        if heat {
+            want.push(crate::augdisplay::HEAT_LAYER);
+        }
+        let want = RenderLayers::from_layers(&want);
+        if *layers != want {
+            *layers = want;
+        }
     }
 }
 
@@ -428,7 +535,7 @@ pub fn tag_casters_system(
         let mut ec = commands.entity(e);
         ec.insert(ShadowCaster);
         if casts {
-            ec.insert(caster_layers(&[]));
+            ec.insert((caster_layers(&[]), Casts));
         }
     }
 }

@@ -159,41 +159,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (water.m.x > 0.5) {
         return modern_water(in, is_front, t);
     }
-    let p = in.world_position.xz;
-    let f = field(p, t);
-    // The WetTexture look: the source picture pushed about by the slope of the water.
-    var displaced = in;
-    displaced.uv = in.uv + f.yz * water.t.y;
-    var pbr_input = pbr_input_from_standard_material(displaced, is_front);
-    // A normal tilted by the slope (the surfaces are flat, facing up or down).
-    let up = select(-1.0, 1.0, pbr_input.world_normal.y >= 0.0);
-    let n = normalize(vec3<f32>(-f.y * 0.18, up, -f.z * 0.18));
-    pbr_input.N = n;
+    // Classic: the original's water - its WetTexture (animated on the CPU like the engine did: watertex.rs) drawn
+    // PF_Translucent, added onto what's below, as dark as its lit picture. No swell, rings or glints of ours.
+    var pbr_input = pbr_input_from_standard_material(in, is_front);
     var color = apply_pbr_lighting(pbr_input);
     color = main_pass_post_lighting_processing(pbr_input, color);
     let to_eye = view.world_position.xyz - in.world_position.xyz;
-    let v = normalize(to_eye);
-    let ndv = clamp(abs(dot(n, v)), 0.0, 1.0);
-    // The original draws water PF_Translucent (added onto what is below), so it is as dark as its lit texture.
-    // A faint moon glint and a little sky at grazing angles on top.
-    let l = normalize(vec3<f32>(0.35, 1.0, 0.2));
-    let h = normalize(l + v);
-    let spec = pow(max(dot(n, h), 0.0), 260.0) * water.t.w;
-    let fres = pow(1.0 - ndv, 4.0);
-    // Far water fades out, so the edge of the map's water melts into the night instead of ending in a line.
-    let fade = 1.0 - smoothstep(water.far.x, water.far.y, length(to_eye));
     var out: FragmentOutput;
     if (water.far.z > 0.5) {
         out.color = vec4<f32>(color.rgb * water.far.z + vec3<f32>(0.3, 0.0, 0.0), 1.0);
         return out;
     }
-    // Everything here is lit by the surface's lightmap (shadows of the dock and the lamp pools included): an unlit
-    // sky term on top made the whole sheet one even grey-blue, brightest at grazing angles, ending in a hard line
-    // at the dock. Grazing angles only raise the lit texture a little.
-    // A faint night-sky sheen at grazing angles keeps unlit water from reading as a hole (a quarter of what it was).
-    let lit = color.rgb * water.t.z * (1.0 + fres * 0.6);
-    let sheen = fres * vec3<f32>(0.005, 0.0075, 0.01);
-    out.color = vec4<f32>((lit + sheen + vec3<f32>(spec) * min(1.0, dot(color.rgb, vec3<f32>(4.0)))) * fade, 1.0);
+    let lit = color.rgb * water.t.z;
+    out.color = vec4<f32>(lit, 1.0);
     return out;
 }
 

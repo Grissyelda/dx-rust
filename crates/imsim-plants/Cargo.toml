@@ -1,0 +1,10 @@
+[package]
+name = "imsim-plants"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+version.workspace = true
+description = "Engine-neutral procedural vegetation: grass fields over ground triangles (GPU blades) and generated trees and bushes."
+
+[dependencies]
+glam = "0.32"
+serde = { version = "1", features = ["derive"] }
