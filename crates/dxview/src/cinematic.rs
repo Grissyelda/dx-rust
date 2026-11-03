@@ -780,6 +780,9 @@ pub fn cinematic_system(
     let mut ev = Vec::new();
     c.tick(if crate::loader::settling() { 0.0 } else { time.delta_secs_f64().min(0.1) }, &mut ev);
     events.0.extend(ev);
+    if env_on!("DXVIEW_CINELOG") {
+        println!("CINE t {:.3} dt {:.4} loc {:.2?} rot {:.1?} fov {:.2}", time.elapsed_secs(), time.delta_secs(), c.loc.to_array(), c.rot, c.fov);
+    }
 
     // The view: Player.SetLocation / ViewRotation (eye height 0). The body follows the camera, out of the world.
     player.body.location = c.loc;

@@ -946,7 +946,7 @@ fn main() {
         )
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system))
+        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system))
         .init_resource::<consys::ConSetup>()
         .init_resource::<triggers::Triggers>()
         .init_resource::<logic::LogicActors>()
@@ -1508,6 +1508,10 @@ fn setup(
         let glass_img = (b.class == SurfaceClass::Translucent && !b.sky && b.mirror.is_none())
             .then(|| b.texture.and_then(|i| glass_imgs.get(&i).map(|h| (i, h.clone()))))
             .flatten();
+        if glass_img.is_some() {
+            // A plain StandardMaterial multiplies the vertex colour in: the light ids made the pane blinding white.
+            mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+        }
         let mut e = match b.mirror {
             // Modern Glass: a frosted pane.
             _ if glass_img.is_some() => {

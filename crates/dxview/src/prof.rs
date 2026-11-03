@@ -61,6 +61,39 @@ pub fn hitch_note(what: &str, ms: f64) {
     }
 }
 
+/// A line of its own in hitch.log (when it's on).
+pub fn hitch_line(text: &str) {
+    if HITCH.load(Ordering::Relaxed) {
+        hitch_write(&format!("{text}\n"));
+    }
+}
+
+/// Frame times while a cut scene or a conversation's camera runs, written to hitch.log when it ends: whether the
+/// camera moves were smooth (VSync with frames now and then over the refresh shows as judder).
+pub fn scene_frames_system(time: bevy::prelude::Res<bevy::prelude::Time<bevy::prelude::Real>>, mut v: bevy::prelude::Local<Vec<f32>>) {
+    let on = crate::cinematic::active() || crate::consys::third_person();
+    if on {
+        v.push(time.delta_secs() * 1000.0);
+        return;
+    }
+    if v.len() < 30 {
+        v.clear();
+        return;
+    }
+    let mut s = std::mem::take(&mut *v);
+    let n = s.len();
+    let mean = s.iter().sum::<f32>() / n as f32;
+    let over = |ms: f32| s.iter().filter(|&&x| x > ms).count();
+    let (o17, o25, o40) = (over(17.5), over(25.0), over(40.0));
+    s.sort_by(|a, b| a.total_cmp(b));
+    hitch_line(&format!(
+        "scene frames: {n}, mean {mean:.1} ms, p50 {:.1}, p95 {:.1}, max {:.1}; over 17.5 ms {o17}, over 25 {o25}, over 40 {o40}",
+        s[n / 2],
+        s[(n * 95 / 100).min(n - 1)],
+        s[n - 1]
+    ));
+}
+
 fn hitch_write(text: &str) {
     use std::io::Write;
     // At most 300 lines a run (a slow GPU would otherwise log every frame).

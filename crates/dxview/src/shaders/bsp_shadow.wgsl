@@ -276,7 +276,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #ifdef VERTEX_COLORS
     if (bsp.r.x > 0.5) {
         // Surfaces drawn full bright (PF_Unlit: lamps, screens, signs) have a white lightmap: they glow instead.
-        if (min(pbr_input.lightmap_light.r, min(pbr_input.lightmap_light.g, pbr_input.lightmap_light.b)) > 0.98) {
+        // (Only faces the bake gave no lights: a face lit brightly enough to saturate its lightmap - Gunther's cell
+        // window under the cell's lamps - isn't a lamp, and glowing it blew out to a white sheet under bloom.)
+        if (min(pbr_input.lightmap_light.r, min(pbr_input.lightmap_light.g, pbr_input.lightmap_light.b)) > 0.98 && in.color.x < 0.75) {
             unlit_glow = bsp.s.w;
         } else {
             let v = normalize(view_bindings::view.world_position.xyz - pbr_input.world_position.xyz);

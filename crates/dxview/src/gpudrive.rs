@@ -104,6 +104,9 @@ pub fn refile_system(
             }
         }
         *phase = 1;
+        if crate::cinematic::active() || crate::consys::third_person() {
+            crate::prof::hitch_line("a camera came on during a scene: level surfaces re-filed");
+        }
         if env_on!("DXVIEW_REFILELOG") {
             println!("gpudrive: a camera came on, level surfaces re-filed");
         }

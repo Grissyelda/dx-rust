@@ -57,7 +57,8 @@ fn screen_def(class: &str) -> Option<ScreenDef> {
         // The cyan "WELCOME" display painted on the recessed panel (ATMTex1 pixels (60,143) (112,143) (117,165)
         // (56,165), carried onto the panel's two faces through their texture mapping).
         // (Grown to the whole dark recess, as seen against the panel: a little taller at both edges, a little wider.)
-        "ATM" => ScreenDef { bl: [0.82, 10.62, -7.44], br: [0.82, -4.01, -7.44], tl: [-0.99, 9.51, 3.43], tr: Some([-0.99, -2.93, 3.43]) },
+        // The recess of ATMTex1's screen, stretched 7% past it top and bottom along its edges (the blue showed under the edges).
+        "ATM" => ScreenDef { bl: [0.96, 10.71, -8.30], br: [0.96, -4.08, -8.30], tl: [-1.36, 9.29, 5.66], tr: Some([-1.36, -2.99, 5.66]) },
         _ => return None,
     })
 }

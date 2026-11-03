@@ -48,14 +48,25 @@ fn frost(src: &Image) -> Option<Image> {
     if data.len() < w * h * 4 || w == 0 || h == 0 {
         return None;
     }
+    // Streaks are what stands out of the picture: luminance above its mean, measured against its bright end. A pane
+    // that is bright all over (bulltprftrans_a at Gunther's cell) is an additive sheen in Unreal, not a white wall:
+    // it gets the faint veil only. Nothing goes past 0.55 (unlit, under Bloom a brighter pane glared).
+    let lums: Vec<f32> = data[..w * h * 4]
+        .chunks_exact(4)
+        .map(|p| (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) / 255.0)
+        .collect();
+    let mean = lums.iter().sum::<f32>() / lums.len() as f32;
+    let mut sorted = lums.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let p95 = sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)];
+    let span = (p95 - mean).max(0.04);
     let mut top = Vec::with_capacity(w * h * 4);
-    for p in data[..w * h * 4].chunks_exact(4) {
+    for (p, &lum) in data[..w * h * 4].chunks_exact(4).zip(&lums) {
         let (r, g, b) = (p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0);
-        let lum = 0.299 * r + 0.587 * g + 0.114 * b;
-        // Frost: a pale blue-grey veil; streaks: the picture itself, lifted.
-        let k = (lum * 1.6).min(1.0);
-        let mix = |c: f32, tint: f32| ((tint * (1.0 - k) + (c * 1.3 + 0.15).min(1.0) * k) * 255.0).round() as u8;
-        let a = (0.22 + 0.6 * k).min(0.85);
+        // Frost: a dim blue-grey veil; streaks: the picture itself, lifted a little.
+        let k = ((lum - mean) / span).clamp(0.0, 1.0);
+        let mix = |c: f32, tint: f32| ((tint * 0.3 * (1.0 - k) + (c * 0.6 + 0.12).min(0.55) * k) * 255.0).round() as u8;
+        let a = 0.1 + 0.32 * k;
         top.extend_from_slice(&[mix(r, 0.74), mix(g, 0.82), mix(b, 0.88), (a * 255.0).round() as u8]);
     }
     // Box-filtered mips (sRGB treated as linear: close enough for a soft veil).

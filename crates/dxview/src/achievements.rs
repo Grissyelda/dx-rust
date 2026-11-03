@@ -369,6 +369,9 @@ pub fn achievements_system(
         st.states.clear();
         st.carried.clear();
         st.pool = None;
+        // The notice's UI layer went with the old map's entities (it was made on the first map - the intro for a
+        // new game - so no notice ever showed after it).
+        st.layer = None;
         on_arrival(st.mission, &st.map, &flags.0);
     }
     // ---- the unlock notice

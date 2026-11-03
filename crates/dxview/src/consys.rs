@@ -3232,9 +3232,10 @@ pub fn con_view_system(
         c.1.yaw = -(me.yaw as f32) - std::f32::consts::FRAC_PI_2;
         c.1.pitch = 0.0;
     }
+    let jc_skel = crate::skeletal::enabled() && crate::skeletal::body_for(&crate::travel::jc_mesh()).is_some();
     // JC: with Skeletal Characters his rebuilt (mirror / third-person) body stands in (thirdperson::camera_layers
     // shows it), so the face in a conversation is the same as in play.
-    if crate::skeletal::mirror_on() {
+    if jc_skel {
         if let Some(p) = st.puppet.take() {
             commands.entity(p.root).despawn();
         }
@@ -3248,7 +3249,7 @@ pub fn con_view_system(
     ));
     let loc = player.body.location;
     let tr = Vec3::from(dx_level::ue_to_bevy(loc.as_vec3().to_array()));
-    if st.puppet.is_none() && !crate::skeletal::mirror_on() {
+    if st.puppet.is_none() && !jc_skel {
         let d = crate::travel::jc_defaults(&mut assets.classes);
         let root = commands
             .spawn((
@@ -3343,6 +3344,9 @@ pub fn con_view_system(
         }
     }
     // The shot.
+    if env_on!("DXVIEW_CONCAMLOG") {
+        println!("CONCAM t {:.3} dt {:.3} shot {:?} jc {:.1?}", time.elapsed_secs(), time.delta_secs(), shot.map(|(l, r)| (l.as_vec3(), r)), loc.as_vec3());
+    }
     if let Some((cl, cr)) = shot {
         let d = rot_vec(cr);
         let dir = Vec3::new(d.x as f32, d.z as f32, d.y as f32);

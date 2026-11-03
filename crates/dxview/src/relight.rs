@@ -198,7 +198,8 @@ pub fn params(name: Option<&str>, p: &mut crate::shadowlight::BspShadowParams) {
         if on() { gain } else { 1.0 },
         if on() { setting!("RemasterAmbient").max(0.0) } else { 0.0 },
         if emissive_on() { s.emissive } else { 0.0 },
-        if emissive_on() { 1.2 } else { 0.0 },
+        // Glass never glows (an unlit pane is still a window).
+        if emissive_on() && !name.is_some_and(crate::glass::is_glass) { 1.2 } else { 0.0 },
     );
 }
 

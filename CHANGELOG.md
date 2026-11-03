@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Playtest fixes (November 3, morning)
+- Gunther's cell window really is clear now: frosted glass picked up the level's per-surface light data as a colour
+  and drew solid white. The frost itself is fainter on panes that are bright all over.
+- JC is back in third-person conversations with Skeletal Characters (he had vanished, so Paul talked to thin air).
+- Achievement popups show again after a map change (they unlocked but never appeared after the first map).
+- The ATM screen is a little taller and covers the blue screen under it.
+- Smoother cut scenes and conversation camera moves: reflections are no longer switched off and back on during a
+  scene (each time one came back on the whole level was re-filed for drawing, a hitch in the middle of a pan).
+  hitch.log now records the frame times of every cut scene and conversation.
+
 ### Characters, achievements test and playtest fixes (November 3, overnight)
 - Each new character (named on the New Game screen) keeps its own saves, quick save, five autosaves and
   achievements. The load screen lists every character under a heading of their own that opens and closes like the

@@ -124,6 +124,10 @@ pub struct Mirrors {
     /// Game time a water sheet was last in the main view (the water reflection runs only while one is, with
     /// half a second's grace: the camera is a whole extra render of the scene).
     pub water_seen: f32,
+    /// When each plane was last wanted: a plane keeps its slot for HOLD seconds after (a reflection camera that
+    /// comes back on has the level's GPU-culled surfaces re-filed - gpudrive::refile_system - a hitch; panning past
+    /// mirrors and water switched them on and off and the cut scenes juddered).
+    pub wanted_at: std::collections::HashMap<usize, f32>,
 }
 
 /// A reflection camera (world, or the sky room with `sky`) of slot `0`.
@@ -303,6 +307,9 @@ pub fn spawn_camera(commands: &mut Commands, mirrors: &Mirrors) {
 
 /// Each frame: pick the planes to reflect, place their cameras, keep their images the window's size and tell the
 /// materials which plane shows which image.
+/// How long a reflection keeps its camera after it stops being wanted (seconds).
+const HOLD: f32 = 6.0;
+
 #[allow(clippy::type_complexity)]
 pub fn mirror_system(
     mut mirrors: ResMut<Mirrors>,
@@ -323,7 +330,10 @@ pub fn mirror_system(
     if water_sheets.iter().any(|v| v.get()) {
         mirrors.water_seen = now;
     }
-    let water_wanted = now - mirrors.water_seen < 0.5;
+    // In a cut scene or conversation nothing is let go: every camera coming back on re-files the level's surfaces
+    // (gpudrive::refile_system), a hitch that showed as jitter in the camera moves.
+    let hold = if crate::cinematic::active() || crate::consys::third_person() { f32::MAX } else { HOLD };
+    let water_wanted = mirrors.water_seen > 0.0 && now - mirrors.water_seen < hold;
     if crate::credits::open() {
         for (_, mut cam, ..) in &mut cams {
             cam.is_active = false;
@@ -401,7 +411,18 @@ pub fn mirror_system(
     // At most two reflections at once (each is the whole scene drawn again); DXVIEW_MIRROR_SLOTS=n for comparisons.
     let max = env_val!("DXVIEW_MIRROR_SLOTS").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(2).min(SLOTS);
     near.truncate(max);
-    let want: Vec<usize> = near.iter().map(|x| x.0).collect();
+    let mut want: Vec<usize> = near.iter().map(|x| x.0).collect();
+    for p in &want {
+        mirrors.wanted_at.insert(*p, now);
+    }
+    // Planes wanted a moment ago stay in their slots while there's room (no off-and-on).
+    for s in mirrors.slots.iter() {
+        if let Some(p) = s.plane {
+            if !want.contains(&p) && want.len() < max && mirrors.wanted_at.get(&p).is_some_and(|t| now - t < hold) {
+                want.push(p);
+            }
+        }
+    }
     // Keep planes in the slot they had; free the rest; give the newcomers free slots.
     let mut changed: Vec<usize> = Vec::new();
     for s in mirrors.slots.iter_mut() {
@@ -602,7 +623,12 @@ pub fn mirror_body_system(
     // Augmentique's outfits screen shows him too (outfit_view.rs).
     let outfits = crate::outfit_view::open();
     // Third person (thirdperson.rs): the main camera draws him too.
-    let show = (outfits || crate::thirdperson::active() || crate::bodyfx::fp_on() || mirrors.active.is_some() && (test || !player.noclip)) && !crate::consys::third_person() && !crate::cinematic::active() && !ph.dead;
+    // A third-person conversation shows him too when he has a rebuilt body (consys then leaves out its vertex puppet).
+    let conv = crate::consys::third_person() && crate::skeletal::enabled() && crate::skeletal::body_for(&crate::travel::jc_mesh()).is_some();
+    let show = (outfits || conv || crate::thirdperson::active() || crate::bodyfx::fp_on() || mirrors.active.is_some() && (test || !player.noclip))
+        && (!crate::consys::third_person() || conv)
+        && !crate::cinematic::active()
+        && !ph.dead;
     if let Some(b) = body.0.as_ref() {
         if b.gen != crate::augmentique::generation() {
             commands.entity(b.root).despawn();
