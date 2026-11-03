@@ -581,8 +581,6 @@ enum MsgPurpose {
     Delete,
     /// DeusExRootWindow.ConfirmQuickLoad.
     QuickLoad,
-    /// Ours: starting a new character overwrites the shared autosave slots (st.box_new_game).
-    AutosaveWarn,
     /// root.MessageBox asked for by another screen (the persona screen's Delete Note?): the answer goes back.
     External,
     /// Ours: the controller layout picture (Settings > Enhancements > Controller Layout; once at the first map for
@@ -619,10 +617,27 @@ pub fn take_box_answer() -> Option<bool> {
 }
 
 /// MenuScreenSaveGame / MenuScreenLoadGame.
+/// A row of the save / load list.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SlRow {
+    /// "New Save Game" (save screen).
+    New,
+    /// A character's heading (load screen; index into `chars`), opened and closed like the Enhancements groups.
+    Char(usize),
+    /// A saved game (index into `games`).
+    Game(usize),
+}
+
 struct SaveLoad {
     saving: bool,
+    /// The save screen: only the character being played. The load screen: every character's.
     games: Vec<crate::save::SaveInfo>,
-    /// Selected row: on the save screen row 0 is "New Save Game", then the games.
+    /// Load screen: (character id, name, saves) in the order of each one's newest save.
+    chars: Vec<(String, String, usize)>,
+    /// The characters shown opened.
+    open: std::collections::HashSet<String>,
+    list: Vec<SlRow>,
+    /// Selected row (into `list`).
     sel: Option<usize>,
     scroll: i32,
     /// The description being typed (save screen) for the selected row.
@@ -636,23 +651,106 @@ impl SaveLoad {
     fn new(saving: bool) -> SaveLoad {
         let mut s = SaveLoad {
             saving,
-            games: crate::save::list(),
+            games: Vec::new(),
+            chars: Vec::new(),
+            open: Default::default(),
+            list: Vec::new(),
             sel: None,
             scroll: 0,
             edit: Edit::new(64),
             confirm_delete: setting!("ConfirmSaveDeletes") < 0.5,
             snap: None,
         };
-        s.sel = if saving || !s.games.is_empty() { Some(0) } else { None };
+        s.reload();
+        // The character being played (else the one saved last) starts opened, its newest save selected.
+        if !saving {
+            let me = crate::save::active_char();
+            let first = s.chars.iter().find(|c| c.0 == me).or(s.chars.first()).map(|c| c.0.clone());
+            if let Some(id) = first {
+                s.open.insert(id.clone());
+                s.build();
+                s.sel = s.list.iter().position(|r| matches!(r, SlRow::Game(i) if s.games[*i].char_id == id));
+            }
+        }
+        if s.sel.is_none() && !s.list.is_empty() {
+            s.sel = Some(0);
+        }
         s
+    }
+    /// Read the folder(s) again (after a delete) and rebuild the rows.
+    fn reload(&mut self) {
+        if self.saving {
+            self.games = crate::save::list_char(&crate::save::active_char());
+        } else {
+            self.games = crate::save::list();
+            self.chars.clear();
+            for g in &self.games {
+                match self.chars.iter_mut().find(|c| c.0 == g.char_id) {
+                    Some(c) => c.2 += 1,
+                    None => {
+                        let name = if g.char_id.is_empty() {
+                            format!("{} (earlier saves)", g.char_name)
+                        } else {
+                            g.char_name.clone()
+                        };
+                        self.chars.push((g.char_id.clone(), name, 1));
+                    }
+                }
+            }
+        }
+        self.build();
+    }
+    fn build(&mut self) {
+        self.list.clear();
+        if self.saving {
+            self.list.push(SlRow::New);
+            self.list.extend((0..self.games.len()).map(SlRow::Game));
+            return;
+        }
+        for (ci, c) in self.chars.iter().enumerate() {
+            self.list.push(SlRow::Char(ci));
+            if self.open.contains(&c.0) {
+                self.list.extend((0..self.games.len()).filter(|&i| self.games[i].char_id == c.0).map(SlRow::Game));
+            }
+        }
     }
     /// The game a row stands for.
     fn game(&self, row: usize) -> Option<&crate::save::SaveInfo> {
-        let i = if self.saving { row.checked_sub(1)? } else { row };
-        self.games.get(i)
+        match self.list.get(row)? {
+            SlRow::Game(i) => self.games.get(*i),
+            _ => None,
+        }
     }
     fn rows(&self) -> usize {
-        self.games.len() + self.saving as usize
+        self.list.len()
+    }
+    /// Open / close the character heading at `row` (load screen). True when the row was a heading.
+    fn toggle(&mut self, row: usize) -> bool {
+        let Some(SlRow::Char(c)) = self.list.get(row).copied() else { return false };
+        let id = self.chars[c].0.clone();
+        if !self.open.remove(&id) {
+            self.open.insert(id);
+        }
+        self.build();
+        self.sel = self.list.iter().position(|r| *r == SlRow::Char(c));
+        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+        true
+    }
+    /// The text of a row: (description, date).
+    fn row_text(&self, row: SlRow, new_label: &str) -> [String; 2] {
+        match row {
+            SlRow::New => [new_label.to_string(), String::new()],
+            SlRow::Char(c) => {
+                let (id, name, n) = &self.chars[c];
+                let sign = if self.open.contains(id) { "-" } else { "+" };
+                [format!("{sign} {name}"), format!("{n} save{}", if *n == 1 { "" } else { "s" })]
+            }
+            SlRow::Game(i) => {
+                let g = &self.games[i];
+                let d = if self.saving { g.description.clone() } else { format!("    {}", g.description) };
+                [d, crate::save::format_date(g.saved_unix)]
+            }
+        }
     }
 }
 
@@ -2078,13 +2176,8 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
             let l = |k: &str| pstr(&d, k);
             header_button(u, W::Header(0), cx + 10, cy + 3, 238, &l("strHeaderNameLabel"));
             header_button(u, W::Header(1), cx + 251, cy + 3, 131, &l("strHeaderDateLabel"));
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            if sl.saving {
-                rows.push(vec![l("NewSaveGameButtonText"), String::new()]);
-            }
-            for g in &sl.games {
-                rows.push(vec![g.description.clone(), crate::save::format_date(g.saved_unix)]);
-            }
+            let new_label = l("NewSaveGameButtonText");
+            let mut rows: Vec<Vec<String>> = sl.list.iter().map(|r| sl.row_text(*r, &new_label).to_vec()).collect();
             // The row being named shows the typed description.
             let editing = sl.saving.then_some(sl.sel).flatten();
             if let Some(r) = editing {
@@ -2231,8 +2324,6 @@ pub struct Menus {
     dead_t: f32,
     /// The game a confirmation box is about: (file, description to save).
     box_save: Option<(std::path::PathBuf, String)>,
-    /// The new character waiting on the autosave warning.
-    box_new_game: Option<crate::travel::NewGame>,
     applied_gen: u64,
     themes_applied: bool,
 }
@@ -2914,7 +3005,9 @@ pub fn menu_system(
                                         sl.edit.anchor = 0;
                                     }
                                 }
-                                if double {
+                                if !sl.saving && sl.toggle(r) {
+                                    // A character's heading opens / closes (one click, like the Enhancements groups).
+                                } else if double {
                                     sl_double = Some(if sl.saving { "SAVE" } else { "LOAD" });
                                 }
                             }
@@ -3109,8 +3202,16 @@ pub fn menu_system(
                         }
                         Body::NewGame(_) | Body::Keypad(_) => {}
                         Body::SaveLoad(sl) => {
-                            let k = if sl.saving { "SAVE" } else { "LOAD" };
-                            save_load_action(st, top, k, &mut hud, &mut assets, &mut acts);
+                            let saving = sl.saving;
+                            let heading = !saving
+                                && match &mut st.stack[top].body {
+                                    Body::SaveLoad(sl) => sl.sel.is_some_and(|r| sl.toggle(r)),
+                                    _ => false,
+                                };
+                            if !heading {
+                                let k = if saving { "SAVE" } else { "LOAD" };
+                                save_load_action(st, top, k, &mut hud, &mut assets, &mut acts);
+                            }
                         }
                         _ => {
                             // Enter is OK.
@@ -3500,13 +3601,6 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
                 acts.push(Act::Push("MenuSelectDifficulty".into()));
             }
         }
-        MsgPurpose::AutosaveWarn => {
-            if let Some(ng) = st.box_new_game.take() {
-                if yes {
-                    acts.push(Act::NewGame(ng));
-                }
-            }
-        }
         MsgPurpose::Overwrite => {
             if yes {
                 if let Some((p, d)) = st.box_save.take() {
@@ -3535,7 +3629,7 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
 fn refresh_games(st: &mut Menus) {
     for w in st.stack.iter_mut() {
         if let Body::SaveLoad(sl) = &mut w.body {
-            sl.games = crate::save::list();
+            sl.reload();
             let n = sl.rows();
             sl.sel = sl.sel.map(|r| r.min(n.saturating_sub(1))).filter(|_| n > 0);
         }
@@ -3626,6 +3720,7 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                         } else if key == "START" {
                             let lddp = crate::travel::lddp();
                             let female = lddp && ng.portrait % 2 == 1;
+                            let name_for_id = name.clone();
                             let new_game = crate::travel::NewGame {
                                 name,
                                 skin: if lddp { (ng.portrait / 2) as u8 } else { ng.portrait as u8 },
@@ -3636,22 +3731,11 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                                 skills: ng.skills.list.iter().map(|s| (s.def.class.clone(), s.level)).collect(),
                                 points_avail: ng.skills.points_avail,
                                 points_total: ng.skills.points_total,
+                                // Ours: a new character gets its own folder of saves, autosaves and achievements.
+                                char_id: crate::save::new_char_id(&name_for_id),
                             };
-                            // Ours: a new character's autosaves go into the same five slots as everyone's.
-                            if crate::save::autosaves_exist() {
-                                st.box_new_game = Some(new_game);
-                                acts.push(Act::Msg(
-                                    "Autosaves".into(),
-                                    format!(
-                                        "This game will autosave into the same {} autosave slots, overwriting the oldest autosaves of earlier games. Your own saves are kept. Continue?",
-                                        crate::save::AUTOSAVE_SLOTS
-                                    ),
-                                    true,
-                                    MsgPurpose::AutosaveWarn,
-                                ));
-                            } else {
-                                acts.push(Act::NewGame(new_game));
-                            }
+                            // (Every character has its own five autosave slots: a new game overwrites none.)
+                            acts.push(Act::NewGame(new_game));
                         }
                     }
                 }
@@ -3784,6 +3868,14 @@ mod tests {
             return;
         };
         let root = std::path::PathBuf::from(root);
+        // The load screen's character groups: two characters' saves and one from before characters had folders.
+        let saves = std::env::temp_dir().join(format!("dxmenu-{}", std::process::id()));
+        std::env::set_var("DXVIEW_SAVE_DIR", &saves);
+        crate::save::write_for_test("JC_Denton-1", "JC Denton", "Liberty Island - the dock", 1);
+        crate::save::write_for_test("JC_Denton-1", "JC Denton", "UNATCO HQ", 2);
+        crate::save::write_for_test("Agent_Smith-2", "Agent Smith", "Battery Park", 3);
+        crate::save::write_for_test("", "JC Denton", "Old save", 4);
+        crate::travel::set_session(crate::travel::NewGame { char_id: "JC_Denton-1".into(), ..Default::default() });
         let mut assets = RuntimeAssets {
             classes: unreal_pkg::classes::ClassDb::open(&root.join("System")),
             lib: dx_level::TexLib::new(&root),

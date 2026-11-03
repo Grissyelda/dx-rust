@@ -48,7 +48,10 @@ pub fn gpu_cull_system(
         return;
     }
     let Some(assets) = assets else { return };
-    let fire: HashSet<AssetId<Image>> = assets.fire.iter().map(|(_, h)| h.id()).collect();
+    // (Fire textures and the Texture.AnimNext loops step only while something on screen shows them, which they
+    // learn from ViewVisibility - set by CPU culling alone.)
+    let mut fire: HashSet<AssetId<Image>> = assets.fire.iter().map(|(_, h)| h.id()).collect();
+    fire.extend(crate::anim_tex::images());
     let mut n = 0;
     for (e, m) in &surfaces {
         let shows_fire = mats.get(&m.0).is_some_and(|m| {

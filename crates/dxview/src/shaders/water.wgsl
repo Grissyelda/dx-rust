@@ -296,6 +296,16 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // Physically 2% straight down; a little more than Schlick at middle angles reads better.
     let k_refl = clamp(fres + 0.12 * pow(1.0 - ndv, 2.0), 0.0, 1.0);
     var col = mix(body, refl, k_refl);
+    // Indoor water (no wave grid over it: water::build_mask leaves out water without sky above): no night sky to
+    // mirror and no light but the lightmap's, so its body is the original's lit picture, under the reflection and
+    // the glints.
+#ifdef VERTEX_UVS_A
+    if (water.grid.x < 0.5 || (water.grid.x < 1.5 && (mask_at(p) & 128u) == 0u)) {
+        let ci = pbr_input_from_standard_material(in, is_front);
+        let c_in = apply_pbr_lighting(ci).rgb * water.t.z;
+        col = c_in + refl * k_refl * 0.5;
+    }
+#endif
     // Far out the modern surface has nothing left to show (its waves average out to a flat sheet): it hands over
     // to the original's animated water picture, lit by its lightmap, under the same reflection - so the far bay
     // still moves and there's no line where the near water's detail ends.

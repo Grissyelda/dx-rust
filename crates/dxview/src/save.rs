@@ -110,12 +110,7 @@ pub const AUTOSAVE_SLOTS: usize = 5;
 static AUTO_PENDING: Mutex<Option<String>> = Mutex::new(None);
 
 fn autosave_path(i: usize) -> PathBuf {
-    dir().join(format!("AutoSave{i}.ron"))
-}
-
-/// Any autosave slot is in use (the new-game warning).
-pub fn autosaves_exist() -> bool {
-    (1..=AUTOSAVE_SLOTS).any(|i| autosave_path(i).exists())
+    active_dir().join(format!("AutoSave{i}.ron"))
 }
 
 /// The slot to write: the first empty one, else the oldest.
@@ -163,6 +158,7 @@ pub fn prepare_load(s: &SaveGame) {
         female: s.global.female,
         retro_morpheus: s.global.retro_morpheus,
         male_interactions: s.global.male_interactions,
+        char_id: s.global.char_id.clone(),
     });
     if let Ok(mut b) = PLAY_BASE.lock() {
         *b = s.play_time;
@@ -225,6 +221,9 @@ pub struct Global {
     pub retro_morpheus: bool,
     #[serde(default)]
     pub male_interactions: bool,
+    /// The character (travel::NewGame.char_id): empty for saves made before characters had their own folders.
+    #[serde(default)]
+    pub char_id: String,
     pub player: PlayerSave,
     pub inventory: imsim_core::inventory::Inventory,
     pub clips: Vec<(String, u32)>,
@@ -408,21 +407,65 @@ fn unsimple(v: &SimpleValue) -> Value {
 
 // ------------------------------------------------------------------------------------------------ files
 
-/// The save folder beside the exe.
+/// The save folder beside the exe (DXVIEW_SAVE_DIR for test runs).
 pub fn dir() -> PathBuf {
+    if let Some(d) = env_val!("DXVIEW_SAVE_DIR") {
+        return PathBuf::from(d);
+    }
     std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.join("Save")))
         .unwrap_or_else(|| PathBuf::from("Save"))
 }
 
+/// Ours: every character keeps its saves, five autosaves, quick save and achievements in its own folder
+/// (Save/Characters/<id>/). Saves from before that (no character id) stay in Save/ itself.
+pub fn char_dir(id: &str) -> PathBuf {
+    if id.is_empty() {
+        dir()
+    } else {
+        dir().join("Characters").join(id)
+    }
+}
+
+/// The folder of the character being played.
+pub fn active_dir() -> PathBuf {
+    char_dir(&active_char())
+}
+
+/// The id of the character being played ("" = the shared folder).
+pub fn active_char() -> String {
+    crate::travel::with_session(|s| s.char_id.clone()).unwrap_or_default()
+}
+
+/// A new character's id: its name (letters, digits, '_') and the time it was made.
+pub fn new_char_id(name: &str) -> String {
+    let mut stem: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(24)
+        .collect();
+    if stem.trim_matches('_').is_empty() {
+        stem = "Agent".into();
+    }
+    let t = unix_now();
+    let mut id = format!("{stem}-{t}");
+    let mut n = 1;
+    while char_dir(&id).exists() {
+        n += 1;
+        id = format!("{stem}-{t}-{n}");
+    }
+    id
+}
+
 pub fn quick_path() -> PathBuf {
-    dir().join("QuickSave.ron")
+    active_dir().join("QuickSave.ron")
 }
 
 /// A new slot file name.
 pub fn new_slot() -> PathBuf {
-    let d = dir();
+    let d = active_dir();
     for i in 1..10000 {
         let p = d.join(format!("Save{i:04}.ron"));
         if !p.exists() {
@@ -436,6 +479,9 @@ pub fn new_slot() -> PathBuf {
 #[derive(Clone, Debug)]
 pub struct SaveInfo {
     pub path: PathBuf,
+    /// The character (folder) it belongs to, and that character's name.
+    pub char_id: String,
+    pub char_name: String,
     pub description: String,
     pub location: String,
     pub saved_unix: u64,
@@ -444,10 +490,31 @@ pub struct SaveInfo {
     pub bytes: u64,
 }
 
-/// Every save in the folder, newest first.
+/// Every save of every character, newest first.
 pub fn list() -> Vec<SaveInfo> {
+    let mut v = list_in(&dir(), "");
+    if let Ok(rd) = std::fs::read_dir(dir().join("Characters")) {
+        for e in rd.flatten() {
+            if e.path().is_dir() {
+                let id = e.file_name().to_string_lossy().to_string();
+                v.extend(list_in(&e.path(), &id));
+            }
+        }
+    }
+    v.sort_by(|a, b| b.saved_unix.cmp(&a.saved_unix));
+    v
+}
+
+/// The saves of one character, newest first.
+pub fn list_char(id: &str) -> Vec<SaveInfo> {
+    let mut v = list_in(&char_dir(id), id);
+    v.sort_by(|a, b| b.saved_unix.cmp(&a.saved_unix));
+    v
+}
+
+fn list_in(folder: &Path, id: &str) -> Vec<SaveInfo> {
     let mut v = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir()) else { return v };
+    let Ok(rd) = std::fs::read_dir(folder) else { return v };
     for e in rd.flatten() {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("ron") {
@@ -459,6 +526,8 @@ pub fn list() -> Vec<SaveInfo> {
         v.push(SaveInfo {
             bytes: t.len() as u64,
             path: p,
+            char_id: id.to_string(),
+            char_name: s.global.name.clone(),
             description: s.description,
             location: s.location,
             saved_unix: s.saved_unix,
@@ -466,13 +535,12 @@ pub fn list() -> Vec<SaveInfo> {
             save_count: s.save_count,
         });
     }
-    v.sort_by(|a, b| b.saved_unix.cmp(&a.saved_unix));
     v
 }
 
-/// The most recently written save of any kind (by file time; cheaper than reading every save).
+/// The character's most recently written save of any kind (by file time; cheaper than reading every save).
 pub fn latest() -> Option<PathBuf> {
-    let rd = std::fs::read_dir(dir()).ok()?;
+    let rd = std::fs::read_dir(active_dir()).ok()?;
     rd.flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("ron"))
@@ -554,6 +622,7 @@ pub fn startup(args: &[String]) -> Option<String> {
         female: s.global.female,
         retro_morpheus: s.global.retro_morpheus,
         male_interactions: s.global.male_interactions,
+        char_id: s.global.char_id.clone(),
     });
     *PLAY_BASE.lock().ok()? = s.play_time;
     SAVE_COUNT.store(s.save_count, Ordering::Relaxed);
@@ -673,6 +742,7 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
     g.female = session.female;
     g.retro_morpheus = session.retro_morpheus;
     g.male_interactions = session.male_interactions;
+    g.char_id = session.char_id;
     {
         let p = world.resource::<Player>();
         g.player.location = a3(p.body.location);
@@ -1395,6 +1465,15 @@ fn write(path: &Path, s: &SaveGame) -> std::io::Result<()> {
     let tmp = path.with_extension("ron.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Tests: write a save with just a description and a character into that character's folder.
+#[cfg(test)]
+pub fn write_for_test(char_id: &str, name: &str, description: &str, n: usize) {
+    let mut s = SaveGame { version: VERSION, description: description.into(), map: "01_NYC_UNATCOIsland".into(), location: "Liberty Island".into(), saved_unix: 1_700_000_000 + n as u64 * 600, ..Default::default() };
+    s.global.name = name.into();
+    s.global.char_id = char_id.into();
+    let _ = write(&char_dir(char_id).join(format!("Save{n:04}.ron")), &s);
 }
 
 /// DeusExPlayer.QuickSave: not on the logo map, while dead, or during an infolink.

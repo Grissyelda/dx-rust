@@ -70,7 +70,7 @@ pub fn surface(name: &str) -> Surface {
         0.0
     };
     let mut s = if has(&["glass", "window", "wndow", "mirror"]) {
-        Surface { roughness: 0.08, spec: 1.6, metal: 0.0, emissive: 0.0 }
+        Surface { roughness: 0.16, spec: 1.0, metal: 0.0, emissive: 0.0 }
     } else if has(&["chrome", "steel", "alum", "brass", "copper", "polish"]) {
         Surface { roughness: 0.25, spec: 1.4, metal: 0.9, emissive: 0.0 }
     } else if has(&["metal", "pipe", "grate", "grill", "vent", "plate", "rail", "door", "panel", "rust"]) {

@@ -530,6 +530,25 @@ fn m02_timer(c: &mut Ctx, map: &str) {
                     c.set("MS_DL_Played", true, 3);
                 }
             }
+            // Ours: with the Ambrosia tagged, Jacobson says Navarre is "out front" with the next assignment. She's
+            // sent to Castle Clinton's front (AnnaDestination, where AnnaRun took her) when she's somewhere else
+            // and out of the player's way - left fighting elsewhere she had to be searched for. From there the
+            // map's MakeAnnaRun triggers bring her to the player as before.
+            if c.b("AmbrosiaTagged") && !c.b("MS_AnnaOutFront") {
+                c.set("MS_AnnaOutFront", true, 3);
+                let anna = c.pawns.iter().find(|p| p.bind.eq_ignore_ascii_case("AnnaNavarre") && p.in_world).map(|p| p.pos);
+                if let (Some(at), Some((pos, yaw))) = (anna, c.point("PatrolPoint", "AnnaDestination")) {
+                    if at.distance(pos) > 400.0 && at.distance(c.player_pos) > 700.0 {
+                        crate::ai::world_req(WorldReq::TeleportOrders(Sel::Bind("AnnaNavarre".into()), pos, yaw, "Standing".into()));
+                    }
+                }
+            }
+            // Ours: once the hostages are out (or the subway's terrorists are dead) the blue beams wired to the
+            // explosive crates switch off (the original leaves them on for good).
+            if !c.b("MS_SubBeamsOff") && (c.b("EscapeSuccessful") || c.b("SubTerroristsDead")) {
+                crate::security::event("BeamTrigger", false);
+                c.set("MS_SubBeamsOff", true, 3);
+            }
             // Optional Fixes: the map's terrorists are tagged ShantyTerrorist; the script only counted the misspelt tag.
             let shanty = c.count("Terrorist", Some("ShantyTerrorists"))
                 + if crate::optfixes::fixes() { c.count("Terrorist", Some("ShantyTerrorist")) } else { 0 };

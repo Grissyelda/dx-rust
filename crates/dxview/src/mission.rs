@@ -70,6 +70,20 @@ pub fn mission_system(
     let lvl = &level.0;
     let fl = &mut flags.0;
     let info = lvl.level_info();
+    // Test aid: DXVIEW_FLAGS="[secs;]Name=1,Other=0" sets flags once, that many seconds into the run.
+    if let Some(v) = env_val!("DXVIEW_FLAGS") {
+        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let (at, list) = v.split_once(';').map_or((0.0, v), |(t, l)| (t.parse::<f32>().unwrap_or(0.0), l));
+        if !DONE.load(std::sync::atomic::Ordering::Relaxed) && time.elapsed_secs() >= at && !crate::menus::intro_map() {
+            DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+            for kv in list.split(',') {
+                if let Some((k, val)) = kv.split_once('=') {
+                    println!("FLAGS {} = {}", k.trim(), val.trim());
+                    fl.set(k.trim(), FlagValue::Bool(val.trim() == "1" || val.trim().eq_ignore_ascii_case("true")), 0);
+                }
+            }
+        }
+    }
     if !st.started {
         st.has_script = info.is_some_and(|a| find(&a.props, "Script").is_some());
         st.started = true;

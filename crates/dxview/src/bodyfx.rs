@@ -212,6 +212,8 @@ pub struct FpState {
     /// How much further back than FP_BACK the body stands this frame (m): enough to keep the cut chest out of view
     /// whatever the pose (walking and aiming lean it forward), eased back when the pose allows.
     extra: f32,
+    /// Frames to wait after the third-person camera before measuring again (its last place lingers a frame).
+    skip: u8,
 }
 
 /// The bones round the cut (chest, shoulders): kept behind and below the view.
@@ -341,7 +343,14 @@ pub fn fp_body_system(
         // The pose (last frame's bones, in the body's own space) decides how much further back: the coat's front
         // at the chest must stay behind the view even looking straight down (walking, running and the aiming poses
         // lean the chest forward into the eye).
-        if let (Some(c), Ok(rg)) = (cam.iter().next(), gts.get(root)) {
+        // (Not while the camera is back over the shoulder: measured from there the chest was metres "ahead of the
+        // eye", and back in first person the body then eased in from far behind - out of sight for seconds.)
+        if crate::thirdperson::active() || crate::consys::third_person() || crate::cinematic::active() {
+            st.extra = 0.0;
+            st.skip = 3;
+        } else if st.skip > 0 {
+            st.skip -= 1;
+        } else if let (Some(c), Ok(rg)) = (cam.iter().next(), gts.get(root)) {
             let eye = c.translation();
             // Along the view (the body can turn away from it in the aiming poses).
             let cf = c.forward().as_vec3();
@@ -358,6 +367,7 @@ pub fn fp_body_system(
                 need = need.max(ahead + below * FP_VIEW_BACK + FP_CHEST_CLEAR * m);
             }
             let dt = time.delta_secs().min(0.1);
+            let need = need.min(0.6);
             st.extra = if need > st.extra { need } else { (st.extra - dt * 0.4).max(need) };
             tf.translation -= flat * st.extra.max(0.0);
         }

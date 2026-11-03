@@ -1,8 +1,8 @@
 //! Achievements: the fifty of Deus Ex Remastered (names and goals as that release lists them), our own icons, a
 //! persona screen (from the Logs screen's Achievements button) and an unlock notice in the HUD's manner.
 //!
-//! Unlocks are kept for the player, not per save (Save/achievements.txt beside the saves: `id=unix time` lines and
-//! `progress.id=n` for the counted ones). Each one is detected from the same things the game itself tracks:
+//! Unlocks are kept per character, not per save (achievements.txt in the character's save folder, save::active_dir:
+//! `id=unix time` lines and `progress.id=n` for the counted ones; a new character starts with none). Each one is detected from the same things the game itself tracks:
 //! mission arrivals, conversation flags and choices, events (MadeBasket, SecretDoor, alexcloset), takedowns,
 //! augmentations, skills, weapon mods, and a few watched situations (sneaking past guards, a cloaked walk through
 //! someone's view, a body near a Karkian, the Underworld's pool table).
@@ -75,6 +75,8 @@ const COUNTED: [(&str, u32); 4] = [("slugger", 3), ("sneak", 3), ("wardenclyffe"
 #[derive(Default)]
 struct Store {
     loaded: bool,
+    /// The character whose file is loaded.
+    char: String,
     unlocked: HashMap<String, u64>,
     progress: HashMap<String, u32>,
     /// Unlocked this session, waiting to be shown.
@@ -84,14 +86,26 @@ struct Store {
 static STORE: std::sync::LazyLock<Mutex<Store>> = std::sync::LazyLock::new(|| Mutex::new(Store::default()));
 
 fn path() -> std::path::PathBuf {
-    crate::save::dir().join("achievements.txt")
+    crate::save::active_dir().join("achievements.txt")
+}
+
+/// The character changed (a new game, a load): the next look reads that character's file.
+pub fn character_changed() {
+    if let Ok(mut s) = STORE.lock() {
+        s.loaded = false;
+    }
 }
 
 fn load(s: &mut Store) {
-    if s.loaded {
+    let who = crate::save::active_char();
+    if s.loaded && s.char == who {
         return;
     }
     s.loaded = true;
+    s.char = who;
+    s.unlocked.clear();
+    s.progress.clear();
+    s.popups.clear();
     let Ok(text) = std::fs::read_to_string(path()) else { return };
     // Files from before format 2 may hold mission achievements the intro / endgame maps (missions 98 / 99) handed
     // out on arrival: those are dropped (arriving in a mission unlocks the ones behind it again).
@@ -128,7 +142,7 @@ fn save(s: &Store) {
     for (k, v) in pr {
         out.push_str(&format!("progress.{k}={v}\n"));
     }
-    let _ = std::fs::create_dir_all(crate::save::dir());
+    let _ = std::fs::create_dir_all(crate::save::active_dir());
     let _ = std::fs::write(path(), out);
 }
 
@@ -216,6 +230,13 @@ pub fn choice(con: &str, text: &str) {
 
 /// A pawn was taken down (ai.rs).
 pub fn takedown(by_player: bool, class: &str, bind: &str, blocker: usize, explosive: bool) {
+    let _ = class;
+    let melee_strength = by_player && crate::perks::in_hand_melee() && crate::abilities::aug_active("AugCombat");
+    takedown_with(by_player, bind, blocker, explosive, melee_strength);
+}
+
+/// takedown with what it asks the world worked out: `melee_strength` = a melee weapon in hand and Combat Strength on.
+pub fn takedown_with(by_player: bool, bind: &str, blocker: usize, explosive: bool, melee_strength: bool) {
     if !by_player {
         // Aggressive Defense: a pawn killed by the blast of its own projectile, which the ADS set off.
         if explosive && ads_owner_recent(blocker) {
@@ -229,8 +250,7 @@ pub fn takedown(by_player: bool, class: &str, bind: &str, blocker: usize, explos
     if bind.eq_ignore_ascii_case("SickMan") {
         unlock("servant");
     }
-    let _ = class;
-    if crate::perks::in_hand_melee() && crate::abilities::aug_active("AugCombat") {
+    if melee_strength {
         add_progress("slugger", 1);
     }
 }
@@ -251,27 +271,35 @@ fn ads_owner_recent(blocker: usize) -> bool {
 
 /// A weapon mod went on (weapons::fit_mod): every upgrade the weapon can take is on it.
 pub fn mods_fitted(w: &crate::weapons::WeaponStats, m: &crate::weapons::ModState) {
-    let c = &w.can_mod;
+    if all_mods_on(&w.can_mod, w.has_scope, w.silenced, w.has_laser, m) {
+        unlock("lockload");
+    }
+}
+
+/// Every upgrade a weapon can take is on it (scope / silencer / laser count when the weapon came with one).
+pub fn all_mods_on(c: &[bool; 8], has_scope: bool, silenced: bool, has_laser: bool, m: &crate::weapons::ModState) -> bool {
     let ok = (!c[0] || m.accuracy > 0.0)
         && (!c[1] || m.clip > 0.0)
         && (!c[2] || m.range > 0.0)
         && (!c[3] || m.reload < 0.0)
         && (!c[4] || m.recoil < 0.0)
-        && (!c[5] || w.has_scope || m.scope)
-        && (!c[6] || w.silenced || m.silencer)
-        && (!c[7] || w.has_laser || m.laser);
-    if ok && c.iter().any(|x| *x) {
-        unlock("lockload");
-    }
+        && (!c[5] || has_scope || m.scope)
+        && (!c[6] || silenced || m.silencer)
+        && (!c[7] || has_laser || m.laser);
+    ok && c.iter().any(|x| *x)
 }
 
 /// While the cloak / radar transparency hides the player from a pawn that's looking right at him (ai.rs).
 pub fn hidden_in_view(robot: bool) {
+    hidden_in_view_with(robot, crate::abilities::aug_active("AugCloak"), crate::abilities::aug_active("AugRadarTrans"));
+}
+
+pub fn hidden_in_view_with(robot: bool, cloak: bool, radar: bool) {
     if robot {
-        if crate::abilities::aug_active("AugRadarTrans") {
+        if radar {
             unlock("automoto");
         }
-    } else if crate::abilities::aug_active("AugCloak") {
+    } else if cloak {
         unlock("section9");
     }
 }
@@ -357,97 +385,20 @@ pub fn achievements_system(
         return;
     }
     let period = std::mem::take(&mut st.tick);
-    let f = &flags.0;
-    let fl = |n: &str| f.get_bool(n);
-    // ---- flags
-    // Rescue the Lady: as soon as Liberty Island's mission is done (the statue cleared), not only on reaching
-    // mission 2 (the notice used to come on the next map's arrival, behind its loading screen).
-    if fl("StatueMissionComplete") {
-        unlock("lady");
-    }
-    if fl("TerroristFollowup2_Played") {
-        unlock("based");
-    }
-    if fl("SimonsInterrogating3_Played") {
-        unlock("sawnothing");
-    }
-    if fl("TalkAboutRay_Played") {
-        unlock("dibbuk");
-    }
-    if fl("M12MeetSandraRenton_Played") {
-        unlock("renton");
-    }
-    if fl("RentonLateComment_Played") {
-        unlock("shame");
-    }
-    if fl("LebedevAnnaDead_Played") {
-        unlock("nerves");
-    }
-    if fl("AnnaExitKillphrase_Played") {
-        unlock("howdid");
-    }
-    if fl("GreenKnowsAboutDowd") && (fl("MS_ShadyGuyUnhidden") || fl("MS_UnhideCommandos")) {
-        unlock("tail");
-    }
-    if fl("JoeGreen_Dead") {
-        unlock("meanjoe");
-    }
-    if fl("Endgame1_Played") {
-        unlock("darkage");
-        unlock("area51");
-    }
-    if fl("Endgame2_Played") {
-        unlock("helios");
-        unlock("area51");
-    }
-    if fl("Endgame3_Played") {
-        unlock("illuminati");
-        unlock("area51");
-    }
-    if st.mission == 1 && inv.0.items.iter().any(|i| i.def.class == "WeaponAssaultGun") {
-        unlock("nicegun");
-    }
+    check_flags(&flags.0, st.mission, inv.0.items.iter().any(|i| i.def.class == "WeaponAssaultGun"));
     // ---- skills and augmentations
     {
         let ab = crate::abilities::lock();
         if let Some(a) = ab.as_ref() {
-            if a.skills.list.iter().filter(|s| s.level >= 3).count() >= 2 {
-                unlock("veteran");
-            }
-            let mut locs = [false; 6];
-            for g in a.augs.list.iter().filter(|g| g.has) {
-                if (g.def.location as usize) < 6 {
-                    locs[g.def.location as usize] = true;
-                }
-                if g.level >= g.def.max_level && !g.boosted && g.def.max_level > 0 {
-                    unlock("upgrades");
-                }
-            }
-            if locs.iter().all(|x| *x) {
-                unlock("biomachina");
-            }
-            if a.augs.list.iter().filter(|g| g.boosted).count() >= 3 {
-                add_progress("atomheart", 3);
-            }
-            // The running augs, compared with last frame's in place (rebuilt only when they change).
-            let on = || a.augs.list.iter().filter(|g| g.active).map(|g| g.def.class.as_str());
-            let power = on().any(|c| c == "AugPower");
-            if power {
-                let newly = on().filter(|c| *c != "AugPower" && !st.active.contains(*c)).count() as u32;
-                // (The ones already on when it came on don't count; it's activations while it runs.)
-                if st.active.contains("AugPower") {
-                    st.power_count += newly;
-                }
-                if st.power_count >= 3 {
-                    add_progress("wardenclyffe", 3);
-                }
-            } else {
-                st.power_count = 0;
-            }
-            if on().count() != st.active.len() || on().any(|c| !st.active.contains(c)) {
-                st.active.clear();
-                st.active.extend(on().map(str::to_owned));
-            }
+            let skills: Vec<usize> = a.skills.list.iter().map(|s| s.level).collect();
+            let augs: Vec<AugView> = a
+                .augs
+                .list
+                .iter()
+                .map(|g| AugView { class: &g.def.class, location: g.def.location as usize, level: g.level, max: g.def.max_level, boosted: g.boosted, has: g.has, active: g.active })
+                .collect();
+            let w = &mut *st;
+            check_abilities(&skills, &augs, &mut w.active, &mut w.power_count);
         }
     }
     // ---- pawns: sneaking past, going on alert behind a wall, eating bodies
@@ -512,6 +463,118 @@ pub fn achievements_system(
         }
     }
     let _ = period;
+}
+
+/// The achievements that follow from the game's flags (polled four times a second), and Nice Gun.
+pub fn check_flags(f: &imsim_core::flags::FlagBase, mission: i32, has_assault_gun: bool) {
+    let fl = |n: &str| f.get_bool(n);
+    // ---- flags
+    // Rescue the Lady: as soon as Liberty Island's mission is done (the statue cleared), not only on reaching
+    // mission 2 (the notice used to come on the next map's arrival, behind its loading screen).
+    if fl("StatueMissionComplete") {
+        unlock("lady");
+    }
+    if fl("TerroristFollowup2_Played") {
+        unlock("based");
+    }
+    if fl("SimonsInterrogating3_Played") {
+        unlock("sawnothing");
+    }
+    if fl("TalkAboutRay_Played") {
+        unlock("dibbuk");
+    }
+    if fl("M12MeetSandraRenton_Played") {
+        unlock("renton");
+    }
+    if fl("RentonLateComment_Played") {
+        unlock("shame");
+    }
+    if fl("LebedevAnnaDead_Played") {
+        unlock("nerves");
+    }
+    if fl("AnnaExitKillphrase_Played") {
+        unlock("howdid");
+    }
+    if fl("GreenKnowsAboutDowd") && (fl("MS_ShadyGuyUnhidden") || fl("MS_UnhideCommandos")) {
+        unlock("tail");
+    }
+    // (Joe Greene's body flag is JoeGreene_Dead - his class's BindName. Mission08's "JoeGreen_Dead" is a typo
+    // in the original script and is never set, so the achievement waited on it forever.)
+    if fl("JoeGreene_Dead") {
+        unlock("meanjoe");
+    }
+    if fl("Endgame1_Played") {
+        unlock("darkage");
+        unlock("area51");
+    }
+    if fl("Endgame2_Played") {
+        unlock("helios");
+        unlock("area51");
+    }
+    if fl("Endgame3_Played") {
+        unlock("illuminati");
+        unlock("area51");
+    }
+    if mission == 1 && has_assault_gun {
+        unlock("nicegun");
+    }
+}
+
+/// One augmentation as the achievements see it.
+pub struct AugView<'a> {
+    pub class: &'a str,
+    pub location: usize,
+    pub level: usize,
+    pub max: usize,
+    pub boosted: bool,
+    pub has: bool,
+    pub active: bool,
+}
+
+/// Veteran Agent, Upgrades, Biomachina, Atom Heart Son and Wardenclyffe Man from the skills and augmentations.
+/// `active` / `power_count`: the running augs last time and the activations counted during this Power Recirculator run.
+pub fn check_abilities(skills: &[usize], augs: &[AugView], active: &mut HashSet<String>, power_count: &mut u32) {
+    if skills.iter().filter(|l| **l >= 3).count() >= 2 {
+        unlock("veteran");
+    }
+    let mut locs = [false; 6];
+    for g in augs.iter().filter(|g| g.has) {
+        if g.location < 6 {
+            locs[g.location] = true;
+        }
+        if g.level >= g.max && !g.boosted && g.max > 0 {
+            unlock("upgrades");
+        }
+    }
+    if locs.iter().all(|x| *x) {
+        unlock("biomachina");
+    }
+    if augs.iter().filter(|g| g.boosted).count() >= 3 {
+        add_progress("atomheart", 3);
+    }
+    // The running augs, compared with last time's (rebuilt only when they change).
+    let on = || augs.iter().filter(|g| g.active).map(|g| g.class);
+    if on().any(|c| c == "AugPower") {
+        // (The ones already on when it came on don't count; it's activations while it runs.)
+        let newly = on().filter(|c| *c != "AugPower" && !active.contains(*c)).count() as u32;
+        if active.contains("AugPower") {
+            *power_count += newly;
+        }
+        if *power_count >= 3 {
+            add_progress("wardenclyffe", 3);
+        }
+    } else {
+        *power_count = 0;
+    }
+    if on().count() != active.len() || on().any(|c| !active.contains(c)) {
+        active.clear();
+        active.extend(on().map(str::to_owned));
+    }
+}
+
+#[cfg(test)]
+pub fn arrival_for_test(mission: i32, map: &str, f: &imsim_core::flags::FlagBase) {
+    on_arrival(mission, map, f);
 }
 
 /// Mission arrivals: the mission before this one is done; and the story checks made on the way in.

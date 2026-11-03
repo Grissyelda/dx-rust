@@ -783,7 +783,8 @@ fn spawner_actors(map: &str) -> Vec<(String, String, Vec<Property>)> {
         set("Id", Value::Str(id));
         set("ItemName", Value::Str(pickup_name));
         set("Tag", Value::Name(format!("AugSpawner_{}", e.name)));
-        set("Physics", Value::Byte(0));
+        // Falling: a box the map left hanging (or on furniture that settled) comes down to rest.
+        set("Physics", Value::Byte(2));
         // SetupOutfitSpawners: Skin and Texture from LookupTexture (Augmentique's box art).
         let look = match find(defaults, "LookupTexture") {
             Some(Value::Str(t)) => t.clone(),

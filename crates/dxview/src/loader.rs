@@ -392,6 +392,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
         Goal::NewGame(ng) => {
             crate::save::new_game();
             crate::travel::set_session(ng);
+            crate::achievements::character_changed();
             crate::save::Arrive::Fresh
         }
         Goal::Load(s) => {

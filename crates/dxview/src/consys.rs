@@ -3232,7 +3232,13 @@ pub fn con_view_system(
         c.1.yaw = -(me.yaw as f32) - std::f32::consts::FRAC_PI_2;
         c.1.pitch = 0.0;
     }
-    // JC.
+    // JC: with Skeletal Characters his rebuilt (mirror / third-person) body stands in (thirdperson::camera_layers
+    // shows it), so the face in a conversation is the same as in play.
+    if crate::skeletal::mirror_on() {
+        if let Some(p) = st.puppet.take() {
+            commands.entity(p.root).despawn();
+        }
+    }
     let rot = [0, norm_yaw(me.yaw / UU), 0];
     let m = dx_level::actors::rotator_to_bevy_mat3(rot);
     let quat = Quat::from_mat3(&Mat3::from_cols(
@@ -3242,7 +3248,7 @@ pub fn con_view_system(
     ));
     let loc = player.body.location;
     let tr = Vec3::from(dx_level::ue_to_bevy(loc.as_vec3().to_array()));
-    if st.puppet.is_none() {
+    if st.puppet.is_none() && !crate::skeletal::mirror_on() {
         let d = crate::travel::jc_defaults(&mut assets.classes);
         let root = commands
             .spawn((

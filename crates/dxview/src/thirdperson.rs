@@ -179,7 +179,8 @@ pub fn camera_layers() -> RenderLayers {
     if crate::shadowlight::level() > 0 {
         l.extend_from_slice(&crate::shadowlight::SLOT_LAYERS);
     }
-    if active() {
+    // (A third-person conversation shows JC's rebuilt body too, instead of a vertex puppet with another face.)
+    if active() || (crate::consys::third_person() && crate::skeletal::mirror_on()) {
         l.push(crate::mirror::BODY_LAYER);
     } else if crate::bodyfx::fp_on() {
         l.push(crate::bodyfx::FP_LAYER);

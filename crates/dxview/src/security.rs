@@ -671,6 +671,12 @@ pub fn security_system(
         for t in st.turrets.iter_mut() {
             if t.tag.eq_ignore_ascii_case("NSFTurret01") || t.tag.eq_ignore_ascii_case("NSFTurret02") {
                 remove_turret(t, &mut commands, &mut blockers);
+            } else if !t.gone {
+                // Ours: any other turret on the island (the cell block's, if someone switched it on) stands down
+                // with the mission over, instead of shooting at the agent who just cleared the statue.
+                turret_untrigger(t);
+                t.disabled = true;
+                t.target = None;
             }
         }
         for l in st.lasers.iter_mut().filter(|l| l.tag.eq_ignore_ascii_case("statue_lasertrap")) {

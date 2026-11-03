@@ -1033,3 +1033,100 @@ pub fn reset_level() {
         v.clear();
     }
 }
+
+// ------------------------------------------------------------------------------------------------ riders
+
+/// Things resting on a mover ride it (Actor.Base: an actor that lands on a mover is based on it and carried along -
+/// the pickups on the shelves of the swinging closet walls in Paul's hotel room). Found once per map by a short
+/// trace down from each placed mesh actor against the movers in the map's own placement; carried as a fixed
+/// transform relative to the mover from then on (so a save that restores an opened mover still lines up).
+#[derive(Component)]
+pub struct MoverRider {
+    mover: usize,
+    /// The rider's transform in the mover's frame.
+    rel: Transform,
+    /// The mover's placement last applied.
+    last: (DVec3, [i32; 3]),
+}
+
+#[allow(clippy::type_complexity)]
+pub fn mover_riders_system(
+    mut commands: Commands,
+    level: Res<crate::LevelRes>,
+    movers: Res<Movers>,
+    mut gen: Local<u64>,
+    mut wait: Local<u32>,
+    candidates: Query<(Entity, &crate::actors::MeshActorRef, &Transform), (Without<MoverRider>, Without<crate::ai::Npc>)>,
+    mut riders: Query<(&mut MoverRider, &mut Transform, Option<&mut crate::actors::Deco>)>,
+) {
+    let lvl = &level.0;
+    if crate::loader::new_map(&mut gen) {
+        *wait = 3;
+    }
+    if *wait > 0 {
+        // A few frames in: the movers and the mesh actors are built.
+        if movers.rt.len() != lvl.movers.len() {
+            return;
+        }
+        *wait -= 1;
+        if *wait > 0 {
+            return;
+        }
+        let _prof = crate::prof::scope("movers::find_riders");
+        let mut n = 0;
+        for (e, r, tf) in &candidates {
+            let Some(ma) = lvl.mesh_actors.get(r.0) else { continue };
+            let a = &lvl.actors[ma.actor];
+            let l = a.location();
+            let p = DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
+            let h = match unreal_pkg::props::find(&a.props, "CollisionHeight") {
+                Some(unreal_pkg::props::Value::Float(f)) => *f as f64,
+                _ => 8.0,
+            };
+            for (mi, info) in lvl.movers.iter().enumerate() {
+                if info.num_keys < 2 || movers.rt[mi].destroyed {
+                    continue;
+                }
+                let base = to_dvec(info.location);
+                if base.distance(p) > info.reach + 64.0 {
+                    continue;
+                }
+                // The mover where the map put it.
+                let rt0 = MoverRt { location: base, rotation: info.rotation, ..movers.rt[mi].clone() };
+                let ext = DVec3::new(2.0, 2.0, 1.0);
+                let Some(hit) = trace_mover(info, &rt0, p, p - DVec3::new(0.0, 0.0, h + 10.0), ext) else { continue };
+                if hit.normal.z < 0.5 {
+                    continue;
+                }
+                let m0 = Transform { translation: Vec3::from(ue_to_bevy(info.location)), rotation: bevy_rotation(info.rotation), scale: Vec3::ONE };
+                let rel = Transform::from_matrix(m0.to_matrix().inverse() * tf.to_matrix());
+                commands.entity(e).insert(MoverRider { mover: mi, rel, last: (base, info.rotation) });
+                n += 1;
+                break;
+            }
+        }
+        if n > 0 {
+            println!("MOVERS {n} things ride movers");
+        }
+        return;
+    }
+    for (mut r, mut tf, deco) in &mut riders {
+        let Some(rt) = movers.rt.get(r.mover) else { continue };
+        if (rt.location, rt.rotation) == r.last {
+            continue;
+        }
+        r.last = (rt.location, rt.rotation);
+        let m = Transform {
+            translation: Vec3::from(ue_to_bevy(rt.location.as_vec3().to_array())),
+            rotation: bevy_rotation(rt.rotation),
+            scale: Vec3::ONE,
+        };
+        let now = Transform::from_matrix(m.to_matrix() * r.rel.to_matrix());
+        let moved = now.translation - tf.translation;
+        *tf = now;
+        if let Some(mut d) = deco {
+            let mv = dx_level::bevy_to_ue(moved.to_array());
+            d.body.location += DVec3::new(mv[0] as f64, mv[1] as f64, mv[2] as f64);
+        }
+    }
+}

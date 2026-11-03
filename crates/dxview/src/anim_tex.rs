@@ -53,8 +53,16 @@ pub fn register(lib: &mut dx_level::TexLib, path: &str, handle: &Handle<Image>, 
         if a.iter().any(|x| x.handle == *handle) {
             return;
         }
+        if env_on!("DXVIEW_ANIMLOG") {
+            println!("ANIMTEX {path}: {} frames, {:.3} s each", frames.len(), step);
+        }
         a.push(Anim { handle: handle.clone(), frames, step, t: 0.0, at: 0, level, mats: None, seen: 0.0 });
     }
+}
+
+/// The images that loop (gpudrive.rs keeps the surfaces showing them CPU-culled).
+pub fn images() -> Vec<AssetId<Image>> {
+    ANIMS.lock().map(|l| l.iter().map(|a| a.handle.id()).collect()).unwrap_or_default()
 }
 
 #[allow(clippy::type_complexity)]
@@ -100,6 +108,9 @@ pub fn anim_tex_system(
                 a.seen = now;
             }
         }
+        if env_on!("DXVIEW_ANIMLOG") && (now * 2.0).floor() != ((now - dt) * 2.0).floor() {
+            println!("ANIMTEX step {:?} at {} seen {:.1} s ago mats {:?}", a.handle.id(), a.at, now - a.seen, a.mats.as_ref().map(|m| (m.0.len(), m.1.len())));
+        }
         // Out of sight for half a second: the loop pauses (nothing would show the new picture).
         if now - a.seen > 0.5 {
             continue;
@@ -108,7 +119,6 @@ pub fn anim_tex_system(
         if a.t < a.step {
             continue;
         }
-        let prev = a.at;
         while a.t >= a.step {
             a.t -= a.step;
             a.at = (a.at + 1) % a.frames.len();
@@ -119,15 +129,10 @@ pub fn anim_tex_system(
             reshaped = im.texture_descriptor.size != next.texture_descriptor.size
                 || im.texture_descriptor.format != next.texture_descriptor.format
                 || im.texture_descriptor.mip_level_count != next.texture_descriptor.mip_level_count;
-            // The frame's pixels move into the image (no copy); the image's old pixels go back to the slot that
-            // frame came from. (`frames` holds every frame in order, with the current frame's slot stale.)
-            if prev != a.at {
-                let (at, prevs) = (a.at, prev);
-                std::mem::swap(&mut *im, &mut a.frames[at]);
-                a.frames.swap(at, prevs);
-            } else {
-                *im = next.clone();
-            }
+            // A copy of the frame goes in: the image is a render-world asset, so the copy's pixels are taken
+            // at upload (moving the frames themselves in, as before, left every frame empty after one loop and the
+            // screens stood still).
+            *im = next.clone();
         }
         // Same size and format: Bevy writes the new pixels into the same texture. A different one (the first
         // frame of a New Vision texture is its HD picture, the loop's frames are the original's) makes a new texture,

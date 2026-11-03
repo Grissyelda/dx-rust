@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Characters, achievements test and playtest fixes (November 3, overnight)
+- Each new character (named on the New Game screen) keeps its own saves, quick save, five autosaves and
+  achievements. The load screen lists every character under a heading of their own that opens and closes like the
+  Enhancements groups; the in-game save screen shows only the character you're playing, so nobody else's saves
+  can be overwritten. Saves made before this are listed together as "(earlier saves)".
+- An achievement test run checks that everything each of the fifty achievements waits for exists in the game and
+  that every one can unlock. It found No Thanks, Mean Joe waiting on a misspelt flag (never set): fixed.
+- Animated screens and monitors (the med lab's heart monitors, news and observation screens, TV noise) animate
+  again, with or without New Vision.
+- Gunther's cell glass (and other glass under bloom) no longer glows blinding white.
+- Modern Water: indoor water - the pool under Castle Clinton, the subway's - was drawn black; it now shows its
+  surface, lit by the room's light.
+- The ATM's screen fills its recess; computer screens sit in their monitor even when the terminal settled onto its
+  desk or another model replaces it.
+- Things resting on a moving part ride it: the items on the shelves of Paul's swinging closet walls.
+- Outfit boxes drop to the floor.
+- Battery Park: the blue laser in the subway switches off once the hostages are out or the terrorists are dead;
+  with the Ambrosia tagged, Anna Navarre waits out front of Castle Clinton instead of wherever the fight left her.
+- Liberty Island: once the statue is cleared, every turret still standing stands down.
+- JC wears the same face in third-person conversations as in play (Skeletal Characters).
+- The first-person body no longer vanishes for a while after the third-person camera.
+
+
 ### Deep optimization and clean-up pass (November 2, night)
 - Measured on an RTX 3050 / Ryzen 5 3600 with every mod: Modern about 17.5 -> 16.5 ms a frame, Classic 11.5 -> 10.4 ms
   (96 fps); every part of the frame got shorter.

@@ -1365,6 +1365,14 @@ pub fn mirror_weapon() -> Option<[[f32; 3]; 4]> {
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+/// JC's face state for the mirror / third-person / conversation body.
+static JC_FACE: std::sync::LazyLock<std::sync::Mutex<crate::actors::Face>> = std::sync::LazyLock::new(Default::default);
+
+/// JC's rebuilt body is up (his mirror / third-person / conversation body is the skeletal one).
+pub fn mirror_on() -> bool {
+    MIRROR_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn mirror_skel_system(
     mut commands: Commands,
     time: Res<Time>,
@@ -1439,7 +1447,15 @@ pub fn mirror_skel_system(
                 *g = s.weapon;
             }
             if let Some(mut w) = w {
-                face_weights(&mut s, &b.mesh, None, false, dt, w.weights_mut());
+                // JC's lip sync in third-person conversations (the same FaceKeys the vertex puppet used, so his
+                // face in a conversation is this body's, not a second model's).
+                let key = JC_FACE.lock().ok().and_then(|mut f| {
+                    f.talking = crate::consys::third_person();
+                    f.phoneme = crate::consys::mouth(crate::consys::Who::Player);
+                    crate::actors::update_face(&mut f, &b.mesh, dt)
+                });
+                let talking = key.is_some() && crate::consys::third_person();
+                face_weights(&mut s, &b.mesh, key.as_ref(), talking, dt, w.weights_mut());
             }
         }
         // Keep the vertex parts hidden.

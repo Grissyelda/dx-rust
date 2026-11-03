@@ -131,6 +131,8 @@ mod trash;
 mod triggers;
 mod smartai;
 mod achievements;
+#[cfg(test)]
+mod achtest;
 mod diegetic;
 mod skeletal;
 mod ragdoll;
@@ -801,6 +803,7 @@ fn main() {
         .add_systems(Startup, (detect_bc1, loader::first_level_setup).chain())
         .add_systems(First, loader::loader_system.before(save::save_first_system))
         .add_systems(Update, (loader::settle_system, loader::loading_screen_system).chain())
+        .add_systems(Update, movers::mover_riders_system.after(movers::tick_movers).before(actors::deco_physics))
         .add_systems(
             Update,
             (
@@ -1655,12 +1658,34 @@ fn setup(
     }
     // Modern Water's wave grid over the map's water (water::grid_mesh), cut to it by the mask.
     {
-        let sheets: Vec<(&[[f32; 3]], &[u32])> = level
+        // Only water under the open sky gets the waves: indoor water (the pool under Castle Clinton, the subway's)
+        // stays a flat sheet, which the water shader draws with its own lit picture (water::is_indoor) - under the
+        // grid there it came out black (a dark room's reflection over an unlit body).
+        let outdoor: Vec<(Vec<[f32; 3]>, Vec<u32>)> = level
             .batches
             .iter()
             .filter(|b| b.class == SurfaceClass::Water && !b.sky)
-            .map(|b| (&b.positions[..], &b.indices[..]))
+            .map(|b| {
+                let idx: Vec<u32> = b
+                    .indices
+                    .chunks_exact(3)
+                    .filter(|t| {
+                        let c = t.iter().fold([0.0f32; 3], |a, &i| {
+                            let p = b.positions[i as usize];
+                            [a[0] + p[0] / 3.0, a[1] + p[1] / 3.0, a[2] + p[2] / 3.0]
+                        });
+                        let u = dx_level::bevy_to_ue(c);
+                        let z = level.collision.zone_at(glam::DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64 + 8.0));
+                        z <= 0 || level.zone_sky.get(z as usize).copied().unwrap_or(false)
+                    })
+                    .flatten()
+                    .copied()
+                    .collect();
+                (b.positions.clone(), idx)
+            })
+            .filter(|(_, i)| !i.is_empty())
             .collect();
+        let sheets: Vec<(&[[f32; 3]], &[u32])> = outdoor.iter().map(|(p, i)| (&p[..], &i[..])).collect();
         let ring = ocean_geom.as_ref().map(|(p, i)| (&p[..], &i[..]));
         if let Some((img, rect, heights)) = water::build_mask(&sheets, ring) {
             let mask = images.add(img);

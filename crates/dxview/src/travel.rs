@@ -23,6 +23,9 @@ pub struct NewGame {
     pub retro_morpheus: bool,
     /// LDDP's "Original Interactions?" (Human.bFemaleUsesMaleInteractions).
     pub male_interactions: bool,
+    /// Ours: the character this game belongs to (save.rs keeps each character's saves, autosaves and achievements
+    /// apart). Empty = the shared folder of saves made before characters existed (and developer runs).
+    pub char_id: String,
 }
 
 impl Default for NewGame {
@@ -38,6 +41,7 @@ impl Default for NewGame {
             female: false,
             retro_morpheus: false,
             male_interactions: false,
+            char_id: String::new(),
         }
     }
 }
@@ -65,6 +69,7 @@ pub fn decode(t: &str) -> NewGame {
             "female" => ng.female = v == "1",
             "retro_morpheus" => ng.retro_morpheus = v == "1",
             "male_interactions" => ng.male_interactions = v == "1",
+            "char_id" => ng.char_id = v.to_string(),
             "skill" => {
                 if let Some((c, l)) = v.split_once(',') {
                     ng.skills.push((c.to_string(), l.parse().unwrap_or(0)));
@@ -394,6 +399,7 @@ fn encode(ng: &NewGame) -> String {
         s.push_str(&format!("skill={c},{l}\n"));
     }
     s.push_str(&format!("female={}\nretro_morpheus={}\nmale_interactions={}\n", ng.female as u8, ng.retro_morpheus as u8, ng.male_interactions as u8));
+    s.push_str(&format!("char_id={}\n", ng.char_id));
     s
 }
 
@@ -413,6 +419,7 @@ mod tests {
             female: true,
             retro_morpheus: false,
             male_interactions: true,
+            char_id: "Agent_Smith-1".into(),
         };
         assert_eq!(decode(&encode(&ng)), ng);
     }

@@ -56,9 +56,102 @@ fn screen_def(class: &str) -> Option<ScreenDef> {
         "ComputerSecurity" => ScreenDef { bl: [-0.59, 8.95, -4.3], br: [-0.59, -8.96, -4.3], tl: [-0.59, 8.95, 4.39], tr: None },
         // The cyan "WELCOME" display painted on the recessed panel (ATMTex1 pixels (60,143) (112,143) (117,165)
         // (56,165), carried onto the panel's two faces through their texture mapping).
-        "ATM" => ScreenDef { bl: [0.75, 10.4, -7.01], br: [0.75, -3.87, -7.01], tl: [-0.9, 9.44, 2.91], tr: Some([-0.9, -2.76, 2.91]) },
+        // (Grown to the whole dark recess, as seen against the panel: a little taller at both edges, a little wider.)
+        "ATM" => ScreenDef { bl: [0.82, 10.62, -7.44], br: [0.82, -4.01, -7.44], tl: [-0.99, 9.51, 3.43], tr: Some([-0.99, -2.93, 3.43]) },
         _ => return None,
     })
+}
+
+/// The terminal's own glowing monitor panel, measured from the mesh it is drawn with (an HDTP or other model
+/// replaces the original's, whose numbers `screen_def` holds): the see-through (translucent / modulated) faces
+/// turned like the original's screen, split into connected panels, and the panel nearest the original screen's
+/// middle squared into a rectangle. Actor-local, DrawScale 1, like ScreenDef. None when nothing fits.
+fn mesh_screen(ma: &dx_level::actors::MeshActor, scale: f64, def: &ScreenDef) -> Option<ScreenDef> {
+    let v = |p: [f64; 3]| DVec3::from_array(p);
+    let (bl, br, tl) = (v(def.bl), v(def.br), v(def.tl));
+    let right = (br - bl).normalize_or_zero();
+    let up0 = tl - bl;
+    let up = (up0 - right * up0.dot(right)).normalize_or_zero();
+    let n = up.cross(right).normalize_or_zero();
+    let mid = bl + (br - bl) * 0.5 + up0 * 0.5;
+    // Triangles (local, DrawScale undone) facing the way the screen faces.
+    let mut tris: Vec<[DVec3; 3]> = Vec::new();
+    for part in &ma.parts {
+        if !matches!(part.class, dx_level::SurfaceClass::Translucent | dx_level::SurfaceClass::Modulated) {
+            continue;
+        }
+        for t in part.indices.chunks_exact(3) {
+            let p = |i: u32| {
+                let q = part.positions[i as usize];
+                // positions are Unreal-space, actor-local, rotated by the entity: undo nothing but DrawScale.
+                DVec3::new(q[0] as f64, q[1] as f64, q[2] as f64) / scale.max(1e-3)
+            };
+            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+            let tn = (b - a).cross(c - a);
+            if tn.length() < 1e-6 || tn.normalize().dot(n).abs() < 0.85 {
+                continue;
+            }
+            tris.push([a, b, c]);
+        }
+    }
+    if tris.is_empty() {
+        return None;
+    }
+    // Connected panels (shared corners, to 0.05 units).
+    let key = |p: DVec3| ((p.x * 20.0).round() as i64, (p.y * 20.0).round() as i64, (p.z * 20.0).round() as i64);
+    let mut owner: std::collections::HashMap<(i64, i64, i64), usize> = Default::default();
+    let mut parent: Vec<usize> = (0..tris.len()).collect();
+    fn root(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    for (ti, t) in tris.iter().enumerate() {
+        for c in t {
+            match owner.get(&key(*c)) {
+                Some(&o) => {
+                    let (ra, rb) = (root(&mut parent, ti), root(&mut parent, o));
+                    parent[ra] = rb;
+                }
+                None => {
+                    owner.insert(key(*c), ti);
+                }
+            }
+        }
+    }
+    let mut groups: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    for ti in 0..tris.len() {
+        let r = root(&mut parent, ti);
+        groups.entry(r).or_default().push(ti);
+    }
+    // The panel whose middle is nearest the original screen's middle (along the screen, not through it).
+    let flat = |p: DVec3| p - n * (p - mid).dot(n);
+    let best = groups.values().min_by(|a, b| {
+        let c = |g: &Vec<usize>| {
+            let s: DVec3 = g.iter().flat_map(|&i| tris[i].iter().copied()).sum::<DVec3>() / (g.len() * 3) as f64;
+            flat(s).distance(mid)
+        };
+        c(a).total_cmp(&c(b))
+    })?;
+    let (mut u0, mut u1, mut v0, mut v1, mut d) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN, 0.0);
+    for &i in best {
+        for p in tris[i] {
+            let q = p - bl;
+            u0 = u0.min(q.dot(right));
+            u1 = u1.max(q.dot(right));
+            v0 = v0.min(q.dot(up));
+            v1 = v1.max(q.dot(up));
+            d += q.dot(n);
+        }
+    }
+    d /= (best.len() * 3) as f64;
+    if u1 - u0 < 4.0 || v1 - v0 < 3.0 {
+        return None;
+    }
+    let at = |u: f64, vv: f64| (bl + right * u + up * vv + n * d).to_array();
+    Some(ScreenDef { bl: at(u0, v0), br: at(u1, v0), tl: at(u0, v1), tr: None })
 }
 
 /// Texture pixel -> face (y, z) for a keypad mesh: u, v are 0..255 across the texture.
@@ -160,6 +253,12 @@ impl Rect3 {
     }
 }
 
+/// How far a terminal has moved from where the map put it (a computer saved a few units over its desk drops onto
+/// it at the start: its screen has to go down with it).
+fn shift_of(decos: &Query<&crate::actors::Deco>, mi: usize) -> DVec3 {
+    decos.iter().find(|d| d.mesh_actor == mi).map_or(DVec3::ZERO, |d| d.body.location - d.start)
+}
+
 fn to_world(ma: &dx_level::actors::MeshActor, scale: f64, p: [f64; 3]) -> DVec3 {
     let ax = dx_level::actors::rotator_axes(ma.rotation);
     let v = [p[0] * scale, p[1] * scale, p[2] * scale];
@@ -212,6 +311,8 @@ struct Session {
     flash: Option<(usize, f32)>,
     /// Desktop size in UI units and the scale it's drawn at (computers).
     desk: (i32, i32, i32),
+    /// How far the terminal moved from its map place (shift_of).
+    off: DVec3,
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
@@ -443,6 +544,7 @@ pub fn diegetic_system(
     binds: Res<crate::keybinds::Bindings>,
     motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
     mut tfs: Query<(&mut Transform, &mut Visibility), Or<(With<DgScreen>, With<DgKeyLcd>, With<DgKeyHover>)>>,
+    decos: Query<&crate::actors::Deco>,
 ) {
     let _prof = crate::prof::scope("diegetic::diegetic_system");
     let lvl = &level.0;
@@ -468,8 +570,15 @@ pub fn diegetic_system(
             if let (Some(def), Some(mi)) = (screen_def(&a.class), mesh_actor_of(lvl, actor)) {
                 let ma = &lvl.mesh_actors[mi];
                 let sc = draw_scale(a);
-                let rect = Rect3::new(to_world(ma, sc, def.bl), to_world(ma, sc, def.br), to_world(ma, sc, def.tl))
-                    .with_tr(def.tr.map(|t| to_world(ma, sc, t)));
+                // The personal terminal's picture goes into its own glowing monitor panel as drawn (another model
+                // than the original's put the screen where the original's panel was: floating off the monitor).
+                let def = if a.class == "ComputerPersonal" { mesh_screen(ma, sc, &def).unwrap_or(def) } else { def };
+                if env_on!("DXVIEW_DGLOG") {
+                    println!("DG screen {} bl {:?} br {:?} tl {:?}", a.class, def.bl, def.br, def.tl);
+                }
+                let off = shift_of(&decos, mi);
+                let rect = Rect3::new(to_world(ma, sc, def.bl) + off, to_world(ma, sc, def.br) + off, to_world(ma, sc, def.tl) + off)
+                    .with_tr(def.tr.map(|t| to_world(ma, sc, t) + off));
                 let unfold = play(lvl, &mut anims, Some(mi), "Activate");
                 // The desktop: 640 x 480 stretched to the screen's shape; drawn at 2x for sharp text up close.
                 let aspect = rect.w / rect.h.max(1e-3);
@@ -489,6 +598,7 @@ pub fn diegetic_system(
                     hover: None,
                     flash: None,
                     desk: (sw, sh, 2),
+                    off,
                 });
             }
         } else if let Some(b) = keypad {
@@ -497,7 +607,8 @@ pub fn diegetic_system(
                 if let (Some((def, grid)), Some(mi)) = (keypad_def(&a.class), mesh_actor_of(lvl, actor)) {
                     let ma = &lvl.mesh_actors[mi];
                     let sc = draw_scale(a);
-                    let rect = Rect3::new(to_world(ma, sc, def.bl), to_world(ma, sc, def.br), to_world(ma, sc, def.tl));
+                    let off = shift_of(&decos, mi);
+                    let rect = Rect3::new(to_world(ma, sc, def.bl) + off, to_world(ma, sc, def.br) + off, to_world(ma, sc, def.tl) + off);
                     *guard = Some(Session {
                         kind: Kind::Keypad,
                         actor,
@@ -513,6 +624,7 @@ pub fn diegetic_system(
                         hover: None,
                         flash: None,
                         desk: (0, 0, 1),
+                        off,
                     });
                 }
             }
@@ -615,7 +727,7 @@ pub fn diegetic_system(
                 let mut best = None;
                 for (r, &z) in g.rows.iter().enumerate() {
                     for (c, &y) in g.cols.iter().enumerate() {
-                        let at = to_world(ma, sc, [g.x, y, z]);
+                        let at = to_world(ma, sc, [g.x, y, z]) + s.off;
                         let dd = at.distance(p);
                         if dd < g.pitch * sc * 0.6 && best.is_none_or(|(_, b)| dd < b) {
                             best = Some((r * 3 + c, dd));
@@ -804,7 +916,7 @@ pub fn diegetic_system(
                 match shown {
                     Some(i) => {
                         let ma = &lvl.mesh_actors[mi];
-                        let at = to_world(ma, sc, [g.x, g.cols[i % 3], g.rows[i / 3]]);
+                        let at = to_world(ma, sc, [g.x, g.cols[i % 3], g.rows[i / 3]]) + shift_of(&decos, mi);
                         let k = (g.pitch * sc * 0.85) as f32 / 52.5;
                         *t = quad_tf(&rect, at, 0.2).with_scale(Vec3::new(k, k, 1.0));
                         v.set_if_neq(Visibility::Visible);
@@ -932,6 +1044,8 @@ pub struct StandbyRes {
     /// Terminals with a screen: actor, class, where the screen is, node name, logo texture.
     list: Option<Vec<(usize, String, Rect3, String, String)>>,
     shown: std::collections::HashMap<usize, StandbyScreen>,
+    /// When this map came in.
+    t0: f32,
 }
 
 /// How near (Unreal units) an idle terminal shows its standby screen, and how many at once.
@@ -955,10 +1069,14 @@ pub fn standby_system(
         ResMut<crate::weapons::RuntimeAssets>,
     ),
     mut res: Local<StandbyRes>,
+    decos: Query<&crate::actors::Deco>,
 ) {
     let _prof = crate::prof::scope("diegetic::standby_system");
     let lvl = &level.0;
     let new_map = crate::loader::new_map(&mut res.gen);
+    if new_map {
+        res.t0 = vtime.elapsed_secs();
+    }
     if new_map || !enabled() {
         for (_, sc) in res.shown.drain() {
             commands.entity(sc.e).despawn();
@@ -971,6 +1089,10 @@ pub fn standby_system(
             return;
         }
     }
+    // (Measured once the map's terminals have settled onto their desks.)
+    if res.list.is_none() && vtime.elapsed_secs() - res.t0 < 2.0 {
+        return;
+    }
     if res.list.is_none() {
         let mut list = Vec::new();
         for (i, a) in lvl.actors.iter().enumerate() {
@@ -980,7 +1102,10 @@ pub fn standby_system(
             let (Some(def), Some(mi)) = (screen_def(&a.class), mesh_actor_of(lvl, i)) else { continue };
             let ma = &lvl.mesh_actors[mi];
             let sc = draw_scale(a);
-            let rect = Rect3::new(to_world(ma, sc, def.bl), to_world(ma, sc, def.br), to_world(ma, sc, def.tl)).with_tr(def.tr.map(|t| to_world(ma, sc, t)));
+            let def = if a.class == "ComputerPersonal" { mesh_screen(ma, sc, &def).unwrap_or(def) } else { def };
+            let off = shift_of(&decos, mi);
+            let rect = Rect3::new(to_world(ma, sc, def.bl) + off, to_world(ma, sc, def.br) + off, to_world(ma, sc, def.tl) + off)
+                .with_tr(def.tr.map(|t| to_world(ma, sc, t) + off));
             let (name, logo) = crate::computers::node_name_logo(lvl, i, &mut assets);
             list.push((i, a.class.clone(), rect, name, logo));
         }
