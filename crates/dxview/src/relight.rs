@@ -23,7 +23,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 pub fn on() -> bool {
-    crate::settings::get("RemasteredLighting") > 0.5
+    setting!("RemasteredLighting") > 0.5
 }
 
 /// 0 off, 1 normal maps, 2 normal + parallax maps (only with remastered lighting: the lightmap alone has no
@@ -32,15 +32,15 @@ pub fn relief_level() -> u8 {
     if !on() {
         return 0;
     }
-    crate::settings::get("ReliefMaps").round().clamp(0.0, 2.0) as u8
+    setting!("ReliefMaps").round().clamp(0.0, 2.0) as u8
 }
 
 fn specular_on() -> bool {
-    on() && crate::settings::get("MaterialSpecular") > 0.5
+    on() && setting!("MaterialSpecular") > 0.5
 }
 
 pub fn emissive_on() -> bool {
-    crate::settings::get("EmissiveSurfaces") > 0.5
+    setting!("EmissiveSurfaces") > 0.5
 }
 
 /// The settings that are built into the level's materials (a change reloads the map when switched in play).
@@ -145,13 +145,6 @@ fn mip_image(w: u32, h: u32, mips: &[Vec<u8>]) -> Image {
 /// How deep relief maps look (Unreal units).
 const RELIEF_DEPTH: f32 = 2.5;
 
-pub fn apply_relief(m: &mut StandardMaterial, t: &dx_level::TextureImage, images: &mut Assets<Image>) -> bool {
-    if relief_level() == 0 {
-        return false;
-    }
-    apply_relief_maps(m, t, dx_level::relief::maps_for(t, true), images)
-}
-
 /// The relief maps of many textures at once, on every core (reading / generating them one by one took seconds
 /// of each map's load with HD textures). None when relief maps are off.
 pub fn relief_maps_parallel(textures: &[dx_level::TextureImage], wanted: &[usize]) -> std::collections::HashMap<usize, dx_level::relief::Relief> {
@@ -198,12 +191,12 @@ pub fn apply_relief_maps(m: &mut StandardMaterial, t: &dx_level::TextureImage, r
 /// The remastered-lighting parameters of a BSP material for its texture.
 pub fn params(name: Option<&str>, p: &mut crate::shadowlight::BspShadowParams) {
     let s = name.map(surface).unwrap_or(MATTE);
-    let gain = crate::settings::get("RemasterGain");
+    let gain = setting!("RemasterGain");
     let gain = if gain > 0.0 { gain } else { 1.0 };
     p.r = Vec4::new(if on() { 1.0 } else { 0.0 }, if specular_on() { s.spec } else { 0.0 }, s.roughness, s.metal);
     p.s = Vec4::new(
         if on() { gain } else { 1.0 },
-        if on() { crate::settings::get("RemasterAmbient").max(0.0) } else { 0.0 },
+        if on() { setting!("RemasterAmbient").max(0.0) } else { 0.0 },
         if emissive_on() { s.emissive } else { 0.0 },
         if emissive_on() { 1.2 } else { 0.0 },
     );

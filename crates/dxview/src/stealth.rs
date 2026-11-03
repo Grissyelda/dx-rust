@@ -30,7 +30,7 @@ pub enum NoiseKind {
 
 /// Enhancement: thrown objects make noises guards investigate (setting ThrownNoise).
 pub fn thrown_noise() -> bool {
-    crate::settings::get("ThrownNoise") > 0.5
+    setting!("ThrownNoise") > 0.5
 }
 
 #[derive(Debug, Clone)]
@@ -149,8 +149,8 @@ pub fn footstep_system(
     // CollisionHeight x 2 down); volume, range and pitch from speed and mass.
     let speed = b.velocity.length() as f32;
     let speed_factor = speed / 180.0;
-    let mass_factor = 150.0 / 150.0;
-    let vol = (speed_factor + 0.2) * mass_factor;
+    // (PlayerPawn mass 150 / 150: the mass factor is 1.)
+    let vol = speed_factor + 0.2;
     let range = (375.0 * vol).clamp(0.01, 375.0 * 4.0);
     let pitch = (vol + 0.5).clamp(1.0, 1.5);
     let volume = vol.clamp(0.0, 1.0) * 0.5;

@@ -421,11 +421,13 @@ pub fn remap_system(
     let pad_btns: Vec<MouseButton> = pad.inputs.iter().filter_map(|i| if let Input::Mouse(m) = i { Some(*m) } else { None }).collect();
     b.keys.clear();
     b.buttons.clear();
-    let mut all_k: Vec<KeyCode> = b.kb_keys.get_pressed().chain(b.kb_keys.get_just_released()).chain(b.kb_keys.get_just_pressed()).copied().collect();
-    all_k.extend(pad_keys.iter().copied());
-    all_k.extend(b.keys.get_pressed().copied());
-    all_k.sort_by_key(|k| format!("{k:?}"));
-    all_k.dedup();
+    // (A handful of inputs: a linear dedup, no sorting by formatted names.)
+    let mut all_k: Vec<KeyCode> = Vec::with_capacity(16);
+    for k in b.kb_keys.get_pressed().chain(b.kb_keys.get_just_released()).chain(b.kb_keys.get_just_pressed()).chain(pad_keys.iter()).chain(b.keys.get_pressed()) {
+        if !all_k.contains(k) {
+            all_k.push(*k);
+        }
+    }
     for k in all_k {
         let kb_tap = b.kb_keys.just_pressed(k) && !b.kb_keys.pressed(k);
         let want = b.kb_keys.pressed(k) || pad_keys.contains(&k);
@@ -437,11 +439,12 @@ pub fn remap_system(
             b.keys.release(k);
         }
     }
-    let mut all_m: Vec<MouseButton> = b.kb_buttons.get_pressed().chain(b.kb_buttons.get_just_released()).chain(b.kb_buttons.get_just_pressed()).copied().collect();
-    all_m.extend(pad_btns.iter().copied());
-    all_m.extend(b.buttons.get_pressed().copied());
-    all_m.sort_by_key(|m| format!("{m:?}"));
-    all_m.dedup();
+    let mut all_m: Vec<MouseButton> = Vec::with_capacity(8);
+    for m in b.kb_buttons.get_pressed().chain(b.kb_buttons.get_just_released()).chain(b.kb_buttons.get_just_pressed()).chain(pad_btns.iter()).chain(b.buttons.get_pressed()) {
+        if !all_m.contains(m) {
+            all_m.push(*m);
+        }
+    }
     for m in all_m {
         let kb_tap = b.kb_buttons.just_pressed(m) && !b.kb_buttons.pressed(m);
         let want = b.kb_buttons.pressed(m) || pad_btns.contains(&m);
@@ -554,6 +557,7 @@ fn build(commands: &mut Commands) {
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(Val::Px(14.0)),
                 row_gap: Val::Px(8.0),
+                display: Display::None,
                 ..default()
             },
             BackgroundColor(BG),
@@ -655,7 +659,7 @@ pub fn bind_menu_system(
     time: Res<Time>,
     mut b: ResMut<Bindings>,
     mut cursor: Single<&mut CursorOptions>,
-    mut root: Query<&mut Visibility, With<BindMenuRoot>>,
+    mut root: Query<(&mut Visibility, &mut Node), With<BindMenuRoot>>,
     mut rows: Query<(&Interaction, &BindButton, &mut BackgroundColor), Without<ResetButton>>,
     mut labels: Query<(&BindLabel, &mut Text, &mut TextColor)>,
     reset: Query<&Interaction, (Changed<Interaction>, With<ResetButton>)>,
@@ -677,15 +681,8 @@ pub fn bind_menu_system(
             cursor.grab_mode = CursorGrabMode::None;
         }
     }
-    for mut v in &mut root {
-        let want = if b.open {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if *v != want {
-            *v = want;
-        }
+    for (v, node) in &mut root {
+        crate::uinode::show(v, node, b.open);
     }
     if !b.open {
         return;

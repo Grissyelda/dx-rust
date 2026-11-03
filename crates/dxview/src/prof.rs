@@ -55,17 +55,6 @@ pub fn load_report() {
     }
 }
 
-/// Times one first-frame build (trees, skyline, grass...) into hitch.log when it is slow.
-pub fn build_note(what: &str, t0: std::time::Instant) {
-    let ms = t0.elapsed().as_secs_f64() * 1000.0;
-    if ms > 20.0 {
-        println!("PROF build {what}: {ms:.0} ms");
-        if HITCH.load(Ordering::Relaxed) {
-            hitch_write(&format!("build {what}: {ms:.0} ms\n"));
-        }
-    }
-}
-
 pub fn hitch_note(what: &str, ms: f64) {
     if ms > 250.0 && HITCH.load(Ordering::Relaxed) {
         hitch_write(&format!("{what}: {ms:.0} ms\n"));

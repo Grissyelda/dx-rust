@@ -165,6 +165,10 @@ pub fn alert_ui_system(
         && !crate::menus::open()
         && !crate::computers::open()
         && !crate::inventory_screen::screen_open();
+    // Off with nothing marked (the common case): nothing to do.
+    if !on && st.marks.is_empty() {
+        return;
+    }
     // Pawns gone (or a new map): drop their markers.
     let alive: std::collections::HashSet<Entity> = npcs.iter().map(|(e, _)| e).collect();
     let gone: Vec<Entity> = st.marks.keys().filter(|e| !alive.contains(e)).copied().collect();
@@ -184,7 +188,7 @@ pub fn alert_ui_system(
         icons.push(images.add(image(glyph(&Q, amber))));
         icons.push(images.add(image(glyph(&B, red))));
         st.icons = icons;
-        for (_, (_, shown)) in st.marks.iter_mut() {
+        for (_, shown) in st.marks.values_mut() {
             *shown = usize::MAX;
         }
     }
@@ -255,7 +259,7 @@ pub fn alert_ui_system(
                                 n.top = Val::Px((v.y - size).round());
                                 n.width = Val::Px(size);
                                 n.height = Val::Px(size);
-                                *vis = Visibility::Inherited;
+                                vis.set_if_neq(Visibility::Inherited);
                                 if shown != k {
                                     img.image = icons[k].clone();
                                 }
@@ -272,7 +276,7 @@ pub fn alert_ui_system(
         if want.is_none() {
             if let Some((m, _)) = st.marks.get(&e) {
                 if let Ok((_, mut vis, _)) = nodes.get_mut(*m) {
-                    *vis = Visibility::Hidden;
+                    vis.set_if_neq(Visibility::Hidden);
                 }
             }
         }

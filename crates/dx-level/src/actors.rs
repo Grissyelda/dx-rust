@@ -356,7 +356,7 @@ pub fn build(
         let actor_unlit = flag(p, "bUnlit");
 
         let mut resolve = |tp: &str| -> Option<(usize, bool)> {
-            tex_by_path
+            *tex_by_path
                 .entry(tp.to_string())
                 .or_insert_with(|| {
                     // Decode with palette index 0 see-through: sections drawn PF_Masked (the combat knife's
@@ -376,7 +376,6 @@ pub fn build(
                     textures.push(TextureImage { name: tp.to_string(), width: f.width as u32, height: f.height as u32, mips: vec![data], bc1: false, bc3: false });
                     Some((textures.len() - 1, false))
                 })
-                .clone()
         };
         let parts = mesh_parts(&m, &mesh_pkg, classes, p, style, actor_unlit, draw_scale, frame, &mut resolve);
         if std::env::var("DXL_PROPLOG").is_ok_and(|c| c.eq_ignore_ascii_case(&a.class)) {

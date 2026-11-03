@@ -64,7 +64,7 @@ pub fn profile(map: &str) -> Option<Profile> {
 
 /// Setting "Weather": 0 off, 1 steady (GMDX iWeatherControl 1: density 7), 2 dynamic (the default).
 fn mode() -> u8 {
-    crate::settings::get("Weather").round() as u8
+    setting!("Weather").round() as u8
 }
 
 /// The Precipitation package is there to draw and hear the rain with.
@@ -284,7 +284,7 @@ pub fn weather_system(
         }
         EXPOSED.store(false, std::sync::atomic::Ordering::Relaxed);
         for mut v in &mut vis {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
         st.drop_end.iter_mut().for_each(|e| *e = 0.0);
         st.splash_end.iter_mut().for_each(|e| *e = 0.0);
@@ -381,7 +381,7 @@ pub fn weather_system(
         st.height = 300.0;
     }
     for mut v in &mut vis {
-        *v = Visibility::Visible;
+        v.set_if_neq(Visibility::Visible);
     }
     let me = player.body.location;
     let pvel = player.body.velocity;
@@ -801,7 +801,7 @@ fn land_cell(ws: &mut WeatherState, lvl: &dx_level::Level, lkey: (i32, i32, i32)
     }
     ws.land_new += 1;
     let me = DVec3::new(0.0, 0.0, me_z);
-    let land = (|| {
+    let land = {
             // Straight down from the cell's ceiling (wind slant is small against the fall).
             let c = DVec3::new((lkey.0 as f64 + 0.5) * 16.0, (lkey.1 as f64 + 0.5) * 16.0, top);
             let low = DVec3::new(c.x, c.y, me.z - 2500.0);
@@ -832,7 +832,7 @@ fn land_cell(ws: &mut WeatherState, lvl: &dx_level::Level, lkey: (i32, i32, i32)
                 b.z
             });
             Land { z, n, water }
-        })();
+        };
     ws.landing.insert(lkey, land);
     Some(land)
 }

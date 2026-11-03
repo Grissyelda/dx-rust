@@ -320,11 +320,10 @@ impl BspCollision {
             for j in 0..i {
                 let (a, b) = (planes[i], planes[j]);
                 for (k, axis) in [DVec3::X, DVec3::Y, DVec3::Z].into_iter().enumerate() {
-                    if (a[k] < 0.0 && b[k] > 0.0) || (a[k] > 0.0 && b[k] < 0.0) {
-                        if !c.bevel(a, b, axis) {
+                    if ((a[k] < 0.0 && b[k] > 0.0) || (a[k] > 0.0 && b[k] < 0.0))
+                        && !c.bevel(a, b, axis) {
                             return None;
                         }
-                    }
                 }
             }
         }
@@ -477,7 +476,7 @@ pub fn trace_cylinder(c: &Cylinder, start: DVec3, end: DVec3, extent: DVec3) -> 
             let t = (plane - s.z) / d.z;
             if (0.0..=1.0).contains(&t) {
                 let p = s + d * t;
-                if p.x * p.x + p.y * p.y <= r * r && best.map_or(true, |(bt, _)| t < bt) {
+                if p.x * p.x + p.y * p.y <= r * r && best.is_none_or(|(bt, _)| t < bt) {
                     best = Some((t, DVec3::new(0.0, 0.0, n)));
                 }
             }

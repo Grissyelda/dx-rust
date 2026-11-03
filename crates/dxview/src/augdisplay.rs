@@ -249,7 +249,7 @@ pub fn augdisplay_system(
                 }
             }
         }
-        for (&b, _) in blockers.deco.iter() {
+        for &b in blockers.deco.keys() {
             if Some(b) == carried {
                 continue;
             }
@@ -316,11 +316,14 @@ pub fn augdisplay_system(
             Transform::default(),
             bevy::core_pipeline::tonemapping::Tonemapping::None,
             bevy::camera::Exposure { ev100: -0.263 },
+            Msaa::Off,
             AugViewCam,
         ));
     }
     for (_, mut cam, mut tf, mut target_rt) in &mut view_cam {
-        cam.is_active = want_view;
+        if cam.is_active != want_view {
+            cam.is_active = want_view;
+        }
         if !want_view {
             continue;
         }
@@ -496,7 +499,7 @@ pub fn augdisplay_system(
                 }
                 for (_, mut node, mut vis, im) in nodes.iter_mut() {
                     if im.is_none() {
-                        *vis = Visibility::Inherited;
+                        vis.set_if_neq(Visibility::Inherited);
                         node.top = Val::Px((ly * s) as f32 * k);
                     }
                 }
@@ -536,7 +539,7 @@ pub fn augdisplay_system(
     if !any {
         for (_, _, mut vis, im) in nodes.iter_mut() {
             if im.is_none() {
-                *vis = Visibility::Hidden;
+                vis.set_if_neq(Visibility::Hidden);
             }
         }
         st.last_panel = 0;
@@ -547,10 +550,10 @@ pub fn augdisplay_system(
         let Some(mut im) = im else { continue };
         have_view = true;
         if !want_view {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         }
-        *vis = Visibility::Inherited;
+        vis.set_if_neq(Visibility::Inherited);
         let k = 1.0 / win.scale_factor();
         node.left = Val::Px((bx * s) as f32 * k);
         node.top = Val::Px((by * s) as f32 * k);
@@ -609,6 +612,7 @@ pub fn vision_system(
     mut tint: Query<(&mut Node, &mut Visibility), With<IrTint>>,
     mut tagged: Local<std::collections::HashSet<Entity>>,
     mut map_gen: Local<u64>,
+    mut was_live: Local<Option<bool>>,
     active: Res<crate::charged::ActiveCharged>,
 ) {
     if crate::loader::new_map(&mut map_gen) {
@@ -634,15 +638,33 @@ pub fn vision_system(
             bevy::core_pipeline::tonemapping::Tonemapping::None,
             bevy::camera::Exposure { ev100: -0.263 },
             bevy::camera::visibility::RenderLayers::layer(HEAT_LAYER),
+            Msaa::Off,
             HeatCam,
         ));
     }
     let Some((mtf, mproj)) = main.iter().next() else { return };
+    let live = on && range > 0.0;
     for (mut cam, mut tf, mut proj) in &mut heat {
-        cam.is_active = on && range > 0.0;
-        *tf = *mtf;
-        *proj = mproj.clone();
+        if cam.is_active != live {
+            cam.is_active = live;
+        }
+        // The camera follows the eye only while it draws (every write marks the components changed).
+        if live {
+            tf.set_if_neq(*mtf);
+            let same = match (&*proj, mproj) {
+                (Projection::Perspective(a), Projection::Perspective(b)) => a.fov == b.fov && a.aspect_ratio == b.aspect_ratio && a.near == b.near && a.far == b.far,
+                _ => false,
+            };
+            if !same {
+                *proj = mproj.clone();
+            }
+        }
     }
+    // Vision off and nothing left glowing: the rest only writes what's already so.
+    if !live && tagged.is_empty() && *was_live == Some(false) {
+        return;
+    }
+    *was_live = Some(live);
     // Who glows: pawns (alive or bodies) within range of the eye.
     let eye_b = dx_level::bevy_to_ue(mtf.translation.to_array());
     let eye = DVec3::new(eye_b[0] as f64, eye_b[1] as f64, eye_b[2] as f64);
@@ -700,12 +722,15 @@ pub fn vision_system(
     ];
     let modern = crate::vision::active();
     for (i, (mut node, mut vis)) in tint.iter_mut().enumerate() {
-        *vis = if on && !modern { Visibility::Inherited } else { Visibility::Hidden };
+        vis.set_if_neq(if on && !modern { Visibility::Inherited } else { Visibility::Hidden });
         if let Some(r) = rects.get(i) {
-            node.left = Val::Px(r.0);
-            node.top = Val::Px(r.1);
-            node.width = Val::Px(r.2);
-            node.height = Val::Px(r.3);
+            let (l, t, w, h) = (Val::Px(r.0), Val::Px(r.1), Val::Px(r.2), Val::Px(r.3));
+            if node.left != l || node.top != t || node.width != w || node.height != h {
+                node.left = l;
+                node.top = t;
+                node.width = w;
+                node.height = h;
+            }
         }
     }
 }

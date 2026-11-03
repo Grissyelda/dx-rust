@@ -38,7 +38,6 @@ pub struct MeshFx {
     t: f32,
     life: f32,
     size: f32,
-    mats: Vec<Handle<StandardMaterial>>,
     /// WaterRing: starts at this DrawScale and grows by the rate per second, glow fading linearly
     /// (instead of growing from nothing to `size`).
     pub grow: Option<(f32, f32)>,
@@ -115,23 +114,10 @@ fn spawn_mesh_fx_ex(
             Visibility::default(),
         ))
         .id();
-    let map = |p: [f32; 3]| ue_to_bevy(p);
-    let Some((_m, _parts, handles)) = crate::weapons::spawn_mesh_parts(
-        &mesh, 1.0, &d, assets, images, meshes, materials, commands, root, &map, None,
-    ) else {
+    // Shared, full-bright meshes (an effect is spawned by every shot, splash and wading step).
+    if crate::weapons::spawn_mesh_parts_shared(&mesh, 1.0, &d, assets, images, meshes, materials, commands, root).is_none() {
         commands.entity(root).despawn();
         return None;
-    };
-    // Own additive materials so each effect fades on its own.
-    let mut mats = Vec::new();
-    for h in &handles {
-        if let Some(mut mm) = meshes.get_mut(h) {
-            let n = mm
-                .attribute(Mesh::ATTRIBUTE_POSITION)
-                .map(|a| a.len())
-                .unwrap_or(0);
-            mm.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0f32, 1.0, 1.0, 1.0]; n]);
-        }
     }
     let tex = find(&d, "Skin").and_then(|v| {
         if let Value::Path(p) = v {
@@ -141,15 +127,6 @@ fn spawn_mesh_fx_ex(
         }
     });
     let img = tex.as_deref().and_then(|p| image_for(assets, images, p));
-    let mat = materials.add(StandardMaterial {
-        base_color_texture: img,
-        unlit: true,
-        double_sided: true,
-        cull_mode: None,
-        alpha_mode: AlphaMode::Add,
-        ..default()
-    });
-    mats.push(mat.clone());
     let life = match find(&d, "LifeSpan") {
         Some(Value::Float(l)) if *l > 0.0 && class == "WaterRing" => *l,
         _ => 0.5,
@@ -158,12 +135,14 @@ fn spawn_mesh_fx_ex(
         Some((l, g)) => (l, Some(g)),
         None => (life, None),
     };
+    // Shared additive material (rings and sparks a half again brighter); the fade swaps between its steps.
+    let tint = if grow.is_some() { [1.0; 3] } else { [1.5; 3] };
+    let mat = assets.sprites.material_tinted(materials, img, crate::sprite::Blend::Add, tint);
     commands.entity(root).insert((
         MeshFx {
             t: 0.0,
             life,
             size,
-            mats,
             grow,
         },
         FxMaterial(mat),
@@ -188,19 +167,11 @@ pub fn mesh_fx_system(
     )>,
     mut kids: Query<&mut MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut assets: ResMut<crate::weapons::RuntimeAssets>,
 ) {
     let _prof = crate::prof::scope("explosion::mesh_fx_system");
     let dt = time.delta_secs();
     for (e, mut fx, mut tf, fm, ch) in &mut q {
-        if let (Some(fm), Some(ch)) = (fm, ch) {
-            for c in ch.iter() {
-                if let Ok(mut m) = kids.get_mut(c) {
-                    if m.0 != fm.0 {
-                        m.0 = fm.0.clone();
-                    }
-                }
-            }
-        }
         fx.t += dt;
         let k = (fx.t / fx.life).min(1.0);
         if fx.t >= fx.life {
@@ -214,12 +185,15 @@ pub fn mesh_fx_system(
             }
             None => {
                 tf.scale = Vec3::splat((fx.size * k).max(0.001));
-                (1.0 - k) * 1.5
+                1.0 - k
             }
         };
-        for m in &fx.mats {
-            if let Some(mut mm) = materials.get_mut(m) {
-                mm.base_color = Color::linear_rgb(glow, glow, glow);
+        if let (Some(fm), Some(ch)) = (fm, ch) {
+            let faded = assets.sprites.faded(&mut materials, &fm.0, glow);
+            for c in ch.iter() {
+                if let Ok(mut m) = kids.get_mut(c) {
+                    crate::sprite::apply(&mut m, faded.clone());
+                }
             }
         }
     }
@@ -352,14 +326,7 @@ pub fn spawn_fireball(
         if img.is_none() {
             continue;
         }
-        frames.push(materials.add(StandardMaterial {
-            base_color_texture: img,
-            unlit: true,
-            double_sided: true,
-            cull_mode: None,
-            alpha_mode: AlphaMode::Add,
-            ..default()
-        }));
+        frames.push(assets.sprites.material(materials, img));
     }
     if frames.is_empty() {
         return;
@@ -368,7 +335,7 @@ pub fn spawn_fireball(
         Some(Value::Float(v)) => *v,
         _ => 1.0,
     };
-    let quad = meshes.add(Rectangle::new(1.0, 1.0));
+    let quad = assets.sprites.quad(meshes);
     let root = commands
         .spawn((
             Transform::from_translation(Vec3::from(ue_to_bevy(at.as_vec3().to_array()))),

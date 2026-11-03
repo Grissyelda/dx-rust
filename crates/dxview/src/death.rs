@@ -63,10 +63,10 @@ pub fn death_system(
             commands.entity(b.root).despawn();
         }
         st.t = 0.0;
-        **vm = Visibility::Inherited;
+        vm.set_if_neq(Visibility::Inherited);
         return;
     }
-    **vm = Visibility::Hidden;
+    vm.set_if_neq(Visibility::Hidden);
     let dt = time.delta_secs();
     let first = st.t == 0.0;
     st.t += dt;

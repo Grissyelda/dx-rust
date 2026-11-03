@@ -429,7 +429,7 @@ pub fn deco_damage_system(
         // The pad feels it break when close (ours): bigger things harder, gone by 400 units.
         let near = 1.0 - (center.distance(player.body.location) / 400.0).min(1.0);
         if near > 0.0 {
-            let size = (fv(p, "Mass", 20.0) / 60.0).clamp(0.3, 1.0) as f32;
+            let size = (fv(p, "Mass", 20.0) / 60.0).clamp(0.3, 1.0);
             crate::dualsense::event(crate::dualsense::Haptic::Smash(size * near as f32));
         }
         blockers.list[b].radius = 0.0;
@@ -670,7 +670,11 @@ pub fn loose_physics(
                 continue;
             }
         }
-        if !l.resting {
+        // At rest nothing moves or needs relighting (it was lit when it landed): only the life countdown above.
+        if l.resting {
+            continue;
+        }
+        {
             l.vel.z -= 950.0 * dt;
             let mut remaining = dt;
             for _ in 0..3 {
@@ -753,6 +757,7 @@ pub fn loose_physics(
                 Vec3::from(m[1]),
                 Vec3::from(m[2]),
             ));
+            // Relit every 24 units on the way and once more where it comes to rest.
             if l.pos.distance(l.lit_at) > 24.0 || l.resting {
                 l.lit_at = l.pos;
                 let at = l.pos.as_vec3().to_array();
@@ -850,7 +855,7 @@ pub fn shell_system(
             ),
             resting: false,
             // Enhancement "Casings And Blood Stay": no LifeSpan.
-            life: (crate::settings::get("PersistentDebris") < 0.5).then(|| fv(&d, "LifeSpan", 10.0)),
+            life: (setting!("PersistentDebris") < 0.5).then(|| fv(&d, "LifeSpan", 10.0)),
             parts: Vec::new(),
             lit_at: DVec3::ZERO,
         };
@@ -1034,16 +1039,8 @@ pub fn flare_system(
         };
         let img = crate::weapons::image_for(&mut assets, &mut images, "Effects.Corona.Corona_G");
         // LightHue 16: orange.
-        let mat = materials.add(StandardMaterial {
-            base_color_texture: img,
-            base_color: Color::linear_rgb(1.6, 0.7, 0.2),
-            unlit: true,
-            double_sided: true,
-            cull_mode: None,
-            alpha_mode: AlphaMode::Add,
-            ..default()
-        });
-        let quad = meshes.add(Rectangle::new(1.0, 1.0));
+        let mat = assets.sprites.material_tinted(&mut materials, img, crate::sprite::Blend::Add, [1.6, 0.7, 0.2]);
+        let quad = assets.sprites.quad(&mut meshes);
         commands.spawn((
             Mesh3d(quad),
             MeshMaterial3d(mat),

@@ -18,11 +18,11 @@ use dx_level::ue_to_bevy;
 use glam::DVec3;
 
 pub fn fog_on() -> bool {
-    crate::settings::get("AtmosphericFog") > 0.5
+    setting!("AtmosphericFog") > 0.5
 }
 
 pub fn halos_on() -> bool {
-    crate::settings::get("LightHalos") > 0.5
+    setting!("LightHalos") > 0.5
 }
 
 const MAX_HALOS: usize = 96;
@@ -67,6 +67,8 @@ pub struct HaloState {
     seen: Vec<bool>,
     check: usize,
     idle: bool,
+    /// Hash of the quads last written (the mesh is rewritten only when it would differ).
+    hash: u64,
 }
 
 #[derive(Component)]
@@ -128,7 +130,7 @@ pub fn halo_system(
     }
     if !halos_on() {
         for mut v in &mut vis {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
         return;
     }
@@ -164,7 +166,7 @@ pub fn halo_system(
         st.mesh = Some(h);
     }
     for mut v in &mut vis {
-        *v = Visibility::Visible;
+        v.set_if_neq(Visibility::Visible);
     }
     let dt = time.delta_secs().min(0.1);
     let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64);
@@ -224,7 +226,7 @@ pub fn halo_system(
         // Close up the glow thins out (you're inside it): nothing within half its size, full from twice it.
         let near = ((d - size * 0.5) / (size * 1.5)).clamp(0.0, 1.0) as f32;
         let bright = l.color[0].max(l.color[1]).max(l.color[2]);
-        let k = *s * near * 0.03 * fog_thick as f32 * (bright * 1.5).min(1.0) / bright.max(1e-3);
+        let k = *s * near * 0.03 * fog_thick * (bright * 1.5).min(1.0) / bright.max(1e-3);
         if k <= 0.001 {
             continue;
         }
@@ -243,12 +245,43 @@ pub fn halo_system(
         return;
     }
     st.idle = pos.is_empty();
+    // The same quads as last time (the camera still, the halos settled): nothing to upload.
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for p in &pos {
+            for k in p {
+                ((k * 64.0).round() as i32).hash(&mut h);
+            }
+        }
+        for c in &col {
+            for k in c {
+                ((k * 4096.0).round() as i32).hash(&mut h);
+            }
+        }
+        h.finish()
+    };
+    if hash == st.hash {
+        return;
+    }
+    st.hash = hash;
     pad(&mut pos, &mut uv, &mut col, &mut idx, MAX_HALOS);
     if let Some(m) = st.mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
         let mut m = m;
-        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
-        m.insert_indices(Indices::U32(idx));
+        // Positions and colours in place; UVs and indices only the first time (they never change after padding).
+        let fresh = m.attribute(Mesh::ATTRIBUTE_POSITION).is_none_or(|a| a.len() != pos.len());
+        if fresh {
+            m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+            m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+            m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+            m.insert_indices(Indices::U32(idx));
+        } else {
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x3(dst)) = m.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+                dst.copy_from_slice(&pos);
+            }
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x4(dst)) = m.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+                dst.copy_from_slice(&col);
+            }
+        }
     }
 }

@@ -675,9 +675,9 @@ pub fn init(root: &std::path::Path) {
     // Outfits found in GMDX Augmented's maps (else all are open).
     let gmdx_maps = unreal_pkg::mods::active("gmdx").and_then(|d| unreal_pkg::mods::find_rel(&d, "Maps"));
     // Without GMDX's maps: our own boxes in the original maps (setting OutfitBoxes), else all open.
-    let own_boxes = gmdx_maps.is_none() && crate::settings::get("OutfitBoxes") > 0.5;
+    let own_boxes = gmdx_maps.is_none() && setting!("OutfitBoxes") > 0.5;
     ALL_UNLOCKED.store(
-        (gmdx_maps.is_none() && !own_boxes) || crate::settings::get("AugAllOutfits") > 0.5,
+        (gmdx_maps.is_none() && !own_boxes) || setting!("AugAllOutfits") > 0.5,
         std::sync::atomic::Ordering::Relaxed,
     );
     unreal_pkg::classes::set_instance_hook(Some(Box::new(npc_hook)));
@@ -970,7 +970,7 @@ fn own_box_actors(map: &str) -> Vec<(String, String, Vec<Property>)> {
 
 /// An outfit box (frob it to unlock the outfit).
 pub fn is_spawner(class: &str) -> bool {
-    crate::util::starts_with_ci(&class, "outfitspawner")
+    crate::util::starts_with_ci(class, "outfitspawner")
 }
 
 /// OutfitManager.SpawnerPickup: the message, the box's pickup sound; the caller removes the box.
@@ -1277,7 +1277,7 @@ pub fn custom_rows() -> Vec<(i64, String, String)> {
         if count <= 1 {
             continue;
         }
-        let cur = parts.iter().filter_map(|id| grp.parts.iter().find(|p| &p.id == id && p.slot == slot)).last();
+        let cur = parts.iter().filter_map(|id| grp.parts.iter().find(|p| &p.id == id && p.slot == slot)).next_back();
         let label = if li < 0 { String::new() } else { d.part_labels.get(li as usize).cloned().unwrap_or_default() };
         out.push((slot, label, cur.map(|p| p.name.clone()).unwrap_or_default()));
     }
@@ -1370,7 +1370,7 @@ fn hash_str(s: &str) -> u64 {
 /// ClassDb's instance hook: SetupNPCOutfits / NPCOutfitGroup.AddMember / ApplyOutfits for a pawn or carcass as the
 /// map is read. Setting AugNPCs = iEquipNPCs (0 none, 1 everyone but unique characters, 2 everyone).
 fn npc_hook(map: &str, class: &str, name: &str, props: &mut Vec<Property>) {
-    let level = crate::settings::get("AugNPCs").round() as i32;
+    let level = setting!("AugNPCs").round() as i32;
     if level <= 0 {
         return;
     }
@@ -1378,7 +1378,7 @@ fn npc_hook(map: &str, class: &str, name: &str, props: &mut Vec<Property>) {
     let Some(d) = g.as_ref() else { return };
     // HDTP people keep their own look (ScriptedPawn.IsHDTP).
     if let Some(Value::Path(m)) = find(props, "Mesh") {
-        if crate::util::starts_with_ci(&m, "hdtp") {
+        if crate::util::starts_with_ci(m, "hdtp") {
             return;
         }
     }
@@ -1387,7 +1387,7 @@ fn npc_hook(map: &str, class: &str, name: &str, props: &mut Vec<Property>) {
         Some(Value::Str(s)) | Some(Value::Name(s)) => s.clone(),
         _ => String::new(),
     };
-    let is_carcass = crate::util::ends_with_ci(&class, "carcass");
+    let is_carcass = crate::util::ends_with_ci(class, "carcass");
     let seed = state(|s| s.seed);
     let mut textures: [Option<String>; 9] = Default::default();
     let mut unique = false;
@@ -1473,7 +1473,7 @@ pub fn apply_weapon_skin(props: &mut Vec<Property>, class: &str, skin: &str, fir
         return;
     }
     if let Some(Value::Path(m)) = find(props, if first { "PlayerViewMesh" } else { "Mesh" }) {
-        if crate::util::starts_with_ci(&m, "hdtpitems.") {
+        if crate::util::starts_with_ci(m, "hdtpitems.") {
             return;
         }
     }

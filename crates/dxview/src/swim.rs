@@ -376,15 +376,8 @@ fn spawn_bubble(
         .lib
         .width(TEX).map(|w| w as f32)
         .unwrap_or(64.0);
-    let material = materials.add(StandardMaterial {
-        base_color_texture: img,
-        unlit: true,
-        double_sided: true,
-        cull_mode: None,
-        alpha_mode: AlphaMode::Add,
-        ..default()
-    });
-    let quad = meshes.add(Rectangle::new(1.0, 1.0));
+    let material = assets.sprites.material(materials, img);
+    let quad = assets.sprites.quad(meshes);
     let draw_scale = 0.05 + frand() as f32 * 0.1;
     commands.spawn((
         Mesh3d(quad),

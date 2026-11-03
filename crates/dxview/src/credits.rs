@@ -597,16 +597,14 @@ pub fn credits_system(
     let k = &binds.keys;
     let shift_alt = k.pressed(KeyCode::ShiftLeft) || k.pressed(KeyCode::ShiftRight) || k.pressed(KeyCode::AltLeft) || k.pressed(KeyCode::AltRight);
     if !shift_alt {
-        if k.just_pressed(KeyCode::ArrowDown) || k.just_pressed(KeyCode::Minus) {
-            if sc.speed < 0.2 {
+        if (k.just_pressed(KeyCode::ArrowDown) || k.just_pressed(KeyCode::Minus))
+            && sc.speed < 0.2 {
                 sc.speed += 0.01;
             }
-        }
-        if k.just_pressed(KeyCode::ArrowUp) || k.just_pressed(KeyCode::Equal) {
-            if sc.speed > 0.01 {
+        if (k.just_pressed(KeyCode::ArrowUp) || k.just_pressed(KeyCode::Equal))
+            && sc.speed > 0.01 {
                 sc.speed -= 0.01;
             }
-        }
         if k.just_pressed(KeyCode::Space) {
             sc.paused = !sc.paused;
         }
@@ -726,7 +724,7 @@ pub fn credits_system(
     if finished && sc.end_timer.is_none() {
         // FinishedScrolling.
         match sc.mode {
-            Mode::Credits if crate::settings::get("QuotesEnabled") > 0.5 => {
+            Mode::Credits if setting!("QuotesEnabled") > 0.5 => {
                 // CreditsWindow: the sting, and the quotes once it has played. (The original only counts down once
                 // the strip has scrolled away; a click just played the sting - we count down from the click too.)
                 crate::sound::play_player("DeusExSounds.UserInterface.CreditsEnd", 1.0, 1024.0);

@@ -59,7 +59,7 @@ impl AlarmRt {
 
     /// IsAlarmReady for `who`.
     pub fn ready_for(&self, who: usize) -> bool {
-        !self.active && !self.disabled && self.associated.map_or(true, |a| a == who)
+        !self.active && !self.disabled && self.associated.is_none_or(|a| a == who)
     }
 }
 
@@ -191,7 +191,7 @@ impl Alarms {
             if d.length() > 2400.0 {
                 continue;
             }
-            if best.map_or(true, |(_, bd)| d.length() < bd) {
+            if best.is_none_or(|(_, bd)| d.length() < bd) {
                 best = Some((i, d.length()));
             }
         }
@@ -320,7 +320,7 @@ pub fn alarm_system(
             1.0,
         );
         // The light blinks twice a second.
-        if now % 0.5 > 0.25 || crate::settings::get("NoStrobeLights") > 0.5 {
+        if now % 0.5 > 0.25 || setting!("NoStrobeLights") > 0.5 {
             let (h, s, b, r) = u.light;
             crate::dynlight::hold(
                 0xA_0000_0000 | i as u64,

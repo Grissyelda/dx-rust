@@ -121,7 +121,7 @@ pub fn autosaves_exist() -> bool {
 /// The slot to write: the first empty one, else the oldest.
 fn next_autosave() -> PathBuf {
     (1..=AUTOSAVE_SLOTS)
-        .map(|i| autosave_path(i))
+        .map(autosave_path)
         .min_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
         .unwrap_or_else(|| autosave_path(1))
 }
@@ -654,7 +654,7 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
     let placed = PLACED.load(Ordering::Relaxed);
     let (map, location, mission) = {
         let lvl = &world.resource::<LevelRes>().0;
-        let info = lvl.actors.iter().find(|a| a.class == "DeusExLevelInfo");
+        let info = lvl.level_info();
         let s = |n: &str| match info.and_then(|a| find(&a.props, n)) {
             Some(Value::Str(v)) => v.clone(),
             _ => String::new(),
@@ -810,7 +810,7 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
             l.loose.push(LooseSave { class: p.class.clone(), location: a3(lo.pos), props });
         }
     }
-    if crate::settings::get("PersistentDebris") > 0.5 {
+    if setting!("PersistentDebris") > 0.5 {
         let mut q = world.query::<(&crate::impacts::KeepDecal, &Transform)>();
         for (k, t) in q.iter(world) {
             l.decals.push(crate::impacts::DecalSave {
@@ -1139,7 +1139,7 @@ fn restore_level_part(world: &mut World, s: &SaveGame, l: &LevelSave) {
                 blocker_updates.push((n.blocker, Some(d.body.location), false));
             }
             if sv.hidden {
-                *vis = Visibility::Hidden;
+                vis.set_if_neq(Visibility::Hidden);
             }
             if sv.in_world && out.is_some() {
                 enter.push(e);
@@ -1178,7 +1178,7 @@ fn restore_level_part(world: &mut World, s: &SaveGame, l: &LevelSave) {
         for (e, ..) in outs {
             world.entity_mut(e).remove::<OutOfWorld>();
             if let Some(mut v) = world.get_mut::<Visibility>(e) {
-                *v = Visibility::Inherited;
+                v.set_if_neq(Visibility::Inherited);
             }
         }
     }
@@ -1399,7 +1399,7 @@ fn write(path: &Path, s: &SaveGame) -> std::io::Result<()> {
 
 /// DeusExPlayer.QuickSave: not on the logo map, while dead, or during an infolink.
 pub fn can_save(dead: bool) -> bool {
-    !crate::menus::intro_map() && !dead && !restoring() && crate::consys::lock().as_ref().map_or(true, |c| c.link.is_none())
+    !crate::menus::intro_map() && !dead && !restoring() && crate::consys::lock().as_ref().is_none_or(|c| c.link.is_none())
 }
 
 #[cfg(test)]

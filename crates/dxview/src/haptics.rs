@@ -221,7 +221,7 @@ pub fn play(h: &crate::dualsense::Haptic, scale: f32) {
 
 /// Infolinks go to the pad speaker (Infolinks Through Controller Speaker, USB).
 pub fn speaker_on() -> bool {
-    available() && crate::dualsense::connected_usb() && crate::settings::get("PadSpeaker") as i32 == 1
+    available() && crate::dualsense::connected_usb() && setting!("PadSpeaker") as i32 == 1
 }
 
 /// Play a speech sound on the pad speaker. False when it can't (not decoded yet: the caller plays it normally).

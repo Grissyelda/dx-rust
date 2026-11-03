@@ -140,7 +140,7 @@ pub fn scriptworld_system(
             for (_, mr, mut vis, _) in &mut q {
                 let ai = lvl.mesh_actors[mr.0].actor;
                 let hide = set.contains(&ai);
-                *vis = if hide { Visibility::Hidden } else { Visibility::Inherited };
+                vis.set_if_neq(if hide { Visibility::Hidden } else { Visibility::Inherited });
                 mark_hidden(ai, hide);
                 if let Some(b) = blockers.list.iter_mut().find(|c| c.actor == ai) {
                     if hide {
@@ -172,7 +172,7 @@ pub fn scriptworld_system(
             let blocker = blockers.list.iter().position(|c| c.actor == ai);
             match &r {
                 ActorReq::Hide(_, hide) => {
-                    *vis = if *hide { Visibility::Hidden } else { Visibility::Inherited };
+                    vis.set_if_neq(if *hide { Visibility::Hidden } else { Visibility::Inherited });
                     mark_hidden(ai, *hide);
                     if let Some(b) = blocker {
                         let blocks = matches!(find(&a.props, "bBlockPlayers"), Some(Value::Bool(true)));
@@ -185,7 +185,7 @@ pub fn scriptworld_system(
                 }
                 ActorReq::Vehicle(_, enter) => {
                     let hide = !*enter;
-                    *vis = if hide { Visibility::Hidden } else { Visibility::Inherited };
+                    vis.set_if_neq(if hide { Visibility::Hidden } else { Visibility::Inherited });
                     mark_hidden(ai, hide);
                     if let Some(b) = blocker {
                         blockers.list[b].radius = if hide { 0.0 } else { radius };

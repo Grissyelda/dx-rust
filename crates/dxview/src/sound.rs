@@ -550,7 +550,7 @@ fn find_ci(p: &std::path::Path) -> Option<PathBuf> {
         .map(|e| e.path())
         .find(|q| {
             q.file_name()
-                .map_or(false, |n| n.to_string_lossy().to_ascii_lowercase() == want)
+                .is_some_and(|n| n.to_string_lossy().to_ascii_lowercase() == want)
         })
 }
 
@@ -569,6 +569,20 @@ enum MusicMode {
     Ambient,
     Combat,
     Dying,
+}
+
+/// An actor's own AmbientSound, gathered once per map.
+struct ActorAmbient {
+    actor: usize,
+    snd: &'static str,
+    radius: f64,
+    vol: f32,
+    pitch: f32,
+    blocker: Option<usize>,
+    /// Lowercased Tag ("" = none): silenced while an untriggered tag.
+    tag: String,
+    /// Location for actors with no blocker.
+    at: Option<DVec3>,
 }
 
 #[derive(Resource)]
@@ -594,7 +608,7 @@ pub struct SoundState {
     time: f32,
     /// Placed actors with an AmbientSound (fires, cameras, turrets, the helicopter, bots...): actor index, sound,
     /// radius, volume, pitch, blocker (None = never moves).
-    actor_ambients: Option<Vec<(usize, String, f64, f32, f32, Option<usize>)>>,
+    actor_ambients: Option<Vec<ActorAmbient>>,
     /// Another song playing over the level's (the credits / quotes music): dynamic music waits.
     other_song: Option<imsim_audio::Song>,
     /// Enhancements (audiofx.rs): occlusion cache, when the room was last measured, the HQ setting sent.
@@ -944,40 +958,48 @@ pub fn sound_system(
                 if matches!(a.class.as_str(), "ElectricityEmitter" | "LaserEmitter") {
                     return None;
                 }
-                let snd = prop(&a.props, "AmbientSound")?;
-                Some((
-                    i,
+                let snd = crate::util::intern(&prop(&a.props, "AmbientSound")?);
+                let tag = match find(&a.props, "Tag") {
+                    Some(Value::Name(t)) => t.to_ascii_lowercase(),
+                    _ => String::new(),
+                };
+                let at = match find(&a.props, "Location") {
+                    Some(Value::Vector(v)) => Some(DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64)),
+                    _ => None,
+                };
+                Some(ActorAmbient {
+                    actor: i,
                     snd,
-                    25.0 * (fprop(&a.props, "SoundRadius", 32.0) as f64 + 1.0),
-                    fprop(&a.props, "SoundVolume", 128.0),
-                    fprop(&a.props, "SoundPitch", 64.0) / 64.0,
-                    by_actor.get(&i).copied(),
-                ))
+                    radius: 25.0 * (fprop(&a.props, "SoundRadius", 32.0) as f64 + 1.0),
+                    vol: fprop(&a.props, "SoundVolume", 128.0),
+                    pitch: fprop(&a.props, "SoundPitch", 64.0) / 64.0,
+                    blocker: by_actor.get(&i).copied(),
+                    tag,
+                    at,
+                })
             })
             .collect();
         st.actor_ambients = Some(list);
     }
-    let off: Vec<String> = OFF_TAGS.lock().map(|t| t.clone()).unwrap_or_default();
-    let owned: Vec<usize> = OWNED.lock().map(|o| o.clone()).unwrap_or_default();
-    for (i, snd, radius, vol, pitch, blocker) in st.actor_ambients.as_ref().unwrap() {
+    // (Read under their locks: no copies of the lists each frame.)
+    let off = OFF_TAGS.lock().unwrap_or_else(|e| e.into_inner());
+    let owned = OWNED.lock().unwrap_or_else(|e| e.into_inner());
+    for amb in st.actor_ambients.as_ref().unwrap() {
+        let (i, snd, radius, vol, pitch, blocker) = (&amb.actor, amb.snd, &amb.radius, &amb.vol, &amb.pitch, &amb.blocker);
         if owned.contains(i) {
             continue;
         }
-        if !off.is_empty() {
-            if let Some(Value::Name(t)) = find(&level.0.actors[*i].props, "Tag") {
-                if off.contains(&t.to_ascii_lowercase()) {
-                    continue;
-                }
-            }
+        if !off.is_empty() && !amb.tag.is_empty() && off.contains(&amb.tag) {
+            continue;
         }
         let pos = match blocker {
             Some(b) => match blockers.list.get(*b) {
                 Some(c) if c.radius > 0.0 => c.center,
                 _ => continue,
             },
-            None => match find(&level.0.actors[*i].props, "Location") {
-                Some(Value::Vector(v)) => DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64),
-                _ => continue,
+            None => match amb.at {
+                Some(p) => p,
+                None => continue,
             },
         };
         if pos.distance_squared(ear) <= radius * radius {
@@ -1110,13 +1132,13 @@ pub fn sound_system(
                 && blockers
                     .list
                     .get(n.blocker)
-                    .map_or(false, |b| b.center.distance(me) < 1600.0 + b.radius)
+                    .is_some_and(|b| b.center.distance(me) < 1600.0 + b.radius)
         })
         .count();
     // GMDX Audio: Play Combat Music = Restricted (setting RestrictedCombatMusic): two or more attackers, so one
     // distant guard doesn't start the combat track.
     crate::hudfade::ATTACKERS.store(attackers as u32, std::sync::atomic::Ordering::Relaxed);
-    let combat = attackers >= if crate::settings::get("RestrictedCombatMusic") > 0.5 { 2 } else { 1 };
+    let combat = attackers >= if setting!("RestrictedCombatMusic") > 0.5 { 2 } else { 1 };
     if combat {
         st.change_timer = 0.0;
         if st.mode != MusicMode::Combat {
@@ -1149,7 +1171,7 @@ pub fn sound_system(
 /// Returns (sound, volumeMultiplier for the AI noise).
 pub fn footstep_sound(group: Option<&str>, water: bool) -> (String, f32) {
     let (snd, mult) = footstep_sound_base(group, water);
-    if crate::settings::get("SurfaceFootsteps") <= 0.5 {
+    if setting!("SurfaceFootsteps") <= 0.5 {
         return (snd, mult);
     }
     // Enhancement (Footstep Loudness by Surface): soft floors hide you, metal and water give you away.

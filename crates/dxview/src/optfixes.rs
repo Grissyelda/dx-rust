@@ -14,39 +14,38 @@
 //!
 //! Every place that changes says "Optional" in a comment.
 
-use crate::settings;
 
 /// The bug fixes (OptionalFixes).
 pub fn fixes() -> bool {
-    settings::get("OptionalFixes") > 0.5
+    setting!("OptionalFixes") > 0.5
 }
 
 pub fn unconscious_death() -> bool {
-    settings::get("UnconsciousDeath") > 0.5
+    setting!("UnconsciousDeath") > 0.5
 }
 
 pub fn noisy_objects() -> bool {
-    settings::get("NoisyObjects") > 0.5
+    setting!("NoisyObjects") > 0.5
 }
 
 pub fn weapon_pointing() -> bool {
-    settings::get("WeaponPointing") > 0.5
+    setting!("WeaponPointing") > 0.5
 }
 
 pub fn radar_cloak() -> bool {
-    settings::get("RadarCloak") > 0.5
+    setting!("RadarCloak") > 0.5
 }
 
 pub fn npc_limp() -> bool {
-    settings::get("NpcLimp") > 0.5
+    setting!("NpcLimp") > 0.5
 }
 
 pub fn boss_resist() -> bool {
-    settings::get("BossResist") > 0.5
+    setting!("BossResist") > 0.5
 }
 
 pub fn long_flares() -> bool {
-    settings::get("LongFlares") > 0.5
+    setting!("LongFlares") > 0.5
 }
 
 /// Noisy object use: the player using something sends a LoudNoise of this radius from it.
@@ -66,11 +65,6 @@ pub fn object_noise(at: bevy::math::DVec3, radius: f64) {
 /// Bosses whose weapon is never dropped (AnnaNavarre / GuntherHermann / WaltonSimons.ShouldDropWeapon False).
 pub fn never_drops_weapon(class: &str) -> bool {
     fixes() && matches!(class, "AnnaNavarre" | "GuntherHermann" | "WaltonSimons")
-}
-
-/// Pawns immune to gas don't run from it (IsProjectileDangerous: Cloud / GasGrenade not evil for them).
-pub fn gas_immune(class: &str) -> bool {
-    matches!(class, "AnnaNavarre" | "GuntherHermann" | "PaulDenton" | "WaltonSimons" | "MJ12Commando" | "RiotCop")
 }
 
 /// Meshes without the *2H sequences although the pawn may carry a two-handed weapon (JaimeReyes / WIB

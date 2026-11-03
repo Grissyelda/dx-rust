@@ -22,7 +22,7 @@ const LENS_FRAC: f32 = 0.62;
 const RIM: f32 = 1.22;
 
 pub fn setting_on() -> bool {
-    crate::settings::get("DiegeticScope") > 0.5
+    setting!("DiegeticScope") > 0.5
 }
 
 /// A scoped weapon (not binoculars) is zoomed with the setting on.

@@ -18,6 +18,8 @@ use unreal_pkg::props::{find, Value};
 #[derive(Default)]
 pub struct MissionState {
     started: bool,
+    /// The map's DeusExLevelInfo names a mission script.
+    has_script: bool,
     first_done: bool,
     timer: f32,
     map: String,
@@ -67,8 +69,9 @@ pub fn mission_system(
     let _prof = crate::prof::scope("mission::mission_system");
     let lvl = &level.0;
     let fl = &mut flags.0;
-    let info = lvl.actors.iter().find(|a| a.class == "DeusExLevelInfo");
+    let info = lvl.level_info();
     if !st.started {
+        st.has_script = info.is_some_and(|a| find(&a.props, "Script").is_some());
         st.started = true;
         st.map = info
             .and_then(|a| match find(&a.props, "MapName") {
@@ -122,11 +125,10 @@ pub fn mission_system(
         }
         // Augmentique (OutfitManager.Setup): finishing the game or the training makes this playthrough's outfits
         // permanent; the outfit worn has its JCOutfits_Equipped_ flag.
-        if crate::augmentique::active() {
-            if (st.mission > 90 || st.mission == 0) && !crate::menus::intro_map() {
+        if crate::augmentique::active()
+            && (st.mission > 90 || st.mission == 0) && !crate::menus::intro_map() {
                 crate::augmentique::copy_to_global();
             }
-        }
         st.seed = 0x9E37_79B9_7F4A_7C15 ^ (st.map.len() as u64);
     }
     // EquipOutfit's flags.
@@ -139,7 +141,7 @@ pub fn mission_system(
         return;
     }
     // A map without a mission script (12_Vandenberg_Tunnels, 99_Endgame4) runs none of this.
-    if info.is_none_or(|a| find(&a.props, "Script").is_none()) {
+    if !st.has_script {
         return;
     }
     // MissionScript runs on a timer (checkTime 1 s); InitStateMachine + FirstFrame on its first tick, once the
@@ -346,9 +348,9 @@ fn first_frame(lvl: &dx_level::Level, map: &str, fl: &mut imsim_core::flags::Fla
             }
             // 00_TRAININGCOMBAT: the Bot1LAM is owned by the player, so pawns can set it off (grenades::attach_grenades).
         }
-        "01_NYC_UNATCOISLAND" => {
+        "01_NYC_UNATCOISLAND"
             // Paul and company are gone after the final briefing.
-            if fl.get_bool("M02Briefing_Played") {
+            if fl.get_bool("M02Briefing_Played") => {
                 crate::ai::world_req(WorldReq::Destroy(Sel::Class("PaulDenton".into())));
                 crate::ai::world_req(WorldReq::Destroy(Sel::ClassTag("UNATCOTroop".into(), "custodytroop".into())));
                 crate::ai::world_req(WorldReq::Destroy(Sel::ClassTag(
@@ -356,7 +358,6 @@ fn first_frame(lvl: &dx_level::Level, map: &str, fl: &mut imsim_core::flags::Fla
                     "TerroristCommander".into(),
                 )));
             }
-        }
         _ => {}
     }
     let _ = lvl;
@@ -490,7 +491,6 @@ fn ctx<'a>(
         pawn_actors.insert(n.actor);
         if n.state != crate::ai::NpcState::Dead {
             pawns.push(crate::missions::PawnInfo {
-                actor: n.actor,
                 class: a.class.clone(),
                 tag: tag_of(a),
                 bind: n.bind_name.clone(),
@@ -498,7 +498,6 @@ fn ctx<'a>(
                 standing: n.orders == crate::ai::Orders::Standing && n.state == crate::ai::NpcState::Idle,
                 pos: d.body.location,
                 emp_hp: n.emp_hp,
-                robot: n.hp_body.robot,
             });
         } else if !n.carried && !n.hp_body.robot {
             // The body: a placed carcass is its own class, a pawn leaves its CarcassType.
@@ -517,7 +516,6 @@ fn ctx<'a>(
             };
             crate::classtree::register(&mut assets.classes, &class);
             carcs.push(crate::missions::CarcInfo {
-                actor: n.actor,
                 class,
                 tag: tag_of(a),
                 killer: n.killer_bind.clone(),

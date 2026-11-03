@@ -239,7 +239,7 @@ pub fn blood_system(
             DVec3::Z,
         ] {
             let h = lvl.collision.trace(l.pos, l.pos + d * 6.0, DVec3::ZERO);
-            if h.fraction < 1.0 && best.map_or(true, |(f, _)| h.fraction < f) {
+            if h.fraction < 1.0 && best.is_none_or(|(f, _)| h.fraction < f) {
                 best = Some((h.fraction, h.normal));
             }
         }
@@ -260,8 +260,8 @@ pub fn blood_system(
         let size = width * (0.2 + rnd() as f32 * 0.2);
         let at = l.pos + DVec3::NEG_Z * 0.0 + (-n) * (f * 6.0) + n * 0.3;
         let normal = Vec3::from(ue_to_bevy(n.as_vec3().to_array())).normalize_or_zero();
-        let mat = materials.add(crate::impacts::decal_material(img, false));
-        let quad = meshes.add(Rectangle::new(1.0, 1.0));
+        let mat = assets.sprites.decal(&mut materials, img, false);
+        let quad = assets.sprites.quad(&mut meshes);
         let rot = Quat::from_rotation_arc(Vec3::Z, normal)
             * Quat::from_rotation_z(rnd() as f32 * std::f32::consts::TAU);
         let splat = commands
@@ -276,7 +276,7 @@ pub fn blood_system(
             .id();
         splats.0.push_back(splat);
         // Enhancement "Casings And Blood Stay": many more before the oldest go.
-        let cap = if crate::settings::get("PersistentDebris") > 0.5 { 3000 } else { 300 };
+        let cap = if setting!("PersistentDebris") > 0.5 { 3000 } else { 300 };
         while splats.0.len() > cap {
             if let Some(old) = splats.0.pop_front() {
                 commands.entity(old).despawn();
@@ -346,7 +346,7 @@ pub fn gib_system(
                 && n.state == crate::ai::NpcState::Dead
                 && d.body.location.distance(c) < 1.0
             {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
         let size = (r + h) / 2.0;
@@ -479,7 +479,7 @@ pub fn burn_fx_system(
         ),
     >,
     mut parts: Query<
-        (Entity, &mut FireParticle, &mut Transform),
+        (Entity, &mut FireParticle, &mut Transform, &mut MeshMaterial3d<StandardMaterial>),
         (Without<crate::FlyCam>, Without<crate::ai::Npc>),
     >,
     (mut assets, mut images, mut meshes, mut materials, mut seed): (
@@ -491,6 +491,10 @@ pub fn burn_fx_system(
     ),
 ) {
     let _prof = crate::prof::scope("effects::burn_fx_system");
+    // Nothing alight and no particles left: nothing to do (the common case).
+    if fx.0.is_empty() && ph.on_fire.is_none() && parts.is_empty() && !npcs.iter().any(|n| n.on_fire.is_some()) {
+        return;
+    }
     let dt = time.delta_secs().min(0.1);
     // Who is alight: pawns by blocker, the player as usize::MAX (with centre, radius, height).
     let mut burning: Vec<(usize, DVec3, f64, f64)> = npcs
@@ -529,7 +533,7 @@ pub fn burn_fx_system(
             .wrapping_add(1442695040888963407);
         ((*seed >> 33) as f32) / (1u64 << 31) as f32
     };
-    let quad = meshes.add(Rectangle::new(1.0, 1.0));
+    let quad = assets.sprites.quad(&mut meshes);
     let spawn_particle = |commands: &mut Commands,
                               assets: &mut RuntimeAssets,
                               images: &mut Assets<Image>,
@@ -546,14 +550,7 @@ pub fn burn_fx_system(
             .load_fire(tex)
             .map(|f| f.width as f32)
             .unwrap_or(32.0);
-        let mat = materials.add(StandardMaterial {
-            base_color_texture: img,
-            unlit: true,
-            double_sided: true,
-            cull_mode: None,
-            alpha_mode: AlphaMode::Add,
-            ..default()
-        });
+        let mat = assets.sprites.material(materials, img);
         commands.spawn((
             Mesh3d(quad.clone()),
             MeshMaterial3d(mat.clone()),
@@ -571,7 +568,7 @@ pub fn burn_fx_system(
         ));
     };
     for (k, c, r, h) in burning {
-        if !fx.0.contains_key(&k) {
+        if let std::collections::hash_map::Entry::Vacant(e) = fx.0.entry(k) {
             let tex = "Effects.Fire.OnFire_J";
             let img = crate::weapons::image_for(&mut assets, &mut images, tex);
             let size = assets
@@ -579,14 +576,7 @@ pub fn burn_fx_system(
                 .load_fire(tex)
                 .map(|f| f.width as f32)
                 .unwrap_or(32.0);
-            let mat = materials.add(StandardMaterial {
-                base_color_texture: img,
-                unlit: true,
-                double_sided: true,
-                cull_mode: None,
-                alpha_mode: AlphaMode::Add,
-                ..default()
-            });
+            let mat = assets.sprites.material(&mut materials, img);
             let mut v = Vec::new();
             for _ in 0..8 {
                 let off = Vec3::new(
@@ -612,7 +602,7 @@ pub fn burn_fx_system(
                     flame_t: rnd() * 0.075,
                 });
             }
-            fx.0.insert(k, v);
+            e.insert(v);
         }
         let mut emit: Vec<(bool, DVec3)> = Vec::new();
         for f in fx.0.get_mut(&k).unwrap() {
@@ -677,7 +667,7 @@ pub fn burn_fx_system(
         }
     }
     // Particles: rise, spread, grow (smoke), fade; gone at the end of their life.
-    for (e, mut q, mut t) in &mut parts {
+    for (e, mut q, mut t, mut slot) in &mut parts {
         q.age += dt;
         if q.age >= q.life {
             commands.entity(e).despawn();
@@ -690,10 +680,7 @@ pub fn burn_fx_system(
         t.rotation = cam.rotation;
         let grow = if q.grow { 1.0 + 2.0 * k } else { 1.0 };
         t.scale = Vec3::splat(q.size * grow * dx_level::METERS_PER_UNIT);
-        if let Some(mut m) = materials.get_mut(&q.mat) {
-            let g = 1.0 - k;
-            m.base_color = Color::linear_rgb(g, g, g);
-        }
+        crate::sprite::apply(&mut slot, assets.sprites.faded(&mut materials, &q.mat, 1.0 - k));
     }
 }
 

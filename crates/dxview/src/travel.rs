@@ -309,7 +309,7 @@ pub fn skin_overrides(map: &str) -> Vec<(String, String, u32, unreal_pkg::props:
     v.push(("JCDouble".into(), "CarcassType".into(), 0, Value::Path("FemJC.JCDentonFemaleCarcass".into())));
     // DentonClone.SetSkin, in the intro (Area 51's clones stay men): her tube, on GFM_TShirtPants in the
     // Land pose, turned a quarter.
-    if crate::util::starts_with_ci(&map, "00_intro") {
+    if crate::util::starts_with_ci(map, "00_intro") {
         let c = "DentonClone";
         let tubes = [
             "FemJC.JCDentonFemaleTex0Tube",

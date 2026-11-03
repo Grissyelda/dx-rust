@@ -297,81 +297,76 @@ pub fn save() {
 
 // ---------------------------------------------------------------- typed views
 
-fn enabled(key: &str) -> bool {
-    get(key) < 0.5
-}
-fn on(key: &str) -> bool {
-    get(key) >= 0.5
-}
+// (Each reads its key through the per-call-site cache: these run every frame.)
 
 pub fn object_names() -> bool {
-    enabled("ObjectNames")
+    setting!("ObjectNames") < 0.5
 }
 pub fn auto_reload() -> bool {
-    enabled("WeaponAutoReload")
+    setting!("WeaponAutoReload") < 0.5
 }
 pub fn subtitles() -> bool {
-    on("Subtitles")
+    setting!("Subtitles") >= 0.5
 }
 pub fn crosshairs() -> bool {
-    get("Crosshairs") < 0.5
+    setting!("Crosshairs") < 0.5
 }
 pub fn head_bob() -> bool {
-    enabled("HeadBob")
+    setting!("HeadBob") < 0.5
 }
 pub fn log_timeout() -> f32 {
-    get("LogTimeoutValue")
+    setting!("LogTimeoutValue")
 }
 pub fn always_run() -> bool {
-    enabled("AlwaysRun")
+    setting!("AlwaysRun") < 0.5
 }
 pub fn toggle_crouch() -> bool {
-    enabled("ToggleCrouch")
+    setting!("ToggleCrouch") < 0.5
 }
 pub fn invert_mouse() -> bool {
-    enabled("InvertMouse")
+    setting!("InvertMouse") < 0.5
 }
 /// PlayerPawn.MouseSensitivity (default 3).
 pub fn mouse_sensitivity() -> f32 {
-    get("MouseSensitivity")
+    setting!("MouseSensitivity")
 }
 pub fn menu_translucent() -> bool {
-    on("MenuTranslucency")
+    setting!("MenuTranslucency") >= 0.5
 }
 pub fn hud_borders() -> bool {
-    on("HUDBordersVisible")
+    setting!("HUDBordersVisible") >= 0.5
 }
 pub fn hud_border_translucent() -> bool {
-    on("HUDBorderTranslucency")
+    setting!("HUDBorderTranslucency") >= 0.5
 }
 pub fn hud_translucent() -> bool {
-    on("HUDTranslucency")
+    setting!("HUDTranslucency") >= 0.5
 }
 /// UIBackground: 0 render the game (masked), 1 snapshot, 2 black.
 pub fn ui_background() -> u8 {
-    get("UIBackground") as u8
+    setting!("UIBackground") as u8
 }
 /// Volumes 0..1.
 pub fn music_volume() -> f32 {
-    get("MusicVolume") / 255.0
+    setting!("MusicVolume") / 255.0
 }
 pub fn sound_volume() -> f32 {
-    get("SoundVolume") / 255.0
+    setting!("SoundVolume") / 255.0
 }
 pub fn speech_volume() -> f32 {
-    get("SpeechVolume") / 255.0
+    setting!("SpeechVolume") / 255.0
 }
 /// Renderer gamma for the Brightness slider (0..1, default 0.5 = 1.15).
 pub fn gamma() -> f32 {
-    0.8 + 0.7 * get("AdjustBrightness")
+    0.8 + 0.7 * setting!("AdjustBrightness")
 }
 /// Debug Mode (Enhancements): the spawn menu, debug unlock, god mode and the corner readout.
 pub fn debug_mode() -> bool {
-    on("DebugMode")
+    setting!("DebugMode") >= 0.5
 }
 /// HUD size step: -1 small, 0 medium, +1 large.
 pub fn hud_scale_step() -> i32 {
-    get("HUDScale").round() as i32 - 1
+    setting!("HUDScale").round() as i32 - 1
 }
 
 #[cfg(test)]

@@ -47,7 +47,7 @@ static CARRYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// Enhancement (Carried Objects As Cover): a crate or anything of 15 or more held in front of you stops enemy
 /// bullets (and takes their damage). Ours; the original turns a carried decoration's collision off.
 pub fn cover_on() -> bool {
-    crate::settings::get("CarryCover") > 0.5
+    setting!("CarryCover") > 0.5
 }
 
 pub fn carrying() -> bool {
@@ -291,6 +291,6 @@ pub fn corpse_drop_system(
         d.last_lit = DVec3::splat(1.0e9);
         let draw = pos + d.pre;
         tf.translation = Vec3::from(ue_to_bevy(draw.as_vec3().to_array()));
-        *vis = Visibility::Inherited;
+        vis.set_if_neq(Visibility::Inherited);
     }
 }

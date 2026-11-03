@@ -50,6 +50,8 @@ pub struct Trash {
     rnd: f64,
     time: f32,
     stopped: bool,
+    /// The one-frame Still clip has been posed (nothing to pose again).
+    posed_still: bool,
     life: f32,
     die_in: f32,
     height: f64,
@@ -162,17 +164,7 @@ fn pose(
     parts: &[MeshPart],
     handles: &[Handle<Mesh>],
 ) {
-    let f = clip.frame();
-    for (pi, hm) in handles.iter().enumerate() {
-        if let Some(mut mm) = meshes.get_mut(hm) {
-            let pos: Vec<[f32; 3]> = parts[pi]
-                .vert_ids
-                .iter()
-                .map(|&v| ue_to_bevy(mesh.sample(clip.start, clip.frames, f, v as usize)))
-                .collect();
-            mm.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-        }
-    }
+    crate::actors::pose_parts_in_place(meshes, mesh, clip.start, clip.frames, clip.frame(), parts, handles);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -314,6 +306,7 @@ pub fn trash_system(
             rnd: 1.0,
             time: 0.0,
             stopped: false,
+            posed_still: false,
             life: fprop(&d, "LifeSpan", 30.0) as f32,
             die_in: f32::MAX,
             height: fprop(&d, "CollisionHeight", 6.0),
@@ -379,10 +372,14 @@ pub fn trash_system(
             }
             t.clip.t += dt;
         }
-        pose(&mut meshes, &t.mesh, &t.clip, &t.parts, &t.handles);
+        // Paper at rest holds a one-frame clip: posed once, then left alone.
+        if t.clip.frames > 1 || !t.posed_still {
+            t.posed_still = t.clip.frames <= 1;
+            pose(&mut meshes, &t.mesh, &t.clip, &t.parts, &t.handles);
+        }
         let rot = to_rot(t.rot);
-        tf.translation = Vec3::from(ue_to_bevy(t.pos.as_vec3().to_array()));
-        tf.rotation = quat_of(rot);
+        // (Written only when it moved: paper at rest stays as it was.)
+        tf.set_if_neq(Transform { translation: Vec3::from(ue_to_bevy(t.pos.as_vec3().to_array())), rotation: quat_of(rot), ..*tf });
         if t.pos.distance(t.lit_at) > 24.0 || t.stopped && t.lit_at.x > 1e8 {
             t.lit_at = t.pos;
             for (pi, hm) in t.handles.iter().enumerate() {

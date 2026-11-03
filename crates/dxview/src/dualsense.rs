@@ -34,8 +34,6 @@ pub struct DsIn {
     pub lt: f32,
     pub rt: f32,
     pub held: Vec<PadBtn>,
-    pub mic_btn: bool,
-    pub battery: u8,
 }
 
 /// What the game wants the pad to show.
@@ -249,8 +247,6 @@ fn parse(d: &[u8], usb: bool, now: f64, fingers: &mut [Finger; 2]) {
         lt: d[4] as f32 / 255.0,
         rt: d[5] as f32 / 255.0,
         held: Vec::new(),
-        mic_btn: d[9] & 0x04 != 0,
-        battery: d[52] & 0x0f,
     };
     let (b0, b1, b2) = (d[7], d[8], d[9]);
     // The D-pad is a hat: 0 up, clockwise, 8 = centred.
@@ -502,7 +498,7 @@ pub fn dualsense_system(
             _ => trigger_for(class, None, strength),
         };
         // The left trigger (aim / scope): a light pull for anything that shoots.
-        let left = if h.stats.hand_to_hand || class.starts_with("Weapon") == false { OFF } else { feedback(4, (2.0 * strength).round().max(1.0) as u8) };
+        let left = if h.stats.hand_to_hand || !class.starts_with("Weapon") { OFF } else { feedback(4, (2.0 * strength).round().max(1.0) as u8) };
         (right, left)
     } else {
         (OFF, OFF)
@@ -541,14 +537,14 @@ pub fn event(h: Haptic) {
     if !crate::gamepad::connected() {
         return;
     }
-    let scale = [0.0, 0.5, 1.0, 1.5][(crate::settings::get("PadRumble") as usize).min(3)];
+    let scale = [0.0, 0.5, 1.0, 1.5][(setting!("PadRumble") as usize).min(3)];
     if scale == 0.0 {
         return;
     }
-    if matches!(h, Haptic::Step(_)) && crate::settings::get("PadHapticSteps") < 0.5 {
+    if matches!(h, Haptic::Step(_)) && setting!("PadHapticSteps") < 0.5 {
         return;
     }
-    let hd = crate::settings::get("PadHaptics") as i32 == 1 && connected_usb() && crate::haptics::available();
+    let hd = setting!("PadHaptics") as i32 == 1 && connected_usb() && crate::haptics::available();
     if hd {
         crate::haptics::play(&h, scale);
         return;

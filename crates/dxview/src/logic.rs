@@ -47,7 +47,7 @@ fn bl(p: &[Property], n: &str, d: bool) -> bool {
 fn indexed(p: &[Property], n: &str) -> Vec<(u32, Value)> {
     p.iter()
         .filter(|x| x.name.eq_ignore_ascii_case(n))
-        .map(|x| (x.index as u32, x.value.clone()))
+        .map(|x| (x.index, x.value.clone()))
         .collect()
 }
 

@@ -116,15 +116,8 @@ fn spawn_puff(
     let tex = "Effects.Smoke.SmokePuff1";
     let Some(img) = crate::weapons::image_for(assets, images, tex) else { return };
     let tex_size = assets.lib.width(tex).map(|w| w as f32).unwrap_or(64.0);
-    let mat = materials.add(StandardMaterial {
-        base_color_texture: Some(img),
-        unlit: true,
-        double_sided: true,
-        cull_mode: None,
-        alpha_mode: AlphaMode::Add,
-        ..default()
-    });
-    let quad = meshes.add(Rectangle::new(1.0, 1.0));
+    let mat = assets.sprites.material(materials, Some(img));
+    let quad = assets.sprites.quad(meshes);
     commands.spawn((
         Mesh3d(quad),
         MeshMaterial3d(mat.clone()),
@@ -204,7 +197,7 @@ pub fn impacts_system(
         Single<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
         Query<&Transform, (Without<crate::FlyCam>, Without<BulletDecal>, Without<Puff>)>,
         Query<&mut BulletDecal>,
-        Query<(Entity, &mut Puff, &mut Transform), (Without<crate::FlyCam>, Without<BulletDecal>)>,
+        Query<(Entity, &mut Puff, &mut Transform, &mut MeshMaterial3d<StandardMaterial>), (Without<crate::FlyCam>, Without<BulletDecal>)>,
     ),
     mut seed: Local<u64>,
     mut map_gen: Local<u64>,
@@ -222,8 +215,8 @@ pub fn impacts_system(
     // Decals put back from the level's saved state (Casings And Blood Stay).
     for d in RESTORE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         let Some(img) = modulated_image_for(&mut assets, &mut images, &d.tex) else { continue };
-        let mat = materials.add(decal_material(img, d.hole));
-        let quad = meshes.add(Rectangle::new(1.0, 1.0));
+        let mat = assets.sprites.decal(&mut materials, img, d.hole);
+        let quad = assets.sprites.quad(&mut meshes);
         let tf = Transform::from_translation(Vec3::from(d.pos))
             .with_rotation(Quat::from_array(d.rot))
             .with_scale(Vec3::splat(d.size));
@@ -282,7 +275,7 @@ pub fn impacts_system(
     }
 
     let hits: Vec<WallHit> = WALL_HITS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-    let persistent = crate::settings::get("PersistentDebris") > 0.5;
+    let persistent = setting!("PersistentDebris") > 0.5;
     // (Only looked up on a frame with hits: class defaults are a fresh list.)
     let rock = if hits.is_empty() { Vec::new() } else { assets.classes.defaults("Rockchip") };
     let rock_meshes: Vec<String> = rock
@@ -394,8 +387,8 @@ pub fn impacts_system(
         let width = assets.lib.width(tex).map(|w| w as f32).unwrap_or(64.0);
         let size = width * scale;
         let normal = Vec3::from(ue_to_bevy(h.normal.as_vec3().to_array())).normalize_or_zero();
-        let mat = materials.add(decal_material(img, true));
-        let quad = meshes.add(Rectangle::new(1.0, 1.0));
+        let mat = assets.sprites.decal(&mut materials, img, true);
+        let quad = assets.sprites.quad(&mut meshes);
         let at = h.at + h.normal * 0.2;
         let world_pos = Vec3::from(ue_to_bevy(at.as_vec3().to_array()));
         let world_rot = Quat::from_rotation_arc(Vec3::Z, normal) * Quat::from_rotation_z(rnd() as f32 * std::f32::consts::TAU);
@@ -434,7 +427,7 @@ pub fn impacts_system(
     if check {
         *check_t = 1.0;
     }
-    for (e, mut p, mut tf) in &mut puffs {
+    for (e, mut p, mut tf, mut slot) in &mut puffs {
         p.age += dt;
         if p.age >= p.life {
             commands.entity(e).try_despawn();
@@ -447,9 +440,7 @@ pub fn impacts_system(
         tf.rotation = cam.rotation;
         tf.scale = Vec3::splat((p.scale * (1.0 + p.age) * p.tex_size * dx_level::METERS_PER_UNIT).max(0.001));
         let glow = 1.0 - p.age / p.life;
-        if let Some(mut m) = materials.get_mut(&p.mat) {
-            m.base_color = Color::linear_rgb(glow, glow, glow);
-        }
+        crate::sprite::apply(&mut slot, assets.sprites.faded(&mut materials, &p.mat, glow));
     }
     let eye = {
         let e = dx_level::bevy_to_ue(cam.translation.to_array());

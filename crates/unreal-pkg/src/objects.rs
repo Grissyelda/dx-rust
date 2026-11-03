@@ -224,8 +224,8 @@ fn rgb565(c: u16) -> [u8; 3] {
 }
 
 pub fn decode_dxt1(data: &[u8], w: usize, h: usize, out: &mut [u8]) -> Option<()> {
-    let bw = (w + 3) / 4;
-    let bh = (h + 3) / 4;
+    let bw = w.div_ceil(4);
+    let bh = h.div_ceil(4);
     if data.len() < bw * bh * 8 {
         return None;
     }

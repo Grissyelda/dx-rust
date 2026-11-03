@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub fn on() -> bool {
-    crate::settings::get("Bloom") > 0.5
+    setting!("Bloom") > 0.5
 }
 
 /// Glowing textures by (part of their) name, and how far past white they go.

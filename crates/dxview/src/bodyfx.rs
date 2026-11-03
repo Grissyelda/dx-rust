@@ -155,7 +155,7 @@ pub fn wounds_system(
             Some(m) => m.clone(),
             None => {
                 let Some(img) = crate::weapons::modulated_image_for(&mut assets, &mut images, tex) else { continue };
-                let m = materials.add(crate::impacts::decal_material(img, true));
+                let m = assets.sprites.decal(&mut materials, img, true);
                 mat_cache.insert(tex, m.clone());
                 m
             }
@@ -226,10 +226,6 @@ const FP_VIEW_BACK: f32 = 0.45;
 /// Which body part the medkit would treat (aim ray against the first-person body): None = the head.
 static AIMED: Mutex<Option<usize>> = Mutex::new(None);
 
-pub fn aimed_part() -> Option<usize> {
-    AIMED.lock().ok().and_then(|g| *g)
-}
-
 /// Diegetic Healing is on and a medkit is in hand.
 pub fn diegetic_heal() -> bool {
     on("DiegeticHealing")
@@ -292,7 +288,7 @@ pub fn fp_body_system(
     if !want {
         if let Some(r) = st.root {
             if let Ok(mut v) = vis.get_mut(r) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
         if let Ok(mut g) = AIMED.lock() {
@@ -410,45 +406,6 @@ pub fn fp_body_system(
 }
 
 // ------------------------------------------------------------------------------------------------ heal label
-
-#[derive(Component)]
-pub struct HealLabel;
-
-pub fn heal_label_system(
-    mut commands: Commands,
-    weapons: Res<crate::weapons::Weapons>,
-    ph: Res<crate::ai::PlayerHealth>,
-    mut q: Query<(&mut Text, &mut Visibility), With<HealLabel>>,
-) {
-    let medkit = weapons.held.as_ref().is_some_and(|h| h.stats.class == "MedKit");
-    // (The aimed "Treat <part>" label gave way to the Alt body overlay, healui.rs.)
-    let show = false && medkit && FP_SHOWN.load(std::sync::atomic::Ordering::Relaxed);
-    if q.is_empty() {
-        commands.spawn((
-            Text::new(""),
-            TextFont { font_size: bevy::text::FontSize::Px(15.0), ..default() },
-            TextColor(Color::srgb(0.75, 1.0, 0.8)),
-            Node { position_type: PositionType::Absolute, top: Val::Percent(56.0), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() },
-            bevy::text::TextLayout::justify(bevy::text::Justify::Center),
-            Visibility::Hidden,
-            HealLabel,
-            GlobalZIndex(20),
-        ));
-        return;
-    }
-    for (mut t, mut v) in &mut q {
-        *v = if show { Visibility::Inherited } else { Visibility::Hidden };
-        if !show {
-            continue;
-        }
-        let part = aimed_part().unwrap_or(crate::ai::P_HEAD);
-        let name = ["Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"][part];
-        let s = format!("Treat {name}  {}%", ph.parts[part].max(0.0).round() as i32);
-        if t.0 != s {
-            t.0 = s;
-        }
-    }
-}
 
 // ------------------------------------------------------------------------------------------------ glows
 
@@ -724,7 +681,7 @@ pub fn glow_system(
                 commands.spawn((
                     Mesh3d(ga.quad.clone()),
                     MeshMaterial3d(ga.leaf.clone()),
-                    Transform::from_translation(at + off).with_rotation(cam_rot * Quat::from_rotation_z(rnd() * 6.28)).with_scale(Vec3::splat(0.0)),
+                    Transform::from_translation(at + off).with_rotation(cam_rot * Quat::from_rotation_z(rnd() * std::f32::consts::TAU)).with_scale(Vec3::splat(0.0)),
                     HealLeaf {
                         vel: Vec3::Y * (0.35 + rnd() * 0.35) + out * (0.05 + rnd() * 0.12),
                         spin: Vec3::new(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5) * 6.0,
@@ -820,7 +777,7 @@ pub fn glow_system(
         l.vel *= 1.0 - 0.6 * dt;
         t.translation += l.vel * dt;
         let spin = l.spin * dt;
-        t.rotation = t.rotation * Quat::from_euler(EulerRot::XYZ, spin.x, spin.y, spin.z);
+        t.rotation *= Quat::from_euler(EulerRot::XYZ, spin.x, spin.y, spin.z);
         let grow = (k / 0.15).min(1.0) * (1.0 - ((k - 0.6) / 0.4).max(0.0));
         t.scale = Vec3::splat(l.size * grow.max(0.0));
     }

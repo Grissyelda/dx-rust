@@ -440,18 +440,18 @@ struct Data {
 static DATA: RwLock<Option<Data>> = RwLock::new(None);
 
 fn models_on() -> bool {
-    crate::settings::get("HDModels") > 0.5
+    setting!("HDModels") > 0.5
 }
 
 fn characters_on() -> bool {
     // Helios's character textures replace HDTP's people (setting DdsCharacters).
     // Skeletal characters skin our own bodies (from the vanilla meshes' rigs), so HDTP's people stay out then.
-    crate::settings::get("HDCharacters") > 0.5 && !dds_characters() && !crate::skeletal::enabled()
+    setting!("HDCharacters") > 0.5 && !dds_characters() && !crate::skeletal::enabled()
 }
 
 /// A DDS pack (Helios) is in use for the people.
 pub fn dds_characters() -> bool {
-    unreal_pkg::mods::active("helios").is_some() && crate::settings::get("DdsCharacters") > 0.5
+    unreal_pkg::mods::active("helios").is_some() && setting!("DdsCharacters") > 0.5
 }
 
 /// Which packages the DDS packs replace, from the settings: people (DeusExCharacters), items and decorations

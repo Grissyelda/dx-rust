@@ -12,7 +12,6 @@ use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 
 pub struct Charged {
     pub class: String,
-    pub name: String,
     pub charge: f32,
     pub max: f32,
     /// Drain per 0.1 s.
@@ -67,7 +66,6 @@ impl ActiveCharged {
         }
         self.0.push(Charged {
             class: class.to_string(),
-            name: s("ItemName"),
             charge,
             max: charge,
             drain: 4.0 * skill,
@@ -169,7 +167,6 @@ pub fn charged_system(
         if fx.contains("goggles") && !active.has("TechGoggles") {
             active.0.push(Charged {
                 class: "TechGoggles".into(),
-                name: "Tech Goggles".into(),
                 charge: 1.0e9,
                 max: 1.0e9,
                 drain: 0.0,
@@ -208,12 +205,6 @@ pub fn charged_system(
     ph.hazmat = active.has("HazMatSuit");
     ph.armor = active.has("BallisticArmor");
     ph.camo = active.has("AdaptiveArmor");
-    ph.charged_text = active
-        .0
-        .iter()
-        .map(|c| format!("{} {:.0}%", c.name, (c.charge / c.max * 100.0).max(0.0)))
-        .collect::<Vec<_>>()
-        .join("\n");
 
     // Tech goggles: the light-amplification box covers the middle half of the screen.
     // AugVision (Vision Enhancement) draws the same light-amplification box (DrawVisionAugmentation, level 0).

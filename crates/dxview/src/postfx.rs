@@ -14,11 +14,11 @@ use bevy::prelude::*;
 use bevy::render::view::Msaa;
 
 pub fn ao_on() -> bool {
-    crate::settings::get("AmbientOcclusion") > 0.5
+    setting!("AmbientOcclusion") > 0.5
 }
 
 pub fn soft_on() -> bool {
-    crate::settings::get("SoftShadows") > 0.5
+    setting!("SoftShadows") > 0.5
 }
 
 /// Size of the lights for soft shadows (metres): a lamp's bulb and shade, more or less.
@@ -40,7 +40,7 @@ pub fn postfx_system(
     // SSAO but no depth prepass for a frame). The Ambient Occlusion setting is now just how strongly the world's
     // shader uses it.
     let ao = ao_on();
-    let detail = crate::settings::get("DetailTextures") > 0.5;
+    let detail = setting!("DetailTextures") > 0.5;
     if *ao_gen != Some((ao, detail)) {
         *ao_gen = Some((ao, detail));
         let ids: Vec<_> = bsp.ids().collect();
@@ -54,7 +54,7 @@ pub fn postfx_system(
     // The SSAO pass costs GPU time, so it's only there when Ambient Occlusion is on in either look (now, or in
     // the Modern mix Classic / Modern remembers); once attached it stays for the session.
     static ATTACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let wanted = ao || crate::settings::get("Modern.AmbientOcclusion") > 0.5;
+    let wanted = ao || setting!("Modern.AmbientOcclusion") > 0.5;
     if wanted {
         ATTACHED.store(true, std::sync::atomic::Ordering::Relaxed);
     }

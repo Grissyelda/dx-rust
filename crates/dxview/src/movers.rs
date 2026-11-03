@@ -495,7 +495,7 @@ pub fn tick_movers(
             }
         }
         if let Some(f) = env_val!("DXVIEW_MOVERLOG") {
-            if info.tag.eq_ignore_ascii_case(&f) || info.name.eq_ignore_ascii_case(&f) || level.actors[info.actor].class.eq_ignore_ascii_case(&f) {
+            if info.tag.eq_ignore_ascii_case(f) || info.name.eq_ignore_ascii_case(f) || level.actors[info.actor].class.eq_ignore_ascii_case(f) {
                 let l = movers.rt[i].location;
                 println!("MOVER {} {:.0},{:.0},{:.0} key {} interp {}", info.name, l.x, l.y, l.z, movers.rt[i].key_num, movers.rt[i].interpolating);
             }
@@ -697,6 +697,10 @@ fn mover_sounds(level: &Level, i: usize, rt: &MoverRt, was: &mut Vec<(bool, bool
     }
     let (moving, opening) = was[i];
     was[i] = (rt.interpolating, rt.opening);
+    // At rest and was at rest: nothing starts, ends or loops (the common case for every mover).
+    if !rt.interpolating && !moving {
+        return;
+    }
     let props = &level.actors[level.movers[i].actor].props;
     let byte = |n: &str, d: f32| crate::sound::fprop(props, n, d);
     let radius = 25.0 * (byte("SoundRadius", 32.0) + 1.0);
@@ -808,7 +812,7 @@ pub fn mover_on_line(
             continue;
         }
         if let Some(h) = trace_mover(info, rt, start, end, DVec3::ZERO) {
-            if best.map_or(true, |b| h.fraction < b.1) {
+            if best.is_none_or(|b| h.fraction < b.1) {
                 best = Some((i, h.fraction));
             }
         }
@@ -847,7 +851,7 @@ pub fn mover_damage_system(
             hits.push((i, dmg, ty, false));
         }
     }
-    let ring_fix = crate::settings::get("FixBlastDoors") > 0.5;
+    let ring_fix = setting!("FixBlastDoors") > 0.5;
     for (pos, radius, dmg, ty, full) in BLASTS
         .lock()
         .map(|mut q| std::mem::take(&mut *q))

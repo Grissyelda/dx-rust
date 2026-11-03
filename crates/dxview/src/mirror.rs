@@ -121,6 +121,9 @@ pub struct Mirrors {
     pub slots: Vec<Slot>,
     /// Some plane is reflecting (JC's body is drawn for the reflections then).
     pub active: Option<usize>,
+    /// Game time a water sheet was last in the main view (the water reflection runs only while one is, with
+    /// half a second's grace: the camera is a whole extra render of the scene).
+    pub water_seen: f32,
 }
 
 /// A reflection camera (world, or the sky room with `sky`) of slot `0`.
@@ -310,10 +313,17 @@ pub fn mirror_system(
     sky_main: Query<&Projection, (With<crate::SkyCam>, Without<MirrorCam>)>,
     mut cams: Query<(&MirrorCam, &mut Camera, &mut Transform, &mut Projection, &mut RenderTarget, &mut RenderLayers)>,
     mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
+    water_sheets: Query<&ViewVisibility, (With<MeshMaterial3d<crate::water::WaterMaterial>>, Without<crate::water::WaterGrid>, Without<crate::water::OceanRing>, Without<crate::water::WaterBacking>)>,
+    time: Res<Time<Real>>,
 ) {
     if mirrors.planes.is_empty() {
         return;
     }
+    let now = time.elapsed_secs();
+    if water_sheets.iter().any(|v| v.get()) {
+        mirrors.water_seen = now;
+    }
+    let water_wanted = now - mirrors.water_seen < 0.5;
     if crate::credits::open() {
         for (_, mut cam, ..) in &mut cams {
             cam.is_active = false;
@@ -341,7 +351,7 @@ pub fn mirror_system(
         // Water goes on past its sheet (the open sea shares its material): reflect it whenever the eye is above it,
         // or the reflection pops in and out with the view's pitch.
         if p.water {
-            return eye.y > p.d;
+            return eye.y > p.d && water_wanted;
         }
         let (lo, hi) = (p.min - Vec3::splat(0.5), p.max + Vec3::splat(0.5));
         let inside = eye.cmpge(lo).all() && eye.cmple(hi).all();
@@ -602,7 +612,7 @@ pub fn mirror_body_system(
     if !show {
         if let Some(b) = body.0.as_ref() {
             if let Ok(mut v) = vis.get_mut(b.root) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
         return;
@@ -657,7 +667,7 @@ pub fn mirror_body_system(
     }
     let Some(b) = body.0.as_mut() else { return };
     if let Ok(mut v) = vis.get_mut(b.root) {
-        *v = Visibility::Inherited;
+        v.set_if_neq(Visibility::Inherited);
     }
     let yaw = cams.iter().next().map_or(0.0, |c| c.0.yaw);
     // FlyCam yaw 0 looks along Bevy -Z (Unreal -Y): JC's Unreal yaw is the view's.

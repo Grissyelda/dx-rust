@@ -193,7 +193,7 @@ impl NavGraph {
                 seen[k] = true;
                 let q = self.points[k].pos;
                 let d = ((q[0] - pos[0]).powi(2) + (q[1] - pos[1]).powi(2) + (q[2] - pos[2]).powi(2)).sqrt();
-                if best.map_or(true, |(bd, _)| d < bd) {
+                if best.is_none_or(|(bd, _)| d < bd) {
                     best = Some((d, k));
                 }
                 c = self.points[k].next_patrol;

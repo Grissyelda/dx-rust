@@ -74,9 +74,7 @@ pub struct Spawned {
 
 /// Marks pawns created at run time.
 #[derive(Component)]
-pub struct SpawnedPawn {
-    pub transient: bool,
-}
+pub struct SpawnedPawn;
 
 fn fv(p: &[Property], n: &str, d: f64) -> f64 {
     match find(p, n) {
@@ -271,9 +269,7 @@ pub fn spawn_system(
                 falls: true,
             },
             crate::ai::Npc::new(ai, b, &lvl.actors[ai].props, r.yaw, r.pos),
-            SpawnedPawn {
-                transient: r.transient,
-            },
+            SpawnedPawn,
         ));
         if let Some(g) = r.generator {
             commands.entity(root).insert(FromGenerator(g));

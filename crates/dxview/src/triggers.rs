@@ -167,8 +167,10 @@ pub fn dispatch(name: &str, on: bool) {
     }
 }
 
-/// Orders and alliance changes for tagged pawns (ScriptedPawn.SetOrders / SetAlliance / ChangeAlly).
+/// Orders and alliance changes for tagged pawns (ScriptedPawn.SetOrders / SetAlliance / ChangeAlly; `Ally` is
+/// handled in ai.rs but no mission script sends it yet).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum PawnOrder {
     Orders {
         tag: String,
@@ -663,11 +665,10 @@ fn untouch(t: &mut Trig, by_player: bool, flags: &mut imsim_core::flags::FlagBas
                 }
             }
         }
-        Kind::Plain | Kind::Logic { .. } | Kind::Shake(..) | Kind::Fade { .. } => {
-            if relevant(t, by_player) {
+        Kind::Plain | Kind::Logic { .. } | Kind::Shake(..) | Kind::Fade { .. }
+            if relevant(t, by_player) => {
                 base_untouch(t, out);
             }
-        }
         _ => {}
     }
 }
@@ -795,7 +796,7 @@ fn triggered(
             }
             // GMDX fix (Shifter; setting FixSkillAwardOnce): a bTriggerOnceOnly award fired by an event pays once
             // (the original only switched its collision off, so a repeated event paid again).
-            if t.once && crate::settings::get("FixSkillAwardOnce") > 0.5 {
+            if t.once && setting!("FixSkillAwardOnce") > 0.5 {
                 t.destroyed = true;
             }
         }
@@ -1013,7 +1014,7 @@ pub fn trigger_system(
     let class_of = |a: usize| -> &str { if a == COLLIDER { "MoverCollider" } else { &level.0.actors[a].class } };
     if env_on!("DXVIEW_TRIGLOG") {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 { println!("T{now:.1} "); println!("COLL {:?}", pawns.iter().filter(|p| p.3 == COLLIDER).map(|p| p.0).collect::<Vec<_>>()); }
+        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(30) { println!("T{now:.1} "); println!("COLL {:?}", pawns.iter().filter(|p| p.3 == COLLIDER).map(|p| p.0).collect::<Vec<_>>()); }
         for t in tr.list.iter().filter(|t| t.class == "DirectionalTrigger") {
             for (c, ..) in pawns.iter().filter(|p| p.3 == COLLIDER) {
                 if (t.pos - *c).length() < 150.0 {

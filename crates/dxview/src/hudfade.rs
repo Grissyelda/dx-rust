@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 pub fn on() -> bool {
-    crate::settings::get("HudFade") > 0.5
+    setting!("HudFade") > 0.5
 }
 
 /// Enemies attacking the player within 1600 units (sound.rs's UpdateDynamicMusic count).

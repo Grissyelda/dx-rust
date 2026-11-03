@@ -843,11 +843,25 @@ impl Level {
                 continue;
             }
             let off = (n[0] * pos[0] + n[1] * pos[1] + n[2] * pos[2] - w.dist).abs();
-            if off < 3.0 && best.map_or(true, |(b, _)| off < b) {
+            if off < 3.0 && best.is_none_or(|(b, _)| off < b) {
                 best = Some((off, w.group));
             }
         }
         best.and_then(|(_, g)| self.floor_groups.get(g as usize)).map(|s| s.as_str())
+    }
+
+    /// The map's DeusExLevelInfo actor (mission number, location, map name, true north, song).
+    pub fn level_info(&self) -> Option<&actors::ActorInfo> {
+        self.actors.iter().find(|a| a.class == "DeusExLevelInfo")
+    }
+
+    /// DeusExLevelInfo.missionNumber (0 when the map has none).
+    pub fn mission_number(&self) -> i32 {
+        match self.level_info().and_then(|a| unreal_pkg::props::find(&a.props, "missionNumber")) {
+            Some(unreal_pkg::props::Value::Int(n)) => *n,
+            Some(unreal_pkg::props::Value::Byte(n)) => *n as i32,
+            _ => 0,
+        }
     }
 
     /// DeusExPlayer.GetFloorMaterial: the texture group of the floor under `pos`, searching `down` units below.
@@ -867,7 +881,7 @@ impl Level {
             if !point_in_xy(&f.points, pos[0], pos[1]) {
                 continue;
             }
-            if best.map_or(true, |(b, _)| below < b) {
+            if best.is_none_or(|(b, _)| below < b) {
                 best = Some((below, f.group));
             }
         }
@@ -1088,7 +1102,7 @@ pub fn build_level(
         let Some(surf) = model.surfaces.get(node.surf as usize) else { continue };
         // Ladders: any face whose texture sits in a group called "Ladder" (CoreTexMetal.Ladder.ladder_a ...).
         let is_ladder = *ladder_mat.entry(surf.material).or_insert_with(|| {
-            surf.material != 0 && pkg.object_path(surf.material).split('.').rev().nth(1).map_or(false, |g| g.eq_ignore_ascii_case("Ladder"))
+            surf.material != 0 && pkg.object_path(surf.material).split('.').rev().nth(1).is_some_and(|g| g.eq_ignore_ascii_case("Ladder"))
         });
         if is_ladder {
             let pts: Vec<[f64; 3]> = (0..node.num_vertices as usize)
@@ -1220,7 +1234,7 @@ pub fn build_level(
             None => false,
         } };
 
-        let cached = tex_cache
+        let cached = *tex_cache
             .entry(surf.material)
             .or_insert_with(|| {
                 let path = pkg.object_path(surf.material);
@@ -1248,8 +1262,7 @@ pub fn build_level(
                 }
                 textures.push(TextureImage { name: path.clone(), width: t.width(), height: t.height(), mips: mips.mips, bc1: mips.bc1, bc3: mips.bc3 });
                 Some((idx, t.masked))
-            })
-            .clone();
+            });
         // A PF_Masked face on a texture first loaded for an unmasked one (or not flagged bMasked): load it again
         // masked, in place, so its holes show (chain-link vent grates drew solid).
         let cached = match cached {

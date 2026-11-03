@@ -188,7 +188,7 @@ impl WaterSim {
                 18 | 19 => {
                     let period = (dr.d as u32 + 8).max(8);
                     let due = if dr.kind == 18 {
-                        (f + (dr.x as u32 * 7 + dr.y as u32 * 13)) % period == 0
+                        (f + (dr.x as u32 * 7 + dr.y as u32 * 13)).is_multiple_of(period)
                     } else {
                         self.frand() < 1.0 / period as f32
                     };

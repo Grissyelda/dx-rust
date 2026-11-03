@@ -18,7 +18,7 @@ use crate::weapons::RuntimeAssets;
 use crate::LevelRes;
 
 pub fn enabled() -> bool {
-    crate::settings::get("FluidBlood") > 0.5
+    setting!("FluidBlood") > 0.5
 }
 
 enum Req {
@@ -135,8 +135,8 @@ fn decal(
     let normal = bv(n).normalize_or(Vec3::Y);
     let rot = Quat::from_rotation_arc(Vec3::Z, normal) * Quat::from_rotation_z(rnd(&mut st.seed) as f32 * std::f32::consts::TAU);
     let mut ec = commands.spawn((
-        Mesh3d(meshes.add(Rectangle::new(1.0, 1.0))),
-        MeshMaterial3d(materials.add(crate::impacts::decal_material(img, false))),
+        Mesh3d(assets.sprites.quad(meshes)),
+        MeshMaterial3d(assets.sprites.decal(materials, img, false)),
         Transform::from_translation(bv(at + n * 0.3)).with_rotation(rot).with_scale(Vec3::splat(size * dx_level::METERS_PER_UNIT)),
         bevy::light::NotShadowCaster,
         crate::impacts::KeepDecal { tex: tex.to_string(), hole: false },
@@ -146,7 +146,7 @@ fn decal(
     }
     let e = ec.id();
     st.decals.push_back(e);
-    let cap = if crate::settings::get("PersistentDebris") > 0.5 { 3000 } else { 400 };
+    let cap = if setting!("PersistentDebris") > 0.5 { 3000 } else { 400 };
     while st.decals.len() > cap {
         if let Some(old) = st.decals.pop_front() {
             commands.entity(old).despawn();

@@ -68,3 +68,13 @@ mod tests {
         assert!(std::ptr::eq(a, intern("Ambient.Hum")));
     }
 }
+
+/// FNV-1a of a string (a stable 64-bit key for names compared every frame).
+pub fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}

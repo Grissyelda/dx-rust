@@ -31,12 +31,12 @@ use glam::DVec3;
 use std::sync::Mutex;
 
 pub fn on() -> bool {
-    crate::settings::get("SmarterAI") > 0.5
+    setting!("SmarterAI") > 0.5
 }
 
 /// Alert indicators over guards' heads (setting AlertIndicators).
 pub fn indicators() -> bool {
-    crate::settings::get("AlertIndicators") > 0.5
+    setting!("AlertIndicators") > 0.5
 }
 
 /// Per-pawn state for the enhancement.
@@ -60,6 +60,8 @@ pub struct SmartState {
     pub unseen: f32,
     /// Ours: the state last frame (to call out on starting an attack).
     pub was_attacking: bool,
+    /// HumanMilitary / HumanThug (class ancestry looked up once).
+    military: Option<bool>,
 }
 
 struct ClassTune {
@@ -97,7 +99,8 @@ pub fn tune(npc: &mut Npc, class: &str, dt: f32) {
     npc.smart.high_alert = (npc.smart.high_alert - dt).max(0.0);
     npc.smart.alert = (npc.smart.alert - dt).max(0.0);
     if on() {
-        if military(class) {
+        let mil = *npc.smart.military.get_or_insert_with(|| military(class));
+        if mil {
             let d = crate::travel::combat_difficulty();
             if d <= 1.0 {
                 vis = vis.max(0.010);
@@ -150,7 +153,7 @@ pub fn player_vis(vis: f32, light: f32, dist: f64, crouched: bool, speed: f64) -
     // Light on you below about 0.12 is shadow; the deeper the shadow, the closer they have to be.
     let shadow = (1.0 - light / 0.12).clamp(0.0, 1.0);
     if shadow > 0.0 {
-        let moving = (speed / 320.0).clamp(0.0, 1.0) as f64;
+        let moving = (speed / 320.0).clamp(0.0, 1.0);
         let mut reach = 160.0 + 440.0 * (1.0 - shadow as f64) + 200.0 * moving;
         if crouched {
             reach *= 0.6;
@@ -207,10 +210,10 @@ pub fn combat_tick(npc: &mut Npc, class: &str, seen: bool, target_is_player: boo
         npc.smart.sfire = 0.0;
         return true;
     }
-    let (wclass, skill, crossbow) = npc
-        .weapon
+    let weapon = npc.weapon.clone();
+    let (wclass, skill, crossbow) = weapon
         .as_ref()
-        .map(|w| (w.class.clone(), w.governing_skill.clone().unwrap_or_default(), w.class == "WeaponMiniCrossbow"))
+        .map(|w| (w.class.as_str(), w.governing_skill.as_deref().unwrap_or_default(), w.class == "WeaponMiniCrossbow"))
         .unwrap_or_default();
     // Sight of the enemy flickers (a doorway, cover, the 0.1 s sight checks): only losing it for half a second
     // counts as losing it. Restarting the react time on every flicker left a pawn staring without ever firing.
@@ -226,7 +229,7 @@ pub fn combat_tick(npc: &mut Npc, class: &str, seen: bool, target_is_player: boo
         let was = npc.smart.unseen;
         npc.smart.unseen += dt;
         if npc.smart.was_seen && was < LOST && npc.smart.unseen >= LOST {
-            npc.smart.react_left = fire_react_time(class, &wclass, &skill);
+            npc.smart.react_left = fire_react_time(class, wclass, skill);
             let human = !robot(class) && !crate::classtree::is_a(class, "Animal");
             let mil_bot = crate::classtree::is_a(class, "MilitaryBot");
             if npc.smart.spotted && !crossbow && (human || mil_bot) && crate::sound::frand() < 0.33 {
@@ -325,7 +328,7 @@ pub fn camera_spotted(player_pos: DVec3) {
 
 /// Ours: a guard that sees the player calls out (an Alert others nearby come to look at).
 pub fn call_out(at: DVec3, who: usize) -> Option<Noise> {
-    on().then(|| Noise {
+    on().then_some(Noise {
         pos: at,
         volume: 1.0,
         radius: 1200.0,

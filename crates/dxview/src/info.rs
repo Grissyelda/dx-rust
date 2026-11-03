@@ -21,7 +21,7 @@ pub struct InfoText;
 
 /// Strip the text markup: <COMMENT>..</COMMENT> goes, <P> is a new paragraph, other tags (<DC=..>, <B>) are dropped.
 pub fn format_text(raw: &str) -> String {
-    let mut s = raw.replace('\0', "").replace('\r', "");
+    let mut s = raw.replace(['\0', '\r'], "");
     while let (Some(a), Some(b)) = (s.find("<COMMENT>"), s.find("</COMMENT>")) {
         if b < a {
             break;
@@ -116,7 +116,7 @@ pub fn info_system(
             if text.0 != *t {
                 text.0 = t.clone();
             }
-            **panel = Visibility::Inherited;
+            panel.set_if_neq(Visibility::Inherited);
         }
         None => **panel = Visibility::Hidden,
     }

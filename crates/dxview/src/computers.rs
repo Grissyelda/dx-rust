@@ -161,7 +161,6 @@ struct Node {
 
 /// One computer's or ATM's state (its properties and what's happened to it).
 struct CompData {
-    class: String,
     kind: Kind,
     pos: DVec3,
     users: Vec<User>,
@@ -315,7 +314,6 @@ impl CompData {
         // NodeInfo[ComputerNode] from the Computers class defaults (texture refs resolve in DeusEx.u).
         let node = if kind != Kind::Atm { node_of(p, assets) } else { Node::default() };
         CompData {
-            class: a.class.clone(),
             kind,
             pos: DVec3::new(loc[0] as f64, loc[1] as f64, loc[2] as f64),
             users,
@@ -2125,6 +2123,7 @@ fn spawn_feed(commands: &mut Commands, images: &mut Assets<Image>, j: usize, s: 
             bevy::light::cluster::ClusterConfig::Single,
             Tonemapping::None,
             Exposure { ev100: -0.263 },
+            Msaa::Off,
             FeedCam,
         ))
         .id();
@@ -2137,6 +2136,7 @@ fn spawn_feed(commands: &mut Commands, images: &mut Assets<Image>, j: usize, s: 
             Transform::default(),
             Tonemapping::None,
             Exposure { ev100: -0.263 },
+            Msaa::Off,
             FeedCam,
         ))
         .id();
@@ -2193,9 +2193,7 @@ pub fn computer_system(
         st.seed = 0x9E37_79B9_7F4A_7C15;
     }
     let mission = *st.mission.get_or_insert_with(|| {
-        lvl.actors
-            .iter()
-            .find(|a| a.class == "DeusExLevelInfo")
+        lvl.level_info()
             .map(|a| pfloat(&a.props, "MissionNumber", 0.0) as u8)
             .unwrap_or(0)
     });
@@ -2476,11 +2474,10 @@ pub fn computer_system(
                             } else {
                                 let pkg = wx.data.get(&t.actor).unwrap().text_package.clone();
                                 match t.screen.as_mut() {
-                                    Some(Screen::Email(m)) | Some(Screen::Bulletins(m)) => {
-                                        if m.sel != Some(r) {
+                                    Some(Screen::Email(m)) | Some(Screen::Bulletins(m))
+                                        if m.sel != Some(r) => {
                                             select_doc(m, r, &pkg, &mut wx);
                                         }
-                                    }
                                     _ => {}
                                 }
                                 t.focus = Some(Wid::Row(L_LIST, r));
@@ -2756,20 +2753,20 @@ pub fn computer_system(
     let nodes = st.nodes.as_mut().unwrap();
     if let Ok(mut v) = backdrop.get_mut(nodes.backdrop) {
         // (Diegetic: the desktop stands in for the black backdrop.)
-        *v = if is_open && dg.is_none() { Visibility::Inherited } else { Visibility::Hidden };
+        v.set_if_neq(if is_open && dg.is_none() { Visibility::Inherited } else { Visibility::Hidden });
     }
     if !is_open {
         st.desk_key.clear();
         for e in [nodes.comp.e, nodes.overlay.e, nodes.hack.e, nodes.accounts.e, nodes.cursor.e, nodes.desk.e] {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(e) {
                 if *v != Visibility::Hidden {
-                    *v = Visibility::Hidden;
+                    v.set_if_neq(Visibility::Hidden);
                 }
             }
         }
         for e in nodes.feed_nodes {
             if let Ok((_, mut v, _)) = feed_nodes.get_mut(e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
         if !close {
@@ -2826,7 +2823,7 @@ pub fn computer_system(
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.desk.e) {
                 if *v != Visibility::Hidden {
-                    *v = Visibility::Hidden;
+                    v.set_if_neq(Visibility::Hidden);
                 }
             }
             st.desk_key.clear();
@@ -2843,7 +2840,7 @@ pub fn computer_system(
             sec_sel = Some((sc.sel, sc.fov));
         }
     } else if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.comp.e) {
-        *v = Visibility::Hidden;
+        v.set_if_neq(Visibility::Hidden);
     }
     // Camera feeds and the selection border above them.
     let client = (pos.0 + TITLE_LEFT_BOTTOM.0, pos.1 + TITLE_H + g.voff);
@@ -2887,19 +2884,30 @@ pub fn computer_system(
                         let vfov = 2.0 * ((fov[j].to_radians() / 2.0).tan() / (FEED_SIZE.0 as f32 / FEED_SIZE.1 as f32)).atan();
                         for (k, c) in f.cams.iter().enumerate() {
                             if let Ok((mut tf, mut pr)) = feed_cams.get_mut(*c) {
-                                tf.rotation = rot;
-                                tf.translation = if k == 0 { Vec3::ZERO } else { eye };
-                                if let Projection::Perspective(pp) = &mut *pr {
-                                    pp.fov = vfov;
+                                let want = Transform { rotation: rot, translation: if k == 0 { Vec3::ZERO } else { eye }, ..*tf };
+                                tf.set_if_neq(want);
+                                let same = matches!(&*pr, Projection::Perspective(pp) if pp.fov == vfov);
+                                if !same {
+                                    if let Projection::Perspective(pp) = &mut *pr {
+                                        pp.fov = vfov;
+                                    }
                                 }
                             }
                         }
                         f.img.clone()
                     }
-                    None => nodes.noise.clone(),
+                    None => {
+                        // NO SIGNAL: the slot's cameras (if any) would draw into an image nobody shows.
+                        if let Some(f) = st.feeds[j].take() {
+                            for c in f.cams {
+                                commands.entity(c).despawn();
+                            }
+                        }
+                        nodes.noise.clone()
+                    }
                 };
                 if let Ok((mut n, mut v, mut im)) = feed_nodes.get_mut(nodes.feed_nodes[j]) {
-                    *v = Visibility::Inherited;
+                    v.set_if_neq(Visibility::Inherited);
                     if im.image != img {
                         im.image = img;
                     }
@@ -2913,11 +2921,11 @@ pub fn computer_system(
         }
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.overlay.e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
             for e in nodes.feed_nodes {
                 if let Ok((_, mut v, _)) = feed_nodes.get_mut(e) {
-                    *v = Visibility::Hidden;
+                    v.set_if_neq(Visibility::Hidden);
                 }
             }
             if st.feeds.iter().any(|f| f.is_some()) {
@@ -2942,7 +2950,7 @@ pub fn computer_system(
         }
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.hack.e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
     }
@@ -2958,7 +2966,7 @@ pub fn computer_system(
         }
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.accounts.e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
     }
@@ -2993,7 +3001,7 @@ pub fn computer_system(
     place(&mut nodes.cursor, &cc, cp, d, sf, &mut images, &mut layers, &mut layer_nodes);
     if (dg.is_none() && window.cursor_position().is_none()) || dg.is_some_and(|v| v.mouse.is_none()) {
         if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.cursor.e) {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
     }
     let _ = &player;
@@ -3088,7 +3096,6 @@ mod tests {
     #[test]
     fn atm_balances_sync_and_hack_sum() {
         let mk = |n: &str, b: i32| CompData {
-            class: "ATM".into(),
             kind: Kind::Atm,
             pos: DVec3::ZERO,
             users: vec![],
@@ -3132,6 +3139,8 @@ mod tests {
             images: Default::default(),
             materials: Default::default(),
             fire: Vec::new(),
+            sprites: Default::default(),
+            shared_parts: Default::default(),
         };
         let lvl = dx_level::load_level(&root, "01_NYC_UNATCOIsland.dx").unwrap();
         let mut hud = ClassicHud::default();

@@ -13,7 +13,7 @@ use glam::DVec3;
 use std::sync::Mutex;
 
 pub fn on() -> bool {
-    crate::settings::get("ModernAim") > 0.5
+    setting!("ModernAim") > 0.5
 }
 
 #[derive(Clone, Copy, Default)]
@@ -104,7 +104,7 @@ pub fn sightable(h: &crate::weapons::Held) -> bool {
         && st.class.starts_with("Weapon")
         // No sights to look down: the riot prod, the shoulder-fired launchers, thrown weapons.
         && !NO_SIGHTS.iter().any(|c| st.class.eq_ignore_ascii_case(c))
-        && st.ammo_class.as_deref().is_some_and(|a| !crate::util::contains_ci(&a, "ammonone"))
+        && st.ammo_class.as_deref().is_some_and(|a| !crate::util::contains_ci(a, "ammonone"))
 }
 
 /// The sway's reach (TraceFire spread units) for the current accuracy (lower is better): DeusExWeapon's own

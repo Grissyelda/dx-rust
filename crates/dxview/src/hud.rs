@@ -310,24 +310,20 @@ pub fn crosshair_system(
     let zoomed = zoom.0.is_some();
     let menu = crate::inventory_screen::screen_open() || crate::consys::third_person() || crate::cinematic::active();
     for (mut img, mut node, size, mut vis) in &mut cross {
-        *vis = if zoomed || menu || !crate::settings::crosshairs() {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        };
-        img.color = color.with_alpha(color.alpha() * crate::hudfade::alpha());
+        vis.set_if_neq(if zoomed || menu || !crate::settings::crosshairs() { Visibility::Hidden } else { Visibility::Inherited });
+        let col = color.with_alpha(color.alpha() * crate::hudfade::alpha());
+        if img.color != col {
+            img.color = col;
+        }
         let (cw, ch) = (size.0 * px, size.1 * px);
-        node.width = Val::Px(cw);
-        node.height = Val::Px(ch);
-        node.left = Val::Px((w * px - cw) * 0.5 + sx * px);
-        node.top = Val::Px((h * px - ch) * 0.5 + sy * px);
+        crate::uinode::set_rect(&mut node, (w * px - cw) * 0.5 + sx * px, (h * px - ch) * 0.5 + sy * px, cw, ch);
     }
 
     // Brackets only for ranged weapons with a target in range. Looking through a rifle scope they always show,
     // sized by the accuracy that drives the scope's sway, so they close in as the aim steadies.
     let scoped = zoomed
         && !crate::scope::diegetic()
-        && weapons.held.as_ref().map_or(false, |h| {
+        && weapons.held.as_ref().is_some_and(|h| {
             h.stats.has_scope && h.stats.class != "Binoculars"
         });
     let modern = crate::aimmode::on()
@@ -523,8 +519,8 @@ pub fn scope_overlay_system(
         return;
     };
     let held = weapons.held.as_ref();
-    let binocs = zoom.0.is_some() && held.map_or(false, |h| h.stats.class == "Binoculars");
-    let scope = zoom.0.is_some() && !binocs && held.map_or(false, |h| h.stats.has_scope) && !crate::scope::diegetic();
+    let binocs = zoom.0.is_some() && held.is_some_and(|h| h.stats.class == "Binoculars");
+    let scope = zoom.0.is_some() && !binocs && held.is_some_and(|h| h.stats.has_scope) && !crate::scope::diegetic();
     let s = ui_scale(win);
     let px = s / win.scale_factor();
     let (w, h) = (
@@ -548,16 +544,9 @@ pub fn scope_overlay_system(
             ScopePart::Binoc { half, .. } => (binocs, (fx + 256.0 * half as f32, fy, 256.0, sh)),
             ScopePart::Scope { .. } => (scope, (fx, fy, 256.0, sh)),
         };
-        *vis = if on {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        vis.set_if_neq(if on { Visibility::Inherited } else { Visibility::Hidden });
         if on {
-            node.left = Val::Px(rect.0 * px);
-            node.top = Val::Px(rect.1 * px);
-            node.width = Val::Px(rect.2.max(0.0) * px);
-            node.height = Val::Px(rect.3.max(0.0) * px);
+            crate::uinode::set_rect(&mut node, rect.0 * px, rect.1 * px, rect.2.max(0.0) * px, rect.3.max(0.0) * px);
         }
     }
 }

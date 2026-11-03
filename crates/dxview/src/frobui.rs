@@ -146,7 +146,7 @@ pub fn frob_target_system(
     // GMDX Tool Windows: Tool Display Style (setting ToolCounts): "owned/needed picks".
     let owned = |class: &str| inv.0.items.iter().filter(|i| i.def.class == class).map(|i| i.count).sum::<u32>();
     let tool_text = |needed: i32, class: &str, one: &str, many: &str| {
-        if crate::settings::get("ToolCounts") > 0.5 {
+        if setting!("ToolCounts") > 0.5 {
             format!("{}/{} {}", owned(class), needed, many)
         } else {
             format!("{} {}", needed, if needed == 1 { one } else { many })
@@ -383,7 +383,7 @@ pub fn frob_target_system(
             if t <= wall + 0.01 {
                 let mut name = str_prop(&it.props, "ItemName");
                 // GMDX Interaction: Show Item Count Labels (setting ItemCounts): "Medkit (3)" for a stack.
-                if crate::settings::get("ItemCounts") > 0.5 {
+                if setting!("ItemCounts") > 0.5 {
                     if let Some(Value::Int(n)) = find(&it.props, "NumCopies") {
                         if *n > 1 {
                             name = format!("{name} ({n})");
@@ -391,7 +391,7 @@ pub fn frob_target_system(
                     }
                 }
                 // GMDX Tool Windows: Show Duplicate Keys (setting DuplicateKeys): a key already on the ring.
-                if it.class == "NanoKey" && crate::settings::get("DuplicateKeys") > 0.5 {
+                if it.class == "NanoKey" && setting!("DuplicateKeys") > 0.5 {
                     let id = match find(&it.props, "KeyID") {
                         Some(Value::Name(n)) => n.clone(),
                         _ => String::new(),
@@ -440,7 +440,7 @@ pub fn frob_target_system(
                     format!("Dead Body ({fam})")
                 };
                 // GMDX Tool Windows: Show Carcass Searched State (setting SearchedText): "[Searched]" in front.
-                if n.searched && crate::settings::get("SearchedText") > 0.5 {
+                if n.searched && setting!("SearchedText") > 0.5 {
                     text = format!("[Searched] {text}");
                 }
                 hits.push((
@@ -484,7 +484,7 @@ pub fn frob_target_system(
     // Grab Ladders: nothing else in reach and the line of sight meets a ladder face close by - highlight it with
     // the button to take hold (walking into a ladder doesn't climb it with the setting on, so say how).
     let mut ladder_aim = false;
-    if best.is_none() && crate::settings::get("LadderGrab") > 0.5 && !LADDER_HELD.load(std::sync::atomic::Ordering::Relaxed) {
+    if best.is_none() && setting!("LadderGrab") > 0.5 && !LADDER_HELD.load(std::sync::atomic::Ordering::Relaxed) {
         let reach = (FROB_DIST * 0.85).min(wall * FROB_DIST + 2.0);
         let mut near: Option<(f64, DVec3)> = None;
         for l in &lvl.ladders {
@@ -586,9 +586,11 @@ pub fn frob_draw_system(
     >,
                 label: &mut Visibility| {
         for (_, _, _, mut v) in corners.iter_mut() {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
-        *label = Visibility::Hidden;
+        if *label != Visibility::Hidden {
+            *label = Visibility::Hidden;
+        }
     };
     let Some(t) = hl
         .target
@@ -653,25 +655,29 @@ pub fn frob_draw_system(
     for (fc, mut node, mut bg, mut vis) in &mut corners {
         let (x, y, bw, bh) = boxes[fc.index];
         let d = if fc.shadow { 1.0 } else { 0.0 };
-        node.left = Val::Px((x + d) * px);
-        node.top = Val::Px((y + d) * px);
-        node.width = Val::Px(bw * px);
-        node.height = Val::Px(bh * px);
-        if !fc.shadow {
+        crate::uinode::set_rect(&mut node, (x + d) * px, (y + d) * px, bw * px, bh * px);
+        if !fc.shadow && bg.0 != Color::WHITE {
             bg.0 = Color::WHITE;
         }
-        *vis = Visibility::Inherited;
+        vis.set_if_neq(Visibility::Inherited);
     }
     // Name label at the box's top-left corner, kept on screen.
     // Object Names (Game Options) off: the box only.
     if t.text.is_empty() || !crate::settings::object_names() {
-        *label.1 = Visibility::Hidden;
+        label.1.set_if_neq(Visibility::Hidden);
         return;
     }
-    text.0 .0 = t.text.clone();
-    text.1.font_size = bevy::text::FontSize::Px(7.0 * px);
-    label.0.left = Val::Px((tlx + 10.0).clamp(10.0, w - 60.0) * px);
-    label.0.top = Val::Px((tly + 10.0).clamp(10.0, h - 30.0) * px);
-    label.0.padding = UiRect::all(Val::Px(4.0 * px));
-    *label.1 = Visibility::Inherited;
+    if text.0 .0 != t.text {
+        text.0 .0 = t.text.clone();
+    }
+    let size = bevy::text::FontSize::Px(7.0 * px);
+    if text.1.font_size != size {
+        text.1.font_size = size;
+    }
+    let pad = UiRect::all(Val::Px(4.0 * px));
+    if label.0.padding != pad {
+        label.0.padding = pad;
+    }
+    crate::uinode::set_pos(&mut label.0, (tlx + 10.0).clamp(10.0, w - 60.0) * px, (tly + 10.0).clamp(10.0, h - 30.0) * px);
+    label.1.set_if_neq(Visibility::Inherited);
 }

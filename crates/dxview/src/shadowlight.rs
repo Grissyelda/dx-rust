@@ -130,7 +130,7 @@ pub fn setup_bsp_shader(mut shaders: ResMut<Assets<Shader>>) {
 }
 
 pub fn level() -> u8 {
-    crate::settings::get("RealtimeShadows").round().clamp(0.0, 2.0) as u8
+    setting!("RealtimeShadows").round().clamp(0.0, 2.0) as u8
 }
 
 fn wanted() -> usize {
@@ -188,6 +188,8 @@ pub struct ShadowLights {
     /// Caster root -> the light it casts from.
     assign: HashMap<Entity, usize>,
     repick: f32,
+    /// Bumped whenever `assign` or a slot's light changes (assign_system re-layers every part only then).
+    gen: u64,
 }
 
 /// The depth bias that marks shadowlight's spots for bsp_shadow.wgsl (other spot lights use their own).
@@ -266,6 +268,7 @@ pub fn shadow_light_system(
     gts: Query<&GlobalTransform>,
     sizes: Query<&CastSize>,
     mut map_gen: Local<u64>,
+    mut was_dark: Local<bool>,
 ) {
     let _prof = crate::prof::scope("shadowlight::shadow_light_system");
     let lvl = &level.0;
@@ -353,6 +356,7 @@ pub fn shadow_light_system(
             // One shadow per model: each caster casts from the chosen light that lights it most (keeping the one it
             // had unless another beats it clearly).
             let old = std::mem::take(&mut st.assign);
+            st.gen += 1;
             let mut per: HashMap<usize, Vec<(DVec3, f32)>> = HashMap::new();
             for (_, r, p) in &roots {
                 let mut best: Option<(f32, usize)> = None;
@@ -396,6 +400,7 @@ pub fn shadow_light_system(
     // Slots: a chosen light keeps its slot; new ones take a free slot; each eases to its rank's weight, the rest fade
     // out (no popping).
     let chosen = st.chosen.clone();
+    let mut bumps = 0;
     for s in st.slots.iter_mut() {
         s.target = match s.light.and_then(|l| chosen.iter().position(|c| *c == l)) {
             Some(rank) => RANK_WEIGHT[rank.min(SLOTS - 1)],
@@ -403,8 +408,9 @@ pub fn shadow_light_system(
         };
         let k = dt * 1.5;
         s.weight = if s.weight < s.target { (s.weight + k).min(s.target) } else { (s.weight - k).max(s.target) };
-        if s.target == 0.0 && s.weight == 0.0 {
+        if s.target == 0.0 && s.weight == 0.0 && s.light.is_some() {
             s.light = None;
+            bumps += 1;
         }
     }
     for (rank, l) in chosen.iter().enumerate() {
@@ -415,8 +421,15 @@ pub fn shadow_light_system(
             s.light = Some(*l);
             s.weight = 0.0;
             s.target = RANK_WEIGHT[rank.min(SLOTS - 1)];
+            bumps += 1;
         }
     }
+    st.gen += bumps;
+    // Shadows off and every slot already dark and hidden: nothing to write.
+    if n == 0 && st.slots.iter().all(|s| s.light.is_none()) && *was_dark {
+        return;
+    }
+    *was_dark = n == 0 && st.slots.iter().all(|s| s.light.is_none());
     let third = crate::thirdperson::active();
     let gain = env_val!("DXVIEW_SHADOW_GAIN").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(1.0f32);
     for (sl, mut pl, mut tf, mut vis, mut layers) in &mut lights {
@@ -429,8 +442,10 @@ pub fn shadow_light_system(
         }
         let aim = s.light.and_then(|i| st.aim.get(&i).copied());
         let Some(info) = s.light.and_then(|i| lvl.lights.get(i)).filter(|_| s.weight > 0.0 && n > 0) else {
-            pl.intensity = 0.0;
-            *vis = Visibility::Hidden;
+            if pl.intensity != 0.0 {
+                pl.intensity = 0.0;
+            }
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         };
         // The shader reads colour x intensity / (4 pi) back as the Unreal light's colour (brightness included).
@@ -450,31 +465,57 @@ pub fn shadow_light_system(
             pl.outer_angle += (half - pl.outer_angle) * k;
             pl.inner_angle = pl.outer_angle * 0.9;
         }
-        *vis = Visibility::Inherited;
+        vis.set_if_neq(Visibility::Inherited);
     }
 }
 
 /// Puts each casting part on its light's layer (or none: then it casts nothing). The heat layer (vision aug) kept.
-pub fn assign_system(st: Res<ShadowLights>, mut parts: Query<(&ChildOf, &mut RenderLayers), With<Casts>>) {
-    let slot_of = |l: usize| st.slots.iter().position(|s| s.light == Some(l));
+/// Every part is re-layered only when the assignments changed; otherwise just the parts that began casting.
+pub fn assign_system(
+    st: Res<ShadowLights>,
+    mut parts: Query<(&ChildOf, &mut RenderLayers), With<Casts>>,
+    fresh: Query<Entity, Added<Casts>>,
+    mut seen: Local<(u64, bool)>,
+) {
     let on = level() > 0;
-    for (c, mut layers) in &mut parts {
+    let all = seen.0 != st.gen || seen.1 != on;
+    *seen = (st.gen, on);
+    if !all && fresh.is_empty() {
+        return;
+    }
+    let slot_of = |l: usize| st.slots.iter().position(|s| s.light == Some(l));
+    let relayer = |c: &ChildOf, layers: &mut Mut<RenderLayers>| {
         let slot = if on { st.assign.get(&c.parent()).and_then(|&l| slot_of(l)) } else { None };
         let heat = layers.intersects(&RenderLayers::layer(crate::augdisplay::HEAT_LAYER));
         let world = layers.intersects(&RenderLayers::layer(crate::mirror::WORLD_LAYER));
-        let mut want = vec![0];
+        let mut want = [0usize; 4];
+        let mut n = 1;
         if world {
-            want.push(crate::mirror::WORLD_LAYER);
+            want[n] = crate::mirror::WORLD_LAYER;
+            n += 1;
         }
         if let Some(k) = slot {
-            want.push(SLOT_LAYERS[k]);
+            want[n] = SLOT_LAYERS[k];
+            n += 1;
         }
         if heat {
-            want.push(crate::augdisplay::HEAT_LAYER);
+            want[n] = crate::augdisplay::HEAT_LAYER;
+            n += 1;
         }
-        let want = RenderLayers::from_layers(&want);
-        if *layers != want {
-            *layers = want;
+        let want = RenderLayers::from_layers(&want[..n]);
+        if **layers != want {
+            **layers = want;
+        }
+    };
+    if all {
+        for (c, mut layers) in &mut parts {
+            relayer(c, &mut layers);
+        }
+    } else {
+        for e in &fresh {
+            if let Ok((c, mut layers)) = parts.get_mut(e) {
+                relayer(c, &mut layers);
+            }
         }
     }
 }
@@ -494,23 +535,31 @@ pub fn tag_casters_system(
     anim_mats: Res<Assets<crate::gpuanim::AnimMaterial>>,
     anim_handles: Query<&MeshMaterial3d<crate::gpuanim::AnimMaterial>>,
     mats: Res<Assets<StandardMaterial>>,
+    mut mover_cache: Local<(u64, std::collections::HashSet<Entity>)>,
 ) {
     // The camera's layers (with SHADOW_LAYER while this is on) are set by thirdperson::toggle_system.
     let on = level() > 0;
     if !on {
         return;
     }
-    let mover_roots: std::collections::HashSet<Entity> =
-        movers.as_ref().map(|m| m.entities.iter().copied().collect()).unwrap_or_default();
+    if parts.is_empty() {
+        return;
+    }
+    // The mover roots, gathered once per map.
+    let gen = crate::loader::generation();
+    if mover_cache.0 != gen || mover_cache.1.len() != movers.as_ref().map_or(0, |m| m.entities.len()) {
+        mover_cache.0 = gen;
+        mover_cache.1 = movers.as_ref().map(|m| m.entities.iter().copied().collect()).unwrap_or_default();
+    }
+    let mover_roots = &mover_cache.1;
     let world_pair = RenderLayers::from_layers(&[0, crate::mirror::WORLD_LAYER]);
     for (e, parent, mat, aabb, gt, layers) in &parts {
-        // Parts with layers of their own are left alone, except the level's (movers: 0 + WORLD_LAYER).
-        if layers.is_some_and(|l| *l != world_pair) {
-            continue;
-        }
+        // Parts with layers of their own are left alone, except the level's (movers: 0 + WORLD_LAYER); parts of
+        // things that aren't actors or movers never cast. Both are marked checked so they aren't visited again.
         let p = parent.parent();
         let mover = mover_roots.contains(&p);
-        if !roots.contains(p) && !mover {
+        if layers.is_some_and(|l| *l != world_pair) || (!roots.contains(p) && !mover) {
+            commands.entity(e).insert(ShadowCaster);
             continue;
         }
         // Bounds come a frame after the mesh; wait for them.

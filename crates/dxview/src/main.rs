@@ -1,4 +1,6 @@
 //! dxview: free-fly viewer for Deus Ex levels, reading the user's own game install at runtime.
+// Bevy systems take many parameters and long query types by nature; the lints that count them are noise here.
+#![allow(clippy::type_complexity, clippy::too_many_arguments, clippy::needless_range_loop, clippy::doc_lazy_continuation)]
 use bevy::{
     app::AppExit,
     asset::RenderAssetUsages,
@@ -17,6 +19,8 @@ use bevy::{
 mod env;
 mod queue;
 mod util;
+mod uinode;
+mod sprite;
 mod abilities;
 mod weather;
 mod shadowlight;
@@ -161,7 +165,7 @@ pub struct LevelRes(pub Level);
 
 /// Materials whose UVs scroll over time (auto-panning surfaces, water).
 #[derive(Resource, Default)]
-struct UvScroll(Vec<(Handle<StandardMaterial>, Vec2, bool)>, Vec<(Handle<shadowlight::BspMaterial>, Vec2)>);
+struct UvScroll(Vec<(Handle<StandardMaterial>, Vec2, bool)>);
 
 #[derive(Component)]
 pub struct FlyCam {
@@ -666,7 +670,7 @@ fn main() {
         }
         // SecondRevision's height maps for New Vision's textures: only while New Vision's textures are on (they are
         // made from them; SecondRevision's terms). Looked for where SecondRevision installs them and beside the exe.
-        if let Some(nv) = unreal_pkg::mods::active("newvision").filter(|_| settings::get("HDTextures") > 0.5) {
+        if let Some(nv) = unreal_pkg::mods::active("newvision").filter(|_| setting!("HDTextures") > 0.5) {
             let game = PathBuf::from(&root);
             let mut hdirs = vec![
                 game.join("Revision").join("NewVision").join("Textures"),
@@ -683,7 +687,7 @@ fn main() {
             }
         }
     }
-    unreal_pkg::paths::set_hd_textures_on(settings::get("HDTextures") > 0.5);
+    unreal_pkg::paths::set_hd_textures_on(setting!("HDTextures") > 0.5);
     consys::warm_db(PathBuf::from(&root).join("System"));
     dx_level::skincolor::OPT_FIXES.store(crate::optfixes::fixes(), std::sync::atomic::Ordering::Relaxed);
     hdtp::apply_dds_filter();
@@ -745,12 +749,12 @@ fn main() {
                 title: "DX RUST".into(),
                 // Settings > Display: the saved resolution and display mode (Windowed by default).
                 resolution: menus::RESOLUTIONS
-                    .get(settings::get("Resolution").max(-1.0) as isize as usize)
+                    .get(setting!("Resolution").max(-1.0) as isize as usize)
                     .copied()
                     .unwrap_or((1600, 900))
                     .into(),
-                mode: menus::start_window_mode(settings::get("DisplayMode")),
-                present_mode: menus::present_mode(settings::get("VSync")),
+                mode: menus::start_window_mode(setting!("DisplayMode")),
+                present_mode: menus::present_mode(setting!("VSync")),
                 ..default()
             }),
             ..default()
@@ -1035,7 +1039,6 @@ fn main() {
             (
                 bodyfx::fp_body_system.after(skeletal::mirror_skel_system),
                 bodyfx::glow_system.after(bodyfx::fp_body_system),
-                bodyfx::heal_label_system,
                 healui::heal_ui_system.before(weapons::weapon_system),
                 optfixes::weapon_pointing_system.before(ai::npc_system),
                 optfixes::unconscious_death_system.after(explosion::explosion_system),
@@ -1560,7 +1563,7 @@ fn setup(
                         if let Some(Some((d, scale))) = b.texture.and_then(|i| level.texture_detail.get(i)) {
                             bm.extension.detail = Some(handles[*d].clone());
                             bm.extension.params.q.y = *scale;
-                            bm.extension.params.q.z = if settings::get("DetailTextures") > 0.5 { 1.0 } else { 0.0 };
+                            bm.extension.params.q.z = if setting!("DetailTextures") > 0.5 { 1.0 } else { 0.0 };
                         }
                         if let Some((mask, lights)) = relight_imgs.as_ref() {
                             bm.extension.mask = Some(mask.clone());
@@ -1751,6 +1754,8 @@ fn setup(
         images: Default::default(),
         materials: Default::default(),
         fire: Vec::new(),
+        sprites: Default::default(),
+        shared_parts: Default::default(),
     };
     hud::spawn_crosshair(&mut commands, &mut runtime_assets, &mut images);
     hud::spawn_scope_overlay(&mut commands, &mut runtime_assets, &mut images);
@@ -2037,7 +2042,7 @@ fn fly(
     let mut test_forward = false;
     let mut test_dt = None;
     let mut test_frob = false;
-    let test_crouch = walk_test.as_ref().map_or(false, |w| w.crouch);
+    let test_crouch = walk_test.as_ref().is_some_and(|w| w.crouch);
     if let Some(wt) = walk_test.as_deref_mut() {
         if wt.t == 0.0 {
             player.noclip = false;
@@ -2275,7 +2280,7 @@ fn fly(
                     let climbing = player.body.physics == Physics::Climbing;
                     // Enhancement "Grab Ladders": Use takes hold, Jump lets go (pushing off), and on the ladder
                     // forward / back climb up / down; otherwise walking into one does nothing special.
-                    let grab = settings::get("LadderGrab") > 0.5;
+                    let grab = setting!("LadderGrab") > 0.5;
                     frobui::LADDER_GRAB.store(grab && !climbing, std::sync::atomic::Ordering::Relaxed);
                     if grab && !climbing {
                         if mouse.just_pressed(MouseButton::Right) {
@@ -2315,7 +2320,7 @@ fn fly(
                     }
                     // Grab Ladders: "Climb Ladder" is highlighted (in reach along the view, not yet touching): Use
                     // steps up to it and takes hold.
-                    if settings::get("LadderGrab") > 0.5
+                    if setting!("LadderGrab") > 0.5
                         && frobui::LADDER_AIM.load(std::sync::atomic::Ordering::Relaxed)
                         && mouse.just_pressed(MouseButton::Right)
                     {
@@ -2363,7 +2368,7 @@ fn fly(
         // DoJump: nothing heavier than 20 in your arms. GMDX fix (setting FixCarryJump): the Muscle aug, which the
         // original read only after giving up, lets you jump with up to (CurrentLevel + 3) x 50 (150-300).
         let carry_limit = match crate::abilities::aug_level("AugMuscle") {
-            Some(l) if crate::settings::get("FixCarryJump") > 0.5 && crate::abilities::aug_active("AugMuscle") => {
+            Some(l) if setting!("FixCarryJump") > 0.5 && crate::abilities::aug_active("AugMuscle") => {
                 (l as f64 + 3.0) * 50.0
             }
             _ => 20.0,
@@ -2476,7 +2481,7 @@ fn fly(
                     < 1.0;
                 (!blocked && floor).then_some(to)
             };
-            if crate::settings::get("SmoothLean") > 0.5 {
+            if setting!("SmoothLean") > 0.5 {
                 // Enhancement (Smooth Leaning): eases in and out instead of the fixed 80 units/s slide, works while
                 // crouch-walking, and where the body can't slide any further (a wall at the corner) the eyes go on
                 // as far as there's room for them, so you can peek past it.
@@ -2899,6 +2904,7 @@ fn overlay_update(
     player: Res<Player>,
     mut text: Single<(&mut Text, &mut Visibility), With<Overlay>>,
     mut show: Local<Option<bool>>,
+    mut refresh: Local<f32>,
 ) {
     let _prof = crate::prof::scope("main::overlay_update");
     let on = show.get_or_insert(true);
@@ -2907,11 +2913,17 @@ fn overlay_update(
     }
     // The corner readout is a Debug Mode feature (Settings > Enhancements).
     let debug = crate::settings::debug_mode() || env_on!("DXVIEW_SHOT");
-    *text.1 = if *on && debug && !inventory_screen::screen_open() && !consys::third_person() && !cinematic::active() {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    let shown = *on && debug && !inventory_screen::screen_open() && !consys::third_person() && !cinematic::active();
+    text.1.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+    // Hidden: nothing to lay out. Shown: the readout refreshes 5 times a second (text shaping isn't free).
+    if !shown {
+        return;
+    }
+    *refresh -= time.delta_secs();
+    if *refresh > 0.0 {
+        return;
+    }
+    *refresh = 0.2;
     let s = &level.0.stats;
     let p = cam.0.translation;
     let mode = if player.noclip {
@@ -2946,12 +2958,10 @@ fn uv_scroll(
     time: Res<Time>,
     scroll: Res<UvScroll>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
     used: Query<&MeshMaterial3d<StandardMaterial>>,
     mut in_use: Local<(u64, std::collections::HashSet<AssetId<StandardMaterial>>, u32)>,
 ) {
     let _prof = crate::prof::scope("main::uv_scroll");
-    let _ = bsp_mats;
     let t = time.elapsed_secs();
     // The level's own surfaces pan in their shader (BspShadowParams.u). These are the plain materials they were
     // made from: only the ones something still draws are moved (changing a material every frame costs the render

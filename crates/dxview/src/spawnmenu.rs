@@ -186,7 +186,7 @@ fn build(commands: &mut Commands, assets: &mut RuntimeAssets, images: &mut Asset
                         SpawnButton(format!("PAWN:{class}")),
                     ))
                     .with_children(|b| {
-                        b.spawn((Text::new(format!("{class}")), TextFont { font_size: bevy::text::FontSize::Px(11.0), ..default() }, TextColor(Color::srgb(0.95, 0.85, 0.85)), Pickable::IGNORE));
+                        b.spawn((Text::new(class.to_string()), TextFont { font_size: bevy::text::FontSize::Px(11.0), ..default() }, TextColor(Color::srgb(0.95, 0.85, 0.85)), Pickable::IGNORE));
                     });
                 }
                 for (class, name, icon) in items {
@@ -236,7 +236,7 @@ pub fn spawn_menu_system(
     mut assets: ResMut<RuntimeAssets>,
     mut images: ResMut<Assets<Image>>,
     mut cursor: Single<&mut CursorOptions>,
-    mut root: Query<&mut Visibility, With<SpawnMenuRoot>>,
+    mut root: Query<(&mut Visibility, &mut Node), With<SpawnMenuRoot>>,
     mut buttons: Query<(&Interaction, &SpawnButton, &mut BackgroundColor), Changed<Interaction>>,
     (player, level, cam, mut drops, mut hud): (
         Res<Player>,
@@ -247,10 +247,6 @@ pub fn spawn_menu_system(
     ),
     mut inv: ResMut<crate::pickups::PlayerInventory>,
 ) {
-    if !menu.built {
-        menu.built = true;
-        build(&mut commands, &mut assets, &mut images);
-    }
     // Debug Mode (Settings > Enhancements) off: no spawn menu, and its god mode goes too.
     if !crate::settings::debug_mode() {
         if menu.open {
@@ -265,14 +261,15 @@ pub fn spawn_menu_system(
         if menu.open {
             cursor.visible = true;
             cursor.grab_mode = CursorGrabMode::None;
+            // Built the first time it opens (hundreds of nodes with icons: not worth laying out before).
+            if !menu.built {
+                menu.built = true;
+                build(&mut commands, &mut assets, &mut images);
+            }
         }
     }
-    for mut v in &mut root {
-        *v = if menu.open {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+    for (v, node) in &mut root {
+        crate::uinode::show(v, node, menu.open);
     }
     if !menu.open {
         return;
@@ -340,7 +337,7 @@ pub fn spawn_menu_system(
                     let augs = [it.next().unwrap_or("").to_string(), it.next().unwrap_or("").to_string()];
                     let d = assets.classes.defaults("AugmentationCannister");
                     let def = crate::pickups::item_def("AugmentationCannister", &d);
-                    hud.text = crate::augcan::add(&mut *inv, &def, augs).unwrap_or_else(|e| e);
+                    hud.text = crate::augcan::add(&mut inv, &def, augs).unwrap_or_else(|e| e);
                     hud.time_left = 2.5;
                     *bg = BackgroundColor(Color::srgba(0.3, 0.45, 0.3, 0.95));
                     continue;

@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 pub fn enabled() -> bool {
-    crate::settings::get("ModernVision") > 0.5
+    setting!("ModernVision") > 0.5
 }
 
 /// Is the modern light amplification showing now (then the original's box, tint and frame stay hidden)?
@@ -123,10 +123,10 @@ pub fn vision_system(
     for (e, m, hot) in &anim_parts {
         if heat.contains(&e) && hot.is_none() {
             let id = m.0.id();
-            if !cache.anim.contains_key(&id) {
+            if let std::collections::hash_map::Entry::Vacant(e) = cache.anim.entry(id) {
                 let Some(mut c) = anim_mats.get(id).cloned() else { continue };
                 c.base.base_color = Color::LinearRgba(LinearRgba::new(HOT, HOT * 0.95, HOT * 0.9, 1.0));
-                cache.anim.insert(id, anim_mats.add(c));
+                e.insert(anim_mats.add(c));
             }
             let h = cache.anim[&id].clone();
             commands.entity(e).insert((HotAnim(m.0.clone()), MeshMaterial3d(h)));

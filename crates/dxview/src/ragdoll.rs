@@ -29,7 +29,7 @@ pub fn player_ragdoll() -> bool {
 }
 
 pub fn enabled() -> bool {
-    crate::settings::get("Ragdolls") > 0.5 && crate::skeletal::enabled()
+    setting!("Ragdolls") > 0.5 && crate::skeletal::enabled()
 }
 
 /// A killing / knock-out blow (ai.rs), Unreal space.
@@ -178,7 +178,6 @@ pub struct Ragdoll {
 /// Static colliders for the level, a cell at a time.
 #[derive(Resource, Default)]
 pub struct RagWorld {
-    generation: u64,
     tris: HashMap<(i32, i32, i32), Vec<[Vec3; 3]>>,
     built: bool,
     spawned: HashMap<(i32, i32, i32), Entity>,
@@ -282,7 +281,7 @@ pub fn start_system(
     player: Option<Res<crate::Player>>,
 ) {
     if crate::loader::new_map(&mut map_gen) {
-        *world = RagWorld { generation: *map_gen, ..default() };
+        *world = RagWorld::default();
     }
     let deaths: Vec<Death> = DEATHS.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default();
     if deaths.is_empty() || !enabled() {

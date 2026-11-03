@@ -55,7 +55,7 @@ fn table(name: &str) -> Option<Roles> {
 
 /// Visible Attachments in use: the mod installed and its setting on (Classic turns it off; read at map load).
 pub fn active() -> bool {
-    installed() && crate::settings::get("VisAttach") > 0.5
+    installed() && setting!("VisAttach") > 0.5
 }
 
 pub fn installed() -> bool {

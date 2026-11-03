@@ -141,7 +141,7 @@ pub fn fixture_system(
             let before = *t;
             *t += dt;
             if before < 2.0 && *t >= 2.0 {
-                if let Some(b) = blockers.list.iter().position(|c| lvl.actors[c.actor].name.eq_ignore_ascii_case(&name)) {
+                if let Some(b) = blockers.list.iter().position(|c| lvl.actors[c.actor].name.eq_ignore_ascii_case(name)) {
                     frobs.push(b);
                 }
             }

@@ -19,6 +19,8 @@ struct Anim {
     /// view it was prepared with, so with the level's surfaces on bindless BspMaterials the swapped picture never
     /// reached the screen (New Vision's monitors stood still).
     mats: Option<(Vec<AssetId<crate::shadowlight::BspMaterial>>, Vec<AssetId<StandardMaterial>>)>,
+    /// Game time something drawing it was last on screen (a loop nobody sees doesn't step).
+    seen: f32,
 }
 
 static ANIMS: Mutex<Vec<Anim>> = Mutex::new(Vec::new());
@@ -51,29 +53,62 @@ pub fn register(lib: &mut dx_level::TexLib, path: &str, handle: &Handle<Image>, 
         if a.iter().any(|x| x.handle == *handle) {
             return;
         }
-        a.push(Anim { handle: handle.clone(), frames, step, t: 0.0, at: 0, level, mats: None });
+        a.push(Anim { handle: handle.clone(), frames, step, t: 0.0, at: 0, level, mats: None, seen: 0.0 });
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn anim_tex_system(
     time: Res<Time>,
     mut images: ResMut<Assets<Image>>,
     mut bsp: ResMut<Assets<crate::shadowlight::BspMaterial>>,
     mut std_mats: ResMut<Assets<StandardMaterial>>,
+    drawn: Query<(&ViewVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&MeshMaterial3d<crate::shadowlight::BspMaterial>>), With<Mesh3d>>,
+    mut visible: Local<(std::collections::HashSet<AssetId<StandardMaterial>>, std::collections::HashSet<AssetId<crate::shadowlight::BspMaterial>>)>,
 ) {
+    let _prof = crate::prof::scope("anim_tex::anim_tex_system");
     let dt = time.delta_secs().min(0.25);
+    let now = time.elapsed_secs();
     let Ok(mut list) = ANIMS.lock() else { return };
+    if list.is_empty() {
+        return;
+    }
+    // The materials something on screen draws this frame.
+    visible.0.clear();
+    visible.1.clear();
+    for (v, sm, bm) in &drawn {
+        if !v.get() {
+            continue;
+        }
+        if let Some(m) = sm {
+            visible.0.insert(m.0.id());
+        }
+        if let Some(m) = bm {
+            visible.1.insert(m.0.id());
+        }
+    }
     for a in list.iter_mut() {
         if a.mats.is_none() {
             let id = a.handle.id();
             let b: Vec<_> = bsp.iter().filter(|(_, m)| m.base.base_color_texture.as_ref().is_some_and(|h| h.id() == id)).map(|(i, _)| i).collect();
             let s: Vec<_> = std_mats.iter().filter(|(_, m)| m.base_color_texture.as_ref().is_some_and(|h| h.id() == id)).map(|(i, _)| i).collect();
             a.mats = Some((b, s));
+            a.seen = now;
+        }
+        if let Some((b, s)) = &a.mats {
+            if b.iter().any(|i| visible.1.contains(i)) || s.iter().any(|i| visible.0.contains(i)) {
+                a.seen = now;
+            }
+        }
+        // Out of sight for half a second: the loop pauses (nothing would show the new picture).
+        if now - a.seen > 0.5 {
+            continue;
         }
         a.t += dt;
         if a.t < a.step {
             continue;
         }
+        let prev = a.at;
         while a.t >= a.step {
             a.t -= a.step;
             a.at = (a.at + 1) % a.frames.len();
@@ -84,7 +119,15 @@ pub fn anim_tex_system(
             reshaped = im.texture_descriptor.size != next.texture_descriptor.size
                 || im.texture_descriptor.format != next.texture_descriptor.format
                 || im.texture_descriptor.mip_level_count != next.texture_descriptor.mip_level_count;
-            *im = next.clone();
+            // The frame's pixels move into the image (no copy); the image's old pixels go back to the slot that
+            // frame came from. (`frames` holds every frame in order, with the current frame's slot stale.)
+            if prev != a.at {
+                let (at, prevs) = (a.at, prev);
+                std::mem::swap(&mut *im, &mut a.frames[at]);
+                a.frames.swap(at, prevs);
+            } else {
+                *im = next.clone();
+            }
         }
         // Same size and format: Bevy writes the new pixels into the same texture. A different one (the first
         // frame of a New Vision texture is its HD picture, the loop's frames are the original's) makes a new texture,

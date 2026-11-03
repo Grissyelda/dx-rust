@@ -136,7 +136,7 @@ fn applies(key: &str) -> bool {
 /// enhancements are on.
 pub fn is_modern() -> bool {
     if crate::settings::has("ModernMode") {
-        return crate::settings::get("ModernMode") > 0.5;
+        return setting!("ModernMode") > 0.5;
     }
     let keys: Vec<&str> = PRESET.iter().map(|p| p.0).filter(|k| applies(k)).collect();
     let on = keys.iter().filter(|k| crate::settings::get(k) > 0.0).count();
@@ -162,7 +162,7 @@ pub fn fill_new_modern_keys() {
 pub fn switch_values(to_modern: bool, current: impl Fn(&str) -> f32) -> (Vec<(String, f32)>, Vec<(String, f32)>) {
     let mut vals = Vec::new();
     let mut memory = Vec::new();
-    let remembered = crate::settings::get("Modern.Saved") > 0.5;
+    let remembered = setting!("Modern.Saved") > 0.5;
     // Going Classic with nothing on (already classic by hand): keep the remembered mix rather than remember "all
     // off" as the player's Modern.
     let all_off = PRESET.iter().filter(|p| applies(p.0)).all(|p| current(p.0) <= 0.0);
@@ -335,7 +335,7 @@ pub fn wipe_system(
     if hitching {
         if words.is_none() {
             if let (Some(a), Some(win)) = (assets.as_mut(), windows.iter().next()) {
-                *words = crate::loader::spawn_loading_words(&mut commands, a, &mut images, &mut layers, win, &mut *font, 5001);
+                *words = crate::loader::spawn_loading_words(&mut commands, a, &mut images, &mut layers, win, &mut font, 5001);
                 if let Some(e) = *words {
                     commands.entity(e).insert(crate::loader::Persist);
                 }
@@ -343,7 +343,7 @@ pub fn wipe_system(
         } else if let (Some(e), Phase::Wiping { t, .. }) = (*words, &*phase) {
             // A slow blink (on 0.7 s, off 0.25 s) while it waits.
             if let Ok(mut v) = vis.get_mut(e) {
-                *v = if (*t % 0.95) < 0.7 { Visibility::Inherited } else { Visibility::Hidden };
+                v.set_if_neq(if (*t % 0.95) < 0.7 { Visibility::Inherited } else { Visibility::Hidden });
             }
         }
     } else if let Some(e) = words.take() {

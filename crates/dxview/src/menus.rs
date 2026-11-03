@@ -364,7 +364,7 @@ fn choice(assets: &mut RuntimeAssets, class: &str) -> Choice {
 
 /// Our own choice: HUD Scale on the Display screen.
 fn hud_scale_choice() -> Choice {
-    let v = crate::settings::get("HUDScale");
+    let v = setting!("HUDScale");
     Choice {
         key: "HUDScale".into(),
         label: "|&HUD Scale".into(),
@@ -383,7 +383,7 @@ fn hud_scale_choice() -> Choice {
 /// Ours, in place of Toggle Full-Screen Mode: Full Screen (exclusive), Windowed, or Borderless (a screen-sized
 /// window without borders, so alt-tab and clicking out behave).
 fn display_mode_choice() -> Choice {
-    let v = crate::settings::get("DisplayMode");
+    let v = setting!("DisplayMode");
     Choice {
         key: "DisplayMode".into(),
         label: "|&Display Mode".into(),
@@ -408,7 +408,7 @@ fn vsync_choice() -> Choice {
     c.label = "|&Vertical Sync".into();
     c.help = "Wait for the monitor's refresh before showing each frame: no tearing, frame rate capped at the refresh rate. Off: as many frames as the PC can draw.".into();
     c.kind = ChoiceKind::Enum(vec!["Disabled".into(), "Enabled".into()]);
-    c.value = crate::settings::get("VSync");
+    c.value = setting!("VSync");
     c.saved = c.value;
     c.dropdown = false;
     c
@@ -454,7 +454,7 @@ pub fn fullscreen_when_ready_system(
     if *done || !cfg!(target_os = "linux") {
         return;
     }
-    let want = crate::settings::get("DisplayMode").round() as i32;
+    let want = setting!("DisplayMode").round() as i32;
     let Ok(mut w) = windows.single_mut() else { return };
     if want == 1 {
         *done = true;
@@ -640,7 +640,7 @@ impl SaveLoad {
             sel: None,
             scroll: 0,
             edit: Edit::new(64),
-            confirm_delete: crate::settings::get("ConfirmSaveDeletes") < 0.5,
+            confirm_delete: setting!("ConfirmSaveDeletes") < 0.5,
             snap: None,
         };
         s.sel = if saving || !s.games.is_empty() { Some(0) } else { None };
@@ -843,14 +843,14 @@ impl Enhance {
             c.label = "Outfits On People (Augmentique)".into();
             c.help = "People in the world wear random outfits: none, everyone but the main characters, or everyone. Takes effect when the next map loads.".into();
             c.kind = ChoiceKind::Enum(vec!["None".into(), "Generic People".into(), "Everyone".into()]);
-            c.value = crate::settings::get("AugNPCs");
+            c.value = setting!("AugNPCs");
             c.saved = c.value;
             items.push(tag(c, "Mods"));
             let mut c = debug_mode_choice();
             c.key = "AugAllOutfits".into();
             c.label = "All Outfits Unlocked (Augmentique)".into();
             c.help = "Every outfit is in the Outfits screen from the start, instead of found in boxes in GMDX Augmented's maps. Takes effect on the next start.".into();
-            c.value = crate::settings::get("AugAllOutfits");
+            c.value = setting!("AugAllOutfits");
             c.saved = c.value;
             items.push(tag(c, "Mods"));
         }
@@ -860,7 +860,7 @@ impl Enhance {
             c.label = "Rain (Precipitation)".into();
             c.help = "Rain on the maps where it fits - New York, Hong Kong, the docks, a little over Paris - falling wherever the sky is open, splashing, with its sound. Dynamic lets it come and go.".into();
             c.kind = ChoiceKind::Enum(vec!["Off".into(), "Steady".into(), "Dynamic".into()]);
-            c.value = crate::settings::get("Weather");
+            c.value = setting!("Weather");
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }
@@ -870,7 +870,7 @@ impl Enhance {
             c.label = "Third Person Camera".into();
             c.help = "Free: the camera turns around JC with the mouse or right stick, he runs the way you push and turns to face it, faces where the camera looks while you aim or shoot, and fidgets when left alone. Shoulder: a fixed view over his shoulder that turns with him.".into();
             c.kind = ChoiceKind::Enum(vec!["Free".into(), "Shoulder".into()]);
-            c.value = crate::settings::get("ThirdPersonCamera");
+            c.value = setting!("ThirdPersonCamera");
             c.saved = c.value;
             items.push(tag(c, "Gameplay"));
         }
@@ -880,7 +880,7 @@ impl Enhance {
             c.label = "CPU Worker Threads".into();
             c.help = "How many threads the game spreads its parallel work over. Auto leaves room for the main and render threads and stops at 10: on processors with many cores (workstation Xeons, Threadrippers) more threads only add overhead. Takes effect on the next start.".into();
             c.kind = ChoiceKind::Enum(crate::threads::STEPS.iter().map(|&n| if n == 0 { "Auto".to_string() } else { n.to_string() }).collect());
-            c.value = crate::threads::step_index(crate::settings::get("WorkerThreads"));
+            c.value = crate::threads::step_index(setting!("WorkerThreads"));
             c.saved = c.value;
             items.push(tag(c, "Display"));
         }
@@ -892,14 +892,14 @@ impl Enhance {
                 t.key = "Trees".into();
                 t.label = "Grown Trees".into();
                 t.help = "The parks' flat card trees and bushes are replaced with grown ones: real branches and bark, clusters of leaves, swaying in the wind and casting shadows. Same size and place as the originals.".into();
-                t.value = crate::settings::get("Trees");
+                t.value = setting!("Trees");
                 t.saved = t.value;
                 t
             }, "Visuals"));
             c.label = "3D Grass".into();
             c.help = "Blades of grass grow out of the lawns, lit like the ground they stand on, swaying in the wind and pushed aside by whoever walks through them. Low: fewer blades and a shorter reach.".into();
             c.kind = ChoiceKind::Enum(vec!["Off".into(), "Low".into(), "High".into()]);
-            c.value = crate::settings::get("Grass");
+            c.value = setting!("Grass");
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }
@@ -909,7 +909,7 @@ impl Enhance {
             c.label = "Upscaling".into();
             c.help = "Native AA smooths edges with temporal antialiasing at full resolution. Quality, Balanced, Performance and Ultra Performance draw the world at 1/1.5, 1/1.7, 1/2 or 1/3 the window's size and upscale it with an edge-aware filter (AMD FSR 1) and sharpening - more frames on slower graphics cards. The weapon, HUD and menus always stay at full resolution.".into();
             c.kind = ChoiceKind::Enum(crate::upscale::NAMES.iter().map(|s| s.to_string()).collect());
-            c.value = crate::settings::get("Upscaling");
+            c.value = setting!("Upscaling");
             c.saved = c.value;
             items.push(tag(c, "Display"));
         }
@@ -919,7 +919,7 @@ impl Enhance {
             c.label = "Real-Time Shadows".into();
             c.help = "People and objects cast moving shadows from the lamps around them, as dark as the light they block. Low uses the two strongest lights near you, High four.".into();
             c.kind = ChoiceKind::Enum(vec!["Off".into(), "Low".into(), "High".into()]);
-            c.value = crate::settings::get("RealtimeShadows");
+            c.value = setting!("RealtimeShadows");
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }
@@ -969,7 +969,7 @@ impl Enhance {
         lip.key = "SmoothLipSync".into();
         lip.label = "Smooth |&Lip Sync".into();
         lip.help = "Mouths blend smoothly between sounds and close gently, and people blink visibly (after Joe Wintergreen's lipsync mod).".into();
-        lip.value = crate::settings::get("SmoothLipSync");
+        lip.value = setting!("SmoothLipSync");
         lip.saved = lip.value;
         items.push(tag(lip, "Visuals"));
         items.push(tag(debug_mode_choice(), "Developer"));
@@ -1150,7 +1150,7 @@ struct KeypadWin {
 
 /// Ours: a code or password appears in one of the player's notes as a whole word.
 pub(crate) fn in_notes(code: &str) -> bool {
-    if code.is_empty() || crate::settings::get("NotesAutofill") < 0.5 {
+    if code.is_empty() || setting!("NotesAutofill") < 0.5 {
         return false;
     }
     let Some(st) = crate::consys::lock().as_ref().map(|s| s.notes.clone()) else { return false };
@@ -1608,7 +1608,7 @@ fn dualsense_choices() -> Vec<Choice> {
 
 /// Ours: Debug Mode on the Enhancements screen.
 fn debug_mode_choice() -> Choice {
-    let v = crate::settings::get("DebugMode");
+    let v = setting!("DebugMode");
     Choice {
         key: "DebugMode".into(),
         label: "|&Debug Mode".into(),
@@ -2126,7 +2126,7 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
                     l("LocationLabel").replace("%s", &g.location),
                     l("SaveCountLabel").replace("%d", &g.save_count.to_string()),
                     l("PlayTimeLabel").replace("%s", &crate::save::format_play_time(g.play_time)),
-                    format!("File Size: {}KB", (g.bytes + 1023) / 1024)
+                    format!("File Size: {}KB", g.bytes.div_ceil(1024))
                 );
                 u.wrapped(&fs, cx + 390, cy + 166, 155, 60, HAlign::Left, VAlign::Center, m_col(8), &info);
             }
@@ -2302,7 +2302,7 @@ fn menu_action(b: &MenuBtn, hud: &mut ClassicHud, assets: &mut RuntimeAssets, ou
         2 => out.push(Act::Pop),
         3 => {
             // StartNewGame: ask about the training mission once.
-            if crate::settings::get("AskedToTrain") < 0.5 {
+            if setting!("AskedToTrain") < 0.5 {
                 crate::settings::set("AskedToTrain", 1.0);
                 crate::settings::save();
                 let d = assets.classes.defaults("MenuMain");
@@ -2457,15 +2457,11 @@ pub fn menu_system(
     st.clock += dt;
     if !st.built {
         st.built = true;
-        let mission = level
-            .0
-            .actors
-            .iter()
-            .find(|a| a.class == "DeusExLevelInfo")
+        let mission = level.0.level_info()
             .map(|a| pint(&a.props, "missionNumber", 0))
             .unwrap_or(0);
         MISSION.store(mission, Ordering::Relaxed);
-        if let Some(Value::Str(loc)) = level.0.actors.iter().find(|a| a.class == "DeusExLevelInfo").and_then(|a| find(&a.props, "MissionLocation")) {
+        if let Some(Value::Str(loc)) = level.0.level_info().and_then(|a| find(&a.props, "MissionLocation")) {
             if let Ok(mut l) = LOCATION.lock() {
                 *l = loc.clone();
             }
@@ -2503,13 +2499,13 @@ pub fn menu_system(
     }
     if !st.themes_applied {
         st.themes_applied = true;
-        apply_themes(&mut assets, crate::settings::get("MenuColor") as usize, crate::settings::get("HUDColor") as usize);
+        apply_themes(&mut assets, setting!("MenuColor") as usize, setting!("HUDColor") as usize);
     }
     // Live settings: themes follow the setting.
     let gen = crate::settings::generation();
     if gen != st.applied_gen {
         st.applied_gen = gen;
-        apply_themes(&mut assets, crate::settings::get("MenuColor") as usize, crate::settings::get("HUDColor") as usize);
+        apply_themes(&mut assets, setting!("MenuColor") as usize, setting!("HUDColor") as usize);
     }
 
     // ---- the logo flyby (DeusExPlayer state Interpolating): the camera rides the path, Fire shows the menu
@@ -2679,21 +2675,24 @@ pub fn menu_system(
         if let Ok((mut v, mut bg)) = backdrop.get_mut(e) {
             // MaskBackground (modulated MaskTexture) / UIBackground 2 = black.
             let black = crate::settings::ui_background() == 2 && !intro_map();
-            bg.0 = Color::srgba(0.0, 0.0, 0.0, if black { 1.0 } else { 0.5 });
-            *v = if is_open { Visibility::Inherited } else { Visibility::Hidden };
+            let col = Color::srgba(0.0, 0.0, 0.0, if black { 1.0 } else { 0.5 });
+            if bg.0 != col {
+                bg.0 = col;
+            }
+            v.set_if_neq(if is_open { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
     if !is_open {
         for l in &st.win_layers {
             if let Ok((_, mut v, _)) = nodes.get_mut(l.e) {
                 if *v != Visibility::Hidden {
-                    *v = Visibility::Hidden;
+                    v.set_if_neq(Visibility::Hidden);
                 }
             }
         }
         if let Some(c) = &st.cursor {
             if let Ok((_, mut v, _)) = nodes.get_mut(c.e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
         if st.intro.is_none() {
@@ -3266,7 +3265,7 @@ pub fn menu_system(
                         w.focus = Some(W::MenuBtn(1));
                     }
                 }
-                let tip = class == "MenuScreenNewGame" && crate::travel::lddp() && crate::settings::get("LDDPGaveNewGameTips") == 0.0;
+                let tip = class == "MenuScreenNewGame" && crate::travel::lddp() && setting!("LDDPGaveNewGameTips") == 0.0;
                 st.push(w);
                 if tip {
                     // MenuScreenNewGame.GiveTip (once: bGaveNewGameTips).
@@ -3416,7 +3415,7 @@ pub fn menu_system(
     }
     for li in (st.stack.len() - first)..n_layers {
         if let Ok((_, mut v, _)) = nodes.get_mut(st.win_layers[li].e) {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
     }
     // A message box keeps the clicks to itself.
@@ -3437,7 +3436,7 @@ pub fn menu_system(
         place(cl, &cc, (mouse.0 - 32, mouse.1 - 32), d, sf, &mut images, &mut layers, &mut nodes);
         if window.cursor_position().is_none() {
             if let Ok((_, mut v, _)) = nodes.get_mut(cl.e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
     }
@@ -3656,7 +3655,7 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                         }
                     }
                 }
-                10 | 11 | 12 => box_answer(st, top, action != 10, hud, assets, acts),
+                10..=12 => box_answer(st, top, action != 10, hud, assets, acts),
                 _ => {}
             }
         }
@@ -3791,6 +3790,8 @@ mod tests {
             images: Default::default(),
             materials: Default::default(),
             fire: Vec::new(),
+            sprites: Default::default(),
+            shared_parts: Default::default(),
         };
         *crate::abilities::lock() = Some(crate::abilities::build(&mut assets.classes));
         apply_themes(&mut assets, DEFAULT_MENU_THEME, DEFAULT_HUD_THEME);

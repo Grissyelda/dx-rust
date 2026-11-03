@@ -432,7 +432,7 @@ pub fn draw_lower(
     // Every choice has to fit (deviation: the original clipped them at the bottom - Gunther's third choice after the
     // rescue). The choices' room first; the speech above them only if it fits too, else just its first line; rows
     // tighten as a last resort.
-    let hotkeys = crate::settings::get("DialogueHotkeys") > 0.5;
+    let hotkeys = setting!("DialogueHotkeys") > 0.5;
     let mut pad = 4;
     let choice_room = |pad: i32| p.choices.len() as i32 * (sf.height + pad);
     while pad > 0 && choice_room(pad) + 2 > h {
@@ -552,6 +552,8 @@ mod tests {
             images: Default::default(),
             materials: Default::default(),
             fire: Vec::new(),
+            sprites: Default::default(),
+            shared_parts: Default::default(),
         };
         let mut hud = ClassicHud::default();
         let (sw, sh, s) = (960, 540, 2);

@@ -12,7 +12,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::collections::HashMap;
 
 pub fn enabled() -> bool {
-    crate::settings::get("ModernGlass") > 0.5
+    setting!("ModernGlass") > 0.5
 }
 
 /// A window-glass texture by its "Package.Group.Name".

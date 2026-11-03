@@ -123,7 +123,7 @@ fn run(id: String) {
         let mut shown: Option<(String, String)> = None;
         loop {
             let want = WANT.lock().ok().and_then(|w| w.clone());
-            let off = crate::settings::get("DiscordPresence") < 0.5;
+            let off = setting!("DiscordPresence") < 0.5;
             let want = if off { None } else { want };
             if want != shown {
                 nonce += 1;

@@ -101,10 +101,10 @@ pub fn heal_ui_system(
     let k = s as f32 / win.scale_factor();
     if st.alpha <= 0.0 {
         for (_, _, mut v) in &mut body {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
         for (_, _, mut v, _) in &mut cursor {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
         return;
     }
@@ -196,7 +196,7 @@ pub fn heal_ui_system(
         nd.top = Val::Px(pos.y);
         nd.width = Val::Px(W as f32 * k);
         nd.height = Val::Px(H as f32 * k);
-        *v = Visibility::Inherited;
+        v.set_if_neq(Visibility::Inherited);
     }
     // The medkit cursor (its belt icon at half size, the hot spot at its centre).
     if cursor.is_empty() {
@@ -220,6 +220,6 @@ pub fn heal_ui_system(
         nd.width = Val::Px(size);
         nd.height = Val::Px(size);
         img.color = Color::srgba(1.0, 1.0, 1.0, st.alpha);
-        *v = if want { Visibility::Inherited } else { Visibility::Hidden };
+        v.set_if_neq(if want { Visibility::Inherited } else { Visibility::Hidden });
     }
 }

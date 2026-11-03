@@ -380,7 +380,7 @@ pub fn projgen_system(
         let p = lvl.actors[ai].props.clone();
         let skin = byte_at(&p, "SkinColor", 0);
         let poison = skin == 0 || skin == 7;
-        let flammable = matches!(skin, 4 | 5 | 6);
+        let flammable = matches!(skin, 4..=6);
         let center = blockers.list.get(b).map(|c| c.center).unwrap_or_else(|| loc(&lvl.actors[ai]));
         let (radius, height) = (fl(&p, "CollisionRadius", 20.0) as f64, fl(&p, "CollisionHeight", 29.0) as f64);
         if destroyed {

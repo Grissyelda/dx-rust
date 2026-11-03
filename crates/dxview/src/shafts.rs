@@ -18,11 +18,11 @@ use glam::DVec3;
 use unreal_pkg::props::{find, Value};
 
 pub fn shafts_on() -> bool {
-    crate::settings::get("LightShafts") > 0.5
+    setting!("LightShafts") > 0.5
 }
 
 pub fn fog_on() -> bool {
-    crate::settings::get("FogVolumes") > 0.5
+    setting!("FogVolumes") > 0.5
 }
 
 /// Entities this module made for the current map.
@@ -218,6 +218,7 @@ pub struct ShaftState {
     spots_lit: usize,
     roll_next: usize,
     roll_all: bool,
+    roll_t: f32,
 }
 
 fn byte(p: &[unreal_pkg::props::Property], name: &str, d: u8) -> u8 {
@@ -394,15 +395,25 @@ pub fn shafts_system(
     }
     // The fog rolls: one box's density is recomputed each frame, in turn (each about 10-15 times a second).
     let t = time.elapsed_secs();
-    let boxes: Vec<(&DriftFog, Transform)> = drift.iter().map(|(f, g)| (f, g.compute_transform())).collect();
-    if !boxes.is_empty() {
-        st.roll_next = (st.roll_next + 1) % boxes.len();
-        // Every box once straight away after a build (they start empty).
-        let all = std::mem::take(&mut st.roll_all);
-        for (k, (f, tf)) in boxes.iter().enumerate() {
-            if all || k == st.roll_next {
-                if let Some(mut img) = images.get_mut(&f.image) {
-                    refill(&mut img, f, tf, t);
+    // At most 20 refills a second in all (each is a new 3D texture upload), and only boxes near enough to see.
+    st.roll_t -= time.delta_secs();
+    let all = std::mem::take(&mut st.roll_all);
+    if all || st.roll_t <= 0.0 {
+        st.roll_t = 0.05;
+        let boxes: Vec<(&DriftFog, Transform)> = drift.iter().map(|(f, g)| (f, g.compute_transform())).collect();
+        if !boxes.is_empty() {
+            // Every box once straight away after a build (they start empty).
+            for _ in 0..boxes.len() {
+                st.roll_next = (st.roll_next + 1) % boxes.len();
+                let (f, tf) = &boxes[st.roll_next];
+                let near = all || tf.translation.distance(cam_tf.translation) < 150.0 + tf.scale.max_element();
+                if all || near {
+                    if let Some(mut img) = images.get_mut(&f.image) {
+                        refill(&mut img, f, tf, t);
+                    }
+                }
+                if !all && near {
+                    break;
                 }
             }
         }
@@ -452,11 +463,11 @@ pub fn shafts_system(
                     sl.outer_angle = s.angle;
                     sl.inner_angle = s.angle * 0.6;
                     *tf = Transform::from_translation(s.pos).with_rotation(s.rot);
-                    *vis = Visibility::Inherited;
+                    vis.set_if_neq(Visibility::Inherited);
                 }
                 None => {
                     sl.intensity = 0.0;
-                    *vis = Visibility::Hidden;
+                    vis.set_if_neq(Visibility::Hidden);
                 }
             }
         }
@@ -483,10 +494,10 @@ pub fn shafts_system(
             sl.range = 1024.0 * METERS_PER_UNIT;
             sl.outer_angle = 0.32;
             sl.inner_angle = 0.0;
-            *vis = Visibility::Inherited;
+            vis.set_if_neq(Visibility::Inherited);
         } else if *vis != Visibility::Hidden {
             sl.intensity = 0.0;
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
         }
     }
     // No beam anywhere near (no flashlight, spotlight or moon through a window): the haze isn't marched at all.

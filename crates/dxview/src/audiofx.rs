@@ -16,19 +16,19 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub fn hq_on() -> bool {
-    crate::settings::get("HQAudio") > 0.5
+    setting!("HQAudio") > 0.5
 }
 
 pub fn occlusion_on() -> bool {
-    crate::settings::get("SoundOcclusion") > 0.5
+    setting!("SoundOcclusion") > 0.5
 }
 
 pub fn reverb_on() -> bool {
-    crate::settings::get("RoomReverb") > 0.5
+    setting!("RoomReverb") > 0.5
 }
 
 pub fn soundscape_on() -> bool {
-    crate::settings::get("Soundscape") > 0.5
+    setting!("Soundscape") > 0.5
 }
 
 /// Occlusion results by source cell: (gain, filter, time checked).

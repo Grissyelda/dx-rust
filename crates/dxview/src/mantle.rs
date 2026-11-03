@@ -10,7 +10,7 @@ use imsim_core::movement::{CollisionWorld, MoveParams};
 use std::sync::Mutex;
 
 pub fn on() -> bool {
-    crate::settings::get("Mantling") > 0.5
+    setting!("Mantling") > 0.5
 }
 
 #[derive(Clone, Copy)]

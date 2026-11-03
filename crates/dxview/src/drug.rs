@@ -114,7 +114,7 @@ pub fn drug_system(
 ) {
     let _prof = crate::prof::scope("drug::drug_system");
     if ph.drug_timer <= 0.0 || ph.dead {
-        **overlay = Visibility::Hidden;
+        overlay.set_if_neq(Visibility::Hidden);
         return;
     }
     let dt = time.delta_secs();
@@ -125,7 +125,7 @@ pub fn drug_system(
     let dy = (1024.0 * (t * mult).sin() * dt * mult).clamp(-4096.0, 4096.0) * unit;
     cam.pitch = (cam.pitch + dp).clamp(-1.55, 1.55);
     cam.yaw -= dy;
-    **overlay = Visibility::Inherited;
+    overlay.set_if_neq(Visibility::Inherited);
     // Ripple the picture about 25 times a second.
     fx.next -= dt;
     if fx.next <= 0.0 {
@@ -187,7 +187,7 @@ pub fn scope_sway_system(
             cam.pitch = (cam.pitch + dt * p * recoil * unit).clamp(-1.55, 1.55);
         }
     }
-    let scoped = zoom.0.is_some() && weapons.held.as_ref().map_or(false, |h| h.stats.has_scope);
+    let scoped = zoom.0.is_some() && weapons.held.as_ref().is_some_and(|h| h.stats.has_scope);
     if !scoped {
         st.0 = 0.0;
         return;

@@ -8,7 +8,7 @@ use crate::movers::Movers;
 use crate::weapons::{image_for, RuntimeAssets};
 use crate::{LevelRes, Player};
 use bevy::{
-    asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
+    asset::RenderAssetUsages, mesh::Indices, prelude::*,
 };
 use dx_level::collision::{trace_cylinder, Cylinder};
 use dx_level::ue_to_bevy;
@@ -32,37 +32,27 @@ pub struct Emitter {
     last_flicker: f32,
 }
 
+/// Bolt segments at most (a kink every ~48 units over 5000).
+const SEGS: usize = 120;
+/// Vertices of the fixed-size bolt mesh: two crossed quads per segment.
+const BOLT_VERTS: usize = SEGS * 8;
+
+/// The bolt mesh at its full capacity, positions all at the origin (written in place each crackle; normals, UVs
+/// and indices never change, so the mesh never changes size and the GPU slab is reused).
 fn beam_mesh() -> Mesh {
-    // Two crossed unit quads along +X (0..1), 1 wide.
-    let pos = vec![
-        [0.0, -0.5, 0.0],
-        [1.0, -0.5, 0.0],
-        [1.0, 0.5, 0.0],
-        [0.0, 0.5, 0.0],
-        [0.0, 0.0, -0.5],
-        [1.0, 0.0, -0.5],
-        [1.0, 0.0, 0.5],
-        [0.0, 0.0, 0.5],
-    ];
-    let uv = vec![
-        [0.0, 0.0],
-        [1.0, 0.0],
-        [1.0, 1.0],
-        [0.0, 1.0],
-        [0.0, 0.0],
-        [1.0, 0.0],
-        [1.0, 1.0],
-        [0.0, 1.0],
-    ];
-    let nrm = vec![[0.0, 0.0, 1.0]; 8];
+    let mut idx: Vec<u32> = Vec::with_capacity(SEGS * 12);
+    for q in 0..SEGS * 2 {
+        let b = q as u32 * 4;
+        idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
     let mut m = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
     );
-    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
-    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-    m.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]));
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; BOLT_VERTS]);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; BOLT_VERTS]);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32, 0.0]; BOLT_VERTS]);
+    m.insert_indices(Indices::U32(idx));
     m
 }
 
@@ -109,9 +99,13 @@ pub fn spawn_emitters(
             Some(Value::Rotator(r)) => *r,
             _ => [0; 3],
         };
+        let at = Vec3::from(ue_to_bevy(l));
         commands.spawn((
             Mesh3d(mesh),
-            bevy::camera::visibility::NoFrustumCulling,
+            // The bolt reaches at most 5000 units from the emitter in some direction: a fixed box that size (the
+            // mesh is rewritten in place and never re-bounded).
+            bevy::camera::primitives::Aabb::from_min_max(at - Vec3::splat(96.0), at + Vec3::splat(96.0)),
+            bevy::camera::visibility::NoAutoAabb,
             MeshMaterial3d(mat),
             Transform::default(),
             Visibility::Hidden,
@@ -141,7 +135,7 @@ pub fn emitter_system(
     mv: Res<Movers>,
     player: Res<Player>,
     mut ph: ResMut<PlayerHealth>,
-    mut q: Query<(&mut Emitter, &mut Transform, &mut Visibility, &Mesh3d)>,
+    mut q: Query<(&mut Emitter, &mut Transform, &mut Visibility, &Mesh3d, &ViewVisibility)>,
     mut meshes: ResMut<Assets<Mesh>>,
     (mut pawn_hits, mut deco_hits, mut seed): (
         ResMut<crate::damage::PawnHits>,
@@ -167,9 +161,10 @@ pub fn emitter_system(
         height: player.params.height,
         actor: usize::MAX,
     };
-    for (mut e, mut tf, mut vis, mesh3d) in &mut q {
+    let ear = player.body.location + DVec3::new(0.0, 0.0, player.eye_height);
+    for (mut e, mut tf, mut vis, mesh3d, seen) in &mut q {
         if !e.on {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         }
         if e.flicker {
@@ -180,14 +175,13 @@ pub fn emitter_system(
             }
         }
         if e.hidden {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         }
         // LaserEmitter.TurnOn: AmbientSound Electricity4 at SoundVolume 128 (0 while the flicker hides the beam),
         // SoundRadius 64. Held only when the listener can see it or is close: through the ground it would carry
         // 1600 units up into the open.
         {
-            let ear = player.body.location + DVec3::new(0.0, 0.0, player.eye_height);
             let d = ear.distance(e.pos);
             // Silent behind the logo on the title map.
             let heard = !crate::menus::intro_map()
@@ -253,50 +247,51 @@ pub fn emitter_system(
             }
         }
         // Draw the bolt: a thin zig-zag (a kink every ~48 units, a few units off the line), crossed quads per
-        // segment, rebuilt every frame so it crackles.
+        // segment, rewritten every frame so it crackles - only while it was on screen lately or is close.
+        if tf.translation != Vec3::ZERO || tf.rotation != Quat::IDENTITY {
+            *tf = Transform::IDENTITY;
+        }
+        vis.set_if_neq(Visibility::Inherited);
+        if !seen.get() && ear.distance(e.pos) > 2000.0 {
+            continue;
+        }
         let len = 5000.0 * frac;
         let end_pt = start + dir * len;
         let side = dir.cross(DVec3::Z).normalize_or(DVec3::X);
         let up = side.cross(dir).normalize_or(DVec3::Z);
-        let n = ((len / 48.0).ceil() as usize).clamp(1, 120);
-        let mut pts = Vec::with_capacity(n + 1);
-        for i in 0..=n {
+        let n = ((len / 48.0).ceil() as usize).clamp(1, SEGS);
+        let mut pts = [Vec3::ZERO; SEGS + 1];
+        for (i, pt) in pts.iter_mut().enumerate().take(n + 1) {
             let t = i as f64 / n as f64;
             let mut p = start + (end_pt - start) * t;
             if i != 0 && i != n {
                 p += side * ((rnd() - 0.5) * 10.0) + up * ((rnd() - 0.5) * 10.0);
             }
-            pts.push(Vec3::from(ue_to_bevy(p.as_vec3().to_array())));
+            *pt = Vec3::from(ue_to_bevy(p.as_vec3().to_array()));
         }
         let w = 1.5 * dx_level::METERS_PER_UNIT;
         let (sv, uv_) = (
             Vec3::from(ue_to_bevy(side.as_vec3().to_array())) * w,
             Vec3::from(ue_to_bevy(up.as_vec3().to_array())) * w,
         );
-        let mut pos: Vec<[f32; 3]> = Vec::new();
-        let mut idx: Vec<u32> = Vec::new();
+        let Some(mut m) = meshes.get_mut(&mesh3d.0) else { continue };
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = m.attribute_mut(Mesh::ATTRIBUTE_POSITION) else { continue };
+        let mut v = 0;
         for k in 0..n {
             let (a, b) = (pts[k], pts[k + 1]);
             for off in [sv, uv_] {
-                let base = pos.len() as u32;
-                pos.extend_from_slice(&[
-                    (a - off).to_array(),
-                    (b - off).to_array(),
-                    (b + off).to_array(),
-                    (a + off).to_array(),
-                ]);
-                idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                pos[v] = (a - off).to_array();
+                pos[v + 1] = (b - off).to_array();
+                pos[v + 2] = (b + off).to_array();
+                pos[v + 3] = (a + off).to_array();
+                v += 4;
             }
         }
-        if let Some(mut m) = meshes.get_mut(&mesh3d.0) {
-            let nv = pos.len();
-            m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-            m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; nv]);
-            m.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32, 0.0]; nv]);
-            m.insert_indices(Indices::U32(idx));
+        // The segments past the end collapse onto the bolt's tip (no triangle drawn).
+        let tip = pts[n].to_array();
+        for p in pos[v..].iter_mut() {
+            *p = tip;
         }
-        *tf = Transform::IDENTITY;
-        *vis = Visibility::Inherited;
     }
 }
 

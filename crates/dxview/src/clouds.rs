@@ -23,7 +23,7 @@ pub const CLOUD_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("3c7e1d52-9a4
 const MIN_SKY_AREA: f32 = 1.4e7;
 
 pub fn on() -> bool {
-    crate::settings::get("Clouds") > 0.5
+    setting!("Clouds") > 0.5
 }
 
 #[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]

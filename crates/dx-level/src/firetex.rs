@@ -45,7 +45,7 @@ fn kind(b: u8) -> Kind {
         24 => Kind::RampLightning,
         25 => Kind::SphereLightning,
         17 | 18 | 27 => Kind::Wander,
-        19 | 20 | 21 => Kind::Cloud,
+        19..=21 => Kind::Cloud,
         _ => Kind::Other,
     }
 }

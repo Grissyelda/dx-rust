@@ -67,7 +67,7 @@ pub fn wireless_target(
             continue;
         }
         if let Some(t) = crate::pickups::ray_cylinder(eye, end, c.center, c.radius, c.height) {
-            if t <= wall + 0.01 && best.map_or(true, |(_, f)| t < f) {
+            if t <= wall + 0.01 && best.is_none_or(|(_, f)| t < f) {
                 best = Some((b, t));
             }
         }

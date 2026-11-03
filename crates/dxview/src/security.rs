@@ -321,7 +321,6 @@ struct Turret {
     tag: String,
     base_blocker: Option<usize>,
     base_entity: Option<Entity>,
-    gun_actor: usize,
     gun_blocker: usize,
     gun_entity: Entity,
     gun_pos: DVec3,
@@ -744,7 +743,7 @@ pub fn security_system(
                 // Out of the world (bInWorld False): nothing to see or shoot.
                 && blockers.list.get(n.blocker).is_some_and(|c| c.radius > 0.0)
                 // GMDX fix (setting FixTurretAnimals): turrets don't waste rounds on rats, birds and dogs.
-                && !(crate::settings::get("FixTurretAnimals") > 0.5
+                && !(setting!("FixTurretAnimals") > 0.5
                     && crate::classtree::is_a(&lvl.actors[n.actor].class, "Animal"))
         })
         .map(|n| (n.blocker, n.body.as_ref().unwrap().location, n.hates("Player")))
@@ -757,8 +756,8 @@ pub fn security_system(
             continue;
         }
         // Destroyed (blown up)?
-        let alive = c.blocker.map_or(true, |b| blockers.list[b].radius > 0.0)
-            && c.entity.map_or(true, |e| decos.get(e).is_ok());
+        let alive = c.blocker.is_none_or(|b| blockers.list[b].radius > 0.0)
+            && c.entity.is_none_or(|e| decos.get(e).is_ok());
         if !alive {
             c.gone = true;
             alarms.set_external(c.alarm, false, c.pos, None);
@@ -913,8 +912,8 @@ pub fn security_system(
             continue;
         }
         // The base and the gun go together (AutoTurret.Destroyed / AutoTurretGun.Destroyed).
-        let base_ok = t.base_blocker.map_or(true, |b| blockers.list[b].radius > 0.0)
-            && t.base_entity.map_or(true, |e| decos.get(e).is_ok());
+        let base_ok = t.base_blocker.is_none_or(|b| blockers.list[b].radius > 0.0)
+            && t.base_entity.is_none_or(|e| decos.get(e).is_ok());
         let gun_ok = blockers.list[t.gun_blocker].radius > 0.0 && decos.get(t.gun_entity).is_ok();
         if !base_ok || !gun_ok {
             println!("TURRET {} destroyed (base {} gun {})", lvl.actors[t.actor].name, base_ok, gun_ok);
@@ -1271,10 +1270,10 @@ pub fn security_system(
                         .with_rotation(Quat::from_rotation_arc(Vec3::Y, dv.normalize_or(Vec3::Y)))
                         .with_scale(Vec3::new(0.65, len as f32, 0.65) * dx_level::METERS_PER_UNIT);
                     if *vis != Visibility::Inherited {
-                        *vis = Visibility::Inherited;
+                        vis.set_if_neq(Visibility::Inherited);
                     }
                 } else if *vis != Visibility::Hidden {
-                    *vis = Visibility::Hidden;
+                    vis.set_if_neq(Visibility::Hidden);
                 }
             }
             if let Ok((mut tf, mut vis)) = fx.get_mut(l.spots[k]) {
@@ -1285,10 +1284,10 @@ pub fn security_system(
                         .with_rotation(Quat::from_rotation_arc(Vec3::Z, nb))
                         .with_scale(Vec3::splat(2.0 * dx_level::METERS_PER_UNIT));
                     if *vis != Visibility::Inherited {
-                        *vis = Visibility::Inherited;
+                        vis.set_if_neq(Visibility::Inherited);
                     }
                 } else if *vis != Visibility::Hidden {
-                    *vis = Visibility::Hidden;
+                    vis.set_if_neq(Visibility::Hidden);
                 }
             }
         }
@@ -1838,7 +1837,6 @@ fn init(
             tag: crate::devices::name_prop(&p, "Tag"),
             base_blocker,
             base_entity: base_blocker.and_then(|bb| blockers.deco.get(&bb).copied()),
-            gun_actor: ai,
             gun_blocker: b,
             gun_entity: root,
             gun_pos,

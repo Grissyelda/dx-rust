@@ -488,8 +488,9 @@ fn cached_db(sys: &std::path::Path) -> Option<std::sync::Arc<ConDb>> {
     Some(db)
 }
 
-/// EBarkModes.
+/// EBarkModes (the original's whole list; Scanning and the alliance barks have no caller yet).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
 pub enum BarkMode {
     Idle,
     CriticalDamage,
@@ -773,11 +774,10 @@ impl ConState {
                         break;
                     }
                 }
-                Some(b) if b.mode == mode => {
-                    if b.timer < 1.0 {
+                Some(b) if b.mode == mode
+                    && b.timer < 1.0 => {
                         break;
                     }
-                }
                 _ => {}
             }
         }
@@ -1254,8 +1254,8 @@ impl ConState {
         let interruptible = self
             .play
             .as_ref()
-            .map_or(true, |p| !self.db.cons[p.con].cannot_be_interrupted);
-        let first = self.play.as_ref().map_or(true, |p| p.first_person);
+            .is_none_or(|p| !self.db.cons[p.con].cannot_be_interrupted);
+        let first = self.play.as_ref().is_none_or(|p| p.first_person);
         interruptible && first && !self.player_dead && !self.player_swimming && !self.player_falling
     }
 
@@ -2360,7 +2360,7 @@ impl ConState {
                 let t = t + dt;
                 l.name_visible = ((t / 0.5) as i32) % 2 == 1;
                 // GMDX HUD: Faster Infolink Playback (setting FasterInfolinks): a queued infolink follows at once.
-                let fast = crate::settings::get("FasterInfolinks") > 0.5 && !self.link_queue.is_empty();
+                let fast = setting!("FasterInfolinks") > 0.5 && !self.link_queue.is_empty();
                 if t > if fast { 0.0 } else { 1.0 + 0.5 } {
                     // DestroyInfoLinkWindow; FireNextDataLink.
                     self.link = None;
@@ -2469,7 +2469,7 @@ pub fn capture_input_system(
         up: keys.just_pressed(KeyCode::ArrowUp) || scroll.delta.y > 0.0,
         down: keys.just_pressed(KeyCode::ArrowDown) || scroll.delta.y < 0.0,
         click: mouse.just_released(MouseButton::Left),
-        pick: if crate::settings::get("DialogueHotkeys") > 0.5 {
+        pick: if setting!("DialogueHotkeys") > 0.5 {
             [
                 (KeyCode::Digit1, KeyCode::Numpad1),
                 (KeyCode::Digit2, KeyCode::Numpad2),
@@ -2538,13 +2538,14 @@ pub fn consys_system(
         ResMut<crate::devices::GameEvents>,
         ResMut<crate::movers::HudMessage>,
     ),
+    mut sight_t: Local<f32>,
 ) {
     let _prof = crate::prof::scope("consys::consys_system");
     let lvl = &level.0;
     if !setup.tried {
         setup.tried = true;
         let sys = root.0.join("System");
-        let info = lvl.actors.iter().find(|a| a.class == "DeusExLevelInfo");
+        let info = lvl.level_info();
         let mission = info
             .and_then(|a| match find(&a.props, "missionNumber") {
                 Some(Value::Int(n)) => Some(*n),
@@ -2697,9 +2698,13 @@ pub fn consys_system(
             }
         }
     }
-    // Line of sight from the eye to each actor with conversations near enough to matter.
-    if let Ok(mut seen) = SIGHT.lock() {
-        seen.clear();
+    // Line of sight from the eye to each actor with conversations near enough to matter (10 times a second: its
+    // only reader is the radius / frob invocation, which runs on the same clock).
+    *sight_t -= dt;
+    if *sight_t <= 0.0 {
+        *sight_t = 0.1;
+        if let Ok(mut seen) = SIGHT.lock() {
+            seen.clear();
         for (w, a) in &st.actors {
             if *w == Who::Player || a.pos.distance(eye_pos) > 1200.0 {
                 continue;
@@ -2707,6 +2712,7 @@ pub fn consys_system(
             if lvl.collision.trace(eye_pos, a.pos, DVec3::ZERO).fraction >= 1.0 {
                 seen.push(*w);
             }
+        }
         }
     }
     // What the player carries (conditions on items): rebuilt only when that changed (a hash of it, no copies).
@@ -2866,7 +2872,7 @@ pub fn consys_system(
                         let hover = HOVER.lock().ok().and_then(|h| *h).filter(|&i| i < n);
                         if let Some(i) = hover {
                             p.focus = i;
-                        } else if mouse_dy.abs() > 0.0 && CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed) == false {
+                        } else if mouse_dy.abs() > 0.0 && !CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed) {
                             let acc = MOUSE_ACC.lock().map(|mut a| {
                                 *a += mouse_dy;
                                 let steps = (*a / 24.0) as i32;
@@ -3218,7 +3224,7 @@ pub fn con_view_system(
         }
         return;
     };
-    **vm = Visibility::Hidden;
+    vm.set_if_neq(Visibility::Hidden);
     if !st.was_third {
         st.was_third = true;
         // DeusExPlayer state Conversation, Begin: LookAtActor(startActor); SetRotation(DesiredRotation).

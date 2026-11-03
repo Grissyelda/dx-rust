@@ -24,7 +24,7 @@ const MAX_GLOW: usize = 1200;
 const MAX_SOFT: usize = 900;
 
 pub fn on() -> bool {
-    crate::settings::get("EnhancedFX") > 0.5
+    setting!("EnhancedFX") > 0.5
 }
 
 #[derive(Clone, Copy)]
@@ -422,16 +422,16 @@ pub fn fx_system(
         if h.fraction < 1.0 {
             let at = e + f * 3000.0 * h.fraction;
             let k = (time.elapsed_secs() * 10.0) as u64;
-            if k % 3 == 0 {
+            if k.is_multiple_of(3) {
                 for g in ["metal", "stone", "wood"] {
                     let side = DVec3::new(-f.y, f.x, 0.0).normalize_or_zero() * match g { "metal" => -60.0, "wood" => 60.0, _ => 0.0 };
                     impact(at + side, h.normal, f, Some(g));
                 }
             }
-            if k % 40 == 0 {
+            if k.is_multiple_of(40) {
                 explosion(at + h.normal * 40.0 + f * -200.0, 256.0);
             }
-            if k % 5 == 0 {
+            if k.is_multiple_of(5) {
                 muzzle(e + f * 40.0, f);
                 blood(at + h.normal * 30.0 - f * 120.0, f);
             }

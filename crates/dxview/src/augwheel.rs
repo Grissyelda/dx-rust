@@ -38,7 +38,7 @@ pub fn open() -> bool {
 }
 
 fn pages_mode() -> bool {
-    crate::settings::get("PadAugPages") > 0.5
+    setting!("PadAugPages") > 0.5
 }
 
 /// D-pad buttons the hotkey pages use (so they don't also step the belt).

@@ -46,7 +46,7 @@ fn present<T: Component + Default, F: bevy::ecs::query::QueryFilter>(
     let Some(c) = c else {
         for (_, _, mut v) in node.iter_mut() {
             if *v != Visibility::Hidden {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
         return;
@@ -64,7 +64,7 @@ fn present<T: Component + Default, F: bevy::ecs::query::QueryFilter>(
                 im.data = Some(c.to_rgba8());
                 for (_, mut nd, mut v) in node.iter_mut() {
                     place(&mut nd);
-                    *v = Visibility::Inherited;
+                    v.set_if_neq(Visibility::Inherited);
                 }
                 return;
             }
@@ -129,7 +129,7 @@ pub fn prompts_system(
     } else if notes {
         // Keyboard: text only (Tab has no glyph).
         vec![(PadBtn::Touch, "Tab: code from notes")]
-    } else if !pad || !ui || crate::settings::get("PadHints") < 0.5 {
+    } else if !pad || !ui || setting!("PadHints") < 0.5 {
         Vec::new()
     } else if crate::consys::third_person() {
         vec![(PadBtn::Down, "Choose"), (PadBtn::South, "Select")]
@@ -170,7 +170,7 @@ pub fn prompts_system(
             for (_, mut nd, mut v) in hint.iter_mut() {
                 nd.left = Val::Px(pos.x);
                 nd.top = Val::Px(pos.y);
-                *v = Visibility::Inherited;
+                v.set_if_neq(Visibility::Inherited);
             }
         }
     }
@@ -183,7 +183,7 @@ pub fn prompts_system(
             _ => None,
         })?
     });
-    match (pad && !ui && crate::settings::get("PadFrobPrompt") > 0.5, use_btn, at) {
+    match (pad && !ui && setting!("PadFrobPrompt") > 0.5, use_btn, at) {
         (true, Some(b), Some(at)) => {
             let w = crate::glyphs::width_in(kind, b);
             let key = hash(&format!("{b:?}{kind:?}{s}"));
@@ -197,7 +197,7 @@ pub fn prompts_system(
                 for (_, mut nd, mut v) in frob.iter_mut() {
                     nd.left = Val::Px(pos.x);
                     nd.top = Val::Px(pos.y);
-                    *v = Visibility::Inherited;
+                    v.set_if_neq(Visibility::Inherited);
                 }
             }
         }

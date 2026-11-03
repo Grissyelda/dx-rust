@@ -186,7 +186,7 @@ enum Btn {
 }
 
 fn sort_on() -> bool {
-    crate::settings::get("InventorySort") > 0.5
+    setting!("InventorySort") > 0.5
 }
 
 /// One line of the info panel.
@@ -1219,7 +1219,7 @@ pub fn inventory_screen_system(
         for e in [canvas_e, cursor_e] {
             if let Ok((_, mut v, _)) = nodes.get_mut(e) {
                 if *v != Visibility::Hidden {
-                    *v = Visibility::Hidden;
+                    v.set_if_neq(Visibility::Hidden);
                 }
             }
         }
@@ -1677,7 +1677,7 @@ pub fn inventory_screen_system(
                 Btn::Drop => {
                     // GMDX HUD: Allow Dropping Item Stacks (setting DropStacks): Shift + Drop drops the whole stack.
                     DROP_STACK.store(
-                        crate::settings::get("DropStacks") > 0.5
+                        setting!("DropStacks") > 0.5
                             && (binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight)),
                         std::sync::atomic::Ordering::Relaxed,
                     );
@@ -1793,7 +1793,7 @@ pub fn inventory_screen_system(
         }
     }
     if let Ok((mut n, mut v, _)) = nodes.get_mut(canvas_e) {
-        *v = Visibility::Inherited;
+        v.set_if_neq(Visibility::Inherited);
         n.left = Val::Px(ox as f32 / sf);
         n.top = Val::Px(oy as f32 / sf);
         n.width = Val::Px(SCREEN_W as f32 * d / sf);
@@ -1882,7 +1882,7 @@ fn present(
         }
     }
     if let Ok((mut n, mut v, _)) = nodes.get_mut(canvas_e) {
-        *v = Visibility::Inherited;
+        v.set_if_neq(Visibility::Inherited);
         n.left = Val::Px(ox as f32 / sf);
         n.top = Val::Px(oy as f32 / sf);
         n.width = Val::Px(SCREEN_W as f32 * d / sf);
@@ -2369,13 +2369,13 @@ fn draw_frame(
     hit: &Hit,
     fi: &FrameInfo,
 ) {
-    let enabled = |b: Btn| fi.enabled.iter().find(|e| e.0 == b).map_or(true, |e| e.1);
+    let enabled = |b: Btn| fi.enabled.iter().find(|e| e.0 == b).is_none_or(|e| e.1);
     // The screen's art under the buttons (borders, backgrounds, nav bar) is the same every frame for a theme and
     // scale: drawn once and copied in (it was most of this screen's frame time).
     c.cached(("inventory", crate::menuui::h_col(0), crate::menuui::h_col(1)), |c| {
         // Client border (640 x 450 at y 33) and client background (585 x 361), 3 x 2 textures of 256.
         for i in 0..6 {
-            let (tx, ty) = ((i % 3) as i32 * 256, (i / 3) as i32 * 256);
+            let (tx, ty) = ((i % 3) * 256, (i / 3) * 256);
             if let Some(t) = hud.ui(assets, &format!("InventoryBorder_{}", i + 1)) {
                 c.texture(
                     tx,
@@ -2392,7 +2392,7 @@ fn draw_frame(
         }
         c.set_clip(Some((CX, CY, 585, 361)));
         for i in 0..6 {
-            let (tx, ty) = ((i % 3) as i32 * 256, (i / 3) as i32 * 256);
+            let (tx, ty) = ((i % 3) * 256, (i / 3) * 256);
             if let Some(t) = hud.ui(assets, &format!("InventoryBackground_{}", i + 1)) {
                 c.texture(
                     CX + tx,
@@ -2672,7 +2672,7 @@ fn draw_items(
             }
         } else if let ItemKind::Pickup { max_copies } = it.def.kind {
             // GMDX HUD: Show Max Stacks (setting ShowMaxStacks): "Count: 3/15".
-            if crate::settings::get("ShowMaxStacks") > 0.5 && max_copies > 1 && max_copies < u32::MAX {
+            if setting!("ShowMaxStacks") > 0.5 && max_copies > 1 && max_copies < u32::MAX {
                 s = format!("Count: {}/{}", it.count, max_copies);
             } else if it.count > 1 {
                 s = format!("Count: {}", it.count);
@@ -3208,6 +3208,8 @@ mod tests {
             images: Default::default(),
             materials: Default::default(),
             fire: Vec::new(),
+            sprites: Default::default(),
+            shared_parts: Default::default(),
         };
         let mut hud = ClassicHud::default();
         let mut inv = PlayerInventory::default();

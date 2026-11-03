@@ -28,7 +28,6 @@ pub struct SkyBatch;
 /// The root the copies hang from: follows the world camera, scaled by `k`.
 #[derive(Component)]
 pub struct SkyRoot {
-    pub k: f32,
     /// How far the farthest copied face can be (metres), for the camera's far plane.
     pub reach: f32,
 }
@@ -103,7 +102,7 @@ pub fn init_system(
     *pending = false;
     let Some((k, reach)) = scale_for(&level.0) else { return };
     let root = commands
-        .spawn((Transform::from_scale(Vec3::splat(k)), Visibility::default(), SkyRoot { k, reach }))
+        .spawn((Transform::from_scale(Vec3::splat(k)), Visibility::default(), SkyRoot { reach }))
         .id();
     for (e, mesh, tf, bsp, std, lm, aabb) in &faces {
         let mut c = commands.spawn((

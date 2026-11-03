@@ -92,7 +92,6 @@ pub enum PadAction {
     AugWheel,
     /// The pause menu (Escape).
     Menu,
-    None,
 }
 
 /// Every pad action with its default button (the modern shooter layout, user decision 2026-10-27).
@@ -153,7 +152,7 @@ pub fn connected() -> bool {
 
 /// The connected pad's glyph family, or the one picked in Enhancements.
 pub fn glyph_kind() -> PadKind {
-    match crate::settings::get("PadGlyphs") as i32 {
+    match setting!("PadGlyphs") as i32 {
         1 => PadKind::Xbox,
         2 => PadKind::PlayStation,
         _ => frame().kind,
@@ -244,7 +243,7 @@ fn read_pad(mut g: NonSendMut<GilrsRes>, f: &mut PadFrame, any_event: &mut bool)
         f.connected = true;
         f.name = "DualSense".into();
         f.kind = PadKind::PlayStation;
-        let dz = [0.06, 0.1, 0.15, 0.22, 0.3][(crate::settings::get("PadDeadzone") as usize).min(4)];
+        let dz = [0.06, 0.1, 0.15, 0.22, 0.3][(setting!("PadDeadzone") as usize).min(4)];
         f.ls = dead(ds.ls, dz);
         f.rs = dead(ds.rs, dz);
         f.lt = ds.lt;
@@ -270,7 +269,7 @@ fn read_pad(mut g: NonSendMut<GilrsRes>, f: &mut PadFrame, any_event: &mut bool)
         f.connected = true;
         f.name = p.name().to_string();
         f.kind = kind_of(p.name(), p.vendor_id());
-        let dz = [0.06, 0.1, 0.15, 0.22, 0.3][(crate::settings::get("PadDeadzone") as usize).min(4)];
+        let dz = [0.06, 0.1, 0.15, 0.22, 0.3][(setting!("PadDeadzone") as usize).min(4)];
         f.ls = dead(Vec2::new(p.value(gilrs::Axis::LeftStickX), p.value(gilrs::Axis::LeftStickY)), dz);
         f.rs = dead(Vec2::new(p.value(gilrs::Axis::RightStickX), p.value(gilrs::Axis::RightStickY)), dz);
         let trig = |b: gilrs::Button| p.button_data(b).map_or(0.0, |d| d.value());
@@ -354,11 +353,6 @@ fn any_kbm() -> bool {
 }
 
 // ------------------------------------------------------------------------------------------------ bindings
-
-pub struct PadBindings {
-    /// The button for each PAD_ACTIONS entry.
-    pub map: Vec<Option<PadBtn>>,
-}
 
 fn save_path() -> PathBuf {
     std::env::current_exe()
@@ -490,7 +484,7 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
         }
         // Ours: with Dialogue Hotkeys on, conversation choices 1-4 are X / Y / LB / RB (A still takes the
         // highlighted one); elsewhere Y is Tab (a keypad code from the notes).
-        let hotkeys = crate::consys::choosing() && crate::settings::get("DialogueHotkeys") > 0.5;
+        let hotkeys = crate::consys::choosing() && setting!("DialogueHotkeys") > 0.5;
         if hotkeys {
             for (b, k) in DIALOGUE_HOTKEYS {
                 if just(b) {
@@ -666,7 +660,7 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
                     out.inputs.push(Input::Key(KeyCode::Escape));
                 }
             }
-            PadAction::AugWheel | PadAction::None => {}
+            PadAction::AugWheel => {}
         }
     }
     // Hotkey pages (augwheel.rs) use the D-pad when that mode is on.
@@ -718,10 +712,10 @@ pub fn look_delta(dt: f32) -> Vec2 {
         return Vec2::ZERO;
     }
     let curved = f.rs / m * m.powf(2.0);
-    let sens = [0.5, 0.75, 1.0, 1.4, 1.9][(crate::settings::get("PadLookSensitivity") as usize).min(4)];
-    let inv = if crate::settings::get("PadInvertLook") > 0.5 { -1.0 } else { 1.0 };
+    let sens = [0.5, 0.75, 1.0, 1.4, 1.9][(setting!("PadLookSensitivity") as usize).min(4)];
+    let inv = if setting!("PadInvertLook") > 0.5 { -1.0 } else { 1.0 };
     // Aim slowdown (Enhancement): 40% slower while the crosshair is on an enemy.
-    let slow = if crate::settings::get("PadAimSlowdown") > 0.5 && crate::hud::on_enemy() { 0.6 } else { 1.0 };
+    let slow = if setting!("PadAimSlowdown") > 0.5 && crate::hud::on_enemy() { 0.6 } else { 1.0 };
     Vec2::new(
         curved.x * 220f32.to_radians() * sens * slow * dt,
         curved.y * 150f32.to_radians() * sens * slow * inv * dt,

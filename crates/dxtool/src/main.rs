@@ -103,12 +103,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let data = pkg.export_data(e);
                 let mut r = Reader::new(data, 0);
-                if e.flags & props::RF_HAS_STACK != 0 {
-                    if props::skip_state_frame(&mut r).is_err() {
+                if e.flags & props::RF_HAS_STACK != 0
+                    && props::skip_state_frame(&mut r).is_err() {
                         failed += 1;
                         continue;
                     }
-                }
                 match props::read_properties(&pkg, &mut r) {
                     Ok(ps) => {
                         let loc = match props::find(&ps, "Location") {

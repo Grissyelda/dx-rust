@@ -293,7 +293,7 @@ pub fn purchasable(p: &Perk) -> bool {
     }
     let g = crate::abilities::lock();
     let Some(a) = g.as_ref() else { return false };
-    let level_ok = p.skill.as_deref().map_or(true, |s| a.skills.level(s) >= p.level);
+    let level_ok = p.skill.as_deref().is_none_or(|s| a.skills.level(s) >= p.level);
     level_ok && a.skills.points_avail >= p.cost
 }
 

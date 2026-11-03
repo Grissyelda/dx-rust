@@ -528,11 +528,7 @@ pub fn cinematic_system(
     let _prof = crate::prof::scope("cinematic::cinematic_system");
     if crate::loader::new_map(&mut map_gen) {
         let points = load_points(&level.0);
-        let mission = level
-            .0
-            .actors
-            .iter()
-            .find(|a| a.class == "DeusExLevelInfo")
+        let mission = level.0.level_info()
             .and_then(|a| match find(&a.props, "missionNumber") {
                 Some(Value::Int(n)) => Some(*n),
                 _ => None,
@@ -641,7 +637,7 @@ pub fn cinematic_system(
                         if end {
                             r.done = true;
                             if vehicle {
-                                *vis = Visibility::Hidden;
+                                vis.set_if_neq(Visibility::Hidden);
                                 crate::sound::own_ambient(r.actor);
                             } else {
                                 d.body.physics = imsim_core::body::BodyPhysics::Falling;
@@ -705,7 +701,7 @@ pub fn cinematic_system(
             cams.p1().rotation = rotq;
             player.body.location = t.it.loc;
             player.body.velocity = DVec3::ZERO;
-            **vm = Visibility::Hidden;
+            vm.set_if_neq(Visibility::Hidden);
             // InterpolateEnd at a bEndOfPath point: SendPlayer(NextMap). (Or the path ran out.)
             let done = ended.iter().any(|&i| t.pts[i].end_of_path) || t.it.target.is_none();
             if done && !crate::loader::busy() {
@@ -722,8 +718,8 @@ pub fn cinematic_system(
 
     // MissionIntro: FirstFrame starts the Intro conversation (forced); Timer sends the player on once it's played.
     if c.intro {
-        if !c.intro_started {
-            if !c.intro_started && crate::consys::lock().is_some() && !crate::loader::settling() {
+        if !c.intro_started
+            && !c.intro_started && crate::consys::lock().is_some() && !crate::loader::settling() {
                 // InitStateMachine / FirstFrame: every flag deleted, PlayerTraveling set.
                 flags.0 = Default::default();
                 flags.0.set("PlayerTraveling", imsim_core::flags::FlagValue::Bool(true), 0);
@@ -738,7 +734,6 @@ pub fn cinematic_system(
                     eprintln!("cinematic: couldn't start the Intro conversation");
                 }
             }
-        }
         let Some(c) = g.as_mut() else { return };
         // Held while the map settles behind the loading screen (loader::settle_system).
         let held = crate::loader::settling();
@@ -762,8 +757,8 @@ pub fn cinematic_system(
         }
     }
     let Some(c) = g.as_mut() else { return };
-    if SKIP.swap(false, Ordering::Relaxed) && active() {
-        if c.intro && !crate::loader::busy() {
+    if SKIP.swap(false, Ordering::Relaxed) && active()
+        && c.intro && !crate::loader::busy() {
             if INTRO_WAIT.swap(false, Ordering::Relaxed) {
                 crate::classic_hud::quote_text(&[], 0.0);
             }
@@ -772,7 +767,6 @@ pub fn cinematic_system(
             post_intro();
             return;
         }
-    }
     if !letterbox() {
         return;
     }
@@ -791,12 +785,12 @@ pub fn cinematic_system(
     player.body.location = c.loc;
     player.body.velocity = DVec3::ZERO;
     player.eye_height = 0.0;
-    **vm = Visibility::Hidden;
+    vm.set_if_neq(Visibility::Hidden);
     let d = forward(c.rot);
     let dir = Vec3::new(d.x as f32, d.z as f32, d.y as f32);
     let mut rotq = Transform::IDENTITY.looking_to(dir, Vec3::Y).rotation;
     if c.rot[2] != 0.0 {
-        rotq = rotq * Quat::from_rotation_z(-(c.rot[2] * UU) as f32);
+        rotq *= Quat::from_rotation_z(-(c.rot[2] * UU) as f32);
     }
     {
         let mut cam = cams.p0();

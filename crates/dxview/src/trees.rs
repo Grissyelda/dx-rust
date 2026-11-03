@@ -36,7 +36,7 @@ impl MaterialExtension for Sway {
 }
 
 pub fn on() -> bool {
-    crate::settings::get("Trees") > 0.5
+    setting!("Trees") > 0.5
 }
 
 /// The kind of plant each original class becomes.

@@ -22,7 +22,7 @@ use glam::DVec3;
 use std::sync::Mutex;
 
 pub fn enabled() -> bool {
-    crate::settings::get("DiegeticScreens") > 0.5
+    setting!("DiegeticScreens") > 0.5
 }
 
 /// A screen: three corners in the actor's space (Unreal units, DrawScale 1).
@@ -339,7 +339,7 @@ pub fn hide_glass_system(
     if want.is_none() {
         for e in hidden.drain(..) {
             if let Ok((_, mut v)) = parts.get_mut(e) {
-                *v = Visibility::Inherited;
+                v.set_if_neq(Visibility::Inherited);
             }
         }
         return;
@@ -357,7 +357,7 @@ pub fn hide_glass_system(
             let Ok((m3, mut v)) = parts.get_mut(c) else { continue };
             let Some(pi) = a.parts.iter().find(|(h, _)| *h == m3.0).map(|(_, i)| *i) else { continue };
             if ma.parts.get(pi).is_some_and(|p| matches!(p.class, dx_level::SurfaceClass::Translucent | dx_level::SurfaceClass::Modulated)) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
                 hidden.push(c);
             }
         }
@@ -702,7 +702,7 @@ pub fn diegetic_system(
                         if *t != tf {
                             *t = tf;
                         }
-                        *v = if show_screen { Visibility::Visible } else { Visibility::Hidden };
+                        v.set_if_neq(if show_screen { Visibility::Visible } else { Visibility::Hidden });
                     }
                 }
                 None => {
@@ -740,7 +740,7 @@ pub fn diegetic_system(
         }
     } else if let Some((e, _)) = res.screen.as_ref() {
         if let Ok((_, mut v)) = tfs.get_mut(*e) {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
     }
     // ---- keypads: the display above the pad and the button under the mouse
@@ -783,7 +783,7 @@ pub fn diegetic_system(
         if let Some((e, _, _)) = res.lcd.as_ref() {
             if let Ok((mut t, mut v)) = tfs.get_mut(*e) {
                 *t = tf;
-                *v = Visibility::Visible;
+                v.set_if_neq(Visibility::Visible);
             }
         }
         // The hovered (or just pressed) button lit.
@@ -807,7 +807,7 @@ pub fn diegetic_system(
                         let at = to_world(ma, sc, [g.x, g.cols[i % 3], g.rows[i / 3]]);
                         let k = (g.pitch * sc * 0.85) as f32 / 52.5;
                         *t = quad_tf(&rect, at, 0.2).with_scale(Vec3::new(k, k, 1.0));
-                        *v = Visibility::Visible;
+                        v.set_if_neq(Visibility::Visible);
                     }
                     None => *v = Visibility::Hidden,
                 }
@@ -816,7 +816,7 @@ pub fn diegetic_system(
     } else {
         for e in [res.lcd.as_ref().map(|l| l.0), res.hover].into_iter().flatten() {
             if let Ok((_, mut v)) = tfs.get_mut(e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
     }
@@ -896,7 +896,7 @@ pub fn place_system(
     tf.rotation = eye_tf.rotation.slerp(target.rotation, k);
     pp.fov = eye_fov + (fov - eye_fov) * k;
     if k > 0.02 {
-        **vm = Visibility::Hidden;
+        vm.set_if_neq(Visibility::Hidden);
     }
 }
 

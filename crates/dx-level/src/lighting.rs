@@ -203,7 +203,7 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb, zone_ambient: &
         // How much each light gives the surface over all its texels (for picking its three strongest).
         let mut total = vec![0.0f32; infos.len()];
         let mut vis_tex: Vec<Vec<f32>> = vec![vec![0.0; u_clamp * v_clamp]; infos.len()];
-        let stride = (u_clamp + 7) / 8;
+        let stride = u_clamp.div_ceil(8);
         let block = stride * v_clamp;
 
         let mut tex = vec![[0u8; 4]; u_clamp * v_clamp];

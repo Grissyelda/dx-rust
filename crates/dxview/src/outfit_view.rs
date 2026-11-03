@@ -73,7 +73,7 @@ pub fn outfit_view_system(
         }
         for e in st.node.iter().copied().chain(st.overlay.as_ref().map(|o| o.1)).collect::<Vec<_>>() {
             if let Ok((_, mut v)) = nodes.get_mut(e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
         }
         return;
@@ -95,6 +95,7 @@ pub fn outfit_view_system(
                 RenderLayers::layer(1),
                 Tonemapping::None,
                 Exposure { ev100: -0.263 },
+                Msaa::Off,
                 OutfitCam,
             ))
             .id();
@@ -108,6 +109,7 @@ pub fn outfit_view_system(
                 RenderLayers::from_layers(&[0, crate::mirror::BODY_LAYER]),
                 Tonemapping::None,
                 Exposure { ev100: -0.263 },
+                Msaa::Off,
                 OutfitCam,
             ))
             .id();
@@ -162,7 +164,7 @@ pub fn outfit_view_system(
     let (x, y, w, h) = req.rect;
     if let Some(n) = st.node {
         if let Ok((mut node, mut v)) = nodes.get_mut(n) {
-            *v = Visibility::Inherited;
+            v.set_if_neq(Visibility::Inherited);
             node.left = Val::Px((req.ox as f32 + x as f32 * req.d) / req.sf);
             node.top = Val::Px((req.oy as f32 + y as f32 * req.d) / req.sf);
             node.width = Val::Px(w as f32 * req.d / req.sf);
@@ -178,7 +180,7 @@ pub fn outfit_view_system(
             }
         }
         if let Ok((mut node, mut v)) = nodes.get_mut(*onode) {
-            *v = Visibility::Inherited;
+            v.set_if_neq(Visibility::Inherited);
             node.left = Val::Px(req.ox as f32 / req.sf);
             node.top = Val::Px(req.oy as f32 / req.sf);
             node.width = Val::Px(c.w as f32 * req.d / req.sf);

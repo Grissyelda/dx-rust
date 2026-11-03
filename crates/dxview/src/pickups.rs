@@ -181,7 +181,7 @@ pub fn ray_cylinder(start: DVec3, end: DVec3, c: DVec3, r: f64, h: f64) -> Optio
             let t = (plane - s.z) / d.z;
             if (0.0..=1.0).contains(&t) {
                 let p = s + d * t;
-                if p.x * p.x + p.y * p.y <= r * r && best.map_or(true, |b| t < b) {
+                if p.x * p.x + p.y * p.y <= r * r && best.is_none_or(|b| t < b) {
                     best = Some(t);
                 }
             }
@@ -282,7 +282,7 @@ pub fn frob_system(
     // Grenades (placed mines, thrown ones lying about).
     for (e, g) in grenades.iter() {
         if let Some(t) = ray_cylinder(eye, end, g.pos, 8.0, 6.0) {
-            if t <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| t < *f) {
+            if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Grenade(e), t));
             }
         }
@@ -296,7 +296,7 @@ pub fn frob_system(
         let p = &level.actors[c.actor].props;
         if find(p, "GroundSpeed").is_none() && crate::consys::has_conversations(b) {
             if let Some(t) = ray_cylinder(eye, end, c.center, c.radius + 2.0, c.height + 2.0) {
-                if t <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| t < *f) {
+                if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                     best = Some((Target::Talk(b), t));
                 }
             }
@@ -313,14 +313,14 @@ pub fn frob_system(
             continue;
         }
         if let Some(t) = ray_cylinder(eye, end, c.center, c.radius + 2.0, c.height + 2.0) {
-            if t <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| t < *f) {
+            if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Device(b), t));
             }
         }
     }
     for (idx, (info, rt)) in level.movers.iter().zip(&mv.rt).enumerate() {
         if let Some(h) = movers::trace_mover(info, rt, eye, end, small) {
-            if h.fraction <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| h.fraction < *f) {
+            if h.fraction <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| h.fraction < *f) {
                 best = Some((Target::Mover(idx), h.fraction));
             }
         }
@@ -348,7 +348,7 @@ pub fn frob_system(
             g("CollisionHeight", 8.0) + 4.0,
         );
         if let Some(t) = ray_cylinder(eye, end, center, r, h) {
-            if t <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| t < *f) {
+            if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Item(e), t));
             }
         }
@@ -370,7 +370,7 @@ pub fn frob_system(
             npc.params.radius,
             npc.params.height,
         ) {
-            if t <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| t < *f) {
+            if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Bot(e), t));
             }
         }
@@ -388,7 +388,7 @@ pub fn frob_system(
             npc.params.radius,
             npc.params.height,
         ) {
-            if t <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| t < *f) {
+            if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Talk(npc.blocker), t));
             }
         }
@@ -401,7 +401,7 @@ pub fn frob_system(
         let r = npc.params.radius * 2.0;
         let c = deco.body.location - DVec3::new(0.0, 0.0, npc.params.height - 10.0);
         if let Some(t) = ray_cylinder(eye, end, c, r, 14.0) {
-            if t <= wall + 0.01 && best.as_ref().map_or(true, |(_, f)| t < *f) {
+            if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Body(e), t));
             }
         }
@@ -553,7 +553,7 @@ pub fn frob_system(
                         .unwrap_or_default()
                 };
                 let def = item_def(&it.class, &it.props);
-                match crate::augcan::add(&mut *inv, &def, [aug(0), aug(1)]) {
+                match crate::augcan::add(&mut inv, &def, [aug(0), aug(1)]) {
                     Ok(m) => {
                         hud.text = m;
                         hud.time_left = 3.0;
@@ -602,7 +602,7 @@ pub fn frob_system(
                     + inv.0.items.iter().map(|x| x.count as usize).sum::<usize>();
                 println!("PICKUP {} -> {msg}", it.class);
                 // GMDX HUD: Pickup Message Shows Size (setting PickupSize): "... [2x3]" when it didn't fit.
-                let msg = if crate::settings::get("PickupSize") > 0.5 && msg == imsim_core::inventory::no_room(&def) {
+                let msg = if setting!("PickupSize") > 0.5 && msg == imsim_core::inventory::no_room(&def) {
                     format!("{msg} [{}x{}]", def.inv_size.0, def.inv_size.1)
                 } else {
                     msg
@@ -612,7 +612,7 @@ pub fn frob_system(
                 if after != before {
                     commands.entity(e).despawn();
                 } else if copies == 1
-                    && crate::settings::get("FloorConsumables") > 0.5
+                    && setting!("FloorConsumables") > 0.5
                     && matches!(
                         it.class.as_str(),
                         "MedKit" | "BioelectricCell" | "Candybar" | "Sodacan" | "SoyFood" | "Liquor40oz" | "WineBottle" | "Cigarettes"
@@ -640,7 +640,7 @@ pub fn frob_system(
             let mut msgs: Vec<String> = Vec::new();
             // A nanokey the pawn carried (PickupDistributor) goes onto the ring.
             let a = &level.actors[npc.actor];
-            let key_msg = crate::keys::take_from(&crate::ai::actor_tag(a)).or_else(|| {
+            let key_msg = crate::keys::take_from(crate::ai::actor_tag(a)).or_else(|| {
                 match find(&a.props, "BindName") {
                     Some(Value::Str(b)) => crate::keys::take_from(b),
                     _ => None,
@@ -663,7 +663,7 @@ pub fn frob_system(
                 npc.searched = true;
                 npc.carried = true;
                 if let Ok(mut v) = vis.get_mut(e) {
-                    *v = Visibility::Hidden;
+                    v.set_if_neq(Visibility::Hidden);
                 }
                 weapons.want_corpse = Some(e);
                 println!("CARRY body {}", level.actors[npc.actor].name);
@@ -759,7 +759,7 @@ pub fn frob_system(
             let medic = level.actors[npc.actor].class == "MedicalBot";
             // GMDX HUD: Streamlined Repair Bot Interface (setting StreamlinedRepairBot): a bot that is still
             // recharging just says so instead of opening its screen.
-            if !medic && npc.service_cooldown > 0.0 && crate::settings::get("StreamlinedRepairBot") > 0.5 {
+            if !medic && npc.service_cooldown > 0.0 && setting!("StreamlinedRepairBot") > 0.5 {
                 hud.text = format!("Recharging... {} seconds remaining", npc.service_cooldown.ceil() as i32);
                 hud.time_left = 2.0;
                 return;
@@ -1028,7 +1028,7 @@ pub fn belt_ui(
         match handle {
             Some(h) => {
                 img.image = h;
-                *vis = Visibility::Inherited;
+                vis.set_if_neq(Visibility::Inherited);
             }
             None => *vis = Visibility::Hidden,
         }

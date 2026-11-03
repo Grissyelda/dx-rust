@@ -26,7 +26,7 @@ use bevy::window::PrimaryWindow;
 
 /// The setting: 0 Off, 1 Native AA, 2 Quality, 3 Balanced, 4 Performance, 5 Ultra Performance.
 pub fn mode() -> u32 {
-    (crate::settings::get("Upscaling").round().max(0.0) as u32).min(5)
+    (setting!("Upscaling").round().max(0.0) as u32).min(5)
 }
 
 /// How many window pixels one rendered pixel covers on each side.

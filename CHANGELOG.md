@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Deep optimization and clean-up pass (November 2, night)
+- Measured on an RTX 3050 / Ryzen 5 3600 with every mod: Modern about 17.5 -> 16.5 ms a frame, Classic 11.5 -> 10.4 ms
+  (96 fps); every part of the frame got shorter.
+- Frame rate: effect sprites (smoke, fire, rings, bubbles, muzzle flashes, gas clouds) share one material per
+  picture and fade by swapping between its steps, so nothing is re-prepared for the GPU every frame; bullet holes,
+  blood splats and wounds share their decal materials and the one quad (they batch into single draws); particle
+  generators (faucets, drips, steam, sparks) draw as one mesh each instead of one entity per particle; tracers,
+  shock rings, sparks and water rings reuse one built mesh instead of allocating a new one per shot; shell
+  casings, fragments and other loose objects stop being relit and moved once at rest; animated textures step only
+  while something on screen shows them; the water reflection renders only while a water sheet is in view; the
+  electricity bolts, blob shadows, coronas and light halos rewrite their meshes in place and only when they changed;
+  the fog's drifting density is refilled at most 20 times a second and only near you; the grass material no longer
+  changes every frame; hidden menus (spawn menu, key editor) are out of the UI layout; a hundred-odd places that
+  wrote the same visibility, node or transform every frame (forcing Bevy to re-propagate whole subtrees) now write
+  only on change; the shadow light layering, splash checks, conversation line-of-sight, coronas' sight traces, the
+  decoration relighting and the mesh-actor weapon models skip the work when nothing moved; settings read in
+  per-pawn code are cached per call site; several per-frame string copies (NPC weapon stats, ammo names, HUD
+  texture keys, sound ambients, key dedup) are gone.
+- Clean-up: dead code and unread fields removed (old tessellated water, HUD text leftovers, unused struct fields),
+  two latent bugs fixed (the spy drone's state and the skeletal body table survived map changes), the clippy
+  backlog taken down from ~390 warnings to a few dozen, `Level::level_info()` / `mission_number()` replace nine
+  copies of the same scan, `uinode` / `sprite` helper modules.
+
 ### Live terminals, controller layout, ladders and playtest fixes (November 2, evening)
 - Diegetic Screens: computers are now used like a live machine. The view stays at your own field of view with the
   monitor filling most of it and the room still around it; the mouse moves the terminal's own cursor, which stays

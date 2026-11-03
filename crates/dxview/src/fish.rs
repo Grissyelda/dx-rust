@@ -598,17 +598,7 @@ pub fn fish_system(
         // LoopAnimPivot('Swim'); skip the vertex work for fish nobody can see.
         f.clip.t += dt;
         if f.unseen < 0.5 {
-            let fr = f.clip.frame();
-            for (pi, hm) in f.handles.iter().enumerate() {
-                if let Some(mut mm) = meshes.get_mut(hm) {
-                    let pos: Vec<[f32; 3]> = f.parts[pi]
-                        .vert_ids
-                        .iter()
-                        .map(|&v| ue_to_bevy(f.mesh.sample(f.clip.start, f.clip.frames, fr, v as usize)))
-                        .collect();
-                    mm.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-                }
-            }
+            crate::actors::pose_parts_in_place(&mut meshes, &f.mesh, f.clip.start, f.clip.frames, f.clip.frame(), &f.parts, &f.handles);
             if f.pos.distance(f.lit_at) > 32.0 {
                 f.lit_at = f.pos;
                 for (pi, hm) in f.handles.iter().enumerate() {

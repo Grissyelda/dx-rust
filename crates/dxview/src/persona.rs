@@ -3870,6 +3870,8 @@ mod tests {
             images: Default::default(),
             materials: Default::default(),
             fire: Vec::new(),
+            sprites: Default::default(),
+            shared_parts: Default::default(),
         };
         let built = abilities::build(&mut assets.classes);
         *abilities::lock() = Some(built);

@@ -16,14 +16,12 @@ use unreal_pkg::props::{find, Property, Value};
 
 #[derive(Clone, Debug)]
 pub struct Point {
-    pub actor: usize,
     pub position: i32,
     pub loc: DVec3,
     /// Pitch, yaw, roll (Unreal units, not wrapped: the original blends the raw numbers).
     pub rot: [f64; 3],
     pub rate: f64,
     pub fov: f64,
-    pub game_speed: f64,
     pub end_of_path: bool,
     pub skip_next: bool,
     pub prev: Option<usize>,
@@ -43,9 +41,8 @@ pub fn path(lvl: &dx_level::Level, tag: &str) -> Vec<Point> {
     let mut pts: Vec<Point> = lvl
         .actors
         .iter()
-        .enumerate()
-        .filter(|(_, a)| a.class == "InterpolationPoint" && crate::devices::name_prop(&a.props, "Tag").eq_ignore_ascii_case(tag))
-        .map(|(i, a)| {
+        .filter(|a| a.class == "InterpolationPoint" && crate::devices::name_prop(&a.props, "Tag").eq_ignore_ascii_case(tag))
+        .map(|a| {
             let p = &a.props;
             let l = a.location();
             let r = match find(p, "Rotation") {
@@ -53,13 +50,11 @@ pub fn path(lvl: &dx_level::Level, tag: &str) -> Vec<Point> {
                 _ => [0.0; 3],
             };
             Point {
-                actor: i,
                 position: f(p, "Position", 0.0) as i32,
                 loc: DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64),
                 rot: r,
                 rate: f(p, "RateModifier", 1.0),
                 fov: f(p, "FovModifier", 1.0),
-                game_speed: f(p, "GameSpeedModifier", 1.0),
                 end_of_path: matches!(find(p, "bEndOfPath"), Some(Value::Bool(true))),
                 skip_next: matches!(find(p, "bSkipNextPath"), Some(Value::Bool(true))),
                 prev: None,
@@ -248,13 +243,11 @@ mod tests {
 
     fn pt(position: i32, x: f64, rate: f64) -> Point {
         Point {
-            actor: 0,
             position,
             loc: DVec3::new(x, 0.0, 0.0),
             rot: [0.0; 3],
             rate,
             fov: 1.0,
-            game_speed: 1.0,
             end_of_path: false,
             skip_next: false,
             prev: None,

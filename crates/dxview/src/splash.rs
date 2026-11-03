@@ -85,10 +85,15 @@ pub fn splash_system(
 
     for (e, d, npc) in &decos {
         seen.push(e);
+        // Still bodies already known can't cross the surface (most decorations, most of the time).
+        let known = st.inside.contains_key(&e);
         match npc {
             Some(n) if n.state != NpcState::Dead => {
                 // A live pawn: Pawn.FootZoneChange.
                 let Some(b) = n.body.as_ref() else { continue };
+                if known && b.velocity == DVec3::ZERO {
+                    continue;
+                }
                 let feet = b.location - DVec3::Z * (n.params.height - 1.0);
                 let now_in = water_at(lvl, feet).is_some();
                 if let Some(entered) = cross(&mut st, e, now_in) {
@@ -113,6 +118,9 @@ pub fn splash_system(
                     Some(b) => (b.location, b.velocity),
                     None => (d.body.location, d.body.velocity),
                 };
+                if known && vel == DVec3::ZERO {
+                    continue;
+                }
                 let now_in = water_at(lvl, loc).is_some();
                 if let Some(true) = cross(&mut st, e, now_in) {
                     if vel.z < -200.0 {
@@ -126,6 +134,9 @@ pub fn splash_system(
 
     for (e, mut l, item) in &mut loose {
         seen.push(e);
+        if l.resting && st.inside.contains_key(&e) {
+            continue;
+        }
         let now_in = water_at(lvl, l.pos).is_some();
         if let Some(true) = cross(&mut st, e, now_in) {
             let at = surface_near(lvl, l.pos);

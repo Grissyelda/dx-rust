@@ -38,7 +38,7 @@ fn anchor(b: PadBtn) -> (i32, i32) {
 fn inside(x: f32, y: f32) -> bool {
     let body = ((x - 300.0) / 112.0).powi(2) + ((y - 128.0) / 48.0).powi(2) <= 1.0;
     let grip = |gx: f32| ((x - gx) / 34.0).powi(2) + ((y - 178.0) / 40.0).powi(2) <= 1.0;
-    let shoulders = y >= 74.0 && y <= 96.0 && ((x - 238.0).abs() < 26.0 || (x - 362.0).abs() < 26.0);
+    let shoulders = (74.0..=96.0).contains(&y) && ((x - 238.0).abs() < 26.0 || (x - 362.0).abs() < 26.0);
     body || grip(222.0) || grip(378.0) || shoulders
 }
 
@@ -187,7 +187,7 @@ fn lines<W: KitWid>(u: &mut Ui<W>, font: &crate::uicanvas::UiFont, x: i32, y: i3
 
 /// Once on the first map for a new player on a pad: the picture opens by itself (setting PadLayoutShown).
 pub fn first_time_system(level: bevy::prelude::Res<crate::LevelRes>, mut waited: bevy::prelude::Local<f32>, time: bevy::prelude::Res<bevy::prelude::Time<bevy::prelude::Real>>) {
-    if crate::settings::get("PadLayoutShown") > 0.5 || !crate::gamepad::pad_in_use() {
+    if setting!("PadLayoutShown") > 0.5 || !crate::gamepad::pad_in_use() {
         return;
     }
     if !crate::util::contains_ci(&level.0.name, "01_NYC_UNATCOIsland") || crate::loader::settling() || crate::cinematic::active() || crate::consys::third_person() || crate::menus::open() {

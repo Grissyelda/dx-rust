@@ -128,7 +128,8 @@ fn vertex(v: Vertex) -> Out {
     let root = vec3<f32>(t0.x + off.x, t0.z + t1.x * off.x + t1.y * off.y, t0.y + off.y);
     // Thinning: every slot near, then falling with the distance squared, none at the far edge; a blade just kept
     // is small and grows as the eye comes nearer, so none pops up at full height.
-    let d = distance(root, params.eye.xyz);
+    // The view's own eye (not a uniform: the material then never changes while the player only moves).
+    let d = distance(root, view.world_position);
     let near = params.eye.w;
     let far = params.b.w;
     var keep = 1.0;

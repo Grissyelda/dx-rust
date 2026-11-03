@@ -89,7 +89,6 @@ pub struct PlayerHealth {
     /// DeusExPlayer.CatchFire: seconds alight (None = not), and the 1 s Burned timer.
     pub on_fire: Option<f32>,
     pub burn_tick: f32,
-    pub charged_text: String,
     /// The body (Region) is in a water zone: pain sounds change (Human.PlayTakeHitSound).
     pub in_water: bool,
     /// swimTimer / swimDuration while swimming, for the HUD.
@@ -121,7 +120,6 @@ impl Default for PlayerHealth {
             energy: 100.0,
             on_fire: None,
             burn_tick: 0.0,
-            charged_text: String::new(),
             in_water: false,
             breath: None,
             damage_icons: Vec::new(),
@@ -486,8 +484,6 @@ pub fn player_offset(player_center: DVec3, view_yaw: f64, at: DVec3) -> DVec3 {
 }
 
 #[derive(Component)]
-pub struct HealthText;
-#[derive(Component)]
 pub struct DamageFlash;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -706,7 +702,7 @@ pub struct Npc {
     pub yaw: f64,
     pub body: Option<Character>,
     pub params: MoveParams,
-    pub weapon: Option<WeaponStats>,
+    pub weapon: Option<std::sync::Arc<WeaponStats>>,
     pub inited: bool,
     pub loaded: u32,
     pub shot_timer: f32,
@@ -812,7 +808,6 @@ pub struct Npc {
     pub fear_injury: bool,
     pub fear_indirect_injury: bool,
     pub hate_indirect_injury: bool,
-    pub fear_projectiles: bool,
     /// A melee weapon and the enemy out of reach: the closest it has got, and how long since it last got closer.
     pub melee_best: f64,
     pub melee_stuck: f32,
@@ -918,7 +913,7 @@ pub struct Npc {
     /// Robot.EMPHitPoints.
     pub emp_hp: f32,
     /// Every weapon carried (InitialInventory order) and the ammo left by class; `weapon` is the one in hand.
-    pub arsenal: Vec<WeaponStats>,
+    pub arsenal: Vec<std::sync::Arc<WeaponStats>>,
     pub ammo_left: Vec<(String, i32)>,
     /// WeaponTimer: seconds since the last weapon change (sticks with a new choice for 5-10 s).
     pub weapon_timer: f32,
@@ -970,7 +965,7 @@ fn fv(p: &[Property], n: &str, d: f32) -> f32 {
 /// weapons when dry, as DeusExWeapon's script does.
 fn npc_finite_ammo() -> bool {
     static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENV.get_or_init(|| std::env::var("DXVIEW_NPC_FINITE_AMMO").is_ok_and(|v| v == "1")) || crate::settings::get("NPCFiniteAmmo") > 0.5
+    *ENV.get_or_init(|| std::env::var("DXVIEW_NPC_FINITE_AMMO").is_ok_and(|v| v == "1")) || setting!("NPCFiniteAmmo") > 0.5
 }
 
 fn flag(p: &[Property], n: &str) -> bool {
@@ -1193,7 +1188,6 @@ impl Npc {
             fear_injury: flag(p, "bFearInjury"),
             fear_indirect_injury: flag(p, "bFearIndirectInjury"),
             hate_indirect_injury: flag(p, "bHateIndirectInjury"),
-            fear_projectiles: flag(p, "bFearProjectiles"),
             melee_best: f64::MAX,
             melee_stuck: 0.0,
             fear: imsim_core::reactions::Fear::new(fv(p, "FearSustainTime", 25.0), fv(p, "FearDecayRate", 0.5)),
@@ -1323,15 +1317,15 @@ impl Npc {
         }
         // Seeking.Begin: what started the search.
         if now == NpcState::Seeking && seek.is_some() && (prev != NpcState::Seeking || seek.map(|s| s.0) != self.bark_seek.map(|s| s.0)) {
-            out = seek.and_then(|(k, post)| {
+            out = seek.map(|(k, post)| {
                 if post {
-                    Some(B::PostAttackSearching)
+                    B::PostAttackSearching
                 } else {
                     match k {
-                        SeekKind::Sound => Some(B::PreAttackSearching),
-                        SeekKind::Sight => Some(B::PreAttackSighting),
-                        SeekKind::Carcass => Some(B::Gore),
-                        SeekKind::Guess => Some(B::PostAttackSearching),
+                        SeekKind::Sound => B::PreAttackSearching,
+                        SeekKind::Sight => B::PreAttackSighting,
+                        SeekKind::Carcass => B::Gore,
+                        SeekKind::Guess => B::PostAttackSearching,
                     }
                 }
             });
@@ -1480,17 +1474,17 @@ impl Npc {
     }
 
     /// The ammo class a weapon would load: what the pawn was given if the weapon takes it, else its AmmoName.
-    fn ammo_class_for(&self, w: &WeaponStats) -> Option<String> {
+    fn ammo_class_for<'a>(&'a self, w: &'a WeaponStats) -> Option<&'a str> {
         if let Some(a) = &self.ammo {
             if w.ammo_names.iter().any(|n| n.eq_ignore_ascii_case(a))
                 || w.ammo_class
                     .as_deref()
-                    .map_or(false, |c| c.eq_ignore_ascii_case(a))
+                    .is_some_and(|c| c.eq_ignore_ascii_case(a))
             {
-                return Some(a.clone());
+                return Some(a.as_str());
             }
         }
-        w.ammo_class.clone()
+        w.ammo_class.as_deref()
     }
 
     fn ammo_count(&self, class: &str) -> i32 {
@@ -1509,27 +1503,21 @@ impl Npc {
         }
         Some(
             self.ammo_class_for(w)
-                .map(|a| self.ammo_count(&a))
+                .map(|a| self.ammo_count(a))
                 .unwrap_or(0),
         )
     }
 
     fn use_ammo(&mut self) {
-        let Some(w) = self.weapon.as_ref() else {
+        let Some(w) = self.weapon.clone() else {
             return;
         };
         if w.reload_count == 0 {
             return;
         }
-        if let Some(a) = self.ammo_class_for(w) {
-            if let Some(e) = self
-                .ammo_left
-                .iter_mut()
-                .find(|x| x.0.eq_ignore_ascii_case(&a))
-            {
-                e.1 = (e.1 - 1).max(0);
-            }
-        }
+        let Some(k) = self.ammo_class_for(&w).and_then(|a| self.ammo_left.iter().position(|x| x.0.eq_ignore_ascii_case(a))) else { return };
+        let e = &mut self.ammo_left[k];
+        e.1 = (e.1 - 1).max(0);
     }
 
     /// ScriptedPawn.SwitchToBestWeapon: score every usable weapon by how far the enemy is from the middle of its
@@ -1540,12 +1528,12 @@ impl Npc {
             enemy.unwrap_or((400.0, 0.0, false, false));
         let mut best: Option<(usize, f64, i32)> = None;
         for i in 0..self.arsenal.len() {
-            let w = self.arsenal[i].clone();
+            let w = &self.arsenal[i];
             let mut valid = true;
             if w.reload_count > 0 {
                 valid = self
-                    .ammo_class_for(&w)
-                    .map(|a| self.ammo_count(&a) >= 1)
+                    .ammo_class_for(w)
+                    .map(|a| self.ammo_count(a) >= 1)
                     .unwrap_or(false);
             }
             if !valid {
@@ -1587,11 +1575,11 @@ impl Npc {
             if robot
                 && w.projectile
                     .as_deref()
-                    .map_or(false, |p| p.contains("Poison"))
+                    .is_some_and(|p| p.contains("Poison"))
             {
                 continue;
             }
-            let current = self.weapon.as_ref().map_or(false, |c| c.class == w.class);
+            let current = self.weapon.as_ref().is_some_and(|c| c.class == w.class);
             if current && self.weapon_timer < 10.0 {
                 if self.weapon_timer < 5.0 {
                     score = -10.0;
@@ -1619,7 +1607,7 @@ impl Npc {
             if let Some(w) = self.weapon.clone() {
                 let left = self.weapon_ammo().unwrap_or(i32::MAX);
                 self.loaded = (w.reload_count.max(1) as i32).min(left).max(0) as u32;
-                if let Some(a) = self.ammo_class_for(&w) {
+                if let Some(a) = self.ammo_class_for(&w).map(str::to_owned) {
                     if w.reload_count > 0 {
                         self.ammo = Some(a);
                     }
@@ -1901,7 +1889,7 @@ pub fn world_system(
                         ));
                         c.radius = 0.0;
                     }
-                    *vis = Visibility::Hidden;
+                    vis.set_if_neq(Visibility::Hidden);
                     crate::scriptworld::mark_hidden(npc.actor, true);
                     println!("LEAVEWORLD {class} {tag}");
                 }
@@ -1923,7 +1911,7 @@ pub fn world_system(
                             c.center = deco.body.location;
                         }
                         commands.entity(e).remove::<OutOfWorld>();
-                        *vis = Visibility::Inherited;
+                        vis.set_if_neq(Visibility::Inherited);
                         crate::scriptworld::mark_hidden(npc.actor, false);
                         println!("ENTERWORLD {}", npc.bind_name);
                     }
@@ -2350,7 +2338,7 @@ fn do_orders_inner(
             let replan = npc
                 .route
                 .as_ref()
-                .map_or(true, |r| r.age > 1.0 || r.goal.distance(goal) > 48.0);
+                .is_none_or(|r| r.age > 1.0 || r.goal.distance(goal) > 48.0);
             if replan {
                 npc.route = Some(plan_route(level, me, goal, &p, None));
             }
@@ -2367,7 +2355,7 @@ fn do_orders_inner(
                 if npc
                     .route
                     .as_ref()
-                    .map_or(true, |r| r.goal.distance(npc.home) > 1.0)
+                    .is_none_or(|r| r.goal.distance(npc.home) > 1.0)
                 {
                     npc.route = Some(plan_route(level, me, npc.home, &p, None));
                 }
@@ -2635,7 +2623,7 @@ fn do_seek(
                 let dist = (here - s.dest).length();
                 let in_view = dist < seek_dist
                     && world.trace(my_eye, s.dest, DVec3::splat(1.0)).fraction >= 0.999;
-                let stuck = npc.route.as_ref().map_or(false, |r| r.stuck > 3);
+                let stuck = npc.route.as_ref().is_some_and(|r| r.stuck > 3);
                 if in_view || stuck || dist < 24.0 {
                     if s.kind == SeekKind::Guess && s.located {
                         // GetOvershootDestination / AIPickRandomDestination: carry on a little past it.
@@ -2662,7 +2650,7 @@ fn do_seek(
                     if npc
                         .route
                         .as_ref()
-                        .map_or(true, |r| r.goal.distance(s.dest) > 1.0 || r.age > 2.0)
+                        .is_none_or(|r| r.goal.distance(s.dest) > 1.0 || r.age > 2.0)
                     {
                         let stuck = npc.route.as_ref().map(|r| r.stuck).unwrap_or(0);
                         let mut r = plan_route(level, here, s.dest, &p, None);
@@ -2917,7 +2905,7 @@ fn burning_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
         };
         let arrived = npc
             .flee_dest
-            .map_or(true, |d| (d - me.center).truncate().length() < 40.0);
+            .is_none_or(|d| (d - me.center).truncate().length() < 40.0);
         npc.flee_repick -= dt;
         if arrived || npc.flee_repick <= 0.0 {
             // Burning.PickDestination: water first - the nearest navigation point in a water zone
@@ -3009,7 +2997,7 @@ fn fleeing_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
         let seen = now - npc.last_seen < 0.6;
         let arrived = npc
             .flee_dest
-            .map_or(true, |d| (d - me.center).truncate().length() < 48.0);
+            .is_none_or(|d| (d - me.center).truncate().length() < 48.0);
         npc.flee_repick -= dt;
         // PickDestination when starting, when the hiding place turns out to be in view, or on arrival
         // while still seen.
@@ -3032,7 +3020,7 @@ fn fleeing_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
             let replan = npc
                 .route
                 .as_ref()
-                .map_or(true, |r| r.age > 1.5 || r.goal.distance(dest) > 32.0);
+                .is_none_or(|r| r.age > 1.5 || r.goal.distance(dest) > 32.0);
             if replan {
                 npc.route = Some(plan_route(lvl, me.center, dest, &npc.params, None));
             }
@@ -3144,7 +3132,7 @@ fn alerting_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
                 let replan = npc
                     .route
                     .as_ref()
-                    .map_or(true, |r| r.age > 2.0 || r.goal.distance(spot) > 32.0);
+                    .is_none_or(|r| r.age > 2.0 || r.goal.distance(spot) > 32.0);
                 if replan {
                     npc.route = Some(plan_route(lvl, me_c, spot, &npc.params, None));
                 }
@@ -3520,11 +3508,11 @@ pub fn npc_system(
         // Smarter AI: GMDX's perception by difficulty and our alert level; a fresh attack on the player starts the
         // fire react time and calls the others over.
         let npc_class: &str = &lvl.actors[npc.actor].class;
-        crate::smartai::tune(npc, &npc_class, dt);
+        crate::smartai::tune(npc, npc_class, dt);
         {
             let atk = matches!(npc.state, NpcState::Attacking | NpcState::Surprised(_)) && npc.target == Some(Target::Player);
             if atk && !npc.smart.was_attacking {
-                crate::smartai::attack_started(npc, &npc_class);
+                crate::smartai::attack_started(npc, npc_class);
                 if let Some(n) = crate::smartai::call_out(me.center, npc.blocker) {
                     new_noises.push(n);
                 }
@@ -4126,7 +4114,7 @@ pub fn npc_system(
                         let replan = npc
                             .route
                             .as_ref()
-                            .map_or(true, |r| r.goal.distance(dest) > 32.0);
+                            .is_none_or(|r| r.goal.distance(dest) > 32.0);
                         if replan {
                             npc.route = Some(plan_route(lvl, me.center, dest, &npc.params, None));
                         }
@@ -4170,7 +4158,7 @@ pub fn npc_system(
 
         // DXVIEW_PAWNLOG=<actor name>: where that pawn is and what it's doing, twice a second.
         if let Some(want) = env_val!("DXVIEW_PAWNLOG") {
-            if lvl.actors[npc.actor].name.eq_ignore_ascii_case(&want) && (now * 2.0).floor() != ((now - dt) * 2.0).floor() {
+            if lvl.actors[npc.actor].name.eq_ignore_ascii_case(want) && (now * 2.0).floor() != ((now - dt) * 2.0).floor() {
                 let c = blockers.list[npc.blocker].center;
                 println!(
                     "PAWNLOG t={:.1} {} at ({:.0},{:.0},{:.0}) yaw={:.0} state={:?} phase={:?} anim={} wish={:.2?} route={} target={:?} fired={}",
@@ -4251,7 +4239,7 @@ pub fn npc_system(
                 solid.push(player_cyl);
             }
             // BlockMonsters stop pawns only.
-            solid.extend(lvl.monster_blocks.iter().map(|c| Cylinder { actor: usize::MAX, ..c.clone() }));
+            solid.extend(lvl.monster_blocks.iter().map(|c| Cylinder { actor: usize::MAX, ..*c }));
             // ...nor through what the player is carrying.
             if let Some(h) = carrying.held.as_ref() {
                 solid.push(Cylinder {
@@ -4328,11 +4316,10 @@ pub fn npc_system(
                         npc.home_yaw = npc.yaw;
                     }
                 }
-                NpcState::Seeking => {
-                    if npc.stalls >= 2 {
+                NpcState::Seeking
+                    if npc.stalls >= 2 => {
                         npc.finish_seek();
                     }
-                }
                 _ => {}
             }
         } else if covered > 30.0 {
@@ -4404,7 +4391,7 @@ pub fn npc_system(
         }
         // Optional Fixes: Jaime and the WIB have no *2H sequences (JaimeReyes / WIB.HasTwoHandedWeapon False).
         let two = npc.two_handed() && !crate::optfixes::no_two_handed(&level.0.actors[npc.actor].class);
-        let melee_w = npc.weapon.as_ref().map_or(false, |w| w.hand_to_hand);
+        let melee_w = npc.weapon.as_ref().is_some_and(|w| w.hand_to_hand);
         // Pawns run normally with a knife (PlayRunningAndFiring with bHandToHand).
         let firing = firing && !(melee_w && speed > 20.0);
         let (walk_m, run_m) = (npc.walk_anim_mult, npc.run_anim_mult);
@@ -4554,7 +4541,7 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
                 {
                     let d = assets.classes.defaults(class);
                     if let Some(w) = weapon_stats(class, &d) {
-                        npc.arsenal.push(w);
+                        npc.arsenal.push(std::sync::Arc::new(w));
                     }
                 }
             }
@@ -4562,7 +4549,7 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
         for i in 0..npc.arsenal.len() {
             let w = npc.arsenal[i].clone();
             if let Some(a) = w.ammo_class.clone() {
-                if npc.ammo_class_for(&w).as_deref() == Some(a.as_str())
+                if npc.ammo_class_for(&w) == Some(a.as_str())
                     && !npc.ammo_left.iter().any(|e| e.0 == a)
                 {
                     let per = match find(&assets.classes.defaults(&a), "AmmoAmount") {
@@ -4577,7 +4564,7 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
         if let Some(w) = npc.arsenal.first().cloned() {
             let left = npc
                 .ammo_class_for(&w)
-                .map(|a| npc.ammo_count(&a))
+                .map(|a| npc.ammo_count(a))
                 .unwrap_or(i32::MAX);
             npc.loaded = if w.reload_count == 0 {
                 1
@@ -4644,7 +4631,7 @@ fn sight_check(npc: &mut Npc, cx: &SightCx) {
                     }
                     let vis = crate::stealth::sight_visibility(
                         crate::smartai::player_vis(
-                            crate::stealth::player_visibility(&plight, player.body.velocity),
+                            crate::stealth::player_visibility(plight, player.body.velocity),
                             plight.brightness,
                             d,
                             player.crouched,
@@ -4686,7 +4673,7 @@ fn sight_check(npc: &mut Npc, cx: &SightCx) {
                 }
                 let c = blockers.list[p.blocker];
                 let d = (c.center - my_eye).length();
-                if cand.map_or(true, |(_, _, bd, _)| d < bd)
+                if cand.is_none_or(|(_, _, bd, _)| d < bd)
                     && sees(c.center, c.height, true, Some(p.blocker)).is_some()
                 {
                     cand = Some((Target::Pawn(p.blocker), c.center, d, 100000.0));
@@ -4711,7 +4698,7 @@ fn sight_check(npc: &mut Npc, cx: &SightCx) {
                     } else if npc.readiness >= npc.sight_pct
                         && t == Target::Player
                         && npc.state != NpcState::Seeking
-                        && crate::smartai::quick_reflex(npc, &npc_class, (pos - me.center).length(), false)
+                        && crate::smartai::quick_reflex(npc, npc_class, (pos - me.center).length(), false)
                     {
                         // Smarter AI (GMDX HandleSighting): high alert - straight to the attack.
                         npc.begin_attack(t, pos, now);
@@ -4813,7 +4800,7 @@ fn hear_noises(npc: &mut Npc, cx: &HearCx) {
                             if t == Target::Player
                                 && matches!(npc.state, NpcState::Idle | NpcState::Seeking)
                                 && n.maker == Some(Target::Player)
-                                && crate::smartai::quick_reflex(npc, &npc_class, (player_center - me.center).length(), true)
+                                && crate::smartai::quick_reflex(npc, npc_class, (player_center - me.center).length(), true)
                             {
                                 // Smarter AI (GMDX HandleLoudNoise): heard close by - attack at once.
                                 npc.begin_attack(t, player_center, now - 1.0);
@@ -5008,7 +4995,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
         // suppressive fire (keep shooting where it was last seen for a while after losing it).
         let react_ok = crate::smartai::combat_tick(
             npc,
-            &npc_class,
+            npc_class,
             now - npc.last_seen < 0.25,
             npc.target == Some(Target::Player),
             dt,
@@ -5041,7 +5028,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
             };
             npc.switch_to_best_weapon(enemy);
         }
-        let melee = npc.weapon.as_ref().map_or(false, |w| w.hand_to_hand);
+        let melee = npc.weapon.as_ref().is_some_and(|w| w.hand_to_hand);
         // Melee weapons close right in; guns hold off at a fraction of their range.
         let accurate = match npc.weapon.as_ref() {
             Some(w) if w.hand_to_hand => {
@@ -5104,7 +5091,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
             let replan = npc
                 .route
                 .as_ref()
-                .map_or(true, |r| r.age > 1.0 || r.goal.distance(chase_to) > 96.0);
+                .is_none_or(|r| r.age > 1.0 || r.goal.distance(chase_to) > 96.0);
             if replan {
                 npc.route =
                     Some(plan_route(lvl, me.center, chase_to, &npc.params, None));
@@ -5236,7 +5223,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
                     .unwrap_or(1);
             }
         } else if let Some(w) = npc.weapon.clone() {
-            fire_weapon(npc, an, w, cx, FireArgs { target_pos, dist, fire_ok, shoot_playing, melee, react_ok, suppress, seen_recently, moving });
+            fire_weapon(npc, an, &w, cx, FireArgs { target_pos, dist, fire_ok, shoot_playing, melee, react_ok, suppress, seen_recently, moving });
         }
     }
     (wish, running, firing)
@@ -5417,12 +5404,12 @@ fn apply_pawn_orders(
                 npc.set_orders(lvl, orders, orders_tag, player_center, now);
             }
             crate::triggers::PawnOrder::Script { sel, orders, orders_tag }
-                if sel_hit(sel, &lvl.actors[npc.actor].class, &npc.bind_name, &my_tag) =>
+                if sel_hit(sel, &lvl.actors[npc.actor].class, &npc.bind_name, my_tag) =>
             {
                 npc.set_orders(lvl, orders, orders_tag, player_center, now);
             }
             crate::triggers::PawnOrder::Ally { sel, alliance, level, permanent }
-                if sel_hit(sel, &lvl.actors[npc.actor].class, &npc.bind_name, &my_tag) =>
+                if sel_hit(sel, &lvl.actors[npc.actor].class, &npc.bind_name, my_tag) =>
             {
                 npc.alliances.change_ally(alliance, *level, *permanent, false);
                 if !npc.hates("Player") && npc.target == Some(Target::Player) {
@@ -5433,7 +5420,7 @@ fn apply_pawn_orders(
                 tag,
                 alliance,
                 list,
-            } if tag.eq_ignore_ascii_case(&my_tag) => {
+            } if tag.eq_ignore_ascii_case(my_tag) => {
                 if !alliance.is_empty() {
                     npc.alliance = alliance.clone();
                     npc.alliances.own = alliance.clone();
@@ -5471,9 +5458,9 @@ struct FireArgs {
 
 /// Attacking.Fire / ContinueFire: one frame of shooting at the target with weapon `w` (shot timing with the Shoot
 /// animation, reloading, ammo, melee blows, projectiles, traced shots, what they hit).
-fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: crate::weapons::WeaponStats, cx: &mut ActCx, f: FireArgs) {
+fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats, cx: &mut ActCx, f: FireArgs) {
     let in_reach = !f.melee || f.dist <= w.max_range as f64 + cx.me.radius;
-    let has_ammo = npc.weapon_ammo().map_or(true, |n| n > 0);
+    let has_ammo = npc.weapon_ammo().is_none_or(|n| n > 0);
     // Melee: the swing starts with the Attack animation and the blow lands at its HandToHandAttack notify
     // (OwnerHandToHandAttack), still needing the target in reach.
     let mut strike_now = false;
@@ -5496,18 +5483,18 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: crate::weapons::WeaponStats,
         return;
     }
     // A melee swing only starts here; its blow comes with the notify (strike_now, a later frame).
-    if !strike_now && !begin_shot(npc, an, &w, cx, f.moving) {
+    if !strike_now && !begin_shot(npc, an, w, cx, f.moving) {
         return;
     }
     // Gunfire is heard by enemies (WeaponFire, LoudNoise) and friends (Distress).
-    if let Some(mut n) = crate::stealth::weapon_noise(&w, cx.me.center, Target::Pawn(npc.blocker)) {
+    if let Some(mut n) = crate::stealth::weapon_noise(w, cx.me.center, Target::Pawn(npc.blocker)) {
         cx.new_noises.push(n.clone());
         n.kind = NoiseKind::Loud;
         cx.new_noises.push(n.clone());
         n.kind = NoiseKind::Distress;
         cx.new_noises.push(n);
     }
-    use_shot_ammo(npc, &w, cx.me.center);
+    use_shot_ammo(npc, w, cx.me.center);
     // Aim at the target's chest with weapon + pawn inaccuracy.
     let aim_at = f.target_pos + DVec3::new(0.0, 0.0, 10.0);
     let fwd = (aim_at - cx.my_eye).normalize_or_zero();
@@ -5541,7 +5528,7 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: crate::weapons::WeaponStats,
     let mut ricocheted = false;
     for _ in 0..w.shots_per_fire() {
         let dir = spread_dir(fwd, right, up, acc, w.max_range as f64, &mut npc.seed);
-        trace_shot(npc, &w, cx, dir, &mut ricocheted);
+        trace_shot(npc, w, cx, dir, &mut ricocheted);
     }
 }
 
@@ -6055,7 +6042,7 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         ));
         // GMDX fix (G-Flex / Shifter; setting FixGibLoot): what a gibbed person carried is
         // thrown out with the chunks instead of destroyed (not robots or animals).
-        if crate::settings::get("FixGibLoot") > 0.5 && !npc.hp_body.robot && !npc.animal {
+        if setting!("FixGibLoot") > 0.5 && !npc.hp_body.robot && !npc.animal {
             for (k, w) in npc.arsenal.iter().enumerate() {
                 let a = npc.yaw + k as f64 * 2.4;
                 weapon_drops.0.push((
@@ -6099,7 +6086,7 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
     }
     // Animals can't be knocked out: a baton or tranquilizer dart kills them. In water nobody is
     // only unconscious (DeusExCarcass: "you will die in water every time").
-    let in_water = crate::actors::water_at(lvl, me_center_of(&blockers, npc.blocker)).is_some();
+    let in_water = crate::actors::water_at(lvl, me_center_of(blockers, npc.blocker)).is_some();
     // Optional Fixes: dying while on fire is burning to death, not falling unconscious (Died: ExtinguishFire, bStunned
     // cleared).
     let burning = npc.on_fire.is_some() && crate::optfixes::fixes();
@@ -6251,7 +6238,7 @@ fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate:
     }
     if h.damage_type == "BleedEffect" && npc.can_bleed {
         for i in 0..10u32 {
-            if (npc.blocker as u32 * 31 + i * 17 + aff.bleed_counter * 7) % 2 == 0 {
+            if (npc.blocker as u32 * 31 + i * 17 + aff.bleed_counter * 7).is_multiple_of(2) {
                 drips.0.push(center + DVec3::Z * npc.params.height * 0.3);
             }
         }
@@ -6413,7 +6400,6 @@ pub fn player_health_ui(
     mut ph: ResMut<PlayerHealth>,
     mut player: ResMut<Player>,
     mut hud: ResMut<HudMessage>,
-    mut text: Single<&mut Text, With<HealthText>>,
     mut flash: Single<&mut BackgroundColor, With<DamageFlash>>,
 ) {
     let _prof = crate::prof::scope("ai::player_health_ui");
@@ -6468,12 +6454,6 @@ pub fn player_health_ui(
             (ph.flash * 1.2).min(cap),
         );
     }
-    // Health, energy and breath are on the original hit display (classic_hud.rs); charged items stay here until
-    // the active items display is ported.
-    let t = ph.charged_text.clone();
-    if text.0 != t {
-        text.0 = t;
-    }
     let pad_confirm = crate::gamepad::frame().pad_last && keys.just_pressed(KeyCode::Space);
     if ph.dead && !crate::menus::open() && (keys.just_pressed(KeyCode::Enter) || pad_confirm) {
         // The most recent save (manual, quick or auto) is loaded; with none, the map is rebuilt from scratch in
@@ -6502,21 +6482,6 @@ pub fn player_health_ui(
 }
 
 pub fn spawn_health_ui(commands: &mut Commands) {
-    commands.spawn((
-        Text::new("HEALTH 100"),
-        TextFont {
-            font_size: bevy::text::FontSize::Px(22.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.85, 1.0, 0.85)),
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(16.0),
-            top: Val::Px(16.0),
-            ..default()
-        },
-        HealthText,
-    ));
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -6733,7 +6698,7 @@ pub fn npc_weapon_models(
                 f.left = 0.1;
             }
             // MuzzleFlashLight: a MuzzleFlash light at Location + view x CollisionRadius x 2 for 0.1 s.
-            if npc.weapon.as_ref().map_or(false, |w| w.muzzle_flash) {
+            if npc.weapon.as_ref().is_some_and(|w| w.muzzle_flash) {
                 let at = dx_level::bevy_to_ue(tf.translation.to_array());
                 let c = DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64);
                 let fwd = DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0);
@@ -6787,22 +6752,23 @@ pub fn npc_weapon_models(
             anim.mesh.weapon_coords(start, frames, f)
         };
         let Some([o, x, y, z]) = coords else {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         };
-        *vis = Visibility::Inherited;
+        vis.set_if_neq(Visibility::Inherited);
         // Pawn-local Unreal: p' = O * DrawScale + [X Y Z] * ThirdPersonScale * p; then into Bevy axes.
         let ds = anim.draw_scale;
         let r = Mat3::from_cols(Vec3::from(x), Vec3::from(y), Vec3::from(z)) * hm.scale;
         let s = swap();
         let lin = s * r * s;
         let t = Vec3::from(ue_to_bevy([o[0] * ds, o[1] * ds, o[2] * ds]));
-        *rtf = Transform::from_matrix(Mat4::from_cols(
+        // Only a changed pose writes the transform (a write re-propagates the model's subtree).
+        rtf.set_if_neq(Transform::from_matrix(Mat4::from_cols(
             lin.x_axis.extend(0.0),
             lin.y_axis.extend(0.0),
             lin.z_axis.extend(0.0),
             t.extend(1.0),
-        ));
+        )));
         // Light it from the static lights near the pawn now and then.
         hm.relight -= dt;
         if hm.relight <= 0.0 {
@@ -6873,7 +6839,7 @@ mod player_health_tests {
 mod weapon_choice_tests {
     use super::*;
 
-    fn stats(class: &str, reload: u32, acc: f32, melee: bool, ammo: Option<&str>) -> WeaponStats {
+    fn stats(class: &str, reload: u32, acc: f32, melee: bool, ammo: Option<&str>) -> std::sync::Arc<WeaponStats> {
         let mut p = vec![
             Property {
                 name: "PlayerViewMesh".into(),
@@ -6920,7 +6886,7 @@ mod weapon_choice_tests {
                 value: Value::Path(format!("DeusEx.{a}")),
             });
         }
-        weapon_stats(class, &p).unwrap()
+        std::sync::Arc::new(weapon_stats(class, &p).unwrap())
     }
 
     #[test]
@@ -6945,12 +6911,12 @@ mod weapon_choice_tests {
     #[test]
     fn karkian_rams_then_bites_while_fire_timer_runs() {
         let mut n = Npc::new(0, 0, &[], 0, DVec3::ZERO);
-        let mut bump = stats("WeaponKarkianBump", 0, 80.0, true, None);
+        let mut bump = (*stats("WeaponKarkianBump", 0, 80.0, true, None)).clone();
         bump.fallback = false;
         bump.ai_fire_delay = 8.0;
-        let mut bite = stats("WeaponKarkianBite", 0, 120.0, true, None);
+        let mut bite = (*stats("WeaponKarkianBite", 0, 120.0, true, None)).clone();
         bite.fallback = false;
-        n.arsenal = vec![bite, bump];
+        n.arsenal = vec![bite.into(), bump.into()];
         n.weapon_timer = 100.0;
         n.fire_timer = 8.0;
         n.switch_to_best_weapon(Some((60.0, 16.0, false, true)));
@@ -6985,7 +6951,7 @@ mod weapon_choice_tests {
 
 /// Enhancement: bodies (dead or unconscious) found by guards raise the alarm (setting BodyAlarms).
 pub fn body_alarms() -> bool {
-    crate::settings::get("BodyAlarms") > 0.5
+    setting!("BodyAlarms") > 0.5
 }
 
 fn me_center_of(blockers: &Blockers, b: usize) -> DVec3 {
@@ -7029,7 +6995,7 @@ pub fn carcass_swap_system(
             }
             let d = assets.classes.defaults(&class);
             let Some(Value::Path(mesh)) = find(&d, "Mesh3").cloned() else { continue };
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             let mut at = npc.body.as_ref().map(|b| b.location).unwrap_or_else(|| blockers.list[npc.blocker].center);
             // Up to the surface.
             for _ in 0..64 {
@@ -7049,7 +7015,7 @@ pub fn carcass_swap_system(
         let Some(class) = npc.swap_carcass.take() else {
             continue;
         };
-        *vis = Visibility::Hidden;
+        vis.set_if_neq(Visibility::Hidden);
         npc.carried = true;
         npc.searched = true;
         let at = blockers.list[npc.blocker].center;
@@ -7102,7 +7068,7 @@ fn frob_door(lvl: &dx_level::Level, mv: &Movers, i: usize, me: usize) -> bool {
         return true;
     }
     let rt = &mv.rt[i];
-    if rt.frobbable.unwrap_or(info.frobbable) && rt.waiting_pawn.map_or(true, |w| w == me) && !door_cooling(i) {
+    if rt.frobbable.unwrap_or(info.frobbable) && rt.waiting_pawn.is_none_or(|w| w == me) && !door_cooling(i) {
         if let Ok(mut m) = DOOR_FROBBED.lock() {
             m.get_or_insert_with(std::collections::HashMap::new).insert(i, std::time::Instant::now());
         }

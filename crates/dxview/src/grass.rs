@@ -23,7 +23,7 @@ pub const GRASS: &[(&str, u8)] = &[("ClenGrenGrass_A", 0), ("LiteGrenGrass_A", 1
 const DATA_W: u32 = 1024;
 
 pub fn level() -> u8 {
-    crate::settings::get("Grass").round().clamp(0.0, 2.0) as u8
+    setting!("Grass").round().clamp(0.0, 2.0) as u8
 }
 
 /// (tiles packed at most, blade slots per tile, full-density reach m, far edge m) by level.
@@ -44,7 +44,7 @@ fn far_budget(l: u8) -> (usize, u32, f32, f32, f32) {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
 pub struct GrassUniform {
     pub a: Vec4,
     pub wind: Vec4,
@@ -202,7 +202,7 @@ pub fn grass_system(
         for l in &g.layers {
             if let Some((e, ..)) = l.drawn {
                 if let Ok(mut v) = vis.get_mut(e) {
-                    *v = Visibility::Hidden;
+                    v.set_if_neq(Visibility::Hidden);
                 }
             }
         }
@@ -281,7 +281,7 @@ pub fn grass_system(
         let Some((e, mat, data, _)) = l.drawn.clone() else { return };
         if let Ok(mut v) = vis.get_mut(e) {
             if *v != Visibility::Inherited {
-                *v = Visibility::Inherited;
+                v.set_if_neq(Visibility::Inherited);
             }
         }
         if l.last_t < 0.0 || eye.distance(l.last_eye) > step || now - l.last_t > every {
@@ -307,16 +307,27 @@ pub fn grass_system(
                 }
             }
         }
-        let Some(mut m) = mats.get_mut(&mat) else { return };
+        // The material is written only when something in it changed (a write re-prepares it on the render
+        // thread): the shader reads the eye from the view, and the pushes are quantised to 2 cm.
         let w = 0.35f32;
-        m.params = GrassUniform {
+        let params = GrassUniform {
             // a.z: 0 = the near blades; else where the far clumps start fading in (m).
             a: Vec4::new(l.near.len() as f32, per as f32, if far_layer { fstart } else { 0.0 }, lv as f32),
             // A light breeze off the sea with gusts (a direction and strength of its own; ours).
             wind: Vec4::new(0.8, 0.6, 0.05 * w, 0.35 * w),
-            eye: eye.extend(near),
+            eye: Vec3::ZERO.extend(near),
             b: Vec4::new(1.0, if far_layer { 0.0 } else { n as f32 }, 1.0, reach),
         };
-        m.pushes = pushes;
+        let mut q = pushes;
+        for p in q.iter_mut() {
+            *p = (*p * 50.0).round() / 50.0;
+        }
+        let same = mats.get(&mat).is_some_and(|m| m.params == params && m.pushes == q);
+        if !same {
+            if let Some(mut m) = mats.get_mut(&mat) {
+                m.params = params;
+                m.pushes = q;
+            }
+        }
     }
 }

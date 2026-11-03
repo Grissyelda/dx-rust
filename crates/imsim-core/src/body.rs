@@ -23,6 +23,8 @@ pub struct Body {
     pub landed_vz: Option<f64>,
 }
 
+// (Unreal's own literal, not sqrt(1/2): the engine compares against exactly this.)
+#[allow(clippy::approx_constant)]
 const WALKABLE_Z: f64 = 0.7071;
 
 impl Body {

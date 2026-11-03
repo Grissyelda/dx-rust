@@ -14,7 +14,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor, ImageFilterMode};
 
 pub fn skyline_on() -> bool {
-    crate::settings::get("Skyline") > 0.5
+    setting!("Skyline") > 0.5
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -91,7 +91,7 @@ pub fn skyline_system(
         let m = lvl.name.to_ascii_lowercase();
         if !outdoors || m.starts_with("00_intro") || m.starts_with("99_endgame") {
             for mut v in &mut panels {
-                *v = Visibility::Inherited;
+                v.set_if_neq(Visibility::Inherited);
             }
             return;
         }
@@ -107,7 +107,7 @@ pub fn skyline_system(
             photo = build_photo_skyline(&mut commands, &mut meshes, &mut materials, &mut images, lvl, centre, half, &mut seed);
         }
         for mut v in &mut panels {
-            *v = if photo { Visibility::Hidden } else { Visibility::Inherited };
+            v.set_if_neq(if photo { Visibility::Hidden } else { Visibility::Inherited });
         }
     }
 }
@@ -176,9 +176,9 @@ pub fn panorama(lvl: &dx_level::Level) -> Option<Panorama> {
     let (mut e_lo, mut e_hi) = (f32::MAX, f32::MIN);
     for b in lvl.batches.iter().filter(|b| b.sky && b.class == dx_level::SurfaceClass::Masked) {
         let Some(ti) = b.texture else { continue };
-        if !decoded.contains_key(&ti) {
+        if let std::collections::hash_map::Entry::Vacant(e) = decoded.entry(ti) {
             let Some(px) = mip0_rgba(&lvl.textures[ti]) else { continue };
-            decoded.insert(ti, px);
+            e.insert(px);
         }
         for t in b.indices.chunks_exact(3) {
             let p = [0, 1, 2].map(|k| Vec3::from(b.positions[t[k] as usize]) - origin);

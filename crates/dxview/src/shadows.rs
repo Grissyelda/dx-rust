@@ -15,7 +15,19 @@ use dx_level::ue_to_bevy;
 use glam::DVec3;
 
 #[derive(Component)]
+#[require(ShadowTrace)]
 pub struct ShadowOf(pub Option<Entity>);
+
+/// The last trace down from the body (kept while it stands still: one trace per pawn per frame was this
+/// system's cost). `hit` = (point, normal, fraction) or None when nothing was under it.
+#[derive(Component, Default)]
+pub struct ShadowTrace {
+    center: Option<DVec3>,
+    hit: Option<(DVec3, DVec3, f64)>,
+}
+
+/// Blobs farther than this from the eye aren't drawn (Unreal units).
+const FAR: f64 = 2400.0;
 
 /// The entity drawing the batch mesh.
 #[derive(Component)]
@@ -60,8 +72,9 @@ pub fn shadow_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     sa: Option<Res<ShadowAssets>>,
     pawns: Query<(Entity, &Npc, &Deco)>,
-    mut shadows: Query<(Entity, &ShadowOf, &mut Transform, &mut Visibility)>,
+    mut shadows: Query<(Entity, &ShadowOf, &mut Transform, &mut Visibility, &mut ShadowTrace)>,
     mirrors: Option<Res<crate::mirror::Mirrors>>,
+    mut last_hash: Local<u64>,
 ) {
     let _prof = crate::prof::scope("shadows::shadow_system");
     let Some(sa) = sa else {
@@ -90,7 +103,8 @@ pub fn shadow_system(
     };
     let lvl = &level.0;
     // One shadow per pawn, plus the player's (None).
-    let have: Vec<Option<Entity>> = shadows.iter().map(|(_, s, _, _)| s.0).collect();
+    let have: std::collections::HashSet<Option<Entity>> = shadows.iter().map(|(_, s, ..)| s.0).collect();
+    let eye = player.body.location;
     for (e, _, _) in &pawns {
         if !have.contains(&Some(e)) {
             commands.spawn((
@@ -118,12 +132,12 @@ pub fn shadow_system(
             ShadowOf(None),
         ));
     }
-    for (se, of, mut tf, mut vis) in &mut shadows {
+    for (se, of, mut tf, mut vis, mut cache) in &mut shadows {
         let (center, radius, height, scale) = match of.0 {
             // No body to shadow while a cut scene has the camera (the player isn't drawn: the intro, the endings).
             // (With the first-person body JC has a body of his own; the blob under it looked like a stain.)
             None if crate::cinematic::active() || crate::consys::third_person() || crate::bodyfx::fp_on() => {
-                *vis = Visibility::Hidden;
+                vis.set_if_neq(Visibility::Hidden);
                 continue;
             }
             None => (
@@ -137,7 +151,7 @@ pub fn shadow_system(
                     (d.body.location, n.params.radius, n.params.height, n.shadow_scale)
                 }
                 Ok(_) => {
-                    *vis = Visibility::Hidden;
+                    vis.set_if_neq(Visibility::Hidden);
                     continue;
                 }
                 Err(_) => match birds.iter().find(|b| b.0 == pe) {
@@ -149,51 +163,76 @@ pub fn shadow_system(
                 },
             },
         };
-        let end = center - DVec3::new(0.0, 0.0, 480.0);
-        let h = lvl.collision.trace(center, end, DVec3::ZERO);
-        if h.fraction >= 1.0 {
-            *vis = Visibility::Hidden;
+        if center.distance(eye) > FAR {
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         }
-        let hit = center + (end - center) * h.fraction;
+        // Trace down only when the body moved.
+        if cache.center != Some(center) {
+            let end = center - DVec3::new(0.0, 0.0, 480.0);
+            let h = lvl.collision.trace(center, end, DVec3::ZERO);
+            cache.center = Some(center);
+            cache.hit = (h.fraction < 1.0).then(|| (center + (end - center) * h.fraction, h.normal, h.fraction));
+        }
+        let Some((hit, normal, _)) = cache.hit else {
+            vis.set_if_neq(Visibility::Hidden);
+            continue;
+        };
         let dist = (hit - center).length();
         let ds = ((radius / 15.0) - ((dist - height) / 130.0)) as f32 * scale;
         if ds <= 0.0 {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         }
         // Not on a mirrored floor: the reflection shows the pawn itself, and a dark blob over it reads as a smudge.
         if mirrors.as_ref().is_some_and(|m| m.on_mirror(Vec3::from(ue_to_bevy(hit.as_vec3().to_array())))) {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
             continue;
         }
-        let at = hit + h.normal * 0.5;
-        let n = Vec3::from(ue_to_bevy([h.normal.x as f32, h.normal.y as f32, h.normal.z as f32])).normalize_or(Vec3::Y);
+        let at = hit + normal * 0.5;
+        let n = Vec3::from(ue_to_bevy([normal.x as f32, normal.y as f32, normal.z as f32])).normalize_or(Vec3::Y);
         let side = sa.size * ds * dx_level::METERS_PER_UNIT;
-        *tf = Transform::from_translation(Vec3::from(ue_to_bevy(at.as_vec3().to_array())))
+        let want = Transform::from_translation(Vec3::from(ue_to_bevy(at.as_vec3().to_array())))
             .with_rotation(Quat::from_rotation_arc(Vec3::Y, n))
             .with_scale(Vec3::new(side, 1.0, side));
-        if *vis != Visibility::Inherited {
-            *vis = Visibility::Inherited;
-        }
+        tf.set_if_neq(want);
+        vis.set_if_neq(Visibility::Inherited);
     }
-    // Every shown blob into the batch mesh; the rest of its quads collapse to a point.
-    let Some(mut mesh) = meshes.get_mut(&sa.batch) else { return };
+    // Every shown blob into the batch mesh; the rest of its quads collapse to a point. The mesh is rewritten
+    // (in place) only when a blob moved or changed.
     let mut pos: Vec<[f32; 3]> = Vec::with_capacity(CAP * 4);
     let mut nrm: Vec<[f32; 3]> = Vec::with_capacity(CAP * 4);
-    for (_, _, tf, vis) in &shadows {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (_, _, tf, vis, _) in &shadows {
         if *vis == Visibility::Hidden || pos.len() >= CAP * 4 {
             continue;
         }
         let m = tf.to_matrix();
         for c in [Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, -0.5), Vec3::new(0.5, 0.0, 0.5), Vec3::new(-0.5, 0.0, 0.5)] {
-            pos.push(m.transform_point3(c).to_array());
+            let p = m.transform_point3(c).to_array();
+            p[0].to_bits().hash(&mut hasher);
+            p[1].to_bits().hash(&mut hasher);
+            p[2].to_bits().hash(&mut hasher);
+            pos.push(p);
         }
         let n = (tf.rotation * Vec3::Y).to_array();
         nrm.extend_from_slice(&[n; 4]);
     }
-    pos.resize(CAP * 4, [0.0; 3]);
-    nrm.resize(CAP * 4, [0.0, 1.0, 0.0]);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
+    let h = hasher.finish();
+    if h == *last_hash {
+        return;
+    }
+    *last_hash = h;
+    let Some(mut mesh) = meshes.get_mut(&sa.batch) else { return };
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(dst)) = mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+        for (i, d) in dst.iter_mut().enumerate() {
+            *d = pos.get(i).copied().unwrap_or([0.0; 3]);
+        }
+    }
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(dst)) = mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL) {
+        for (i, d) in dst.iter_mut().enumerate() {
+            *d = nrm.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+        }
+    }
 }

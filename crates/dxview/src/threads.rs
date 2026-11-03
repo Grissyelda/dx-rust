@@ -47,7 +47,7 @@ pub fn task_pools() -> TaskPoolPlugin {
     let requested = std::env::var("DXVIEW_THREADS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or_else(|| STEPS[step_index(crate::settings::get("WorkerThreads")) as usize]);
+        .unwrap_or_else(|| STEPS[step_index(setting!("WorkerThreads")) as usize]);
     let compute = compute_threads(hw, requested);
     println!("dxview: {hw} hardware threads, {compute} worker threads");
     TaskPoolPlugin {

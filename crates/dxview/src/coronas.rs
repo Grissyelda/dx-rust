@@ -21,7 +21,7 @@ pub struct CoronaSprite(usize);
 /// drawn glow - a bright core, a wide soft halo, a faint horizontal streak and four thin diffraction spikes, in the
 /// light's colour - that fades in and out over a moment instead of popping when something passes in front.
 pub fn modern() -> bool {
-    crate::settings::get("ModernCoronas") > 0.5
+    setting!("ModernCoronas") > 0.5
 }
 
 /// The modern glow picture for a light colour (sRGB, straight alpha).
@@ -148,6 +148,7 @@ pub fn corona_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut core_state: Local<CoreState>,
+    mut los: Local<Vec<(f32, bool)>>,
 ) {
     let _prof = crate::prof::scope("coronas::corona_system");
     if crate::loader::new_map(&mut map_gen) {
@@ -173,18 +174,32 @@ pub fn corona_system(
     let modern = modern();
     let dt = time.delta_secs().min(0.1);
     let mut cores: Vec<(Vec3, [f32; 3], f32, f32)> = Vec::new();
+    let now = time.elapsed_secs();
+    if los.len() != level.0.coronas.len() {
+        los.clear();
+        los.resize(level.0.coronas.len(), (-1.0, false));
+    }
     for (_, c, mut node, mut vis, mut img) in &mut q {
         let co = &level.0.coronas[c.0];
         let p = DVec3::new(co.pos[0] as f64, co.pos[1] as f64, co.pos[2] as f64);
         let mut shown = false;
         let mut strength = 1.0f32;
-        if p.distance(eye) < 2000.0 && level.0.collision.trace(p, eye, DVec3::ZERO).fraction >= 1.0
-        {
+        // The cheap tests first (range, in front of the camera); the line of sight is traced at 10 Hz per corona
+        // and remembered (one trace per frame for every lamp in range was most of this system).
+        let to = Vec3::from(ue_to_bevy(co.pos)) - tf.translation;
+        let cosv = to.normalize_or_zero().dot(*tf.forward());
+        let in_range = cosv > 0.0 && p.distance(eye) < 2000.0;
+        let clear = in_range && {
+            let l = &mut los[c.0];
+            if now - l.0 >= 0.1 {
+                l.0 = now + (c.0 % 6) as f32 * 0.016;
+                l.1 = level.0.collision.trace(p, eye, DVec3::ZERO).fraction >= 1.0;
+            }
+            l.1
+        };
+        if clear {
             if let Ok(v) = camera.world_to_viewport(gt, Vec3::from(ue_to_bevy(co.pos))) {
-                // In front of the camera only.
-                let to = Vec3::from(ue_to_bevy(co.pos)) - tf.translation;
-                let cosv = to.normalize_or_zero().dot(*tf.forward());
-                if cosv > 0.0 {
+                {
                     let mut size = co.draw_scale * width * 0.2;
                     if modern {
                         // Modern: a bloom the size of a real glow round the bulb (about two metres across at
@@ -196,10 +211,13 @@ pub fn corona_system(
                         size = (r_px * 2.0).clamp(width * 0.02, width * 0.12);
                         strength = 0.6 + 0.4 * cosv * cosv;
                     }
-                    node.left = Val::Px(v.x - size * 0.5);
-                    node.top = Val::Px(v.y - size * 0.5);
-                    node.width = Val::Px(size);
-                    node.height = Val::Px(size);
+                    let (l, t, w) = (Val::Px(v.x - size * 0.5), Val::Px(v.y - size * 0.5), Val::Px(size));
+                    if node.left != l || node.top != t || node.width != w {
+                        node.left = l;
+                        node.top = t;
+                        node.width = w;
+                        node.height = w;
+                    }
                     shown = true;
                 }
             }
@@ -210,11 +228,14 @@ pub fn corona_system(
             let want = if shown { strength } else { 0.0 };
             *f += (want - *f) * (dt * 8.0).min(1.0);
             let a = *f;
-            img.color = Color::srgba(1.0, 1.0, 1.0, a);
+            let col = Color::srgba(1.0, 1.0, 1.0, a);
+            if img.color != col {
+                img.color = col;
+            }
             if a > 0.01 {
                 cores.push((Vec3::from(ue_to_bevy(co.pos)), co.color, a, co.draw_scale.clamp(0.3, 2.0)));
             }
-            *vis = if a > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
+            vis.set_if_neq(if a > 0.01 { Visibility::Inherited } else { Visibility::Hidden });
         } else {
             if shown {
                 cores.push((Vec3::from(ue_to_bevy(co.pos)), co.color, 1.0, co.draw_scale.clamp(0.3, 2.0)));
@@ -222,11 +243,7 @@ pub fn corona_system(
             if img.color != Color::WHITE {
                 img.color = Color::WHITE;
             }
-            *vis = if shown {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            };
+            vis.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
     write_cores(&mut commands, &mut core_state, &mut meshes, &mut mats, &mut images, tf, &cores);
@@ -238,6 +255,8 @@ pub fn corona_system(
 pub struct CoreState {
     mesh: Option<(Handle<Mesh>, Entity)>,
     gen: u64,
+    /// Cores written last time (0 = the mesh holds collapsed quads).
+    written: usize,
 }
 
 const CORE_CAP: usize = 64;
@@ -310,21 +329,38 @@ fn write_cores(
         st.mesh = Some((h, e));
     }
     let Some((h, _)) = &st.mesh else { return };
+    // Nothing to show and nothing shown last time: the mesh already holds collapsed quads.
+    let n = if on { cores.len().min(CORE_CAP) } else { 0 };
+    if n == 0 && st.written == 0 {
+        return;
+    }
     let Some(mut m) = meshes.get_mut(h) else { return };
     let right = *tf.right();
     let up = *tf.up();
-    let mut pos = vec![[0.0f32; 3]; CORE_CAP * 4];
-    let mut col = vec![[0.0f32; 4]; CORE_CAP * 4];
-    if on {
-        for (i, (p, c, a, scale)) in cores.iter().take(CORE_CAP).enumerate() {
-            // About 9 units across at draw scale 1: the bulb itself.
-            let r = 4.5 * scale * dx_level::METERS_PER_UNIT;
-            for (k, (sx, sy)) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].into_iter().enumerate() {
-                pos[i * 4 + k] = (*p + right * r * sx + up * r * sy).to_array();
-                col[i * 4 + k] = [c[0] * a, c[1] * a, c[2] * a, 1.0];
-            }
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = m.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+        for (i, p) in pos.iter_mut().enumerate() {
+            let c = i / 4;
+            *p = if c < n {
+                let (at, _, _, scale) = cores[c];
+                // About 9 units across at draw scale 1: the bulb itself.
+                let r = 4.5 * scale * dx_level::METERS_PER_UNIT;
+                let (sx, sy) = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)][i % 4];
+                (at + right * r * sx + up * r * sy).to_array()
+            } else {
+                [0.0; 3]
+            };
         }
     }
-    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x4(col)) = m.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+        for (i, cl) in col.iter_mut().enumerate() {
+            let c = i / 4;
+            *cl = if c < n {
+                let (_, cc, a, _) = cores[c];
+                [cc[0] * a, cc[1] * a, cc[2] * a, 1.0]
+            } else {
+                [0.0; 4]
+            };
+        }
+    }
+    st.written = n;
 }

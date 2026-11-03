@@ -267,7 +267,7 @@ pub fn loader_system(world: &mut World) {
             }
             *last = key;
         }
-        unreal_pkg::paths::set_hd_textures_on(crate::settings::get("HDTextures") > 0.5);
+        unreal_pkg::paths::set_hd_textures_on(setting!("HDTextures") > 0.5);
         dx_level::skincolor::OPT_FIXES.store(crate::optfixes::fixes(), std::sync::atomic::Ordering::Relaxed);
         crate::hdtp::apply_dds_filter();
         crate::hdtp::build_layer();
@@ -459,6 +459,8 @@ fn reset_modules() {
     crate::cinematic::reset_level();
     crate::scriptworld::reset_level();
     crate::impacts::reset_level();
+    crate::augdisplay::reset_level();
+    crate::skeletal::reset_level();
 }
 
 /// Resources the app creates once with defaults (main.rs); the map-building systems re-insert the rest.
@@ -527,7 +529,7 @@ pub fn loading_screen_system(
     }
     let Some(assets) = assets.as_mut() else { return };
     let Some(win) = windows.iter().next() else { return };
-    if let Some(e) = spawn_loading_words(&mut commands, assets, &mut images, &mut layers, win, &mut *font, 1000) {
+    if let Some(e) = spawn_loading_words(&mut commands, assets, &mut images, &mut layers, win, &mut font, 1000) {
         commands.entity(e).insert(LoadingScreen);
     }
 }

@@ -28,8 +28,10 @@ struct Particle {
     pos: DVec3,
     vel: DVec3,
     life: f32,
-    entity: Entity,
 }
+
+/// Quads in a generator's batch mesh (ParticleIterator.Particles[64]).
+const CAP: usize = 64;
 
 struct Gen {
     tag: String,
@@ -58,6 +60,11 @@ struct Gen {
     /// Texture height / width.
     aspect: f32,
     mat: Option<Handle<StandardMaterial>>,
+    /// The entity drawing every particle of this generator as one mesh of CAP camera-facing quads (positions and
+    /// colours rewritten in place while any particle lives), and that mesh.
+    batch: Option<(Entity, Handle<Mesh>)>,
+    /// Particles drawn last time (0 = the mesh holds collapsed quads already).
+    drawn: usize,
     /// Actor.LifeSpan: the generator stops after this long and goes once its particles have died.
     lifespan: Option<f32>,
     /// Sound played for each burst (ParticleGenerator.spawnSound).
@@ -102,12 +109,30 @@ static ADD_GEN: Mutex<Vec<Gen>> = Mutex::new(Vec::new());
 pub struct Particles {
     gens: Vec<Gen>,
     built: bool,
-    quad: Option<Handle<Mesh>>,
     seed: u64,
 }
 
+/// A generator's batch mesh entity.
 #[derive(Component)]
 pub struct ParticleSprite;
+
+/// The batch mesh at its capacity: positions and colours written in place, UVs and indices fixed.
+fn batch_mesh() -> Mesh {
+    let mut uv = Vec::with_capacity(CAP * 4);
+    let mut idx: Vec<u32> = Vec::with_capacity(CAP * 6);
+    for q in 0..CAP as u32 {
+        uv.extend([[0.0f32, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
+        let b = q * 4;
+        idx.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+    let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::RENDER_WORLD | bevy::asset::RenderAssetUsages::MAIN_WORLD);
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; CAP * 4]);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; CAP * 4]);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; CAP * 4]);
+    m.insert_indices(bevy::mesh::Indices::U32(idx));
+    m
+}
 
 fn f(p: &[Property], n: &str, d: f32) -> f32 {
     match find(p, n) {
@@ -166,6 +191,8 @@ fn build(level: &dx_level::Level, blockers: &crate::actors::Blockers) -> Vec<Gen
             size: 0.0,
             aspect: 1.0,
             mat: None,
+            batch: None,
+            drawn: 0,
             lifespan: None,
             spawn_sound: None,
             track: None,
@@ -206,6 +233,8 @@ fn build(level: &dx_level::Level, blockers: &crate::actors::Blockers) -> Vec<Gen
             size: 0.0,
             aspect: 1.0,
             mat: None,
+            batch: None,
+            drawn: 0,
             lifespan: None,
             spawn_sound: None,
             track: None,
@@ -281,6 +310,8 @@ fn spec_gen(g: GenSpec) -> Gen {
         size: 0.0,
         aspect: 1.0,
         mat: None,
+        batch: None,
+        drawn: 0,
         lifespan: g.lifespan,
         track: None,
         spawn_sound: g.spawn_sound,
@@ -311,7 +342,7 @@ pub fn particle_system(
     fixtures: Res<crate::fixtures::Fixtures>,
     mut st: ResMut<Particles>,
     cam: Single<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<ParticleSprite>)>,
-    mut sprites: Query<(&mut Transform, &mut Visibility), With<ParticleSprite>>,
+    mut sprites: Query<&mut Visibility, With<ParticleSprite>>,
     (mut assets, mut images, mut meshes, mut materials): (
         ResMut<RuntimeAssets>,
         ResMut<Assets<Image>>,
@@ -334,12 +365,12 @@ pub fn particle_system(
     if st.gens.is_empty() {
         return;
     }
-    let quad = st.quad.get_or_insert_with(|| meshes.add(Rectangle::new(1.0, 1.0))).clone();
     let dt = time.delta_secs().min(0.1);
     let inbox: Vec<(String, bool)> = INBOX.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     let eye = dx_level::bevy_to_ue(cam.translation.to_array());
     let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
     let look = cam.forward();
+    let (right, up) = (*cam.right(), *cam.up());
     let mut seed = st.seed;
     let mut rnd = move || {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -385,10 +416,8 @@ pub fn particle_system(
         };
         let frozen = !(d < 320.0 || (d < 4000.0 && in_front));
         if frozen {
-            for p in &g.parts {
-                if let Ok((_, mut v)) = sprites.get_mut(p.entity) {
-                    *v = Visibility::Hidden;
-                }
+            if let Some(mut v) = g.batch.as_ref().and_then(|(e, _)| sprites.get_mut(*e).ok()) {
+                v.set_if_neq(Visibility::Hidden);
             }
             continue;
         }
@@ -397,14 +426,7 @@ pub fn particle_system(
             let (w, h) = tex_size(&mut assets, &g.tex);
             g.size = w;
             g.aspect = h / w.max(1.0);
-            g.mat = Some(materials.add(StandardMaterial {
-                base_color_texture: img,
-                unlit: true,
-                double_sided: true,
-                cull_mode: None,
-                alpha_mode: AlphaMode::Add,
-                ..default()
-            }));
+            g.mat = Some(assets.sprites.material(&mut materials, img));
         }
         // Spew.
         if g.spewing {
@@ -429,18 +451,23 @@ pub fn particle_system(
                             };
                             vel += v * 0.2 * g.eject;
                         }
-                        let entity = commands
-                            .spawn((
-                                Mesh3d(quad.clone()),
-                                MeshMaterial3d(g.mat.clone().unwrap()),
-                                Transform::from_translation(Vec3::from(ue_to_bevy(g.pos.as_vec3().to_array())))
-                                    .with_scale(Vec3::ZERO),
-                                Visibility::Inherited,
-                                ParticleSprite,
-                                bevy::light::NotShadowCaster,
-                            ))
-                            .id();
-                        g.parts.push(Particle { pos: g.pos, vel, life: g.life, entity });
+                        if g.batch.is_none() {
+                            let h = meshes.add(batch_mesh());
+                            let e = commands
+                                .spawn((
+                                    Mesh3d(h.clone()),
+                                    MeshMaterial3d(g.mat.clone().unwrap()),
+                                    Transform::IDENTITY,
+                                    Visibility::Inherited,
+                                    bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
+                                    bevy::camera::visibility::NoAutoAabb,
+                                    ParticleSprite,
+                                    bevy::light::NotShadowCaster,
+                                ))
+                                .id();
+                            g.batch = Some((e, h));
+                        }
+                        g.parts.push(Particle { pos: g.pos, vel, life: g.life });
                     }
                 }
             }
@@ -454,31 +481,69 @@ pub fn particle_system(
         g.parts.retain_mut(|p| {
             p.life -= dt;
             if p.life <= 0.0 {
-                commands.entity(p.entity).despawn();
                 return false;
             }
             if gravity {
                 p.vel.z += -950.0 * dt as f64;
             }
             p.pos += (p.vel + DVec3::new(0.0, 0.0, if gravity { 0.0 } else { rise })) * dt as f64;
-            let k = 1.0 - p.life / life0;
-            let grow = if scale { 1.0 + 2.0 * k } else { 1.0 };
-            let glow = if fade { 1.0 - k } else { 1.0 };
-            if let Ok((mut tf, mut v)) = sprites.get_mut(p.entity) {
-                tf.translation = Vec3::from(ue_to_bevy(p.pos.as_vec3().to_array()));
-                tf.rotation = cam.rotation;
-                // Fading is drawn as shrinking brightness; additive blending makes a smaller sprite read dimmer.
-                // The software renderer never draws a sprite under a pixel or so: tiny water drops stay visible.
-                let w = (size * ds * grow * glow.max(0.15).sqrt()).max(p.pos.distance(eye) as f32 * 0.0025);
-                tf.scale = Vec3::new(w, w * aspect, w) * dx_level::METERS_PER_UNIT;
-                *v = Visibility::Inherited;
-            }
             true
         });
+        // Every living particle into the batch: a camera-facing quad, its size and brightness from its age (fading
+        // is drawn as shrinking brightness; additive blending makes a smaller sprite read dimmer; the software
+        // renderer never drew a sprite under a pixel or so: tiny water drops stay visible).
+        let Some((be, bh)) = g.batch.as_ref() else { continue };
+        if g.parts.is_empty() && g.drawn == 0 {
+            if let Ok(mut v) = sprites.get_mut(*be) {
+                v.set_if_neq(Visibility::Hidden);
+            }
+            continue;
+        }
+        if let Ok(mut v) = sprites.get_mut(*be) {
+            v.set_if_neq(Visibility::Inherited);
+        }
+        let n = g.parts.len().min(CAP);
+        if let Some(mut m) = meshes.get_mut(bh) {
+            let corners = [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)];
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = m.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+                for (i, p) in g.parts.iter().take(n).enumerate() {
+                    let k = 1.0 - p.life / life0;
+                    let grow = if scale { 1.0 + 2.0 * k } else { 1.0 };
+                    let glow = if fade { 1.0 - k } else { 1.0 };
+                    let w = (size * ds * grow * glow.max(0.15).sqrt()).max(p.pos.distance(eye) as f32 * 0.0025) * dx_level::METERS_PER_UNIT;
+                    let c = Vec3::from(ue_to_bevy(p.pos.as_vec3().to_array()));
+                    for (q, (sx, sy)) in corners.into_iter().enumerate() {
+                        pos[i * 4 + q] = (c + right * (w * sx) + up * (w * aspect * sy)).to_array();
+                    }
+                }
+                for v in pos[n * 4..].iter_mut() {
+                    *v = [0.0; 3];
+                }
+            }
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x4(col)) = m.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+                for (i, _) in g.parts.iter().take(n).enumerate() {
+                    for q in 0..4 {
+                        col[i * 4 + q] = [1.0, 1.0, 1.0, 1.0];
+                    }
+                }
+                for v in col[n * 4..].iter_mut() {
+                    *v = [0.0; 4];
+                }
+            }
+        }
+        g.drawn = n;
     }
     st.seed = rnd().1;
-    // LifeSpan ran out and the last particle has died: the generator goes.
-    st.gens.retain(|g| !(g.lifespan.is_some_and(|t| t <= 0.0) && g.parts.is_empty()));
+    // LifeSpan ran out and the last particle has died: the generator goes (with its batch).
+    st.gens.retain(|g| {
+        let gone = g.lifespan.is_some_and(|t| t <= 0.0) && g.parts.is_empty();
+        if gone {
+            if let Some((e, _)) = &g.batch {
+                commands.entity(*e).despawn();
+            }
+        }
+        !gone
+    });
 }
 
 /// A new map: drop generators queued for the old one.

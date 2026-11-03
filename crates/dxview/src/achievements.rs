@@ -209,7 +209,7 @@ pub fn choice(con: &str, text: &str) {
     if con.eq_ignore_ascii_case("ClubMercedesConvo1") && text.trim().eq_ignore_ascii_case("Sure.") {
         unlock("sure");
     }
-    if con.eq_ignore_ascii_case("M11MeetGunther") && crate::util::contains_ci(&text, "laputan machine") {
+    if con.eq_ignore_ascii_case("M11MeetGunther") && crate::util::contains_ci(text, "laputan machine") {
         unlock("notmachine");
     }
 }
@@ -300,9 +300,7 @@ pub struct Watch {
 }
 
 fn mission_of(lvl: &dx_level::Level) -> i32 {
-    lvl.actors
-        .iter()
-        .find(|a| a.class == "DeusExLevelInfo")
+    lvl.level_info()
         .and_then(|a| match unreal_pkg::props::find(&a.props, "MissionNumber") {
             Some(unreal_pkg::props::Value::Int(n)) => Some(*n),
             Some(unreal_pkg::props::Value::Byte(n)) => Some(*n as i32),
@@ -567,7 +565,7 @@ fn draw_popup(
     let layer = st.layer.get_or_insert_with(|| crate::menuui::layer(commands, images, layers, 30));
     let Some((id, t)) = st.popup.as_mut() else {
         if let Ok((_, mut v, _)) = nodes.get_mut(layer.e) {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
         return;
     };
@@ -576,7 +574,7 @@ fn draw_popup(
     if *t > LIFE {
         st.popup = None;
         if let Ok((_, mut v, _)) = nodes.get_mut(layer.e) {
-            *v = Visibility::Hidden;
+            v.set_if_neq(Visibility::Hidden);
         }
         return;
     }

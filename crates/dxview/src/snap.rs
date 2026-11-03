@@ -73,7 +73,7 @@ pub fn pick_in(rects: &[[f32; 4]], at: Vec2, dir: Vec2) -> Option<Vec2> {
     let inside = |r: &[f32; 4]| at.x >= r[0] && at.x < r[2] && at.y >= r[1] && at.y < r[3];
     // From inside a widget, measure from its centre (so a wide button doesn't skew the direction) and skip
     // widgets overlapping it along the move.
-    let from = rects.iter().filter(|r| inside(r)).last();
+    let from = rects.iter().rfind(|r| inside(r));
     let origin = from.map(centre).unwrap_or(at);
     let mut best: Option<(f32, Vec2)> = None;
     for r in rects {

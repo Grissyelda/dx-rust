@@ -24,7 +24,7 @@ use glam::DVec3;
 use std::sync::Mutex;
 
 pub fn enabled() -> bool {
-    crate::settings::get("ThirdPerson") > 0.5
+    setting!("ThirdPerson") > 0.5
 }
 
 #[derive(Clone, Copy, Default)]
@@ -74,7 +74,7 @@ static STATE: Mutex<State> = Mutex::new(State {
 
 /// The free orbit camera is in use (third person active with Third Person Camera = Free).
 pub fn free() -> bool {
-    active() && crate::settings::get("ThirdPersonCamera") < 0.5
+    active() && setting!("ThirdPersonCamera") < 0.5
 }
 
 /// Turn the orbit camera (radians, FlyCam's convention: yaw left positive, pitch up positive).

@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use glam::DVec3;
 
 pub fn on() -> bool {
-    crate::settings::get("Elements") > 0.5
+    setting!("Elements") > 0.5
 }
 
 const SHOCK_RANGE: f64 = 600.0;

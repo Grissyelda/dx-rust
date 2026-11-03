@@ -222,7 +222,7 @@ pub fn update_face(f: &mut Face, mesh: &dx_level::actors::AnimMesh, dt: f32) -> 
     // Enhancement "Smooth Lip Sync" (after Joe Wintergreen's lipsync mod): phonemes blend over 0.16 s instead of
     // snapping in 0.1, the mouth eases shut over 0.25 s, blinks are checked every 0.5 s and play at a fifth of the
     // speed. (Joe's 0.36 s blend never let the mouth reach a shape before the next one came: lips barely parted.)
-    let smooth = crate::settings::get("SmoothLipSync") > 0.5;
+    let smooth = setting!("SmoothLipSync") > 0.5;
     let (speak_t, close_t, blink_every, blink_rate) = if smooth { (0.16, 0.25, 0.5, 0.2) } else { (0.1, 0.1, 2.0, 1.0) };
     let closed = seq_start(mesh, "MouthClosed").map(|s| s.0);
     let cur = |f: &Face| f.mouth.map(|(a, b, k)| if k >= 0.5 { b } else { a });
@@ -1145,8 +1145,26 @@ pub fn animate(
     }
     if crate::prof::on() {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 5 == 0 {
+        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(5) {
             println!("PROF animate: {n_all} animated, {n_vis} visible, {n_up} posed ({n_gpu} on the GPU), {n_verts} CPU verts");
+        }
+    }
+}
+
+/// Poses vertex-animated mesh parts at frame `f` of the sequence at `start`, writing the positions into the
+/// meshes in place (no new buffers; the birds, fish and trash paper used to allocate theirs every frame).
+pub fn pose_parts_in_place(meshes: &mut Assets<Mesh>, mesh: &dx_level::actors::AnimMesh, start: usize, frames: usize, f: f32, parts: &[dx_level::actors::MeshPart], handles: &[Handle<Mesh>]) {
+    for (pi, hm) in handles.iter().enumerate() {
+        let Some(part) = parts.get(pi) else { continue };
+        let Some(mut m) = meshes.get_mut(hm) else { continue };
+        let pos = part.vert_ids.iter().map(|&v| ue_to_bevy(mesh.sample(start, frames, f, v as usize)));
+        match m.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x3(dst)) if dst.len() == part.vert_ids.len() => {
+                for (d, p) in dst.iter_mut().zip(pos) {
+                    *d = p;
+                }
+            }
+            _ => m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos.collect::<Vec<[f32; 3]>>()),
         }
     }
 }

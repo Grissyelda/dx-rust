@@ -99,7 +99,7 @@ fn profile_image() -> Image {
             let u = (x as f32 + 0.5) / W as f32;
             let v = (y as f32 + 0.5) / H as f32;
             let across = (u * std::f32::consts::PI).sin().powf(2.2);
-            let streak = 0.75 + 0.25 * ((v * 6.283 * 3.0 + u * 9.0).sin() * 0.5 + 0.5);
+            let streak = 0.75 + 0.25 * ((v * std::f32::consts::TAU * 3.0 + u * 9.0).sin() * 0.5 + 0.5);
             let a = (across * streak * 255.0) as u8;
             px.extend_from_slice(&[255, 255, 255, a]);
         }

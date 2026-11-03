@@ -284,7 +284,7 @@ pub fn grow(s: &Species, seed: u32) -> Plant {
     let mut ring_of: Vec<(u32, usize)> = vec![(u32::MAX, 0); nodes.len()];
     // Lumps and ridges on thick wood: two slow lobed waves round the section that drift along the branch, so the
     // section changes shape as it climbs (and the trunk isn't a lathe-turned pole).
-    let (g1, g2) = (rand(&mut rs) * 6.28, rand(&mut rs) * 6.28);
+    let (g1, g2) = (rand(&mut rs) * std::f32::consts::TAU, rand(&mut rs) * std::f32::consts::TAU);
     let ring = |plant: &mut Plant, i: usize, dir: Vec3, sides: usize, phase: f32| -> u32 {
         let n = &nodes[i];
         let rot = Quat::from_rotation_arc(Vec3::Y, dir.normalize_or(Vec3::Y));

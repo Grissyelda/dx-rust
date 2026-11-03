@@ -62,8 +62,6 @@ pub struct Projectile {
     pub life: f32,
     pub stuck: bool,
     pub stick: bool,
-    #[allow(dead_code)]
-    pub parts: Vec<(Handle<Mesh>, dx_level::actors::MeshPart)>,
     /// Gas clouds (Cloud: TearGas, PoisonGas): a growing, fading sprite that hurts everything in `radius` it can see.
     pub cloud: Option<CloudFx>,
     /// bExplodes (rockets): blastRadius. Any impact (or running out of life) explodes instead of a direct hit.
@@ -255,11 +253,14 @@ pub fn launch_system(
                 Visibility::default(),
             ))
             .id();
-        let mut parts = Vec::new();
+        let unlit = matches!(find(&d, "bUnlit"), Some(Value::Bool(true)));
         if let Some(Value::Path(mesh)) = find(&d, "Mesh") {
             let mesh = mesh.clone();
             let map = |p: [f32; 3]| ue_to_bevy(p);
-            if let Some((_m, ps, handles)) = spawn_mesh_parts(
+            if unlit {
+                // bUnlit (tracers): full bright, so every one draws the same shared meshes.
+                crate::weapons::spawn_mesh_parts_shared(&mesh, f("DrawScale", 1.0), &d, &mut assets, &mut images, &mut meshes, &mut materials, &mut commands, root);
+            } else if let Some((_m, ps, handles)) = spawn_mesh_parts(
                 &mesh,
                 f("DrawScale", 1.0),
                 &d,
@@ -273,19 +274,10 @@ pub fn launch_system(
                 None,
             ) {
                 let at = l.pos.as_vec3().to_array();
-                let unlit = matches!(find(&d, "bUnlit"), Some(Value::Bool(true)));
                 for (h, part) in handles.into_iter().zip(ps) {
                     if let Some(mut mm) = meshes.get_mut(&h) {
-                        let colors = if unlit {
-                            // bUnlit (Tracer): full bright.
-                            let n = mm.attribute(Mesh::ATTRIBUTE_POSITION).map(|a| a.len()).unwrap_or(0);
-                            vec![[1.0f32, 1.0, 1.0, 1.0]; n]
-                        } else {
-                            light_part(&part, at, [0, 0, 0], 1.0, &level.0.lights)
-                        };
-                        mm.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        mm.insert_attribute(Mesh::ATTRIBUTE_COLOR, light_part(&part, at, [0, 0, 0], 1.0, &level.0.lights));
                     }
-                    parts.push((h, part));
                 }
             }
         }
@@ -312,15 +304,8 @@ pub fn launch_system(
                     .or_else(|| assets.lib.load_wet(&tex).map(|t| t.width as f32))
                     .or_else(|| assets.lib.load_fire(&tex).map(|f| f.width as f32))
                     .unwrap_or(64.0);
-                let material = materials.add(StandardMaterial {
-                    base_color_texture: img,
-                    unlit: true,
-                    double_sided: true,
-                    cull_mode: None,
-                    alpha_mode: AlphaMode::Add,
-                    ..default()
-                });
-                let quad = meshes.add(Rectangle::new(1.0, 1.0));
+                let material = assets.sprites.material(&mut materials, img);
+                let quad = assets.sprites.quad(&mut meshes);
                 let sprite = commands
                     .spawn((
                         Mesh3d(quad),
@@ -438,7 +423,6 @@ pub fn launch_system(
                 && matches!(find(&d, "bStickToWall"), Some(Value::Bool(true)))
                 && !matches!(find(&d, "bExplodes"), Some(Value::Bool(true))),
             sprite: sprite_fx,
-            parts,
             explodes: if matches!(find(&d, "bExplodes"), Some(Value::Bool(true))) {
                 Some(if rigged { 576.0 } else { f("blastRadius", 128.0) as f64 })
             } else {
@@ -477,10 +461,11 @@ pub fn projectile_system(
         ResMut<crate::damage::PawnHits>,
         ResMut<crate::destruct::DecoHits>,
     ),
-    (cam, mut sprites, mut materials): (
+    (cam, mut sprites, mut materials, mut assets): (
         Single<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
-        Query<&mut Transform, (Without<Projectile>, Without<crate::FlyCam>)>,
+        Query<(&mut Transform, &mut MeshMaterial3d<StandardMaterial>), (Without<Projectile>, Without<crate::FlyCam>)>,
         ResMut<Assets<StandardMaterial>>,
+        ResMut<RuntimeAssets>,
     ),
     mut booms: ResMut<crate::explosion::Explosions>,
     mut trails: Local<Vec<u64>>,
@@ -531,16 +516,14 @@ pub fn projectile_system(
             };
             let v = 1.0 + fx.age;
             let scale = (-sm / (v * v) + sm + 1.0) * fx.min_scale;
-            if let Ok(mut st) = sprites.get_mut(fx.sprite) {
+            let glow = 1.0 / (v * v * v);
+            if let Ok((mut st, mut slot)) = sprites.get_mut(fx.sprite) {
                 st.scale =
                     Vec3::splat((scale * fx.tex_size * dx_level::METERS_PER_UNIT).max(0.001));
                 st.rotation = cam.rotation;
+                crate::sprite::apply(&mut slot, assets.sprites.faded(&mut materials, &fx.material, glow));
             }
             tf.rotation = Quat::IDENTITY;
-            let glow = 1.0 / (v * v * v);
-            if let Some(mut m) = materials.get_mut(&fx.material) {
-                m.base_color = Color::linear_rgb(glow, glow, glow);
-            }
         }
         if let Some(c) = p.cloud.as_mut() {
             // Cloud.Tick: grow (DrawScale = (-s/(1+t)^2 + s + 1) * MinDrawScale, s = Max/Min) and fade with the
@@ -554,16 +537,15 @@ pub fn projectile_system(
             let v = 1.0 + c.age;
             let scale = c.fixed.unwrap_or((-sm / (v * v) + sm + 1.0) * c.min_scale);
             let size = scale * c.tex_size * dx_level::METERS_PER_UNIT;
-            if let Ok(mut st) = sprites.get_mut(c.sprite) {
+            // ScaleGlow = LifeSpan / 2 (an sRGB value in the original's canvas).
+            let glow = (life * 0.5).clamp(0.0, 1.0).powf(2.2);
+            if let Ok((mut st, mut slot)) = sprites.get_mut(c.sprite) {
                 st.scale = Vec3::splat(size.max(0.001));
                 // Face the camera (the root has no rotation of its own for clouds).
                 st.rotation = cam.rotation;
+                crate::sprite::apply(&mut slot, assets.sprites.faded(&mut materials, &c.material, glow));
             }
             tf.rotation = Quat::IDENTITY;
-            let glow = (life * 0.5).clamp(0.0, 1.0);
-            if let Some(mut m) = materials.get_mut(&c.material) {
-                m.base_color = Color::srgb(glow, glow, glow);
-            }
             // Deviation: in the original the first Timer only comes as a pepper puff expires, 300 units out, so a
             // target right in front of the nozzle is never caught. A pawn the cloud reaches is gassed once at once.
             if from.is_none() || c.interval < 1.5 {
@@ -741,7 +723,7 @@ pub fn projectile_system(
             }
         }
         if let Some((bird, f)) = crate::critters::trace_birds(start, end) {
-            if f < h.fraction && ph_hit.map_or(true, |x| f < x.fraction) && p.explodes.is_none() {
+            if f < h.fraction && ph_hit.is_none_or(|x| f < x.fraction) && p.explodes.is_none() {
                 crate::critters::hit_bird(bird, p.damage);
                 p.impact(start + (end - start) * f);
                 commands.entity(e).despawn();
