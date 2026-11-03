@@ -181,7 +181,9 @@ pub fn apply_relief_maps(m: &mut StandardMaterial, t: &dx_level::TextureImage, r
             // (a texel a unit): a fixed 0.035 was 9 units deep on a 256 wall and 36 on a 1024 one - the bricks slid
             // and smeared as you moved. RELIEF_DEPTH units deep on every texture, as the addon's renderer shows it.
             m.parallax_depth_scale = (RELIEF_DEPTH / t.width.max(16) as f32).clamp(0.001, 0.02);
-            m.max_parallax_layer_count = 24.0;
+            // 16 layers at grazing angles (fewer face on, Bevy scales them by the view): 24 cost a third more
+            // for steps you can only see on the steepest walls.
+            m.max_parallax_layer_count = 16.0;
             m.parallax_mapping_method = bevy::pbr::ParallaxMappingMethod::Relief { max_steps: 5 };
         }
     }

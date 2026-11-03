@@ -3535,6 +3535,7 @@ pub struct FireUse {
     std: std::collections::HashMap<AssetId<StandardMaterial>, Option<usize>>,
     bsp: std::collections::HashMap<AssetId<crate::shadowlight::BspMaterial>, Option<usize>>,
     anim: std::collections::HashMap<AssetId<crate::gpuanim::AnimMaterial>, Option<usize>>,
+    water: std::collections::HashMap<AssetId<crate::water::WaterMaterial>, Option<usize>>,
     /// Seconds since each fire texture was last on screen.
     unseen: Vec<f32>,
     /// This frame: on screen / being simulated (buffers kept between frames).
@@ -3564,6 +3565,11 @@ pub fn fire_texture_system(
     std_q: Query<(&ViewVisibility, &MeshMaterial3d<StandardMaterial>)>,
     bsp_q: Query<(&ViewVisibility, &MeshMaterial3d<crate::shadowlight::BspMaterial>)>,
     anim_q: Query<(&ViewVisibility, &MeshMaterial3d<crate::gpuanim::AnimMaterial>)>,
+    // Classic water's WetTexture / WaveTexture simulations show on water sheets (water.rs material).
+    (mut water_mats, water_q): (
+        ResMut<Assets<crate::water::WaterMaterial>>,
+        Query<(&ViewVisibility, &MeshMaterial3d<crate::water::WaterMaterial>)>,
+    ),
 ) {
     let _prof = crate::prof::scope("weapons::fire_texture_system");
     const RATE: f32 = 1.0 / 40.0;
@@ -3577,6 +3583,7 @@ pub fn fire_texture_system(
         u.std.clear();
         u.bsp.clear();
         u.anim.clear();
+        u.water.clear();
         u.unseen = vec![0.0; n];
     }
     let mut seen = std::mem::take(&mut u.seen);
@@ -3607,9 +3614,21 @@ pub fn fire_texture_system(
                 }
             }
         }
+        for (v, m) in &water_q {
+            if v.get() {
+                let k = *u.water.entry(m.0.id()).or_insert_with(|| water_mats.get(&m.0).and_then(|m| fire_of(&u.index, &m.base)));
+                if let Some(k) = k {
+                    seen[k] = true;
+                }
+            }
+        }
     }
     for (t, s) in u.unseen.iter_mut().zip(&seen) {
         *t = if *s { 0.0 } else { *t + dt };
+    }
+    if env_on!("DXVIEW_FIRELOG") {
+        let names: Vec<usize> = (0..n).filter(|&k| seen[k]).collect();
+        println!("FIRELOG fires {n} seen {names:?} water mats {} water meshes {}", u.water.len(), water_q.iter().count());
     }
     u.seen = seen;
     // (Materials made later - a weapon picked up, a copy for a screen effect - are looked up again now and then.)
@@ -3655,6 +3674,14 @@ pub fn fire_texture_system(
                 _ => img.data = Some(out.clone()),
             }
         }
+    }
+    // The water material isn't bindless: its bind group holds the texture view it was made with, and every upload
+    // of a simulated picture comes back as a new texture - so a water material showing one is prepared again with
+    // each step (the Classic water stood still on its first frame). One small bind group 40 times a second.
+    let touch: Vec<AssetId<crate::water::WaterMaterial>> =
+        u.water.iter().filter(|(_, k)| k.is_some_and(|k| u.active.get(k).copied().unwrap_or(false))).map(|(id, _)| *id).collect();
+    for id in touch {
+        let _ = water_mats.get_mut(id);
     }
 }
 
@@ -3873,10 +3900,17 @@ pub fn activate_pickup(
         }
         "Sodacan" => {
             heal(ph, crate::perks::food(2.0));
+            crate::stamina::eat(20.0);
             crate::sound::play_player(&crate::travel::voice("DeusExSounds.Player.MaleBurp"), 1.0, 0.0);
         }
-        "Candybar" => heal(ph, crate::perks::food(2.0)),
-        "SoyFood" => heal(ph, crate::perks::food(5.0)),
+        "Candybar" => {
+            heal(ph, crate::perks::food(2.0));
+            crate::stamina::eat(30.0);
+        }
+        "SoyFood" => {
+            heal(ph, crate::perks::food(5.0));
+            crate::stamina::eat(45.0);
+        }
         "Liquor40oz" => {
             heal(ph, crate::perks::food(2.0));
             ph.drug_timer += 10.0;

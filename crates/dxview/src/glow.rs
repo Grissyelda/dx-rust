@@ -99,6 +99,8 @@ pub fn glow_system(
                 high_pass_frequency: 0.9,
                 prefilter: BloomPrefilter { threshold: 1.0, threshold_softness: 0.25 },
                 composite_mode: BloomCompositeMode::Additive,
+                // The blur chain starts at 256 px (Bevy's 512 doubles the work for a glow this soft).
+                max_mip_dimension: 256,
                 ..default()
             });
         }

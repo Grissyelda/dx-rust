@@ -117,8 +117,8 @@ pub struct Grass {
 
 #[derive(Default)]
 struct Layer {
-    /// (mesh entity, material, data image, level it was built for).
-    drawn: Option<(Entity, Handle<GrassMaterial>, Handle<Image>, u8)>,
+    /// (mesh entities - one per CHUNK tiles -, material, data image, level it was built for).
+    drawn: Option<(Vec<Entity>, Handle<GrassMaterial>, Handle<Image>, u8)>,
     last_eye: Vec3,
     last_t: f32,
     near: Vec<u32>,
@@ -155,9 +155,14 @@ pub fn build(commands: &mut Commands, level: &dx_level::Level, lightmap: Option<
     commands.insert_resource(Grass { pending, lightmap, ..default() });
 }
 
-fn slot_mesh(slots: u32) -> Mesh {
+/// Tiles per slot mesh. The slots past the tiles packed this time are degenerate, but the GPU still runs every
+/// vertex of a mesh it draws (2 million a frame at High with the whole budget in one mesh): split into chunks,
+/// only those holding packed tiles are drawn.
+const CHUNK: usize = 512;
+
+fn slot_mesh(first: u32, slots: u32) -> Mesh {
     let mut pos = Vec::with_capacity(slots as usize * 7);
-    for s in 0..slots {
+    for s in first..first + slots {
         for c in 0..7u32 {
             pos.push([s as f32, c as f32, 0.0]);
         }
@@ -199,12 +204,16 @@ pub fn grass_system(
         }
     }
     if g.field.is_empty() || lv == 0 || lres.is_none() {
-        for l in &g.layers {
-            if let Some((e, ..)) = l.drawn {
-                if let Ok(mut v) = vis.get_mut(e) {
-                    v.set_if_neq(Visibility::Hidden);
+        for l in g.layers.iter_mut() {
+            if let Some((es, ..)) = &l.drawn {
+                for e in es {
+                    if let Ok(mut v) = vis.get_mut(*e) {
+                        v.set_if_neq(Visibility::Hidden);
+                    }
                 }
             }
+            // Shown again: repack (which sets the chunks' visibility) at once.
+            l.last_t = -1.0;
         }
         return;
     }
@@ -245,10 +254,12 @@ pub fn grass_system(
         let far_layer = k == 1;
         let (cap, per, reach, step, every) = if far_layer { (fcap, fper, ffar, fstep, 2.0) } else { (cap, per, far, 0.4, 0.5) };
         // (Re)build the slot mesh for this level.
-        if l.drawn.as_ref().is_none_or(|d| d.3 != lv || vis.get(d.0).is_err()) {
-            if let Some((e, ..)) = l.drawn.take() {
-                if let Ok(mut ec) = commands.get_entity(e) {
-                    ec.despawn();
+        if l.drawn.as_ref().is_none_or(|d| d.3 != lv || d.0.first().is_none_or(|e| vis.get(*e).is_err())) {
+            if let Some((es, ..)) = l.drawn.take() {
+                for e in es {
+                    if let Ok(mut ec) = commands.get_entity(e) {
+                        ec.despawn();
+                    }
                 }
             }
             let Some(lm) = g.lightmap.clone() else { return };
@@ -263,27 +274,27 @@ pub fn grass_system(
             img.sampler = bevy::image::ImageSampler::nearest();
             let data = images.add(img);
             let mat = mats.add(GrassMaterial { data: data.clone(), lightmap: lm, params: GrassUniform::default(), pushes: [Vec4::ZERO; 16] });
-            let e = commands
-                .spawn((
-                    Mesh3d(meshes.add(slot_mesh(cap as u32 * per))),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::default(),
-                    Visibility::Inherited,
-                    bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
-                    bevy::camera::visibility::NoAutoAabb,
-                    bevy::light::NotShadowCaster,
-                    bevy::light::NotShadowReceiver,
-                ))
-                .id();
-            l.drawn = Some((e, mat, data, lv));
+            let es: Vec<Entity> = (0..cap.div_ceil(CHUNK))
+                .map(|c| {
+                    let tiles = CHUNK.min(cap - c * CHUNK) as u32;
+                    commands
+                        .spawn((
+                            Mesh3d(meshes.add(slot_mesh(c as u32 * CHUNK as u32 * per, tiles * per))),
+                            MeshMaterial3d(mat.clone()),
+                            Transform::default(),
+                            Visibility::Hidden,
+                            bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
+                            bevy::camera::visibility::NoAutoAabb,
+                            bevy::light::NotShadowCaster,
+                            bevy::light::NotShadowReceiver,
+                        ))
+                        .id()
+                })
+                .collect();
+            l.drawn = Some((es, mat, data, lv));
             l.last_t = -1.0;
         }
-        let Some((e, mat, data, _)) = l.drawn.clone() else { return };
-        if let Ok(mut v) = vis.get_mut(e) {
-            if *v != Visibility::Inherited {
-                v.set_if_neq(Visibility::Inherited);
-            }
-        }
+        let Some((es, mat, data, _)) = l.drawn.clone() else { return };
         if l.last_t < 0.0 || eye.distance(l.last_eye) > step || now - l.last_t > every {
             l.last_eye = eye;
             l.last_t = now;
@@ -293,6 +304,13 @@ pub fn grass_system(
             l.texels.clear();
             l.texels.resize(l.near.len() * TEXELS as usize, [0.0; 4]);
             g.field.pack(&l.near, &mut l.texels);
+            // Only the chunks holding packed tiles are drawn.
+            let used = l.near.len().div_ceil(CHUNK);
+            for (c, e) in es.iter().enumerate() {
+                if let Ok(mut v) = vis.get_mut(*e) {
+                    v.set_if_neq(if c < used { Visibility::Inherited } else { Visibility::Hidden });
+                }
+            }
             if let Some(mut img) = images.get_mut(&data) {
                 if let Some(bytes) = img.data.as_mut() {
                     for (k, t) in l.texels.iter().enumerate() {

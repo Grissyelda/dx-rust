@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Sprint, Classic water and a GPU pass (November 3, afternoon)
+- New enhancement, Sprint and Stamina (Gameplay; in the Modern mix): your old running pace becomes the normal
+  pace, and holding Walk (Shift) or clicking the left stick sprints about 45% faster. Sprinting uses stamina,
+  shown as a bar on the right of the body display, opposite the bioenergy bar (the breath bar takes its place
+  under water). It comes back slowly once you stop; candy bars, soy food and soda top it up. No sprinting while
+  crouched, carrying something, swimming or in the air; crouching keeps its pace. Run it dry and you're winded
+  for a while.
+- Classic water moves again: the harbour's water picture was only ever drawn on its first frame, and its ripples
+  were too weak to see.
+- Augmentique outfit boxes open from every side (from some angles they said you couldn't lift them).
+- GPU pass: ambient occlusion, bloom and anti-aliasing cost less (ambient occlusion was the most expensive
+  single pass of a Modern frame), clouds skip the work where there's no cloud, relief walls use fewer depth
+  layers, and the grass only draws the blades in use (it ran every blade's vertices every frame).
+
 ### Playtest fixes (November 3, morning)
 - Gunther's cell window really is clear now: frosted glass picked up the level's per-surface light data as a colour
   and drew solid white. The frost itself is fainter on panes that are bright all over.

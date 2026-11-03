@@ -21,6 +21,7 @@ mod queue;
 mod util;
 mod uinode;
 mod sprite;
+mod stamina;
 mod abilities;
 mod weather;
 mod shadowlight;
@@ -1834,8 +1835,12 @@ fn setup(
                 min_filter: ImageFilterMode::Linear,
                 ..default()
             });
-            if let Some(mut im) = images.get_mut(&handles[i]) {
-                *im = img;
+            // (Level textures are made for the render world only, so by now the main world may no longer hold
+            // this one: insert it again, kept on both sides, or the fire texture system has nothing to write -
+            // the Classic water stood still.)
+            let _ = images.insert(&handles[i], img);
+            if env_on!("DXVIEW_FIRELOG") {
+                println!("FIRELOG level fire {} = {}", runtime_assets.fire.len(), t.name);
             }
             runtime_assets.fire.push((f, handles[i].clone()));
         }
@@ -2602,10 +2607,26 @@ fn fly(
         params.ground_speed *= leg_speed;
         // Modern Aiming: walking pace down the sights.
         params.ground_speed *= crate::aimmode::speed_mult();
-        // Always Run: Shift walks; off, you walk unless Shift is held.
-        let walk_key = keys.pressed(KeyCode::ShiftLeft) != !crate::settings::always_run();
-        if walk_key || player.crouched {
-            params.ground_speed *= 0.3;
+        if crate::stamina::enabled() {
+            // Sprint (stamina.rs): the run pace is the normal pace; Walk held (or the pad's stick click) sprints.
+            let can = !player.crouched
+                && !player.swimming
+                && player.body.physics == Physics::Walking
+                && wish.length() > 0.1
+                && carrying.held.is_none()
+                && weapons_res.corpse.is_none();
+            let sprint = crate::stamina::tick(time.delta_secs(), keys.pressed(KeyCode::ShiftLeft), can);
+            if player.crouched {
+                params.ground_speed *= 0.3;
+            } else if sprint {
+                params.ground_speed *= crate::stamina::SPRINT_MULT;
+            }
+        } else {
+            // Always Run: Shift walks; off, you walk unless Shift is held.
+            let walk_key = keys.pressed(KeyCode::ShiftLeft) != !crate::settings::always_run();
+            if walk_key || player.crouched {
+                params.ground_speed *= 0.3;
+            }
         }
         // WaterSpeed = Default.WaterSpeed x SkillSwimming (untrained 1.0).
         params.water_speed =

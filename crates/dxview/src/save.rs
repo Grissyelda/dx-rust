@@ -977,6 +977,7 @@ fn restore_global(world: &mut World, s: &SaveGame) {
     let g = &s.global;
     let travel = TRAVEL.load(Ordering::Relaxed);
     if !travel {
+        crate::stamina::refill();
         {
             let mut p = world.resource_mut::<Player>();
             p.body.location = v3(g.player.location);

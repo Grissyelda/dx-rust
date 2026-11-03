@@ -61,8 +61,10 @@ pub fn postfx_system(
     let ssao = ATTACHED.load(std::sync::atomic::Ordering::Relaxed) && !env_on!("DXVIEW_AO_NOSSAO");
     for (e, has) in &world {
         if ssao && !has {
+            // Low: one slice of two samples, denoised. Medium was the single most expensive GPU pass of a Modern frame
+            // (more than drawing the level), for a difference hard to see under Unreal's baked light.
             commands.entity(e).insert(ScreenSpaceAmbientOcclusion {
-                quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Low,
                 constant_object_thickness: 0.3,
             });
         } else if !ssao && has {
@@ -76,7 +78,8 @@ pub fn postfx_system(
             commands.entity(e).insert(want_msaa);
         }
         if last && aa_off && !smaa {
-            commands.entity(e).insert(Smaa::default());
+            // Medium preset: shorter edge searches than High, about two thirds of its cost.
+            commands.entity(e).insert(Smaa { preset: bevy::anti_alias::smaa::SmaaPreset::Medium });
         } else if smaa && !aa_off {
             commands.entity(e).remove::<Smaa>();
         }

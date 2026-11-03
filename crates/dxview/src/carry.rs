@@ -204,6 +204,10 @@ pub fn carry_system(
     if unreal_pkg::props::find(&a.props, "GroundSpeed").is_some() {
         return;
     }
+    // Augmentique's outfit boxes are opened, never lifted, whichever side you frob them from (pickups.rs).
+    if crate::augmentique::is_spawner(&a.class) {
+        return;
+    }
     // Buttons, switches and hackable devices are used, not lifted (pickups.rs handles them).
     if !d.pushable
         && (crate::devices::is_hackable(&a.props)

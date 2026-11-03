@@ -567,6 +567,8 @@ pub struct Snapshot {
     parts: [i32; 6],
     energy: f32,
     breath: Option<f32>,
+    /// Sprint stamina 0..1 (stamina.rs), when Sprint is on and not under water.
+    stamina: Option<f32>,
     swim_time: f32,
     /// Unreal yaw units.
     yaw: i32,
@@ -642,6 +644,7 @@ pub fn classic_hud_system(
     snap.parts = [P_HEAD, P_TORSO, P_ARM_L, P_ARM_R, P_LEG_L, P_LEG_R].map(|i| p[i].max(0.0).round() as i32);
     snap.energy = ph.energy;
     snap.breath = ph.breath;
+    snap.stamina = if ph.breath.is_some() { None } else { crate::stamina::fraction() };
     snap.swim_time = *swim_clock;
     snap.yaw = yaw;
     snap.dead = ph.dead;
@@ -1027,6 +1030,7 @@ pub fn classic_hud_system(
                     cols,
                     (snap.energy.clamp(0.0, 100.0) * 0.55) as i32,
                     snap.breath.map(|b| (b.clamp(0.0, 1.0) * 55.0) as i32),
+                    snap.stamina.map(|b| (b.clamp(0.0, 1.0) * 55.0) as i32),
                     blink,
                     (ww, wh, s),
                 )))
@@ -1754,6 +1758,12 @@ fn draw_hit(
         }
         c.text(f, 61, 74, 8, 8, HAlign::Left, VAlign::Top, col, "O2");
     }
+    // Sprint stamina: a bar like the bioenergy one on the other side of the body (the breath bar's place, which
+    // takes it back under water).
+    let stamina_pct = if breath_pct.is_none() { snap.stamina.map(|b| b.clamp(0.0, 1.0)) } else { None };
+    if let (Some(b), Some(f)) = (stamina_pct, font) {
+        c.text(f, 61, 74, 8, 8, HAlign::Left, VAlign::Top, color_scaled(b), "ST");
+    }
     // Children, bottom first: the body outline, the parts, the bars.
     if let Some(t) = hud.ui(assets, "HUDHitDisplay_Body") {
         c.texture(24, 15, 34, 68, 0, 0, &t, Style::Translucent, COL_ARMOR);
@@ -1778,7 +1788,7 @@ fn draw_hit(
         c.fill(x, 20 + 55 - size, 5, size, Style::Normal, color_scaled(pct));
     };
     bar(c, 15, energy_pct);
-    if let Some(b) = breath_pct {
+    if let Some(b) = breath_pct.or(stamina_pct) {
         bar(c, 61, b);
     }
 }
@@ -2335,7 +2345,9 @@ mod tests {
         let snap = Snapshot {
             parts: [100, 80, 55, 30, 5, 0],
             energy: 70.0,
-            breath: Some(0.6),
+            // HUD_PREVIEW_STAMINA=1: the sprint stamina bar in the breath bar's place.
+            breath: if env_on!("HUD_PREVIEW_STAMINA") { None } else { Some(0.6) },
+            stamina: env_on!("HUD_PREVIEW_STAMINA").then_some(0.45),
             yaw: 3000,
             held: Some(HeldView {
                 class: "WeaponPistol".into(),

@@ -572,6 +572,8 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
     for (i, (_, act, _)) in PAD_ACTIONS.iter().enumerate() {
         let Some(b) = map[i] else { continue };
         match act {
+            // Sprint (stamina.rs): the stick click starts / stops a sprint instead of holding Walk.
+            PadAction::Game("Walk (hold)") if crate::stamina::enabled() => crate::stamina::pad_button(held(b)),
             PadAction::Game(name) => {
                 if held(b) {
                     if let Some(k) = bound(key_map, name) {
@@ -671,7 +673,7 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
     }
     // A light push of the left stick walks (Walk held), as an analog stick's half tilt does in console games.
     let m = f.ls.length();
-    if m > 0.0 && m < 0.5 {
+    if m > 0.0 && m < 0.5 && !crate::stamina::enabled() {
         if let Some(k) = bound(key_map, "Walk (hold)") {
             out.inputs.push(k);
         }

@@ -390,6 +390,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
     // ---- who the player is now
     let arrive = match goal {
         Goal::NewGame(ng) => {
+            crate::stamina::refill();
             crate::save::new_game();
             crate::travel::set_session(ng);
             crate::achievements::character_changed();
@@ -427,6 +428,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::stamina::reset_level();
     crate::smartai::reset_level();
     crate::diegetic::reset_level();
     crate::abilities::reset_level();

@@ -24,22 +24,39 @@ fn height_frac(w: vec3<f32>) -> f32 {
     return clamp((w.y - p.slab.x) / p.slab.y, 0.0, 1.0);
 }
 
-fn density(w: vec3<f32>, t: f32) -> f32 {
+// The cloud density at a point. Cheap parts first: outside the slab's profile, or where the coverage alone leaves
+// no cloud, the finer noise (which only ever eats cloud away) isn't sampled. `fine` = false skips it altogether
+// (the moon-shadow taps, where its detail can't be seen).
+fn density_q(w: vec3<f32>, t: f32, fine: bool) -> f32 {
     let h = height_frac(w);
-    let wind = vec3<f32>(p.wind.x, 0.0, p.wind.z) * t;
-    let q = w.xzy * vec3<f32>(p.slab.z, p.slab.z, p.slab.z * 2.5) + vec3<f32>(wind.x, wind.z, t * p.wind.y);
-    let base = textureSampleLevel(noise_tex, noise_smp, q, 0.0).r;
-    // Finer noise, moving a little faster, eats at the edges.
-    let detail = textureSampleLevel(noise_tex, noise_smp, q * 4.3 + vec3<f32>(wind.x * 1.6, wind.z * 1.6, t * p.wind.y * 3.0), 0.0).r;
     // Flat-ish bottoms, rounded tops.
     let profile = smoothstep(0.0, 0.12, h) * (1.0 - smoothstep(mix(0.45, 0.75, p.shape.z), 1.0, h));
+    if (profile <= 0.0) {
+        return 0.0;
+    }
+    let wind = vec3<f32>(p.wind.x, 0.0, p.wind.z) * t;
+    let q = w.xzy * vec3<f32>(p.slab.z, p.slab.z, p.slab.z * 2.5) + vec3<f32>(wind.x, wind.z, t * p.wind.y);
     // Coverage itself drifts over kilometres: banks of cloud with clear sky between.
     let big = textureSampleLevel(noise_tex, noise_smp, q * 0.23 + vec3<f32>(0.37, 0.71, t * p.wind.y * 0.2), 0.0).r;
     let cover = clamp(p.slab.w + (big - 0.5) * 1.3, 0.0, 0.95);
-    var d = (base - (1.0 - cover)) / max(cover, 0.05);
-    if (cover <= 0.02) { d = 0.0; }
-    d = d * profile - (1.0 - detail) * p.shape.x;
+    if (cover <= 0.02) {
+        return 0.0;
+    }
+    let base = textureSampleLevel(noise_tex, noise_smp, q, 0.0).r;
+    var d = (base - (1.0 - cover)) / max(cover, 0.05) * profile;
+    if (d <= 0.0) {
+        return 0.0;
+    }
+    if (fine) {
+        // Finer noise, moving a little faster, eats at the edges.
+        let detail = textureSampleLevel(noise_tex, noise_smp, q * 4.3 + vec3<f32>(wind.x * 1.6, wind.z * 1.6, t * p.wind.y * 3.0), 0.0).r;
+        d = d - (1.0 - detail) * p.shape.x;
+    }
     return clamp(d, 0.0, 1.0) * p.wind.w;
+}
+
+fn density(w: vec3<f32>, t: f32) -> f32 {
+    return density_q(w, t, true);
 }
 
 @fragment
@@ -49,6 +66,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let dir = normalize(start - cam);
     // Only from below (the eye is always under the slab).
     if (dir.y <= 0.02) {
+        discard;
+    }
+    // Past the fade at the sheet's rim nothing shows: no march.
+    let r = length(start.xz - p.fade.xy);
+    let edge = 1.0 - smoothstep(p.fade.z, p.fade.w, r);
+    if (edge <= 0.0) {
         discard;
     }
     let t = globals.time;
@@ -72,8 +95,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let d = density(w, t);
         if (d > 0.002) {
             // Moon light reaching this point through the cloud above it (two taps).
-            let l1 = density(w + p.moon.xyz * p.slab.y * 0.12, t);
-            let l2 = density(w + p.moon.xyz * p.slab.y * 0.35, t);
+            let l1 = density_q(w + p.moon.xyz * p.slab.y * 0.12, t, false);
+            let l2 = density_q(w + p.moon.xyz * p.slab.y * 0.35, t, false);
             let lt = exp(-(l1 * 1.6 + l2 * 2.4));
             let h = height_frac(w);
             // City light on the bellies, fading up the cloud; a faint sky ambient everywhere.
@@ -93,8 +116,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
     // Fade out far away (the horizon) and at the sheet's rim.
-    let r = length(start.xz - p.fade.xy);
-    let edge = 1.0 - smoothstep(p.fade.z, p.fade.w, r);
     let alpha = (1.0 - trans) * edge;
     if (alpha < 0.002) {
         discard;
