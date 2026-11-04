@@ -148,7 +148,15 @@ of them. GMDX's own copy of the game code isn't run: its perks are rewritten in 
 and icons from your copy of the mod.
 
 ## Building from source
-You need Rust (stable) and, on Windows, the Visual Studio C++ build tools.
+You need Rust (stable) and a C compiler: on Windows, the Visual Studio C++ build tools. On Linux, also the
+development packages for Wayland, ALSA, udev and xkbcommon:
+
+    # Debian / Ubuntu / Kubuntu
+    sudo apt install build-essential pkg-config libwayland-dev wayland-protocols libasound2-dev libudev-dev libxkbcommon-dev
+    # Fedora
+    sudo dnf install gcc pkgconf-pkg-config wayland-devel wayland-protocols-devel alsa-lib-devel systemd-devel libxkbcommon-devel
+    # Arch / SteamOS (desktop)
+    sudo pacman -S --needed base-devel pkgconf wayland wayland-protocols alsa-lib systemd-libs libxkbcommon
 
     cargo build --release -p dxview                                       # the game
     cargo build --release --manifest-path crates/dxlauncher/Cargo.toml    # the launcher
