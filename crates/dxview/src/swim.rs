@@ -38,6 +38,8 @@ pub struct Swim {
     pub duration: f64,
     /// Pawn.PainTime (counts down; PainTimer fires when it crosses zero).
     pain_time: f64,
+    /// The same timer for a pain zone (ZoneInfo bPainZone: the training's toxic pool); -1 = not in one.
+    zone_pain_time: f64,
     head_in: bool,
     foot_in: bool,
     started: bool,
@@ -300,8 +302,42 @@ pub fn swim_system(
         sw.tread = 0.0;
     }
 
+    // Pawn.FootZoneChange / PainTimer for pain zones (the training's toxic pool, 20 'Radiation' a second): the
+    // feet entering one start the timer at once, then every second DamagePerSec x depth (0.4 for the feet, +0.4
+    // for the body, +0.2 for the head) in the zone's damage type. In one, drowning doesn't run (its PainTime is
+    // the pain zone's).
+    let pain_of = |p: DVec3| {
+        let z = lvl.collision.zone_at(p);
+        lvl.zone_pain.get(z.max(0) as usize).cloned().flatten()
+    };
+    let foot_pain = if active { pain_of(loc - DVec3::Z * (h - 1.0)) } else { None };
+    if let Some((dps, ty)) = foot_pain.as_ref() {
+        if sw.zone_pain_time < 0.0 {
+            sw.zone_pain_time = 0.01;
+        }
+        sw.zone_pain_time -= dt;
+        if sw.zone_pain_time <= 0.0 {
+            let mut depth = 0.4;
+            if pain_of(loc).is_some() {
+                depth += 0.4;
+            }
+            if pain_of(loc + DVec3::Z * player.eye_height).is_some() {
+                depth += 0.2;
+            }
+            if *dps > 0.0 {
+                let dmg = (*dps * depth).floor();
+                if dmg > 0.0 {
+                    ph.damage(dmg, ty, DVec3::ZERO);
+                }
+            }
+            sw.zone_pain_time = if ph.dead { -1.0 } else { 1.0 };
+        }
+    } else {
+        sw.zone_pain_time = -1.0;
+    }
+
     // Pawn.PainTimer: out of breath under water, 5 points every 2 s.
-    if sw.pain_time > 0.0 && active {
+    if sw.pain_time > 0.0 && active && foot_pain.is_none() {
         sw.pain_time -= dt;
         if sw.pain_time <= 0.0 && head {
             ph.damage(5.0, "Drowned", DVec3::ZERO);

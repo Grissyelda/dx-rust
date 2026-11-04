@@ -21,13 +21,16 @@ The highlights since v0.10.0 (the detailed notes for each day follow):
   96 fps at default settings.
 - **Mods**: one Mod Assets folder for all of them, Helios texture packs, GMDX perks and quality-of-life options,
   Augmentique outfits.
-- Many fixes from playtests and GitHub reports (#2, #4, #6, #7, #8), the training courses and Mission 1 among them.
+- Many fixes from playtests and GitHub reports (#2, #4, #6, #7, #8), the training courses (the stealth maze's alarm,
+  the toxic pool's radiation, the holograms) and Mission 1 among them.
 
 ### Training, holograms and a processor pass (November 4)
 - The training's stealth maze works as it should: the soldiers run for the alarm when they see you (failing the
   test), and the reset switch at the top starts it over. Unarmed guards now raise the alarm or flee instead of
   ignoring you.
 - The holograms at the end of training show their animated effect instead of flat purple.
+- The training's toxic swimming pool hurts again: pain zones deal their damage every second (radiation there),
+  more the deeper you are in, as in the original.
 - The flashlight and vision augs glow softly through JC's glasses instead of shining two cones from his eyes.
 - New Water Reflections setting (Enhancements > Visuals): Screen-Space, the default, reflects what is on screen and
   is worked out on the graphics card from the picture already drawn - the processor no longer draws the whole world

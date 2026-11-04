@@ -216,6 +216,9 @@ pub struct Level {
     pub nano_keys: Vec<(String, String, String)>,
     /// Per BSP zone: water (WaterZone / bWaterZone) and its fluid friction.
     pub zone_water: Vec<Option<f32>>,
+    /// Per BSP zone: a pain zone (ZoneInfo bPainZone) - its DamagePerSec and DamageType (the training's toxic pool:
+    /// 20 'Radiation').
+    pub zone_pain: Vec<Option<(f32, String)>>,
     /// Per BSP zone: open to the sky (it has fake-backdrop faces looking into the sky room; the sky room itself
     /// excluded) - where weather falls.
     pub zone_sky: Vec<bool>,
@@ -1020,6 +1023,29 @@ pub fn build_level(
             })
         })
         .collect();
+    let zone_pain: Vec<Option<(f32, String)>> = model
+        .zone_actors
+        .iter()
+        .map(|&za| {
+            if za <= 0 {
+                return None;
+            }
+            let e = pkg.exports.get(za as usize - 1)?;
+            let ps = classes.actor_properties(pkg, e).unwrap_or_default();
+            if !matches!(props::find(&ps, "bPainZone"), Some(Value::Bool(true))) {
+                return None;
+            }
+            let dps = match props::find(&ps, "DamagePerSec") {
+                Some(Value::Int(v)) => *v as f32,
+                _ => 0.0,
+            };
+            let ty = match props::find(&ps, "DamageType") {
+                Some(Value::Name(n)) => n.clone(),
+                _ => String::new(),
+            };
+            Some((dps, ty))
+        })
+        .collect();
     // Zone ambient light (ZoneInfo AmbientBrightness / Hue / Saturation; the level's own LevelInfo for zone 0),
     // which the engine starts every lightmap texel from.
     let level_info = pkg.exports.iter().find(|e| pkg.class_name(e.class_index) == "LevelInfo");
@@ -1558,6 +1584,7 @@ pub fn build_level(
         movers,
         nav,
         zone_water,
+        zone_pain,
         zone_sky,
         sky_area,
         lights,
