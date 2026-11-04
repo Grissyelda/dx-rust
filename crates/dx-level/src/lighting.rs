@@ -28,7 +28,7 @@ pub struct Atlas {
     pub lights: Vec<LightInfo>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct LightInfo {
     /// Unreal units.
     pub pos: [f32; 3],
@@ -36,6 +36,43 @@ pub struct LightInfo {
     pub color: [f32; 3],
     /// Unreal units.
     pub radius: f32,
+    /// LE_Spotlight: the beam's direction (the actor's Rotation) and 1 - LightCone / 256 (the cosine past which
+    /// nothing is lit); 0 = all round.
+    pub dir: [f32; 3],
+    pub cone: f32,
+    /// LE_NonIncidence: no falloff with the angle of the surface.
+    pub flat: bool,
+    /// LE_Cylinder: distance measured across, not up and down.
+    pub cylinder: bool,
+}
+
+impl LightInfo {
+    /// An all-round light.
+    pub fn omni(pos: [f32; 3], color: [f32; 3], radius: f32) -> LightInfo {
+        LightInfo { pos, color, radius, ..Default::default() }
+    }
+
+    /// The light's own shape at a point (LE_Spotlight's cone; 1 for an all-round light): the engine's spatial
+    /// spot effect, squared from the cone's edge to its axis.
+    pub fn spot(&self, p: [f32; 3]) -> f32 {
+        if self.cone <= 0.0 {
+            return 1.0;
+        }
+        let d = [p[0] - self.pos[0], p[1] - self.pos[1], p[2] - self.pos[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-4);
+        let c = (d[0] * self.dir[0] + d[1] * self.dir[1] + d[2] * self.dir[2]) / len;
+        if c <= self.cone {
+            return 0.0;
+        }
+        let t = (c - self.cone) / (1.0 - self.cone).max(1e-4);
+        t * t
+    }
+
+    /// Distance from the light to a point as its effect measures it (LE_Cylinder: horizontal).
+    pub fn dist(&self, p: [f32; 3]) -> f32 {
+        let d = [p[0] - self.pos[0], p[1] - self.pos[1], if self.cylinder { 0.0 } else { p[2] - self.pos[2] }];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    }
 }
 
 struct Rect {
@@ -93,7 +130,26 @@ fn load_light(pkg: &Package, idx: i32, classes: &mut ClassDb) -> Option<LightInf
     let brightness = byte(&ps, "LightBrightness").unwrap_or(64) as f32 / 255.0;
     let radius = 25.0 * (byte(&ps, "LightRadius").unwrap_or(64) as f32 + 1.0);
     let c = hsv_white(byte(&ps, "LightHue").unwrap_or(0), byte(&ps, "LightSaturation").unwrap_or(255));
-    Some(LightInfo { pos: *pos, color: [c[0] * brightness, c[1] * brightness, c[2] * brightness], radius })
+    let mut l = LightInfo::omni(*pos, [c[0] * brightness, c[1] * brightness, c[2] * brightness], radius);
+    // LightEffect (Actor.ELightEffect): LE_Spotlight 12, LE_NonIncidence 13, LE_Cylinder 17. The engine applies these
+    // when it builds a lightmap from the editor's shadow bits, so the bits alone don't hold them: read as all-round
+    // lights the training hall's twelve downward spots flooded every wall (GitHub #6).
+    match byte(&ps, "LightEffect").unwrap_or(0) {
+        12 => {
+            let r = match props::find(&ps, "Rotation") {
+                Some(Value::Rotator(r)) => *r,
+                _ => [0, 0, 0],
+            };
+            let u = std::f32::consts::TAU / 65536.0;
+            let (p, y) = (r[0] as f32 * u, r[1] as f32 * u);
+            l.dir = [p.cos() * y.cos(), p.cos() * y.sin(), p.sin()];
+            l.cone = (1.0 - byte(&ps, "LightCone").unwrap_or(128) as f32 / 256.0).max(1e-3);
+        }
+        13 => l.flat = true,
+        17 => l.cylinder = true,
+        _ => {}
+    }
+    Some(l)
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -230,17 +286,19 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb, zone_ambient: &
                             vis += bit(x, y) * wx * wy;
                         }
                     }
-                    let vis = vis / 16.0;
+                    // The light's shape (spotlight cones) goes in with the shadow, so the remastered lighting's
+                    // per-light reach (the mask) carries it too.
+                    let vis = vis / 16.0 * l.spot(p);
                     if vis <= 0.0 {
                         continue;
                     }
                     vis_tex[k][ty * u_clamp + tx] = vis;
                     let to = sub(l.pos, p);
-                    let dist = dot(to, to).sqrt();
+                    let dist = l.dist(p);
                     if dist >= l.radius {
                         continue;
                     }
-                    let ndl = (dot(to, n) / dist.max(1e-6)).abs();
+                    let ndl = if l.flat { 1.0 } else { (dot(to, n) / dot(to, to).sqrt().max(1e-6)).abs() };
                     let f = (1.0 - dist / l.radius) * ndl * vis;
                     total[k] += f * l.color[0].max(l.color[1]).max(l.color[2]);
                     for c in 0..3 {

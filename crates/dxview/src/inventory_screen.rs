@@ -37,6 +37,11 @@ use unreal_pkg::props::{Property, Value};
 /// True while a persona screen is up (the HUD and crosshair hide).
 pub static SCREEN_OPEN: AtomicBool = AtomicBool::new(false);
 
+/// The inventory or a persona screen is up.
+pub fn persona_open() -> bool {
+    SCREEN_OPEN.load(Ordering::Relaxed)
+}
+
 pub fn screen_open() -> bool {
     SCREEN_OPEN.load(Ordering::Relaxed) || crate::computers::open() || crate::menus::open() || crate::menus::intro_map() || crate::credits::open()
 }
@@ -169,6 +174,8 @@ struct Drag {
     src: DragSrc,
     start: (i32, i32),
     active: bool,
+    /// Ours (item rotation): the dragged item is turned (R or right click while dragging).
+    rot: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -179,6 +186,8 @@ enum Btn {
     ChangeAmmo,
     /// Ours: Enhancement "Inventory Auto-Sort".
     Sort,
+    /// Ours (Item Rotation): rearrange and turn items to free the most room.
+    Pack,
     Exit,
     Nav(usize),
     /// A crowded nav bar's scroll arrow (0 left, 1 right).
@@ -187,6 +196,38 @@ enum Btn {
 
 fn sort_on() -> bool {
     setting!("InventorySort") > 0.5
+}
+
+/// Ours (setting InventoryRotate): items can lie turned in the grid; Pack; Shift-click to the belt.
+pub fn rotate_on() -> bool {
+    setting!("InventoryRotate") > 0.5
+}
+
+/// An item's grid icon and its size, turned when the item is (cached per picture).
+/// `size` = the picture's part of the texture (from its top-left corner; the texture is padded to a power of two).
+fn item_icon(hud: &mut ClassicHud, assets: &mut RuntimeAssets, path: &str, size: (i32, i32), turned: bool) -> Option<Arc<UiTex>> {
+    let t = hud.tex(assets, path)?;
+    if !turned {
+        return Some(t);
+    }
+    thread_local! {
+        static TURNED: std::cell::RefCell<std::collections::HashMap<String, Arc<UiTex>>> = Default::default();
+    }
+    Some(TURNED.with(|m| {
+        m.borrow_mut()
+            .entry(path.to_string())
+            .or_insert_with(|| {
+                let (w, h) = ((size.0.max(1) as u32).min(t.w), (size.1.max(1) as u32).min(t.h));
+                let mut crop = UiTex { w, h, px: Vec::with_capacity((w * h) as usize) };
+                for y in 0..h {
+                    for x in 0..w {
+                        crop.px.push(t.px[(y * t.w + x) as usize]);
+                    }
+                }
+                Arc::new(crop.turned())
+            })
+            .clone()
+    }))
 }
 
 /// One line of the info panel.
@@ -747,8 +788,8 @@ fn item_rect(it: &imsim_core::inventory::Item) -> Option<(i32, i32, i32, i32)> {
     Some((
         ITEMS.0 + c as i32 * INV_BUTTON,
         ITEMS.1 + r as i32 * INV_BUTTON,
-        INV_BUTTON * it.def.inv_size.0 as i32 + 1,
-        INV_BUTTON * it.def.inv_size.1 as i32 + 1,
+        INV_BUTTON * it.size().0 as i32 + 1,
+        INV_BUTTON * it.size().1 as i32 + 1,
     ))
 }
 
@@ -903,6 +944,10 @@ pub(crate) fn layout(f: &Fonts) -> Layout {
     if sort_on() {
         acts.push(Btn::Sort);
         labels.push("|&Sort");
+    }
+    if rotate_on() {
+        acts.push(Btn::Pack);
+        labels.push("|&Pack");
     }
     let bars = bar_layout(&f.headers, &labels, BUTTONS.0, BUTTONS.2, false);
     Layout {
@@ -1084,6 +1129,10 @@ pub fn inventory_screen_system(
     let _prof = crate::prof::scope("inventory_screen::inventory_screen_system");
     let dt = real.delta_secs();
     let st = &mut *st;
+    let rot = rotate_on();
+    if inv.0.allow_rotate != rot {
+        inv.0.allow_rotate = rot;
+    }
     if !st.built {
         st.built = true;
         for which in 0..2 {
@@ -1498,10 +1547,12 @@ pub fn inventory_screen_system(
         match &hit {
             Hit::Button(b) => st.pressed = Some(*b),
             Hit::Item(c) => {
+                let rot = inv.0.items.iter().find(|i| &i.key() == c).is_some_and(|i| i.rotated);
                 st.drag = Some(Drag {
                     src: DragSrc::Item(c.clone()),
                     start: mouse,
                     active: false,
+                    rot,
                 })
             }
             Hit::Belt(slot) if inv.0.belt[*slot].is_some() => {
@@ -1509,6 +1560,7 @@ pub fn inventory_screen_system(
                     src: DragSrc::Belt(*slot),
                     start: mouse,
                     active: false,
+                    rot: false,
                 })
             }
             _ => {}
@@ -1517,6 +1569,38 @@ pub fn inventory_screen_system(
     if let Some(d) = st.drag.as_mut() {
         if !d.active && ((mouse.0 - d.start.0).abs() > 2 || (mouse.1 - d.start.1).abs() > 2) {
             d.active = true;
+        }
+    }
+    // Ours (item rotation): R or a right click (the pad's X) turns what's being dragged; R with nothing dragged
+    // turns the selected item where it lies, if it fits that way.
+    let turn = rotate_on() && (binds.keys.just_pressed(KeyCode::KeyR) || binds.buttons.just_pressed(MouseButton::Right));
+    if turn {
+        let dragged = st.drag.as_mut().filter(|d| d.active).and_then(|d| {
+            let c = match &d.src {
+                DragSrc::Item(c) => c.clone(),
+                _ => return None,
+            };
+            Some((d, c))
+        });
+        if let Some((d, c)) = dragged {
+            if inv.0.items.iter().find(|i| i.key() == c).is_some_and(|i| i.def.inv_size.0 != i.def.inv_size.1) {
+                d.rot = !d.rot;
+                crate::sound::play_player("DeusExSounds.UserInterface.Menu_Focus", 0.25, 0.0);
+            }
+        } else if binds.keys.just_pressed(KeyCode::KeyR) {
+            if let Some(Sel::Item(c)) = &st.sel {
+                if let Some(idx) = inv.0.items.iter().position(|i| &i.key() == c) {
+                    let it = &inv.0.items[idx];
+                    if let (Some((x, y)), true) = (it.pos, it.def.inv_size.0 != it.def.inv_size.1) {
+                        let rot = !it.rotated;
+                        if inv.0.move_item_turned(idx, x, y, rot) {
+                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Focus", 0.25, 0.0);
+                        } else {
+                            st.set_status("No room to turn it".into());
+                        }
+                    }
+                }
+            }
         }
     }
     if left_up {
@@ -1532,7 +1616,25 @@ pub fn inventory_screen_system(
             Some(Drag {
                 src: DragSrc::Item(c),
                 ..
-            }) => select(st, Sel::Item(c), &inv),
+            }) => {
+                // Ours (with item rotation): Shift-click puts it in the first free belt slot (or takes it off).
+                let shift = binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight);
+                if rotate_on() && shift {
+                    if let Some(idx) = inv.0.items.iter().position(|i| i.key() == c) {
+                        if let Some(b) = inv.0.belt_pos(idx).filter(|b| *b != 0) {
+                            inv.0.belt[b] = None;
+                            st.set_status("Taken off the belt".into());
+                        } else if let Some(slot) = (1..10).find(|&s| inv.0.belt[s].is_none()) {
+                            inv.0.belt_assign(idx, slot);
+                            st.belt_sel = Some(slot);
+                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+                        } else {
+                            st.set_status("The belt is full".into());
+                        }
+                    }
+                }
+                select(st, Sel::Item(c), &inv)
+            }
             Some(Drag {
                 src: DragSrc::Belt(slot),
                 ..
@@ -1570,7 +1672,7 @@ pub fn inventory_screen_system(
         }
     }
     // Keys (VirtualKeyPressed).
-    let sel_class = match &st.sel {
+    let mut sel_class = match &st.sel {
         Some(Sel::Item(c)) => Some(c.clone()),
         _ => None,
     };
@@ -1598,6 +1700,17 @@ pub fn inventory_screen_system(
     if binds.keys.just_pressed(KeyCode::Backspace) {
         action = Some(Btn::Drop);
     }
+    // Ours (controller): Y uses / equips the item under the cursor, LT drops it.
+    let pad_y = crate::gamepad::PAD_NOTES.load(Ordering::Relaxed);
+    let pad_lt = crate::gamepad::PAD_LT.load(Ordering::Relaxed);
+    if pad_y || pad_lt {
+        if let Hit::Item(c) = &hit {
+            select(st, Sel::Item(c.clone()), &inv);
+            sel_class = Some(c.clone());
+            let weapon = inv.0.items.iter().any(|i| &i.key() == c && i.def.kind == ItemKind::Weapon);
+            action = Some(if pad_lt { Btn::Drop } else if weapon { Btn::Equip } else { Btn::Use });
+        }
+    }
     if binds.keys.just_pressed(KeyCode::Enter) {
         action = Some(Btn::Use);
     }
@@ -1614,7 +1727,7 @@ pub fn inventory_screen_system(
                    assets: &mut RuntimeAssets,
                    inv: &imsim_core::inventory::Inventory|
      -> bool {
-        if b == Btn::Sort {
+        if b == Btn::Sort || b == Btn::Pack {
             return true;
         }
         let Some(Sel::Item(c)) = &st.sel else {
@@ -1626,7 +1739,7 @@ pub fn inventory_screen_system(
             .iter()
             .any(|i| &i.key() == c && i.def.kind == ItemKind::Weapon);
         match b {
-            Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_) | Btn::Sort => true,
+            Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_) | Btn::Sort | Btn::Pack => true,
             Btn::Drop => true,
             Btn::Equip => {
                 !c.starts_with("WeaponMod")
@@ -1696,6 +1809,11 @@ pub fn inventory_screen_system(
                     }
                 }
                 Btn::Sort => inv.0.auto_sort(),
+                Btn::Pack => {
+                    if !inv.0.pack() {
+                        st.set_status("Already packed".into());
+                    }
+                }
                 Btn::ChangeAmmo => {
                     if let Some(c) = sel_class.clone() {
                         load_ammo(
@@ -1714,7 +1832,7 @@ pub fn inventory_screen_system(
     }
 
     // ---------------------------------------------------------------- draw
-    let en: Vec<(Btn, bool)> = [Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo, Btn::Sort]
+    let en: Vec<(Btn, bool)> = [Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo, Btn::Sort, Btn::Pack]
         .iter()
         .map(|b| (*b, enabled(*b, st, &mut assets, &inv.0)))
         .collect();
@@ -1807,18 +1925,16 @@ pub fn inventory_screen_system(
     let dragging = st.drag.as_ref().filter(|d| d.active).cloned();
     let drag_icon = dragging.as_ref().and_then(|d| match &d.src {
         DragSrc::Item(c) => view.item(c).map(|(_, it)| {
-            (
-                it.def.large_icon.clone().or(it.def.icon.clone()),
-                it.def.large_size,
-            )
+            let s = it.def.large_size;
+            (it.def.large_icon.clone().or(it.def.icon.clone()), if d.rot { (s.1, s.0) } else { s }, d.rot, (s.0 as i32, s.1 as i32))
         }),
         DragSrc::Belt(slot) => view.inv.belt[*slot]
             .and_then(|i| view.inv.items.get(i))
-            .map(|it| (it.def.icon.clone(), (42, 37))),
+            .map(|it| (it.def.icon.clone(), (42, 37), false, (42, 37))),
     });
-    if let Some((Some(icon), size)) = drag_icon {
+    if let Some((Some(icon), size, turned, picture)) = drag_icon {
         let valid = drag_valid(dragging.as_ref().unwrap(), &hit, mouse, &view, &mut assets);
-        if let Some(t) = hud.tex(&mut assets, &icon) {
+        if let Some(t) = item_icon(&mut hud, &mut assets, &icon, picture, turned) {
             let (w, h) = (size.0.max(1) as i32, size.1.max(1) as i32);
             cc = Canvas::new(w, h, s);
             cc.texture(
@@ -1975,9 +2091,9 @@ fn drag_valid(
     match &d.src {
         DragSrc::Item(c) => match hit {
             Hit::Belt(slot) => *slot != 0,
-            Hit::Item(t) if t == c => grid_target(c, mouse, view).is_some(),
+            Hit::Item(t) if t == c => grid_target(c, mouse, view, d.rot).is_some(),
             Hit::Item(t) => c.starts_with("WeaponMod") && weapon_for_mod(c, t, view, assets),
-            Hit::Grid(..) => grid_target(c, mouse, view).is_some(),
+            Hit::Grid(..) => grid_target(c, mouse, view, d.rot).is_some(),
             _ => false,
         },
         DragSrc::Belt(_) => matches!(hit, Hit::Belt(s) if *s != 0),
@@ -1997,9 +2113,14 @@ fn weapon_for_mod(mod_key: &str, weapon_key: &str, view: &View, assets: &mut Run
 }
 
 /// CalculateItemPosition: the grid cell the dragged item would go to (centred on the icon), if empty.
-fn grid_target(class: &str, mouse: (i32, i32), view: &View) -> Option<(u32, u32)> {
+fn grid_target(class: &str, mouse: (i32, i32), view: &View, rot: bool) -> Option<(u32, u32)> {
     let (idx, it) = view.item(class)?;
-    let (iw, ih) = (it.def.large_size.0 as i32, it.def.large_size.1 as i32);
+    let (mut iw, mut ih) = (it.def.large_size.0 as i32, it.def.large_size.1 as i32);
+    let mut size = it.def.inv_size;
+    if rot {
+        (iw, ih) = (ih, iw);
+        size = (size.1, size.0);
+    }
     let ax = if iw > INV_BUTTON {
         iw / 2 - INV_BUTTON / 2
     } else {
@@ -2019,9 +2140,7 @@ fn grid_target(class: &str, mouse: (i32, i32), view: &View) -> Option<(u32, u32)
         (px / INV_BUTTON).max(0) as u32,
         (py / INV_BUTTON).max(0) as u32,
     );
-    view.inv
-        .fits(it.def.inv_size, sx, sy, Some(idx))
-        .then_some((sx, sy))
+    view.inv.fits(size, sx, sy, Some(idx)).then_some((sx, sy))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2064,8 +2183,8 @@ fn finish_drag(
                         clips: &Clips::default(),
                         charged: &crate::charged::ActiveCharged::default(),
                     };
-                    if let Some((x, y)) = grid_target(c, mouse, &view) {
-                        inv.0.move_item(idx, x, y);
+                    if let Some((x, y)) = grid_target(c, mouse, &view, d.rot) {
+                        inv.0.move_item_turned(idx, x, y, d.rot);
                     }
                 }
                 _ => {}
@@ -2516,6 +2635,7 @@ fn draw_frame(
         (Btn::Drop, "|&Drop"),
         (Btn::ChangeAmmo, "Change Amm|&o"),
         (Btn::Sort, "|&Sort"),
+        (Btn::Pack, "|&Pack"),
     ];
     let mut right = BUTTONS.0;
     for (b, x, w) in &lay.actions {
@@ -2588,7 +2708,7 @@ fn draw_items(
         let mut fill: Option<Rgb> = None;
         if is_drag {
             // The button follows the mouse over valid empty cells (SetItemButtonPos), showing its drop fill.
-            if let Some((x, y)) = grid_target(&key, mouse, view) {
+            if let Some((x, y)) = grid_target(&key, mouse, view, dragging.is_some_and(|d| d.rot)) {
                 r.0 = ITEMS.0 + x as i32 * INV_BUTTON;
                 r.1 = ITEMS.1 + y as i32 * INV_BUTTON;
                 fill = Some(COL_MOD_TRUE);
@@ -2618,14 +2738,18 @@ fn draw_items(
         if is_drag {
             continue;
         }
-        let (icon, (iw, ih)) = match &it.def.large_icon {
+        let (icon, (mut iw, mut ih)) = match &it.def.large_icon {
             Some(p) => (
                 Some(p.clone()),
                 (it.def.large_size.0 as i32, it.def.large_size.1 as i32),
             ),
             None => (it.def.icon.clone(), (40, 35)),
         };
-        if let Some(t) = icon.and_then(|p| hud.tex(assets, &p)) {
+        let picture = (iw, ih);
+        if it.rotated {
+            (iw, ih) = (ih, iw);
+        }
+        if let Some(t) = icon.and_then(|p| item_icon(hud, assets, &p, picture, it.rotated)) {
             c.texture(
                 x + w / 2 - iw / 2,
                 y + h / 2 - ih / 2,
@@ -3225,6 +3349,20 @@ mod tests {
             let d = assets.classes.defaults(c);
             let def = crate::pickups::item_def(c, &d);
             inv.0.pick_up(&def, n);
+        }
+        // Item rotation: Pack turns what it needs to (INV_PREVIEW_PACK=1).
+        if std::env::var_os("INV_PREVIEW_PACK").is_some() {
+            inv.0.allow_rotate = true;
+            let _ = inv.0.pack();
+            if let Some(i) = inv.0.items.iter().position(|i| i.def.class == "WeaponGEPGun") {
+                let p = inv.0.items[i].pos.unwrap();
+                if !inv.0.items[i].rotated {
+                    let _ = inv.0.move_item_turned(i, p.0, p.1, true);
+                }
+            }
+            for it in &inv.0.items {
+                println!("INV {} {:?} {:?} rot {}", it.def.class, it.pos, it.def.inv_size, it.rotated);
+            }
         }
         inv.0.ammo.push(("Ammo10mm".into(), 14));
         inv.0.ammo.push(("AmmoRocket".into(), 4));

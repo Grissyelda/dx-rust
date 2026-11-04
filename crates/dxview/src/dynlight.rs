@@ -43,11 +43,7 @@ impl Spec {
     fn info(&self, pos: DVec3, scale: f32) -> LightInfo {
         let c = hsv_white(self.hue, self.saturation);
         let b = self.brightness as f32 / 255.0 * scale;
-        LightInfo {
-            pos: pos.as_vec3().to_array(),
-            color: [c[0] * b, c[1] * b, c[2] * b],
-            radius: 25.0 * (self.radius + 1.0),
-        }
+        LightInfo::omni(pos.as_vec3().to_array(), [c[0] * b, c[1] * b, c[2] * b], 25.0 * (self.radius + 1.0))
     }
 }
 

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Bug reports, item rotation, blood and achievements (November 3, evening)
+- Classic lighting matches the original again where it was too bright, as in the training halls: spotlights now
+  light only inside their cones (they lit all round like bulbs), and lights marked as flat or cylindrical work as
+  the original's do. Thanks to RevengeRip for the report.
+- Bodies no longer drop the moment you pick them up (the click that lifted a body could also throw it). Thanks to
+  RevengeRip.
+- New Field of View slider in Settings > Enhancements > Display (60-130, default 75 as the original). The weapon in
+  hand keeps its own view so wide angles never show the ends of the models, and JC's body in first person stands
+  back further at wide angles. Thanks to RevengeRip for the suggestion.
+- The hacking window's empty box is now a countdown of the time left before the hack is detected; it turns red and
+  blinks in the last five seconds.
+- Ragdolls: knees and elbows bend the way the limb points instead of twisting, and hips swing less.
+- New enhancement, Item Rotation (Interface; in the Modern mix): items can lie turned in the inventory grid - R or
+  a right click while dragging turns one, R turns the selected item where it lies - and pickups that only fit
+  turned go in turned. A Pack button turns and rearranges everything to leave the most room, and Shift-click puts
+  an item in the first free belt slot. With a controller on the inventory and persona screens: LB / RB change
+  screens, Y uses or equips the item under the cursor, LT drops it, X turns what you're dragging.
+- Fluid Blood: blood on walls runs down in trickles with a bead at the tip, slowing as it goes, following the wall
+  and dripping off its edge; wounds are openings rather than stains and keep bleeding, pouring for a while from the
+  dead; blood from point-blank shots and melee spatters the weapon in hand.
+- Achievements: those that give the story away are blurred with a lock over them until unlocked; the endings (and
+  Area 51) count for every character once any character has reached them, so all three can be had over several
+  playthroughs; and a new Achievements screen on the main menu shows what's unlocked and by which characters.
+
 ### Sprint, Classic water and a GPU pass (November 3, afternoon)
 - New enhancement, Sprint and Stamina (Gameplay; in the Modern mix): your old running pace becomes the normal
   pace, and holding Walk (Shift) or clicking the left stick sprints about 45% faster. Sprinting uses stamina,

@@ -769,6 +769,14 @@ enum Body {
     SaveLoad(SaveLoad),
     Keypad(KeypadWin),
     Enhance(Enhance),
+    /// Ours: the main menu's Achievements screen (every character's).
+    Achieve(AchieveView),
+}
+
+struct AchieveView {
+    scroll: i32,
+    chars: Vec<crate::achievements::CharAch>,
+    global: std::collections::HashMap<String, (u64, String)>,
 }
 
 /// Ours: Settings > Enhancements as one scrolling, searchable list of every option beyond the original (the
@@ -826,6 +834,7 @@ impl Enhance {
             ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab (pad: Y) types a keypad code or fills in a login."),
             ("DialogueHotkeys", "Interface", "Dialogue Hotkeys", "Number the first four conversation choices; keys 1-4 pick them."),
             ("InventorySort", "Interface", "Inventory Auto-Sort", "A Sort button on the inventory screen packs the items neatly, weapons first."),
+            ("InventoryRotate", "Interface", "Item Rotation", "Items can lie turned in the inventory grid: R or right click while dragging (the pad's X) turns one, R turns the selected item in place. A Pack button turns and rearranges everything to free the most room, Shift-click puts an item on the belt, and pickups that only fit turned go in turned. Controller: Y uses / equips the item under the cursor, LT drops it, LB / RB change screens."),
             ("PersistentDebris", "Visuals", "Casings And Blood Stay", "Shell casings never vanish, many more blood splats stay, and blood, bullet holes and casings are still there when you come back to a map or load a save."),
             ("DiegeticScreens", "Interface", "Terminals In The World", "Computers, ATMs and keypads are used where they stand: the view moves in to the screen (the security terminal unfolds first), the original interface shows on the monitor and the mouse works on it; keypads are pressed button by button. Move the mouse off the screen for a second to step away."),
             ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord."),
@@ -972,6 +981,22 @@ impl Enhance {
             c.value = setting!("ThirdPersonCamera");
             c.saved = c.value;
             items.push(tag(c, "Gameplay"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "FOV".into();
+            c.label = "Field of View".into();
+            c.help = "How wide you see, in degrees across the screen (the original's DefaultFOV; 75 as it shipped, made for 4:3). Wider suits widescreen and ultrawide monitors. The weapon in your hands keeps its own view, so it never stretches or shows its cut-off ends; scopes and binoculars zoom as before.".into();
+            let vals: Vec<i32> = (60..=130).step_by(5).collect();
+            c.kind = ChoiceKind::Slider {
+                ticks: vals.len() as i32,
+                start: 60.0,
+                end: 130.0,
+                labels: vals.iter().map(|v| if *v == 75 { "75 (original)".to_string() } else { v.to_string() }).collect(),
+            };
+            c.value = crate::weapons::base_fov();
+            c.saved = c.value;
+            items.push(tag(c, "Display"));
         }
         {
             let mut c = debug_mode_choice();
@@ -1391,7 +1416,11 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                         b.enabled = false;
                     }
                     if i == 8 {
-                        b.enabled = false;
+                        // Ours: the multiplayer slot opens the Achievements screen (no multiplayer yet).
+                        b.label = "Achievements".into();
+                        b.invoke = "MenuScreenAchievements".into();
+                        b.action = 1;
+                        b.enabled = true;
                     }
                 }
             }
@@ -1436,6 +1465,16 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 sl.edit.anchor = 0;
             }
             Body::SaveLoad(sl)
+        }
+        "MenuScreenAchievements" => {
+            f = frame(assets, "MenuScreenCustomizeKeys");
+            f.class = class.to_string();
+            f.title = "Achievements".into();
+            // One button: back to the main menu.
+            let prev = f.actions.iter().find(|a| a.1 == 4).map(|a| a.2.clone()).unwrap_or_else(|| "Previous Menu".into());
+            f.actions = vec![(2, 4, prev, String::new())];
+            let (chars, global) = crate::achievements::all_characters();
+            Body::Achieve(AchieveView { scroll: 0, chars, global })
         }
         "MenuScreenEnhancements" => {
             f = frame(assets, "MenuScreenCustomizeKeys");
@@ -2155,6 +2194,29 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
                 u.c.text(&f, cx + 14, cy + 26, 360, ROW_H, HAlign::Left, VAlign::Center, m_col(8), "Nothing matches the search.");
             }
             list(u, 0, (cx + 11, cy + 23, 369, 268), &[240, 129], &rows, sel, &mut en.scroll, false);
+        }
+        Body::Achieve(av) => {
+            let total = crate::achievements::LIST.len();
+            let any = crate::achievements::LIST.iter().filter(|a| av.chars.iter().any(|c| c.unlocked.contains_key(a.0)) || av.global.contains_key(a.0)).count();
+            header_button(u, W::Header(0), cx + 10, cy + 3, 222, "Achievement");
+            header_button(u, W::Header(1), cx + 235, cy + 3, 97, &format!("{any} / {total}"));
+            let (lx, ly, lw, lh) = (cx + 11, cy + 23, 369, 268);
+            let content = total as i32 * crate::achievements::ROW;
+            let inner = scrollbar(u, 0, lx, ly, lw, lh, content, &mut av.scroll);
+            let head = fh.clone();
+            let small = u.f.small.clone();
+            crate::achievements::draw_all(&mut u.c, &head, &small, (lx, ly, inner, lh), av.scroll, &av.chars, &av.global);
+            if av.chars.is_empty() {
+                u.c.text(&small, lx + 4, ly + lh - 14, inner - 8, 12, HAlign::Center, VAlign::Center, m_col(8), "No character has unlocked any yet.");
+            }
+            // Rows for the mouse wheel and the pad's snap.
+            for i in 0..total {
+                let ry = ly + i as i32 * crate::achievements::ROW - av.scroll;
+                let (top, bot) = (ry.max(ly), (ry + crate::achievements::ROW).min(ly + lh));
+                if bot - top > 0 {
+                    u.hit(W::Row(0, i), (lx, top, inner, bot - top), true);
+                }
+            }
         }
         Body::Keys(k) => {
             let d = u.assets.classes.defaults("MenuScreenCustomizeKeys");
@@ -3557,6 +3619,7 @@ fn scroll_by(win: &mut Win, id: u8, d: i32) {
         // The Enhancements list (list() clamps it to the end when it draws).
         Body::Enhance(en) if id == 0 => en.scroll = (en.scroll + d).max(0),
         Body::SaveLoad(sl) if id == 0 => sl.scroll = (sl.scroll + d).max(0),
+        Body::Achieve(av) if id == 0 => av.scroll = (av.scroll + d).max(0),
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = (ng.desc_scroll + d).max(0),
         _ => {}
     }
@@ -3573,6 +3636,7 @@ fn set_scroll(win: &mut Win, id: u8, v: i32) {
         Body::Keys(k) if id == 0 => k.scroll = v,
         Body::Enhance(en) if id == 0 => en.scroll = v,
         Body::SaveLoad(sl) if id == 0 => sl.scroll = v,
+        Body::Achieve(av) if id == 0 => av.scroll = v,
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = v,
         _ => {}
     }
@@ -3877,6 +3941,12 @@ mod tests {
         crate::save::write_for_test("Agent_Smith-2", "Agent Smith", "Battery Park", 3);
         crate::save::write_for_test("", "JC Denton", "Old save", 4);
         crate::travel::set_session(crate::travel::NewGame { char_id: "JC_Denton-1".into(), ..Default::default() });
+        // Two characters' achievements (and an ending reached by one of them) for the Achievements screen.
+        let _ = std::fs::create_dir_all(saves.join("Characters/JC_Denton-1"));
+        let _ = std::fs::create_dir_all(saves.join("Characters/Agent_Smith-2"));
+        let _ = std::fs::write(saves.join("Characters/JC_Denton-1/achievements.txt"), "format=2\nname=JC Denton\nlady=1793404800\ntown=1793404900\nlebedev=1793405000\nhelios=1793406000\n");
+        let _ = std::fs::write(saves.join("Characters/Agent_Smith-2/achievements.txt"), "format=2\nname=Agent Smith\nlady=1793504800\ndunkin=1793504900\n");
+        let _ = std::fs::write(saves.join("achievements_global.txt"), "helios=1793406000;JC Denton\n");
         let mut assets = RuntimeAssets {
             classes: unreal_pkg::classes::ClassDb::open(&root.join("System")),
             lib: dx_level::TexLib::new(&root),
@@ -3910,6 +3980,7 @@ mod tests {
             "MenuScreenCustomizeKeys",
             "MenuScreenSaveGame",
             "MenuScreenLoadGame",
+            "MenuScreenAchievements",
             "KEYPAD",
             "MSG",
         ] {

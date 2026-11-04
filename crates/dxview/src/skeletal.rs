@@ -1523,7 +1523,9 @@ fn relight(s: &mut SkelBody, lvl: &dx_level::Level, ue: [f32; 3], scale_glow: f3
 }
 
 fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: [f32; 3], scale_glow: f32, mats: &mut Assets<ActorMaterial>) {
-    let sig = crate::dynlight::light_sig(lights, [0.0; 3], 0) ^ ((scale_glow * 64.0) as u64);
+    // (Under a spotlight the light depends on where the body stands: 32-unit steps.)
+    let at = if lights.iter().any(|l| l.cone > 0.0) { [(ue[0] / 32.0).round(), (ue[1] / 32.0).round(), (ue[2] / 32.0).round()] } else { [0.0; 3] };
+    let sig = crate::dynlight::light_sig(lights, at, 0) ^ ((scale_glow * 64.0) as u64);
     if sig == s.light_sig {
         return;
     }
@@ -1542,7 +1544,7 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
     for (_, l) in best.iter().skip(16) {
         let d = Vec3::from(l.pos).distance(Vec3::from(ue));
         if d < l.radius {
-            amb += Vec3::from(l.color) * (1.0 - d / l.radius) * 0.5;
+            amb += Vec3::from(l.color) * (1.0 - d / l.radius) * 0.5 * l.spot(ue);
         }
     }
     best.truncate(16);
@@ -1552,7 +1554,8 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
     for (i, (_, l)) in best.iter().enumerate() {
         let bp = Vec3::from(dx_level::ue_to_bevy(l.pos));
         lt.pos[i] = bp.extend(l.radius * dx_level::METERS_PER_UNIT);
-        lt.col[i] = Vec3::from(l.color).extend(0.0);
+        // (A spotlight's cone at the body, as a whole: the shader's lights are all round.)
+        lt.col[i] = (Vec3::from(l.color) * l.spot(ue)).extend(0.0);
     }
     lt.amb = amb.extend(0.0);
     for h in &s.mats {

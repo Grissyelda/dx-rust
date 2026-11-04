@@ -138,6 +138,7 @@ mod diegetic;
 mod skeletal;
 mod ragdoll;
 mod gore;
+mod viewblood;
 mod bodyfx;
 mod healui;
 mod optfixes;
@@ -1068,6 +1069,8 @@ fn main() {
                 skeletal::spawn_system.after(gpuanim::gpuanim_setup).before(actors::animate),
                 skeletal::pose_system.after(actors::animate).before(ai::npc_weapon_models),
                 gore::gore_system.after(ai::npc_system),
+                bodyfx::bleed_system.after(bodyfx::wounds_system).before(gore::gore_system),
+                viewblood::view_blood_system.after(gore::gore_system).after(weapons::weapon_system),
             ),
         )
         .add_systems(Startup, classic_hud::setup_hud_shader)

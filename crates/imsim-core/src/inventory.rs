@@ -64,6 +64,9 @@ pub struct Item {
     pub uid: u32,
     /// What this one item carries (an augmentation canister's two AddAugs).
     pub data: Vec<String>,
+    /// Ours (item rotation): turned a quarter in the grid, so it takes inv_size.1 x inv_size.0 cells.
+    #[serde(default)]
+    pub rotated: bool,
 }
 
 impl Item {
@@ -73,6 +76,15 @@ impl Item {
             self.def.class.clone()
         } else {
             format!("{}#{}", self.def.class, self.uid)
+        }
+    }
+
+    /// The cells it takes (columns, rows), turned or not.
+    pub fn size(&self) -> (u32, u32) {
+        if self.rotated {
+            (self.def.inv_size.1, self.def.inv_size.0)
+        } else {
+            self.def.inv_size
         }
     }
 }
@@ -91,6 +103,9 @@ pub struct Inventory {
     pub credits: u32,
     /// Last uid handed out (Item::uid).
     pub next_uid: u32,
+    /// Ours (item rotation, a setting the game sets each frame): pickups may go in turned, Pack may turn items.
+    #[serde(skip)]
+    pub allow_rotate: bool,
 }
 
 impl Inventory {
@@ -186,8 +201,9 @@ impl Inventory {
                 continue;
             }
             if let Some((c, r)) = it.pos {
-                for y in r..(r + it.def.inv_size.1).min(INV_ROWS) {
-                    for x in c..(c + it.def.inv_size.0).min(INV_COLS) {
+                let (w, h) = it.size();
+                for y in r..(r + h).min(INV_ROWS) {
+                    for x in c..(c + w).min(INV_COLS) {
                         g[y as usize][x as usize] = true;
                     }
                 }
@@ -212,11 +228,19 @@ impl Inventory {
 
     /// PlaceItemInSlot, if the item fits there.
     pub fn move_item(&mut self, idx: usize, col: u32, row: u32) -> bool {
-        let Some(size) = self.items.get(idx).map(|i| i.def.inv_size) else { return false };
+        let Some(rot) = self.items.get(idx).map(|i| i.rotated) else { return false };
+        self.move_item_turned(idx, col, row, rot)
+    }
+
+    /// Ours (item rotation): as move_item, turned (`rotated`) or not.
+    pub fn move_item_turned(&mut self, idx: usize, col: u32, row: u32, rotated: bool) -> bool {
+        let Some(def) = self.items.get(idx).map(|i| i.def.inv_size) else { return false };
+        let size = if rotated { (def.1, def.0) } else { def };
         if !self.fits(size, col, row, Some(idx)) {
             return false;
         }
         self.items[idx].pos = Some((col, row));
+        self.items[idx].rotated = rotated;
         true
     }
 
@@ -229,14 +253,14 @@ impl Inventory {
             let (ia, ib) = (&self.items[a], &self.items[b]);
             let w = |i: &Item| if i.def.kind == ItemKind::Weapon { 0 } else { 1 };
             let area = |i: &Item| i.def.inv_size.0 * i.def.inv_size.1;
-            (w(ia), std::cmp::Reverse(area(ia)), std::cmp::Reverse(ia.def.inv_size.1), &ia.def.name)
-                .cmp(&(w(ib), std::cmp::Reverse(area(ib)), std::cmp::Reverse(ib.def.inv_size.1), &ib.def.name))
+            (w(ia), std::cmp::Reverse(area(ia)), std::cmp::Reverse(ia.size().1), &ia.def.name)
+                .cmp(&(w(ib), std::cmp::Reverse(area(ib)), std::cmp::Reverse(ib.size().1), &ib.def.name))
         });
         for &i in &order {
             self.items[i].pos = None;
         }
         for &i in &order {
-            match self.find_slot(self.items[i].def.inv_size, Some(i)) {
+            match self.find_slot(self.items[i].size(), Some(i)) {
                 Some(p) => self.items[i].pos = Some(p),
                 None => {
                     for (it, p) in self.items.iter_mut().zip(old) {
@@ -248,9 +272,116 @@ impl Inventory {
         }
     }
 
+    /// Ours (Pack): rearrange - and with allow_rotate, turn - everything in the grid to leave the largest empty
+    /// rectangle (so the next big pickup fits). Tries several orders and orientation rules, first fit, keeps the
+    /// best; nothing moves if no arrangement beats or matches the current one. Returns whether anything moved.
+    pub fn pack(&mut self) -> bool {
+        let placed: Vec<usize> = (0..self.items.len()).filter(|&i| self.items[i].pos.is_some()).collect();
+        if placed.is_empty() {
+            return false;
+        }
+        let old: Vec<(Option<(u32, u32)>, bool)> = self.items.iter().map(|i| (i.pos, i.rotated)).collect();
+        let score = |inv: &Inventory| -> (u32, u32, i64) {
+            let g = inv.grid(None);
+            let free_rect = largest_free_rect(&g);
+            // Then: free cells in as few rows / columns at the bottom right as possible (items packed top left).
+            let mut spread = 0i64;
+            for (y, row) in g.iter().enumerate() {
+                for (x, on) in row.iter().enumerate() {
+                    if *on {
+                        spread += (y * INV_COLS as usize + x) as i64;
+                    }
+                }
+            }
+            let turned = inv.items.iter().filter(|i| i.rotated).count() as u32;
+            (free_rect, u32::MAX - turned, -spread)
+        };
+        let base = score(self);
+        let mut best: Option<((u32, u32, i64), Vec<(Option<(u32, u32)>, bool)>)> = None;
+        let w = |i: &Item| if i.def.kind == ItemKind::Weapon { 0 } else { 1 };
+        let orders: [&dyn Fn(&Item) -> (u32, u32, u32, u32); 4] = [
+            &|i| (u32::MAX - i.def.inv_size.0 * i.def.inv_size.1, u32::MAX - i.def.inv_size.0.max(i.def.inv_size.1), 0, 0),
+            &|i| (u32::MAX - i.def.inv_size.0.max(i.def.inv_size.1), u32::MAX - i.def.inv_size.0 * i.def.inv_size.1, 0, 0),
+            &|i| (w(i), u32::MAX - i.def.inv_size.0 * i.def.inv_size.1, 0, 0),
+            &|i| (u32::MAX - i.def.inv_size.1, u32::MAX - i.def.inv_size.0, 0, 0),
+        ];
+        // Orientation rules: 0 as they are, 1 lying (wide), 2 standing (tall), 3 whichever fits higher up.
+        let rules: &[u8] = if self.allow_rotate { &[0, 1, 2, 3] } else { &[0] };
+        for ord in orders.iter() {
+            let mut order = placed.clone();
+            order.sort_by_key(|&i| (ord(&self.items[i]), self.items[i].def.name.clone()));
+            for &rule in rules {
+                for &i in &placed {
+                    self.items[i].pos = None;
+                }
+                let mut ok = true;
+                for &i in &order {
+                    let d = self.items[i].def.inv_size;
+                    let turned = (d.1, d.0);
+                    let options: Vec<bool> = match rule {
+                        0 => vec![self.items[i].rotated],
+                        1 => vec![d.1 > d.0, !(d.1 > d.0)],
+                        2 => vec![d.0 > d.1, !(d.0 > d.1)],
+                        _ => vec![false, true],
+                    };
+                    let mut pick: Option<((u32, u32), bool)> = None;
+                    for rot in options {
+                        if rot && (d.0 == d.1 || !self.allow_rotate) && rule != 0 {
+                            continue;
+                        }
+                        let size = if rot { turned } else { d };
+                        if let Some(p) = self.find_slot(size, Some(i)) {
+                            let better = match pick {
+                                None => true,
+                                Some((q, _)) => rule == 3 && (p.1, p.0) < (q.1, q.0),
+                            };
+                            if better {
+                                pick = Some((p, rot));
+                            }
+                            if rule != 3 {
+                                break;
+                            }
+                        }
+                    }
+                    match pick {
+                        Some((p, rot)) => {
+                            self.items[i].pos = Some(p);
+                            self.items[i].rotated = rot;
+                        }
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    let sc = score(self);
+                    if best.as_ref().is_none_or(|b| sc > b.0) {
+                        best = Some((sc, self.items.iter().map(|i| (i.pos, i.rotated)).collect()));
+                    }
+                }
+                for (it, p) in self.items.iter_mut().zip(&old) {
+                    it.pos = p.0;
+                    it.rotated = p.1;
+                }
+            }
+        }
+        match best {
+            Some((sc, layout)) if sc > base => {
+                for (it, p) in self.items.iter_mut().zip(layout) {
+                    it.pos = p.0;
+                    it.rotated = p.1;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Whether there's room for a new item of this size (FindInventorySlot with bSearchOnly).
     pub fn has_room(&self, def: &ItemDef) -> bool {
         self.find_slot(def.inv_size, None).is_some()
+            || (self.allow_rotate && self.find_slot((def.inv_size.1, def.inv_size.0), None).is_some())
     }
 
     /// Belt slot holding item `idx`.
@@ -284,14 +415,19 @@ impl Inventory {
 
     /// As add_new, returning the new item's index.
     pub fn add_new_at(&mut self, def: &ItemDef, count: u32) -> Option<usize> {
-        let pos = self.find_slot(def.inv_size, None)?;
+        // Ours (item rotation): a pickup that only fits turned goes in turned.
+        let (pos, rotated) = match self.find_slot(def.inv_size, None) {
+            Some(p) => (p, false),
+            None if self.allow_rotate && def.inv_size.0 != def.inv_size.1 => (self.find_slot((def.inv_size.1, def.inv_size.0), None)?, true),
+            None => return None,
+        };
         let uid = if self.items.iter().any(|i| i.def.class == def.class) {
             self.next_uid += 1;
             self.next_uid
         } else {
             0
         };
-        self.items.push(Item { def: def.clone(), count, pos: Some(pos), uid, data: Vec::new() });
+        self.items.push(Item { def: def.clone(), count, pos: Some(pos), uid, data: Vec::new(), rotated });
         let idx = self.items.len() - 1;
         // First free belt slot 1..9 (0 is the nano key ring's).
         if let Some(slot) = (1..10).find(|&s| self.belt[s].is_none()) {
@@ -302,6 +438,23 @@ impl Inventory {
 }
 
 /// DeusExPlayer.InventoryFull.
+/// The area of the largest empty rectangle in a grid.
+pub fn largest_free_rect(g: &[[bool; INV_COLS as usize]; INV_ROWS as usize]) -> u32 {
+    let mut best = 0;
+    for y0 in 0..INV_ROWS as usize {
+        for x0 in 0..INV_COLS as usize {
+            for y1 in y0..INV_ROWS as usize {
+                for x1 in x0..INV_COLS as usize {
+                    if (y0..=y1).all(|y| (x0..=x1).all(|x| !g[y][x])) {
+                        best = best.max(((y1 - y0 + 1) * (x1 - x0 + 1)) as u32);
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
 pub fn no_room(def: &ItemDef) -> String {
     format!("You don't have enough room in your inventory to pick up the {}", def.name)
 }
@@ -385,4 +538,33 @@ mod tests {
         assert_eq!(inv.pick_up(&c, 1).unwrap(), "100 credits added");
         assert_eq!(inv.credits, 100);
     }
+
+    #[test]
+    fn pack_turns_items_to_free_room() {
+        let def = |c: &str, w, h| ItemDef { class: c.into(), name: c.into(), kind: ItemKind::Weapon, inv_size: (w, h), ..Default::default() };
+        let mut inv = Inventory { allow_rotate: true, ..Default::default() };
+        // A 1 x 4 rifle standing in column 2 splits the 5 x 6 grid in two.
+        inv.add_new(&def("Rifle", 1, 4), 1);
+        assert!(inv.move_item(0, 2, 1));
+        let before = largest_free_rect(&inv.grid(None));
+        assert!(inv.pack());
+        let after = largest_free_rect(&inv.grid(None));
+        assert!(after > before, "{before} -> {after}");
+        // A 4 x 2 that doesn't fit lying goes in standing.
+        let mut inv = Inventory { allow_rotate: true, ..Default::default() };
+        for k in 0..6 {
+            inv.add_new(&def(&format!("W{k}"), 1, 1), 1);
+            assert!(inv.move_item(k, 4, k as u32));
+        }
+        // Columns 0..3 free: a 5 x 2 only fits standing (2 x 5).
+        assert!(inv.add_new(&def("Tall", 5, 2), 1));
+        assert!(inv.items.last().unwrap().rotated);
+        let mut inv = Inventory { allow_rotate: false, ..Default::default() };
+        for k in 0..6 {
+            inv.add_new(&def(&format!("W{k}"), 1, 1), 1);
+            assert!(inv.move_item(k, 4, k as u32));
+        }
+        assert!(!inv.add_new(&def("Tall", 5, 2), 1));
+    }
+
 }

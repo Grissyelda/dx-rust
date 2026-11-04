@@ -3929,6 +3929,14 @@ mod tests {
             let _ = crate::augcan::add(&mut inv, &def, ["AugSpeed".into(), "AugStealth".into()]);
             let _ = crate::augcan::add(&mut inv, &def, ["AugAqualung".into(), "AugEnviro".into()]);
         }
+        // A character with a few achievements (two spoilers left locked) for the achievements screen.
+        let saves = std::env::temp_dir().join(format!("dxpersona-{}", std::process::id()));
+        std::env::set_var("DXVIEW_SAVE_DIR", &saves);
+        let _ = std::fs::create_dir_all(saves.join("Characters/Prev-1"));
+        let _ = std::fs::write(saves.join("Characters/Prev-1/achievements.txt"), "format=2\nname=Prev\nlady=1793404800\nlebedev=1793405000\n");
+        let _ = std::fs::write(saves.join("achievements_global.txt"), "helios=1793406000;Somebody Else\n");
+        crate::travel::set_session(crate::travel::NewGame { char_id: "Prev-1".into(), name: "Prev".into(), ..Default::default() });
+        crate::achievements::character_changed();
         let medbot = |remaining: f32| BotView { med: true, remaining, refresh: 60.0, amount: 300.0 };
         for (screen, bot, name) in [
             (SCREEN_HEALTH, None, "health"),
@@ -3944,6 +3952,7 @@ mod tests {
             (SCREEN_GOALS, None, "goals_edit"),
             (SCREEN_GOALS, None, "goals_select"),
             (SCREEN_GOALS, None, "goals_delete"),
+            (SCREEN_ACHIEVEMENTS, None, "achievements"),
         ] {
             let mut ui = PersonaUi::default();
             ui.show_completed = true;

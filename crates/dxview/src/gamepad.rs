@@ -447,6 +447,8 @@ pub const DIALOGUE_HOTKEYS: [(PadBtn, KeyCode); 4] =
 
 /// Y in a menu: type the keypad code found in the notes (menus.rs takes it).
 pub static PAD_NOTES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// LT pressed this frame in a free-cursor screen (the inventory drops the item under the cursor).
+pub static PAD_LT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The pad was the last thing used (glyphs instead of keys in prompts).
 pub fn pad_in_use() -> bool {
@@ -459,6 +461,7 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
     let mut out = PadOut { inputs: Vec::new(), scroll: 0.0, cursor: Vec2::ZERO, snap: None };
     // Y's "code from notes" lasts one frame (whoever is open takes it; nobody keeps it for later).
     PAD_NOTES.store(false, std::sync::atomic::Ordering::Relaxed);
+    PAD_LT.store(false, std::sync::atomic::Ordering::Relaxed);
     if !f.connected {
         return out;
     }
@@ -497,6 +500,18 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
             }
             if just(PadBtn::North) {
                 PAD_NOTES.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if just(PadBtn::LT) {
+                PAD_LT.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Ours: on the inventory / persona screens LB / RB step through the screens (the Left / Right keys).
+            if crate::inventory_screen::persona_open() {
+                if just(PadBtn::LB) {
+                    h.taps.push((Input::Key(KeyCode::ArrowLeft), 2));
+                }
+                if just(PadBtn::RB) {
+                    h.taps.push((Input::Key(KeyCode::ArrowRight), 2));
+                }
             }
         }
         // Start on the menus closes them all (back to the game); elsewhere it's Escape like B.

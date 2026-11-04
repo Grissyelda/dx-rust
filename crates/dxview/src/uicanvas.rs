@@ -18,6 +18,19 @@ pub struct UiTex {
 }
 
 impl UiTex {
+    /// Ours (inventory item rotation): turned a quarter clockwise.
+    pub fn turned(&self) -> UiTex {
+        let (w, h) = (self.w as usize, self.h as usize);
+        let mut px = vec![[0u8; 4]; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                // (x, y) -> (h - 1 - y, x) in an h-wide picture.
+                px[x * h + (h - 1 - y)] = self.px[y * w + x];
+            }
+        }
+        UiTex { w: self.h, h: self.w, px }
+    }
+
     pub fn from_rgba(w: u32, h: u32, bytes: &[u8]) -> UiTex {
         UiTex {
             w,
@@ -115,6 +128,30 @@ pub enum VAlign {
 }
 
 pub type Rgb = [u8; 3];
+
+/// One line of a box blur (window 2r+1, clamped at the ends) by a running sum.
+fn box_line(line: &[[f32; 4]], rad: usize, mut put: impl FnMut(usize, [f32; 4])) {
+    let n = line.len();
+    let mut acc = [0f32; 4];
+    let (mut a, mut b) = (0usize, 0usize); // window [a, b)
+    for i in 0..n {
+        let (lo, hi) = (i.saturating_sub(rad), (i + rad + 1).min(n));
+        while b < hi {
+            for k in 0..4 {
+                acc[k] += line[b][k];
+            }
+            b += 1;
+        }
+        while a < lo {
+            for k in 0..4 {
+                acc[k] -= line[a][k];
+            }
+            a += 1;
+        }
+        let m = (b - a) as f32;
+        put(i, acc.map(|v| (v / m).max(0.0)));
+    }
+}
 
 pub struct Canvas {
     pub w: i32,
@@ -300,6 +337,50 @@ impl Canvas {
         for py in (y.max(y0))..((y + h).min(y1)) {
             for px in (x.max(x0))..((x + w).min(x1)) {
                 self.put_unclipped(px, py, rgb, style);
+            }
+        }
+    }
+
+    /// Ours: blurs what's drawn in a box (two passes of a separable box blur, `r` UI units), then darkens it by
+    /// `dim` (spoiler achievements hide their picture and text this way).
+    pub fn blur(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, dim: f32) {
+        let s = self.s;
+        let (x0, y0) = ((x.max(0)) * s, (y.max(0)) * s);
+        let (x1, y1) = (((x + w).min(self.w)) * s, ((y + h).min(self.h)) * s);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let row = (self.w * s) as usize;
+        let rad = (r * s).max(1) as usize;
+        let (bw, bh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        let mut line: Vec<[f32; 4]> = Vec::with_capacity(bw.max(bh));
+        for _pass in 0..2 {
+            // Rows.
+            for py in 0..bh {
+                let base = (y0 as usize + py) * row + x0 as usize;
+                line.clear();
+                line.extend_from_slice(&self.px[base..base + bw]);
+                let out = &mut self.px[base..base + bw];
+                box_line(&line, rad, |i, v| out[i] = v);
+            }
+            // Columns.
+            for px in 0..bw {
+                line.clear();
+                for py in 0..bh {
+                    line.push(self.px[(y0 as usize + py) * row + x0 as usize + px]);
+                }
+                let pxs = &mut self.px;
+                box_line(&line, rad, |i, v| pxs[(y0 as usize + i) * row + x0 as usize + px] = v);
+            }
+        }
+        if dim > 0.0 {
+            for py in 0..bh {
+                let base = (y0 as usize + py) * row + x0 as usize;
+                for p in &mut self.px[base..base + bw] {
+                    for k in 0..3 {
+                        p[k] *= 1.0 - dim;
+                    }
+                }
             }
         }
     }

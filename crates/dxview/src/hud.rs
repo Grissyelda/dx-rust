@@ -247,7 +247,7 @@ pub fn crosshair_system(
     // Modern Aiming: the crosshair and brackets sit on the drifting point of aim (aimmode.rs).
     let (sx, sy) = {
         let s = crate::aimmode::sway();
-        let half = (crate::aimmode::fov(crate::weapons::DEFAULT_FOV).to_radians() * 0.5).tan();
+        let half = (crate::aimmode::fov(crate::weapons::base_fov()).to_radians() * 0.5).tan();
         (s.x * 1000.0 / 1024.0 / half * w * 0.5, -s.y * 1000.0 / 1024.0 / half * w * 0.5)
     };
     let (x, y) = ((w * 0.5 + sx).floor() - 1.0, (h * 0.5 + sy).floor() - 1.0);

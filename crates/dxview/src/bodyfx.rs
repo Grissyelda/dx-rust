@@ -65,6 +65,74 @@ pub fn wound(blocker: usize, at: DVec3, dir: DVec3, kind: &'static str) {
     }
 }
 
+/// A wound that's still bleeding (Fluid Blood): drops run out of it and fall, faster once the body is dead.
+#[derive(Component)]
+pub struct Bleeder {
+    /// The body it's on, seconds of bleeding left, drops owed.
+    owner: Entity,
+    left: f32,
+    acc: f32,
+    dead_seen: bool,
+}
+
+/// Wounds bleed: drops leave each one along its outward face and a little down (gore.rs flies them).
+pub fn bleed_system(
+    time: Res<Time>,
+    mut bleeders: Query<(&mut Bleeder, &GlobalTransform)>,
+    npcs: Query<&crate::ai::Npc>,
+    mut seed: Local<u64>,
+) {
+    if !crate::gore::enabled() {
+        return;
+    }
+    if *seed == 0 {
+        *seed = 0xB1EED;
+    }
+    let dt = time.delta_secs().min(0.1);
+    let mut rnd = || {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*seed >> 40) as f64) / (1u64 << 24) as f64
+    };
+    for (mut b, g) in &mut bleeders {
+        if b.left <= 0.0 {
+            continue;
+        }
+        let dead = npcs.get(b.owner).is_ok_and(|n| n.state == crate::ai::NpcState::Dead);
+        if dead && !b.dead_seen {
+            // The heart's stopped but the blood still runs out (and pools under the body).
+            b.dead_seen = true;
+            b.left = b.left.max(16.0);
+        }
+        b.left -= dt;
+        let rate = if dead { 3.5 } else { 2.0 } * (b.left / 12.0).clamp(0.25, 1.0);
+        b.acc += rate * dt;
+        while b.acc >= 1.0 {
+            b.acc -= 1.0;
+            let at = Vec3::from(dx_level::bevy_to_ue(g.translation().to_array()));
+            // The wound decal faces into the body (looking along the shot): out is its back.
+            let out_b = -g.forward().as_vec3();
+            let out = Vec3::from(dx_level::bevy_to_ue((g.translation() + out_b).to_array())) - at;
+            let out = out.normalize_or(Vec3::Z).as_dvec3();
+            let vel = out * (14.0 + rnd() * 26.0) + DVec3::new(rnd() - 0.5, rnd() - 0.5, 0.0) * 12.0;
+            crate::gore::drip(at.as_dvec3() + out * 1.0, vel, 1.6 + rnd() as f32 * 2.4);
+        }
+    }
+}
+
+/// A wound's inner part: dark in the middle, a raw red ring, ragged at the edge (drawn over the splat mark, so a
+/// wound looks like an opening and not only a stain).
+fn wound_hole(assets: &mut crate::weapons::RuntimeAssets, images: &mut Assets<Image>) -> Handle<Image> {
+    crate::gore::synth_decal(assets, images, "Synth.WoundHole", 32, 32, |u, v| {
+        let (dx, dy) = (u - 0.5, v - 0.5);
+        let r = (dx * dx + dy * dy).sqrt() * 2.0;
+        let ang = dy.atan2(dx);
+        let edge = 0.78 + 0.12 * (ang * 5.0).sin() * (ang * 3.0 + 1.3).cos();
+        let a = 1.0 - ((r - edge * 0.85) / (edge * 0.15)).clamp(0.0, 1.0);
+        let dark = 1.0 - ((r - 0.12) / 0.4).clamp(0.0, 1.0);
+        (a, dark)
+    })
+}
+
 /// The wound marks on one body (oldest first).
 #[derive(Component, Default)]
 pub struct Wounds(VecDeque<Entity>);
@@ -169,17 +237,41 @@ pub fn wounds_system(
         let w = commands
             .spawn((Mesh3d(q.clone()), MeshMaterial3d(mat), local, bevy::light::NotShadowCaster, RenderLayers::layer(0), ChildOf(bone)))
             .id();
+        let mut extra = None;
+        // Fluid Blood: the opening itself (a smaller, deeper mark on top) and blood running out of it.
+        if crate::gore::enabled() && !matches!(kind, "Burned" | "Flamed") {
+            let img = wound_hole(&mut assets, &mut images);
+            let hole = assets.sprites.decal(&mut materials, img, true);
+            let inner = Transform::from_translation(hit - d * 0.007)
+                .looking_to(d, if d.y.abs() > 0.9 { Vec3::X } else { Vec3::Y })
+                .with_scale(Vec3::splat(size * 0.5));
+            let local = Transform::from_matrix(g.inverse() * inner.to_matrix());
+            let left = if kind == "Exploded" { 6.0 } else { 9.0 + (*seed >> 40) as f32 / (1u64 << 24) as f32 * 7.0 };
+            let ie = commands
+                .spawn((
+                    Mesh3d(q.clone()),
+                    MeshMaterial3d(hole),
+                    local,
+                    bevy::light::NotShadowCaster,
+                    RenderLayers::layer(0),
+                    ChildOf(bone),
+                    Bleeder { owner: e, left, acc: 0.0, dead_seen: false },
+                ))
+                .id();
+            extra = Some(ie);
+        }
         match wounds {
             Some(mut ws) => {
                 ws.0.push_back(w);
-                while ws.0.len() > 10 {
+                ws.0.extend(extra);
+                while ws.0.len() > 20 {
                     if let Some(old) = ws.0.pop_front() {
                         commands.entity(old).despawn();
                     }
                 }
             }
             None => {
-                commands.entity(e).insert(Wounds(VecDeque::from([w])));
+                commands.entity(e).insert(Wounds(VecDeque::from_iter(std::iter::once(w).chain(extra))));
             }
         }
     }
@@ -358,16 +450,18 @@ pub fn fp_body_system(
             let inv = rg.affine().inverse();
             let m = dx_level::METERS_PER_UNIT;
             let mut need = 0.0f32;
+            // A wider Field of View sees further back and down past the eye.
+            let k = ((crate::weapons::base_fov().to_radians() * 0.5).tan() / 37.5f32.to_radians().tan()).max(1.0);
             for name in FP_CHEST {
                 let Some(i) = s.rig.names.iter().position(|n| n == name) else { continue };
                 let Ok(bg) = gts.get(s.nodes[i]) else { continue };
                 let p = tf.transform_point(inv.transform_point3(bg.translation())) + flat * (FP_CHEST_FRONT * m);
                 let ahead = (p - eye).dot(flat);
                 let below = (eye.y - p.y).max(0.0);
-                need = need.max(ahead + below * FP_VIEW_BACK + FP_CHEST_CLEAR * m);
+                need = need.max(ahead + below * FP_VIEW_BACK * k + FP_CHEST_CLEAR * m);
             }
             let dt = time.delta_secs().min(0.1);
-            let need = need.min(0.6);
+            let need = need.min(0.6 * k);
             st.extra = if need > st.extra { need } else { (st.extra - dt * 0.4).max(need) };
             tf.translation -= flat * st.extra.max(0.0);
         }

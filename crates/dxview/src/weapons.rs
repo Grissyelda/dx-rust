@@ -31,6 +31,14 @@ pub const VIEW_LAYER: usize = 2;
 /// Deus Ex's default field of view (horizontal degrees).
 pub const DEFAULT_FOV: f32 = 75.0;
 
+/// The world's field of view (setting FOV, Settings > Enhancements > Display; the original's DefaultFOV, 75):
+/// horizontal degrees across the window, as Unreal measures it. The weapon in hand keeps DEFAULT_FOV on its own
+/// camera, so a wide view never shows the model's cut-off ends.
+pub fn base_fov() -> f32 {
+    let v = setting!("FOV");
+    if v < 1.0 { DEFAULT_FOV } else { v.clamp(60.0, 130.0) }
+}
+
 #[derive(Component)]
 pub struct ViewModelCam;
 #[derive(Component)]
@@ -789,6 +797,10 @@ pub struct Weapons {
     pub corpse: Option<Entity>,
     /// A body just picked up, to be raised as the POVCorpse view model.
     pub want_corpse: Option<Entity>,
+    /// The carried body can be thrown: both mouse buttons have been up since it was picked up. (The click that
+    /// picks it up could still count as just pressed when the body reached the hands in the same frame - the
+    /// systems' order isn't fixed - so it was thrown at once: GitHub #7, seen on Linux.)
+    pub corpse_armed: bool,
     /// Mods fitted, by weapon class.
     pub mods: HashMap<String, ModState>,
     /// The last real weapon drawn (unmodded stats): where a weapon mod used from the belt goes.
@@ -916,8 +928,8 @@ pub fn fov_system(
     let world_fov = crate::cinematic::fov()
         .unwrap_or_else(|| {
             // Through the diegetic scope only the lens is zoomed (scope.rs); the world view keeps a sights' narrowing.
-            let z = if crate::scope::active(&zoom, &weapons) { Some(DEFAULT_FOV * 0.82) } else { zoom.0 };
-            crate::aimmode::fov(crate::drug::drug_fov(&ph, z.unwrap_or(DEFAULT_FOV), &mut n))
+            let z = if crate::scope::active(&zoom, &weapons) { Some(base_fov() * 0.82) } else { zoom.0 };
+            crate::aimmode::fov(crate::drug::drug_fov(&ph, z.unwrap_or(base_fov()), &mut n))
         });
     for (mut p, is_vm) in &mut cams {
         let fov = if is_vm { DEFAULT_FOV } else { world_fov };
@@ -1708,6 +1720,7 @@ pub fn select_system(
             ) {
                 weapons.held = Some(h);
                 weapons.corpse = Some(body);
+                weapons.corpse_armed = false;
             }
         }
         return;
@@ -2857,7 +2870,11 @@ pub fn weapon_system(
     // halves view x 300 x AugMuscle + 220 up + 40 x VRand for a corpse, which barely leaves the hands; ours throws
     // it at the full speed, like a crate (the user's call), and it slides on landing (actors::deco_physics).
     if let Some(body) = weapons.corpse {
+        if !mouse.pressed(MouseButton::Left) && !mouse.pressed(MouseButton::Right) {
+            weapons.corpse_armed = true;
+        }
         let clicked = cursor.grab_mode == CursorGrabMode::Locked
+            && weapons.corpse_armed
             && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right));
         if clicked {
             let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64).normalize();

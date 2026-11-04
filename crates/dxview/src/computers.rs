@@ -1709,6 +1709,18 @@ fn draw_hack(u: &mut Ui<Wid>, h: &Hack) {
     let st = u.state(Wid::HackBtn, h.btn_enabled);
     crate::inventory_screen::draw_button(&mut u.c, u.hud, u.assets, &fh, 20, 86, bw, &label_s, st, false);
     u.hit(Wid::HackBtn, (20, 86, bw, 16), h.btn_enabled);
+    // Ours: the empty well right of the button shows the time left before the hack is detected (the bar's
+    // seconds), red and blinking for the last five and once it's caught.
+    let left = if h.detected { 0.0 } else { h.detection.max(0.0) };
+    let secs = left.ceil() as i32;
+    let blink = (h.detected || left < 5.0) && (h.detection.abs() * 2.0).fract() < 0.35;
+    if !(h.detected || left < 5.0) || !blink {
+        let col = if h.detected || left < 5.0 { HACK_RED } else { crate::uicanvas::color_scaled(pct) };
+        let s = format!("{}:{:02}", secs / 60, secs % 60);
+        let x0 = 20 + bw + 2;
+        let w = (96 - x0).max(20);
+        u.text(&fx, x0, 86, w, 16, HAlign::Center, VAlign::Center, col, &s);
+    }
 }
 
 /// ComputerScreenHackAccounts.

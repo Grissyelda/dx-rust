@@ -38,6 +38,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("AdjustBrightness", 0.5),
     // HUD size (ours): 0 small, 1 medium (the original's rule), 2 large.
     ("HUDScale", 1.0),
+    ("FOV", 75.0),
     // Sound.
     ("MusicVolume", 153.0),
     ("SoundVolume", 204.0),
@@ -90,6 +91,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("NotesAutofill", 0.0),
     ("DialogueHotkeys", 0.0),
     ("InventorySort", 0.0),
+    ("InventoryRotate", 0.0),
     ("PersistentDebris", 0.0),
     ("DiscordPresence", 1.0),
     // v2 medium enhancements (all off unless noted).

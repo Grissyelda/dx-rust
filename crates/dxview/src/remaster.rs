@@ -96,6 +96,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("DuplicateKeys", 1.0),
     ("FasterInfolinks", 1.0),
     ("InventorySort", 1.0),
+    ("InventoryRotate", 1.0),
     ("ItemCounts", 1.0),
     ("PickupSize", 1.0),
     ("SearchedText", 1.0),

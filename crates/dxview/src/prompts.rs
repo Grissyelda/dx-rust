@@ -135,6 +135,13 @@ pub fn prompts_system(
         vec![(PadBtn::Down, "Choose"), (PadBtn::South, "Select")]
     } else {
         let mut v = vec![(PadBtn::South, "Select"), (PadBtn::West, "Alternate"), (PadBtn::East, "Back"), (PadBtn::Down, "Move")];
+        if crate::inventory_screen::persona_open() {
+            // Ours: the persona shortcuts.
+            v[1] = (PadBtn::West, if crate::inventory_screen::rotate_on() { "Turn" } else { "Alternate" });
+            v.push((PadBtn::North, "Use"));
+            v.push((PadBtn::LT, "Drop"));
+            v.push((PadBtn::RB, "Screens"));
+        }
         if crate::inventory_screen::screen_open() {
             v.push((PadBtn::Select, "Close"));
         }

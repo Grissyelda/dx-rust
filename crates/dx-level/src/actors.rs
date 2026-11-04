@@ -648,15 +648,20 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
             let mut c = amb;
             for l in &near {
                 let to = [l.pos[0] - pt[0], l.pos[1] - pt[1], l.pos[2] - pt[2]];
-                let d = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                let len = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                let d = l.dist(pt);
                 if d >= l.radius {
+                    continue;
+                }
+                let spot = l.spot(pt);
+                if spot <= 0.0 {
                     continue;
                 }
                 // Facing: one-sided (a light behind the surface, or inside the head, leaves it dark - the intro's
                 // clone with the lamp in his head lit only on the shoulders), both sides on PF_TwoSided sections.
-                let d_n = (to[0] * n[0] + to[1] * n[1] + to[2] * n[2]) / d.max(1e-3);
-                let ndl = if part.two_sided { d_n.abs() } else { d_n.max(0.0) };
-                let att = (1.0 - d / l.radius) * ndl;
+                let d_n = (to[0] * n[0] + to[1] * n[1] + to[2] * n[2]) / len.max(1e-3);
+                let ndl = if l.flat { 1.0 } else if part.two_sided { d_n.abs() } else { d_n.max(0.0) };
+                let att = (1.0 - d / l.radius) * ndl * spot;
                 for ch in 0..3 {
                     c[ch] += l.color[ch] * att;
                 }
@@ -700,7 +705,7 @@ pub fn shadowed_lights_into(col: &crate::collision::BspCollision, lights: &[Ligh
                 return None;
             }
             let k = seen as f32 / samples.len() as f32;
-            Some(LightInfo { pos: l.pos, color: [l.color[0] * k, l.color[1] * k, l.color[2] * k], radius: l.radius })
+            Some(LightInfo { color: [l.color[0] * k, l.color[1] * k, l.color[2] * k], ..*l })
         })
         .for_each(|l| out.push(l));
 }

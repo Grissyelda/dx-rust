@@ -127,6 +127,8 @@ combat, orders and movement as components and systems of their own).
     infolinks, dropping whole stacks, binoculars on the scope key, restricted combat music, no flickering lights).
 12b. Classic / Modern: one switch for every enhancement at the top of Enhancements, and in play on Tab with a
     cinematic wipe across the screen, after Halo 2: Anniversary (done; Modern brings back your own mix).
+12c. Item rotation in the inventory grid, a Pack button and Shift-click to the belt, with controller shortcuts on
+    the persona screens (done); a Field of View slider (done).
 
 ### Medium (systems whose pieces exist)
 13. HUD customisation: toggle, scale and fade each part (done).
@@ -232,7 +234,8 @@ Shadows with contact hardening.
     Still to come: lighting their surroundings themselves.
 
 Also done: **achievements** - the fifty of Deus Ex Remastered with our own icons, an Achievements screen off the
-Logs screen, an unlock notice in the HUD, kept for the player across saves.
+Logs screen and another on the main menu (which characters unlocked what), an unlock notice in the HUD, spoilers
+hidden until unlocked, kept per character, with the endings shared by every character.
 
 53. **Skeletal characters** (done in code, an Enhancement in the Modern preset; the Machine God team's rig and
     rebuilt bodies, shipped with the game with their blessing and credited in the credits): rebuilt male and female bodies
@@ -250,9 +253,10 @@ Logs screen, an unlock notice in the HUD, kept for the player across saves.
     meshes drawn with them in their original skins, moves cross-faded, lip sync / blinks / glances / brows on the
     face's blend shapes, the weapon in the rebuilt hand, lit by the same lights as before, and JC's mirror and
     third-person body. Mods: Helios repaints and Augmentique outfits (JC, Lay D and the people they dress) are worn
-    by the rebuilt bodies; HDTP's people are switched off while Skeletal Characters is on. Still to come: aim layered
-    over running, heads turning to speakers, strafing right (the left strafe plays for both), animation notifies
-    from the rig. Not covered by the rig: commandos, robots, animals and HDTP's replacement meshes.
+    by the rebuilt bodies; HDTP's people are switched off while Skeletal Characters is on. Since then: aim layered
+    over walking, running and strafing, heads turning to whoever speaks, strafing both ways, and footsteps and
+    melee blows timed from the rig's own motion. Not covered by the rig: commandos, robots, animals and HDTP's
+    replacement meshes.
 
 Characters in Deus Ex are vertex-animated meshes without skeletons, which is why items that need bones sat in the
 last tier until the skeletal bodies above arrived.

@@ -2320,6 +2320,7 @@ mod tests {
                     pos: None,
                     uid: 0,
                     data: Vec::new(),
+                    rotated: false,
                 });
                 inv.0.belt[slot] = Some(inv.0.items.len() - 1);
             };

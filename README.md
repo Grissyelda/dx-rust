@@ -65,8 +65,9 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
     with blended moves and faces that lip-sync, blink and glance around; JC's own body (or Lay D's, in any
     Augmentique outfit) in mirrors, third person and under the view in first person; Helios repaints carry over to
     the rebuilt bodies, and HDTP's people step aside while they are on;
-  - **ragdolls** (Avian physics) for the killed and knocked out, and for JC himself, fluid blood (droplets, runs down walls, pools
-    under the dead, bloodier gibs), wound marks, hurt poses and limps, and coat tails that ripple as people move.
+  - **ragdolls** (Avian physics) for the killed and knocked out, and for JC himself, fluid blood (droplets, trickles that run down walls
+    and drip off their edges, bleeding wounds, pools under the dead, blood on your weapon at close range, bloodier
+    gibs), wound marks, hurt poses and limps, and coat tails that ripple as people move.
 - **Modern play (all optional):**
   - Modern Aiming: the aim sways within the accuracy cone (wide when untrained, steady when you master the
     weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns (lined up on the
@@ -82,12 +83,14 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   - diegetic healing: hold a medkit, look at the limb to treat and use it there; aug glows on JC's body;
   - better audio: smoother mixing, sound through walls, room reverb and a distant soundscape.
 - **Achievements.** Fifty achievements in the style of the *Remastered* list, with their own page in the
-  persona screens and an unlock notice in play.
+  persona screens, an unlock notice in play, spoilers hidden until unlocked, endings that count for every
+  character, and a main-menu screen showing which characters unlocked what.
 - **Smooth lip sync.** Mouths blend between sounds and close gently, and people blink visibly. The timings follow
   Joe Wintergreen's lipsync mod, and there's a switch in Enhancements to turn it off.
 - **Optional extras:**
   - dialogue hotkeys and Discord Rich Presence;
-  - inventory auto-sort;
+  - inventory auto-sort, and item rotation with a Pack button and Shift-click to the belt;
+  - a Field of View slider;
   - keypad codes and logins taken from your notes;
   - using consumables straight from the floor;
   - ladder grabbing;

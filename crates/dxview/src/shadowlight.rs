@@ -246,7 +246,7 @@ fn reach(level: &dx_level::Level, l: &dx_level::lighting::LightInfo, p: DVec3) -
         return 0.0;
     }
     let b = l.color[0].max(l.color[1]).max(l.color[2]);
-    b * (1.0 - d as f32 / l.radius)
+    b * (1.0 - d as f32 / l.radius) * l.spot([p.x as f32, p.y as f32, p.z as f32])
 }
 
 /// Distance with height counted twice: lights and casters on your own floor matter most.

@@ -421,7 +421,8 @@ fn achievement_run() {
     println!("ACHIEVEMENT RUN\n{report}");
     // A second character starts clean and the first keeps its unlocks.
     crate::travel::set_session(crate::travel::NewGame { char_id: "AchTest-2".into(), name: "Other".into(), ..Default::default() });
-    assert_eq!(crate::achievements::unlocked_count(), 0, "achievements are per character");
+    // ... except the endings, which count for every character once one has reached them.
+    assert_eq!(crate::achievements::unlocked_count(), crate::achievements::GLOBAL.len(), "achievements are per character (but the endings are shared)");
     crate::travel::set_session(crate::travel::NewGame { char_id: "AchTest-1".into(), name: "Ach Test".into(), ..Default::default() });
     assert_eq!(crate::achievements::unlocked_count(), crate::achievements::LIST.len());
     let _ = std::fs::remove_dir_all(&dir);
