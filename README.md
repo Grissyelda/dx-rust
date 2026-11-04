@@ -46,19 +46,22 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   - **GMDX: Augmented Edition** (perks bought with skill points on the Skills screen, and its fixes and
     quality-of-life options);
   - **Helios** texture packs (repainted characters, items and world);
-  - **Precipitation** (rain sounds and weather for the rain enhancement).
+  - **Precipitation** (rain sounds and weather for the rain enhancement);
+  - the **Parallax Occlusion Mapping** addon's normal and height maps (relief on the walls for remastered lighting).
 - **Classic / Modern in one key.** Press **Tab** in play and the screen wipes between the original look and a
   modern one, like the graphics switch in some remasters. Modern turns on every enhancement below at once and puts
   back your own mix the next time; Classic is the game as it shipped.
 - **A modern look (all optional):**
   - **remastered lighting**: walls and floors relit per pixel by the lamps that reach them, with relief maps
-    (the Parallax Occlusion Mapping addon's normal and height maps, shipped with the release, and generated ones
-    for the rest), highlights on metal, glass and tiles, and glowing lamps, screens and signs - while every shadow
-    the original baked stays;
+    (the Parallax Occlusion Mapping addon's normal and height maps from the Mods page, and generated ones for the
+    rest), highlights on metal, glass and tiles, and glowing lamps, screens and signs - while every shadow the
+    original baked stays;
   - real-time shadows from the map's own lights, ambient occlusion, soft shadows and bloom;
   - rain with splashes, ripples and lightning storms (with the Precipitation mod's sounds), volumetric night
     clouds and rolling fog, light shafts and haze;
-  - modern water with waves, reflections and an open sea, mirrors that reflect JC;
+  - modern water with waves, rain rings, an open sea and reflections worked out on the graphics card (or a full
+    planar reflection), frosted modern glass, mirrors that reflect JC;
+  - grass on the lawns and grown, swaying trees in place of the flat card ones;
   - a photographic city skyline, light halos and modern coronas, a modern night-vision view;
   - Helios repaints and HD textures, and enhanced particle effects, barrel smoke and bullet impacts;
   - **skeletal characters**: the Machine God team's rebuilt human bodies on a real skeleton, in the original skins,
@@ -81,6 +84,7 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
     alarms;
   - terminals and keypads used in the world: the camera moves in to the screen and you click on it;
   - diegetic healing: hold a medkit, look at the limb to treat and use it there; aug glows on JC's body;
+  - sprinting with stamina (food tops it up), and a combat HUD that fades out when nothing is happening;
   - better audio: smoother mixing, sound through walls, room reverb and a distant soundscape.
 - **Achievements.** Fifty achievements in the style of the *Remastered* list, with their own page in the
   persona screens, an unlock notice in play, spoilers hidden until unlocked, endings that count for every
@@ -90,7 +94,8 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
 - **Optional extras:**
   - dialogue hotkeys and Discord Rich Presence;
   - inventory auto-sort, and item rotation with a Pack button and Shift-click to the belt;
-  - a Field of View slider and a frame rate cap (30 to 240 fps);
+  - a Field of View slider, a frame rate cap (30 to 240 fps) and upscaling (AMD FSR 1) for slower graphics cards;
+  - optional gameplay fixes (unconscious bodies killed by blasts, noisy objects, limping, boss resistances...);
   - keypad codes and logins taken from your notes;
   - using consumables straight from the floor;
   - ladder grabbing;
@@ -99,7 +104,10 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
   - a debug menu with the original cheats.
 
   Every setting, the original ones included, is on one searchable list.
-- **Rotating autosaves** on map changes and completed goals.
+- **Saves per character.** Each new game keeps its own saves, rotating autosaves (on map changes and completed
+  goals) and achievements; the Load screen groups them by character.
+- **A welcome screen** on the main menu for players of the original: what's new, what to try and what to watch
+  out for.
 
 ## Getting started
 
@@ -126,7 +134,8 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
    [New Vision](https://www.moddb.com/mods/deus-ex-new-vision),
    [Augmentique](https://www.moddb.com/mods/augmentique),
    [GMDX](https://www.moddb.com/mods/gmdx) (Augmented Edition),
-   Visible Attachments, Helios and Precipitation.
+   Visible Attachments, Helios, Precipitation and the
+   [Parallax Occlusion Mapping](https://www.moddb.com/games/deus-ex/addons) addon (its *Half Size-Full Depth* folder).
 2. On the launcher's **Mods** page, click *Mod Assets Folder...* and choose the folder holding them all (each mod in
    its own folder inside it), or click a mod's own button and choose its folder. Right-click to turn one off again.
 3. For Lay D Denton, start a new game and use the portrait arrows: every other face is the female JC. Tick
@@ -161,7 +170,8 @@ On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder.
 The whole game is implemented. Before 1.0:
 - a full playthrough, with fixes for whatever it finds;
 - tuning by eye (water, a few intro effects);
-- more performance work on the render thread (Modern with every mod runs about 70 fps on a Ryzen 5 3600 and RTX 3050);
+- more performance work on the render thread (Modern with every mod runs about 70 fps on a Ryzen 5 3600 and RTX 3050;
+  Modern Water's screen-space reflections now spare the processor the second view of the world it used to draw);
 - Steam Deck tuning;
 - save round-trip tests on every map.
 

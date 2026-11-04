@@ -393,7 +393,7 @@ pub fn mirror_system(
         .planes
         .iter()
         .enumerate()
-        .filter(|(_, p)| (!p.water || crate::water::modern()) && (p.n.dot(eye) - p.d).abs() >= 0.01 && visible(p))
+        .filter(|(_, p)| (!p.water || crate::water::planar()) && (p.n.dot(eye) - p.d).abs() >= 0.01 && visible(p))
         .map(|(i, p)| (i, eye.clamp(p.min, p.max).distance(eye)))
         .filter(|(_, d)| *d <= 40.0)
         .collect();

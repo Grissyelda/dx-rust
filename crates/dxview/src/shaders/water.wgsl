@@ -5,7 +5,7 @@
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
-    mesh_view_bindings::{view, globals},
+    mesh_view_bindings::{view, globals, view_transmission_texture, view_transmission_sampler},
     mesh_functions,
     view_transformations::{position_world_to_clip, depth_ndc_to_view_z},
 }
@@ -23,6 +23,7 @@ struct WaterParams {
     grid: vec4<f32>,
     mask: vec4<f32>,
     heights: array<vec4<f32>, 4>,
+    ssr: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterParams;
@@ -214,6 +215,89 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     return out;
 }
 
+#ifdef DEPTH_PREPASS
+// Where a world point falls on screen: (pixel x, y, NDC depth, inside the view?).
+fn ssr_project(q: vec3<f32>) -> vec4<f32> {
+    let c = view.clip_from_world * vec4<f32>(q, 1.0);
+    if (c.w <= 1e-4) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    let ndc = c.xyz / c.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    let inside = select(0.0, 1.0, all(uv > vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)));
+    return vec4<f32>(view.viewport.xy + uv * view.viewport.zw, ndc.z, inside);
+}
+
+// How far a screen pixel is from the screen's edge, as a fade (reflections leaving the picture fade out instead of
+// stopping at a line).
+fn ssr_edge(px: vec2<f32>) -> f32 {
+    let uv = (px - view.viewport.xy) / view.viewport.zw;
+    let e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    return smoothstep(0.0, 0.07, e);
+}
+
+fn ssr_color(px: vec2<f32>) -> vec3<f32> {
+    let uv = (px - view.viewport.xy) / view.viewport.zw;
+    return textureSampleLevel(view_transmission_texture, view_transmission_sampler, uv, 0.0).rgb;
+}
+
+// The reflected ray from `p0` along `r`, stepping out with growing strides through the scene's depth; on the first
+// step that passes behind a surface (by less than the surface could be thick) the step is refined and the colour
+// there taken. Rays that pass everything take what lies far off in their direction (the sky, the skyline) when it
+// is on screen. rgb = colour, a = how much to trust it.
+fn ssr_trace(p0: vec3<f32>, r: vec3<f32>, dist: f32, steps: i32) -> vec4<f32> {
+    var s = 0.3 + dist * 0.012;
+    var prev = 0.0;
+    for (var i = 0; i < steps; i += 1) {
+        let q = ssr_project(p0 + r * s);
+        if (q.w < 0.5) {
+            break;
+        }
+        let scene = prepass_utils::prepass_depth(vec4<f32>(q.xy, 0.0, 0.0), 0u);
+        if (scene > 0.0) {
+            let ray_z = depth_ndc_to_view_z(q.z);
+            let scene_z = depth_ndc_to_view_z(scene);
+            if (ray_z < scene_z) {
+                let thick = 0.8 + s * 0.06;
+                if (scene_z - ray_z > thick) {
+                    // Passed behind something thick (the ray went under a wall it can't have hit): nothing to show.
+                    break;
+                }
+                // Refine between the last step in front and this one.
+                var a = prev;
+                var b = s;
+                for (var k = 0; k < 4; k += 1) {
+                    let m = 0.5 * (a + b);
+                    let qm = ssr_project(p0 + r * m);
+                    let sm = prepass_utils::prepass_depth(vec4<f32>(qm.xy, 0.0, 0.0), 0u);
+                    if (sm > 0.0 && depth_ndc_to_view_z(qm.z) < depth_ndc_to_view_z(sm)) {
+                        b = m;
+                    } else {
+                        a = m;
+                    }
+                }
+                let qh = ssr_project(p0 + r * b);
+                // Rays coming back toward the eye see the backs of things the picture doesn't have.
+                let facing = smoothstep(-0.2, 0.15, dot(r, -normalize(view.world_position.xyz - p0)));
+                return vec4<f32>(ssr_color(qh.xy), ssr_edge(qh.xy) * facing);
+            }
+        }
+        prev = s;
+        s *= 1.5;
+    }
+    // Past everything: what's far off that way, if the picture has it and it is far (sky, skyline, distant towers).
+    let far = ssr_project(p0 + r * 20000.0);
+    if (far.w > 0.5) {
+        let scene = prepass_utils::prepass_depth(vec4<f32>(far.xy, 0.0, 0.0), 0u);
+        let far_enough = scene <= 0.0 || -depth_ndc_to_view_z(scene) > 150.0;
+        if (far_enough) {
+            return vec4<f32>(ssr_color(far.xy), ssr_edge(far.xy));
+        }
+    }
+    return vec4<f32>(0.0);
+}
+#endif
+
 // Modern Water: a shader-pack surface. Clear water whose colour comes from how much of it you look through (the
 // scene's depth behind it): shallow water shows what's under it, deep water turns a dark blue-green; the planar
 // reflection by Fresnel, bent by the waves; sharp glints of the moon and the lamps. The WetTexture's picture isn't
@@ -261,6 +345,9 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // as blue-grey angular patches and seams across the harbour. The lamps still show in the reflection and as
     // glints of the dynamic lights.
     pbr_input.lightmap_light = vec3<f32>(0.0);
+    // (The material carries a little specular transmission only to be drawn in the transmissive pass, where the
+    // scene behind is on hand for the screen-space reflection: none of it is to be lit as transmission.)
+    pbr_input.material.specular_transmission = 0.0;
     var light = apply_pbr_lighting(pbr_input).rgb;
     let to_eye = view.world_position.xyz - in.world_position.xyz;
     let dist = length(to_eye);
@@ -291,6 +378,17 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
         refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.5;
     }
+#ifdef DEPTH_PREPASS
+    // Screen-space: the reflected ray marched through the depth of the scene already drawn (Bevy's transmission
+    // copy of it) - no second view of the world for the CPU to build.
+    if (water.ssr.x > 0.5 && up > 0.0) {
+        let bend = 0.45 * (1.0 / (1.0 + dist * 0.05) + 0.06 * far_k) * (0.4 + 0.6 * ndv_flat);
+        let rn = normalize(vec3<f32>(-g.x * bend, 1.0, -g.y * bend));
+        let r = reflect(-v, rn);
+        let hit = ssr_trace(in.world_position.xyz + rn * 0.02, r, dist, i32(water.ssr.y));
+        refl = mix(refl, hit.rgb * 0.5, hit.a);
+    }
+#endif
     // The water body: its own deep colour, lit a little by the light falling into it (lamp pools glow blue-green).
     let body = water.tint.rgb * 0.55 + light * vec3<f32>(0.010, 0.022, 0.027);
     // Physically 2% straight down; a little more than Schlick at middle angles reads better.
@@ -301,7 +399,8 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     // the glints.
 #ifdef VERTEX_UVS_A
     if (water.grid.x < 0.5 || (water.grid.x < 1.5 && (mask_at(p) & 128u) == 0u)) {
-        let ci = pbr_input_from_standard_material(in, is_front);
+        var ci = pbr_input_from_standard_material(in, is_front);
+        ci.material.specular_transmission = 0.0;
         let c_in = apply_pbr_lighting(ci).rgb * water.t.z;
         col = c_in + refl * k_refl * 0.5;
     }
@@ -319,7 +418,8 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         // a few pixels and filters down to one flat grey; enlarged, its animated ripples still show and move.
         var in_far = in;
         in_far.uv = in.uv * 0.083;
-        let cp = pbr_input_from_standard_material(in_far, is_front);
+        var cp = pbr_input_from_standard_material(in_far, is_front);
+        cp.material.specular_transmission = 0.0;
         let c_lit = apply_pbr_lighting(cp).rgb * water.t.z;
         col = mix(col, c_lit + refl * k_refl * 0.6, far_tex);
     }
@@ -348,9 +448,22 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     let alpha = clamp(max(absorb, k_refl + foam * 0.4), 0.0, 1.0);
     var out: FragmentOutput;
     out.color = vec4<f32>(col, alpha);
+#ifdef DEPTH_PREPASS
+    if (water.ssr.x > 0.5) {
+        // Drawn opaque over a copy of the scene: blend onto it here, the scene under the water bent a little by
+        // the waves (not where that would pull in something standing in front of the water).
+        var px = in.position.xy + vec2<f32>(g.x, -g.y) * view.viewport.w * 0.012 / (1.0 + dist * 0.12);
+        let sd = prepass_utils::prepass_depth(vec4<f32>(px, 0.0, 0.0), 0u);
+        if (sd > in.position.z) {
+            px = in.position.xy;
+        }
+        px = clamp(px, view.viewport.xy + vec2<f32>(0.5), view.viewport.xy + view.viewport.zw - vec2<f32>(0.5));
+        out.color = vec4<f32>(mix(ssr_color(px), col, alpha), 1.0);
+    }
+#endif
     // DXVIEW_WATER_DEBUG=2: the reflection alone (red where this plane has none); 3: the depth through the water.
     if (water.far.z > 1.5) {
-        out.color = select(vec4<f32>(1.0, 0.0, 0.0, 1.0), vec4<f32>(refl * 3.0, 1.0), water.m.y > 0.5);
+        out.color = select(vec4<f32>(1.0, 0.0, 0.0, 1.0), vec4<f32>(refl * 3.0, 1.0), water.m.y > 0.5 || water.ssr.x > 0.5);
     }
     if (water.far.z > 2.5) {
         out.color = vec4<f32>(vec3<f32>(1.0 - exp(-depth * 0.2)), 1.0);

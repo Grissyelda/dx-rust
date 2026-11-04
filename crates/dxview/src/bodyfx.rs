@@ -519,6 +519,8 @@ pub struct FpGlow {
     t: f32,
     life: Option<f32>,
     aug: Option<&'static str>,
+    /// Its size before the pulse.
+    base: f32,
 }
 
 static HEALED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
@@ -648,10 +650,9 @@ pub struct HealLeaf {
 #[derive(Default)]
 pub struct GlowAssets {
     quad: Handle<Mesh>,
-    cone: Handle<Mesh>,
     leaf: Handle<StandardMaterial>,
     soft: Handle<Image>,
-    /// One material per aug colour (soft glow), and one for the eye light streaming forward.
+    /// One material per aug colour (soft glow), and a faint one for the halo round the glasses.
     by_aug: HashMap<&'static str, (Handle<StandardMaterial>, Handle<StandardMaterial>)>,
 }
 
@@ -678,8 +679,6 @@ pub fn glow_system(
         let leaf_tex = images.add(leaf_image());
         GlowAssets {
             quad: meshes.add(Rectangle::new(1.0, 1.0)),
-            // The eye light: a cone pointing forward from the eye (tip at the eye, opening ahead), drawn additively.
-            cone: meshes.add(Cone { radius: 1.0, height: 1.0 }.mesh().resolution(12)),
             leaf: materials.add(StandardMaterial {
                 base_color: Color::WHITE,
                 base_color_texture: Some(leaf_tex),
@@ -729,34 +728,22 @@ pub fn glow_system(
                         want.push(((s.root, *aug, k), b, Vec3::splat(0.07), Vec3::ZERO, Quat::IDENTITY, layer, false));
                         continue;
                     }
-                    // The eyes: a bright iris and the aug's light streaming forward out of each one.
+                    // The eyes: the aug glows through JC's glasses - a small bright spot on each lens and a faint
+                    // soft halo round the pair (no beams: the light itself is the flashlight's own).
                     let (Ok(rg), Ok(hg)) = (gts.get(s.root), gts.get(b)) else { continue };
                     let a = rg.affine();
                     let fwd = a.transform_vector3(Vec3::Z).normalize_or_zero();
                     let up = a.transform_vector3(Vec3::Y).normalize_or_zero();
                     let lat = a.transform_vector3(Vec3::X).normalize_or_zero();
                     let inv = hg.affine().inverse();
-                    let hrot = hg.compute_transform().rotation;
+                    // On the lenses: a touch in front of the eyes, where the glasses sit.
+                    let lens = |side: f32| hg.translation() + fwd * 0.094 + up * 0.06 + lat * 0.032 * side;
+                    let bright = if *aug == "AugLight" { 1.0 } else { 0.8 };
                     for (j, side) in [-1.0f32, 1.0].iter().enumerate() {
-                        let eye = hg.translation() + fwd * 0.082 + up * 0.06 + lat * 0.032 * side;
-                        let local = inv.transform_point3(eye);
-                        // The iris: a small soft spot facing the way the head does.
-                        want.push(((s.root, *aug, k * 4 + j), b, Vec3::splat(0.022), local, hrot.inverse() * Quat::from_rotation_arc(Vec3::Z, fwd), layer, false));
-                        // The light: a cone with its tip at the eye, 0.32 m long, opening forward (Bevy's cone points
-                        // up its +Y with the tip at +height/2: turned to point back at the eye from ahead).
-                        let len = if *aug == "AugLight" { 0.42 } else { 0.3 };
-                        let rot_w = Quat::from_rotation_arc(Vec3::Y, -fwd);
-                        let centre = eye + fwd * (len * 0.5);
-                        want.push((
-                            (s.root, *aug, k * 4 + 2 + j),
-                            b,
-                            Vec3::new(0.035, len, 0.035),
-                            inv.transform_point3(centre),
-                            hrot.inverse() * rot_w,
-                            layer,
-                            true,
-                        ));
+                        want.push(((s.root, *aug, k * 4 + j), b, Vec3::splat(0.026 * bright), inv.transform_point3(lens(*side)), Quat::IDENTITY, layer, false));
                     }
+                    let mid = (lens(-1.0) + lens(1.0)) * 0.5 + fwd * 0.004;
+                    want.push(((s.root, *aug, k * 4 + 2), b, Vec3::splat(0.11 * bright), inv.transform_point3(mid), Quat::IDENTITY, layer, true));
                 }
             }
         }
@@ -813,10 +800,6 @@ pub fn glow_system(
             // Keep the eye pieces where the eyes are (the head turns under them).
             if let Ok((_, _, mut t, _)) = glows.get_mut(*e) {
                 t.translation = at;
-                t.rotation = rot;
-                if beam {
-                    t.scale = scale;
-                }
             }
             continue;
         }
@@ -827,27 +810,27 @@ pub fn glow_system(
             .or_insert_with(|| {
                 let c = aug_colour(k.1);
                 let col = Color::LinearRgba(LinearRgba::rgb(c.x, c.y, c.z));
-                let beam_c = c * 0.18;
+                // The halo round the glasses: the same colour, faint.
+                let beam_c = c * 0.22;
                 (
                     materials.add(StandardMaterial { base_color: col, base_color_texture: Some(soft), unlit: true, alpha_mode: AlphaMode::Add, ..default() }),
                     materials.add(StandardMaterial {
                         base_color: Color::LinearRgba(LinearRgba::rgb(beam_c.x, beam_c.y, beam_c.z)),
+                        base_color_texture: Some(ga.soft.clone()),
                         unlit: true,
                         alpha_mode: AlphaMode::Add,
-                        double_sided: true,
-                        cull_mode: None,
                         ..default()
                     }),
                 )
             })
             .clone();
-        let (mesh, mat) = if beam { (ga.cone.clone(), beam_mat) } else { (ga.quad.clone(), glow_mat) };
+        let (mesh, mat) = if beam { (ga.quad.clone(), beam_mat) } else { (ga.quad.clone(), glow_mat) };
         let e = commands
             .spawn((
                 Mesh3d(mesh),
                 MeshMaterial3d(mat),
                 Transform::from_translation(at).with_rotation(rot).with_scale(scale),
-                FpGlow { t: 0.0, life: None, aug: Some(k.1) },
+                FpGlow { t: 0.0, life: None, aug: Some(k.1), base: scale.x },
                 bevy::light::NotShadowCaster,
                 RenderLayers::layer(layer),
                 ChildOf(bone),
@@ -857,14 +840,13 @@ pub fn glow_system(
     }
     for (_e, mut g, mut t, parent) in &mut glows {
         g.t += dt;
-        if g.life.is_none() && t.scale.y == t.scale.x {
-            // The round glows: a slow pulse, facing the camera.
+        if g.life.is_none() {
+            // The round glows: a slow pulse (the eye glows a soft shimmer), facing the camera.
             if let Ok(pg) = gts.get(parent.parent()) {
                 t.rotation = pg.compute_transform().rotation.inverse() * cam_rot;
             }
-            let p = 0.85 + 0.15 * (g.t * 3.0).sin();
-            let base = if g.aug.is_some_and(eye_aug) && t.scale.x < 0.05 { 0.022 } else { 0.07 };
-            t.scale = Vec3::splat(base * p);
+            let p = if g.aug.is_some_and(eye_aug) { 0.92 + 0.05 * (g.t * 2.1).sin() + 0.03 * (g.t * 7.3).sin() } else { 0.85 + 0.15 * (g.t * 3.0).sin() };
+            t.scale = Vec3::splat(g.base * p);
         }
     }
     // Leaves: rise, spread, turn, grow in and shrink away.

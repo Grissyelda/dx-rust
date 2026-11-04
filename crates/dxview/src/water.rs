@@ -42,6 +42,10 @@ pub struct WaterParams {
     pub mask: Vec4,
     /// Water heights (Bevy y) by the mask's plane index (16).
     pub heights: [Vec4; 4],
+    /// Screen-space reflections (Water Reflections = Screen-Space): x 1 = on (the material is drawn opaque in the
+    /// transmissive pass, where the scene drawn so far is on hand as a texture: the shader reflects it and blends
+    /// the water onto it itself, refracted by the waves), y march steps.
+    pub ssr: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -177,6 +181,17 @@ pub fn modern() -> bool {
     setting!("ModernWater") > 0.5
 }
 
+/// Modern Water's reflections drawn by a second camera under the water (Water Reflections = Planar).
+pub fn planar() -> bool {
+    modern() && setting!("WaterReflections") > 0.5
+}
+
+/// Modern Water's reflections worked out on the GPU from the picture already drawn (Water Reflections =
+/// Screen-Space, the default): no second view for the CPU to prepare and record.
+pub fn ssr() -> bool {
+    modern() && setting!("WaterReflections") < 0.5
+}
+
 /// Each frame: time and the live rings into every water material.
 pub fn water_system(
     time: Res<Time>,
@@ -212,7 +227,9 @@ pub fn water_system(
     let modern = modern();
     let switched = wm.modern != Some(modern);
     wm.modern = Some(modern);
-    let key = [if modern { 1.0 } else { 0.0 }, storm(), moon_dir.x, moon_dir.y, moon_dir.z];
+    let ssr = ssr();
+    let key = [if modern { 1.0 } else { 0.0 } + if ssr { 2.0 } else { 0.0 }, storm(), moon_dir.x, moon_dir.y, moon_dir.z];
+    let switched = switched || wm.last.is_some_and(|l| l[0] != key[0]);
     if wm.last != Some(key) {
         wm.last = Some(key);
         changed = true;
@@ -233,11 +250,19 @@ pub fn water_system(
                 let opaque = wm.opaque.get(i).copied().unwrap_or(false);
                 m.base.alpha_mode = match (opaque, modern) {
                     (true, _) => AlphaMode::Opaque,
+                    // Screen-space: drawn opaque in the transmissive pass, blending onto its own copy of the scene
+                    // (Bevy only puts opaque transmissive materials there).
+                    (false, true) if ssr => AlphaMode::Opaque,
                     (false, true) => AlphaMode::Blend,
                     (false, false) => AlphaMode::Add,
                 };
                 m.base.perceptual_roughness = if modern { 0.07 } else { 1.0 };
                 m.base.reflectance = if modern { 0.5 } else { 0.05 };
+                // Screen-space reflections read the scene drawn so far (Bevy's transmission texture): a material
+                // with any specular transmission is drawn in the transmissive pass, after the opaque world is
+                // copied (the shader turns the transmission itself off again).
+                m.base.specular_transmission = if ssr && !opaque { 1e-3 } else { 0.0 };
+                m.extension.params.ssr = Vec4::new(if ssr && !opaque { 1.0 } else { 0.0 }, 20.0, 0.0, 0.0);
             }
         }
     }
@@ -273,6 +298,7 @@ pub fn material(base: StandardMaterial, opaque: bool, placeholder: Handle<Image>
                 grid: Vec4::ZERO,
                 mask: Vec4::ZERO,
                 heights: [Vec4::ZERO; 4],
+                ssr: Vec4::ZERO,
             },
             reflection: placeholder,
             mask,

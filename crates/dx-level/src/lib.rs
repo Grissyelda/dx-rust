@@ -1247,6 +1247,18 @@ pub fn build_level(
                         textures.push(img);
                         return Some((idx, false));
                     }
+                    // A FireTexture on the BSP (the training's hologram tubes, BobPage.BP_FX_03): a warmed-up frame
+                    // stands in, and dxview animates it by name (as on meshes).
+                    if let Some(mut f) = lib.load_fire(&path) {
+                        for _ in 0..40 {
+                            f.step();
+                        }
+                        let mut data = Vec::new();
+                        f.rgba(&mut data);
+                        let idx = textures.len();
+                        textures.push(TextureImage { name: path.clone(), width: f.width as u32, height: f.height as u32, mips: vec![data], bc1: false, bc3: false });
+                        return Some((idx, false));
+                    }
                     if path.to_ascii_lowercase().contains("water") {
                         let idx = textures.len();
                         textures.push(synth_water(&path));
@@ -1283,6 +1295,9 @@ pub fn build_level(
             Some((i, m)) => (Some(i), m),
             None => {
                 stats.missing_textures += 1;
+                if std::env::var_os("DXL_MISSINGLOG").is_some() {
+                    eprintln!("MISSING texture {} (surface {}, flags {:#x})", pkg.object_path(surf.material), node.surf, surf.poly_flags);
+                }
                 (None, false)
             }
         };

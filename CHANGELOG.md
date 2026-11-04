@@ -1,6 +1,38 @@
 # Changelog
 
-## Unreleased
+## v0.11.0
+
+The highlights since v0.10.0 (the detailed notes for each day follow):
+- **Skeletal characters and ragdolls**: the Machine God team's rebuilt human bodies on a real skeleton (blended
+  moves, talking faces, coat cloth, hurt poses, aiming and looking), ragdolls for the dead and knocked out, fluid
+  blood that runs down walls, wound marks and blood on your weapon.
+- **Remastered lighting**: per-pixel relighting of the walls with relief maps (the Parallax Occlusion addon, read
+  from the launcher's Mods page) and highlights; real-time shadows reworked; emissive lamps and screens; modern
+  glass.
+- **Modern Water rebuilt**: one wave grid round the eye, storms with whitecaps, indoor water done right, and
+  screen-space reflections worked out on the graphics card (Planar is still there as an option).
+- **New enhancements**: sprinting with stamina, grass and grown trees, upscaling (AMD FSR 1), Combat HUD fade, live
+  terminals in the world, a diegetic rifle scope, diegetic healing on the body, item rotation and Pack, optional
+  gameplay fixes, a Field of View slider and a frame rate cap.
+- **Achievements**: per character, spoilers hidden, endings shared across characters, a main-menu screen.
+- **Saves per character**, and a welcome screen for players of the original.
+- **Performance**: GPU-driven drawing (bindless materials, multi-draw, GPU culling), a CPU pass and an allocation
+  pass - Modern with every mod went from about 41 to 70 fps on a Ryzen 5 3600 + RTX 3050; Classic from 72 to about
+  96 fps at default settings.
+- **Mods**: one Mod Assets folder for all of them, Helios texture packs, GMDX perks and quality-of-life options,
+  Augmentique outfits.
+- Many fixes from playtests and GitHub reports (#2, #4, #6, #7, #8), the training courses and Mission 1 among them.
+
+### Training, holograms and a processor pass (November 4)
+- The training's stealth maze works as it should: the soldiers run for the alarm when they see you (failing the
+  test), and the reset switch at the top starts it over. Unarmed guards now raise the alarm or flee instead of
+  ignoring you.
+- The holograms at the end of training show their animated effect instead of flat purple.
+- The flashlight and vision augs glow softly through JC's glasses instead of shining two cones from his eyes.
+- New Water Reflections setting (Enhancements > Visuals): Screen-Space, the default, reflects what is on screen and
+  is worked out on the graphics card from the picture already drawn - the processor no longer draws the whole world
+  a second time for the water; Planar keeps the old full reflection. The water also bends what lies under it.
+- The level's surfaces are kept on the graphics card only (less memory).
 
 ### Welcome screen, frame rate cap and fixes (November 3, night)
 - A welcome window on the main menu for players of the original: what's new, what to try, what to look out for,

@@ -1482,9 +1482,11 @@ fn setup(
                 h
             })
             .clone();
+        // The level's surfaces live on the GPU only: nothing reads their Bevy meshes back (the game works from the
+        // level's own batches), so the main world's copy of every vertex is dropped once uploaded.
         let mut mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
+            RenderAssetUsages::RENDER_WORLD,
         );
         if b.class == SurfaceClass::Water && !b.sky {
             sheet_pts.extend_from_slice(&b.positions);
@@ -1552,7 +1554,7 @@ fn setup(
                 // Water isn't lightmapped: the shadow pairs (shadowlight.rs) would black it out under a shadow.
                 // On the mirror faces' layer: only the world camera draws water (the reflection cameras would only clip
                 // it away again).
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(wm), bevy::light::NotShadowReceiver, RenderLayers::layer(mirror::LAYER)))
+                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(wm), bevy::light::NotShadowReceiver, bevy::light::NotShadowCaster, RenderLayers::layer(mirror::LAYER)))
             }
             // PF_Mirrored: the same surface with the reflection added (mirror.rs).
             Some(plane) => {

@@ -1422,7 +1422,9 @@ impl Npc {
     /// SetEnemy + HandleEnemy: attack, after the surprise pause that ReactionLevel hasn't covered yet.
     /// HandleEnemy: HandlingEnemy -> Attacking, or fleeing for a pawn with nothing to fight with.
     fn handle_enemy(&mut self, t: Target, pos: DVec3, seen_at: f32, now: f32) {
-        if self.weapon.is_some() {
+        // HandlingEnemy.BeginState: RAISEALARM_BeforeAttacking goes for the alarm whatever the pawn holds (the
+        // training stealth maze's unarmed soldiers); Attacking then finds no weapon and flees.
+        if self.weapon.is_some() || (self.raise_alarm == 0 && self.alarm_timer <= 0.0) {
             self.begin_attack(t, pos, seen_at);
         } else {
             self.flee_from(t, pos, now, false);
@@ -4597,7 +4599,9 @@ fn sight_check(npc: &mut Npc, cx: &SightCx) {
     let pawns = senses.pawns;
     let sees = |center: DVec3, height: f64, check_dir: bool, other: Option<usize>| senses.sees(center, height, check_dir, other);
     let valid_enemy = |npc: &Npc, t: Target| senses.valid_enemy(npc, t);
-    if npc.think <= 0.0 && npc.weapon.is_some() && !stunned_now {
+    // CheckEnemyPresence runs for armed and unarmed pawns alike (bLookingForEnemy): an unarmed one that sees an
+    // enemy raises the alarm or flees.
+    if npc.think <= 0.0 && !stunned_now && (npc.weapon.is_some() || npc.hates("Player") || !npc.arsenal.is_empty()) {
         npc.think = 0.1;
         let period = std::mem::take(&mut npc.cycle);
         if matches!(npc.state, NpcState::Idle | NpcState::Seeking) && npc.react_presence {
@@ -4920,6 +4924,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
             npc.state = NpcState::Alerting;
             npc.route = None;
             println!("PAWN {} runs for the alarm", lvl.actors[npc.actor].name);
+            return (wish, true, false);
         }
     }
     // Attacking.BeginState: SetupWeapon(true) - the weapon comes out even when no surprise pause ran.
@@ -4938,7 +4943,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
         npc.patrol_dest = None;
         npc.orders_failed = false;
     } else if npc.should_flee()
-        || (npc.weapon.is_none() && !npc.arsenal.is_empty())
+        || npc.weapon.is_none()
         || npc.should_drop_weapon() && npc.weapon.is_some() && !crate::optfixes::never_drops_weapon(&cx.lvl.actors[npc.actor].class)
     {
         // HandleEnemy: drop the gun if an arm is gone (ShouldDropWeapon), then run if badly hurt

@@ -744,6 +744,7 @@ fn dev_goto(world: &mut World) {
             let lvl = &world.resource::<crate::LevelRes>().0;
             if let Some(i) = lvl.actors.iter().position(|a| a.name.eq_ignore_ascii_case(map)) {
                 let class = lvl.actors[i].class.clone();
+                let ev = crate::devices::name_prop(&lvl.actors[i].props, "Event");
                 let code = match unreal_pkg::props::find(&lvl.actors[i].props, "validCode") {
                     Some(unreal_pkg::props::Value::Str(s)) => s.clone(),
                     _ => "1234".to_string(),
@@ -754,6 +755,17 @@ fn dev_goto(world: &mut World) {
                     let b = world.resource::<crate::actors::Blockers>().list.iter().position(|c| c.actor == i);
                     if let Some(b) = b {
                         crate::menus::open_keypad(b, code, false);
+                    }
+                } else {
+                    // Anything else: as the player's frob would (fixtures toggle, DeusExDecoration.Frob's Event).
+                    let b = world.resource::<crate::actors::Blockers>().list.iter().position(|c| c.actor == i);
+                    if let Some(b) = b {
+                        if crate::fixtures::is_fixture(&class) {
+                            crate::fixtures::frob(b);
+                        }
+                    }
+                    if !ev.is_empty() {
+                        world.resource_mut::<crate::devices::GameEvents>().0.push((ev, true));
                     }
                 }
                 println!("GOTO frob {map} ({class})");

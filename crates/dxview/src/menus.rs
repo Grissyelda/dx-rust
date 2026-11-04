@@ -914,7 +914,7 @@ impl Enhance {
             ("LightShafts", "Visuals", "Light Shafts", "Beams of light in the air: the flashlight's cone, spotlights and the moonlight through windows and grates show in the haze."),
             ("FogVolumes", "Visuals", "Local Fog", "Low mist lying over the water in sewers and other indoor waterways, and a smoky haze in the bars and clubs that catches the light."),
             ("Clouds", "Visuals", "Night Clouds", "Volumetric clouds drifting over the open-air maps, lit by the moon and the city; in the rain they close into a dark overcast with lightning and thunder."),
-            ("ModernWater", "Visuals", "Modern Water", "Water with real reflections of what's around it, a dark see-through body, fine wind waves, rain rings and glints from the lights - like a modern shader pack. Costs an extra render near water."),
+            ("ModernWater", "Visuals", "Modern Water", "Water with real reflections of what's around it, a dark see-through body, fine wind waves, rain rings and glints from the lights - like a modern shader pack. See Water Reflections for how the reflections are made."),
             ("NoStrobeLights", "Visuals", "No Flickering Lights", "Flickering and blinking lights burn steady (GMDX's Lighting Accessibility, for photosensitive players)."),
         ] {
             let mut c = debug_mode_choice();
@@ -1009,6 +1009,16 @@ impl Enhance {
             c.value = setting!("FPSLimit");
             c.saved = c.value;
             items.push(tag(c, "Display"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "WaterReflections".into();
+            c.label = "Water Reflections".into();
+            c.help = "How Modern Water mirrors its surroundings. Screen-Space reflects what is on screen, worked out on the graphics card from the picture already drawn: nearly free for the processor. Planar draws the whole scene a second time from below the water for exact reflections of things off screen too - sharper, but it costs the processor a second view whenever water is in sight.".into();
+            c.kind = ChoiceKind::Enum(vec!["Screen-Space".to_string(), "Planar".to_string()]);
+            c.value = setting!("WaterReflections");
+            c.saved = c.value;
+            items.push(tag(c, "Visuals"));
         }
         {
             let mut c = debug_mode_choice();
