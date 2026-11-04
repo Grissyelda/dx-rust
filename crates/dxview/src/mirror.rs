@@ -579,6 +579,8 @@ pub struct MirrorBody {
     held: Option<(String, Entity, f32, Vec<dx_level::actors::MeshPart>, Vec<Handle<Mesh>>)>,
     /// augmentique::generation() when built (a new outfit rebuilds him).
     gen: u64,
+    /// Seconds crouched (0 standing): Human.PlayDuck drops into the crouch once (Crouch), then holds CrouchWalk.
+    crouch_t: f32,
 }
 
 #[derive(Resource, Default)]
@@ -666,6 +668,7 @@ pub fn mirror_body_system(
                     root,
                     mesh: std::sync::Arc::new({
                         let mut am = dx_level::actors::anim_mesh(&lm);
+                        dx_level::actors::deepen_crouch(&mut am);
                         dx_level::actors::synth_crouch_walk(&mut am);
                         am
                     }),
@@ -677,6 +680,7 @@ pub fn mirror_body_system(
                     lit_at: -1.0,
                     held: None,
                     gen: crate::augmentique::generation(),
+                    crouch_t: 0.0,
                 });
             }
             None => {
@@ -744,6 +748,17 @@ pub fn mirror_body_system(
     let aiming = ranged && !reloading && (keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || crate::aimmode::ads() > 0.3);
     let shooting = firing || aiming;
     // (sequence, loops: else held on its last frame / frame 0 for aim poses, rate x)
+    if player.crouched {
+        b.crouch_t += time.delta_secs();
+    } else {
+        b.crouch_t = 0.0;
+    }
+    let crouch_len = b
+        .mesh
+        .seqs
+        .iter()
+        .find(|s| s.name.eq_ignore_ascii_case("Crouch"))
+        .map_or(0.0, |s| s.num_frames.max(1) as f32 / s.rate.max(1.0));
     let (want, looped, rate_k): (&str, bool, f32) = if player.swimming {
         (if firing { "TreadShoot" } else { "Tread" }, true, 1.0)
     } else if falling {
@@ -759,8 +774,14 @@ pub fn mirror_body_system(
             // PlayCrawling: LoopAnim('CrouchWalk'), its legs in step with the ground covered. Meshes without it
             // (the women's GFM_Trench: Lay D Denton) get one made up (dx_level::actors::synth_crouch_walk).
             ("CrouchWalk", true, (speed as f32 / (player.params.ground_speed as f32 * 0.3).max(1.0)).clamp(0.6, 2.0))
-        } else {
+        } else if b.crouch_t < crouch_len && !b.seq.starts_with("CrouchWalk") && !b.seq.starts_with("CrouchShoot") {
+            // PlayDuck from standing: PlayAnim('Crouch') - the drop - once.
             ("Crouch", false, 1.0)
+        } else {
+            // Crouched and still: Human.PlayDuck / TweenToWaiting's TweenAnim('CrouchWalk'): its first frame, held
+            // (the end of Crouch is a lower, folded pose than the crouch he walks in - standing on it looked like
+            // he'd sat on his heels).
+            ("CrouchWalk", false, 1.0)
         }
     } else if reloading && ranged && !moving {
         ("Reload", true, 1.0)
@@ -805,8 +826,10 @@ pub fn mirror_body_system(
         Some(f) => (f, true, 1.0),
         None => (want, looped, rate_k),
     };
-    // Aim pose: frame 0 of Shoot / CrouchShoot held while aiming and not firing.
-    let aim_pose = aiming && !firing && (!moving || player.crouched) && !falling && !player.swimming;
+    // Aim pose: frame 0 of Shoot / CrouchShoot held while aiming and not firing; frame 0 of CrouchWalk crouched and
+    // still.
+    let crouch_still = want == "CrouchWalk" && !looped;
+    let aim_pose = (aiming && !firing && (!moving || player.crouched) && !falling && !player.swimming) || crouch_still;
     if env_on!("DXVIEW_BODYLOG") {
         static T: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
         if let Ok(mut t) = T.lock() {

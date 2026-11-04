@@ -39,6 +39,8 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     // HUD size (ours): 0 small, 1 medium (the original's rule), 2 large.
     ("HUDScale", 1.0),
     ("FOV", 75.0),
+    ("FPSLimit", 0.0),
+    ("WelcomeSeen", 0.0),
     // Sound.
     ("MusicVolume", 153.0),
     ("SoundVolume", 204.0),

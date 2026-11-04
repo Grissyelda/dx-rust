@@ -90,7 +90,7 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
 - **Optional extras:**
   - dialogue hotkeys and Discord Rich Presence;
   - inventory auto-sort, and item rotation with a Pack button and Shift-click to the belt;
-  - a Field of View slider;
+  - a Field of View slider and a frame rate cap (30 to 240 fps);
   - keypad codes and logins taken from your notes;
   - using consumables straight from the floor;
   - ladder grabbing;

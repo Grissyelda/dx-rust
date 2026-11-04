@@ -2689,7 +2689,15 @@ pub fn weapon_system(
         };
         let hit = world.trace(eye, eye + fw * 10000.0, DVec3::ZERO);
         // What's in the sights: (blocker, its range, a living pawn).
-        let target = hit.actor.filter(|_| h.state != WState::Reloading).map(|b| {
+        // Nothing is aimed at during a conversation or cut scene (the camera is the scene's; with the GEP in hand the
+        // speaker was "acquired", beeping and locking under the dialogue).
+        let away = crate::consys::third_person() || crate::cinematic::active() || crate::computers::open();
+        if away {
+            h.lock_mode = 0;
+            h.lock_target = None;
+            h.lock_timer = 0.0;
+        }
+        let target = hit.actor.filter(|_| h.state != WState::Reloading && !away).map(|b| {
             let a = &level.0.actors[blockers.list[b].actor];
             let alive = find(&a.props, "GroundSpeed").is_some() && pawn_health.0.get(&b).is_none_or(|&hp| hp > 0.0);
             (b, blockers.list[b].center.distance(player.body.location), alive)

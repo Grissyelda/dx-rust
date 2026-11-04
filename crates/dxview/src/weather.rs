@@ -228,19 +228,31 @@ pub fn density() -> f32 {
 
 /// PrecipitationInfo.RainStep: a footstep out in the rain (bSplashyFeet: density 4 and up) also splashes. Returns the
 /// volume scale for the normal step sound (carpet 0.75, grass 0.5).
+///
+/// Ours: the splash follows how wet the ground is (`wetness`: it takes half a minute of real rain to soak and dries
+/// over a minute and a half after), and on hard floors it's a light patter under the step rather than a full water
+/// step - with the mod's numbers every step on the dock sounded like wading whenever the drift passed 4.
 pub fn rain_step(group: Option<&str>, volume: f32, range: f32, pitch: f32) -> f32 {
-    if density() < 4.0 || !EXPOSED.load(std::sync::atomic::Ordering::Relaxed) {
+    let wet = wetness();
+    if density() < 4.0 || wet < 0.2 || !EXPOSED.load(std::sync::atomic::Ordering::Relaxed) {
         return 1.0;
     }
     let n = (crate::sound::frand() * 3.0) as u32 % 3 + 1;
     let (splash, step) = match group.map(|g| g.to_ascii_lowercase()) {
-        Some(g) if g == "textile" => (1.0, 0.75),
-        Some(g) if g == "foliage" => (1.0, 0.5),
-        _ => (0.75, 1.0),
+        Some(g) if g == "textile" => (0.8, 0.75),
+        Some(g) if g == "foliage" || g == "earth" => (0.7, 0.6),
+        _ => (0.3, 1.0),
     };
-    crate::sound::play_player(&format!("DeusExSounds.Generic.WaterStep{n}"), splash * volume, range);
+    crate::sound::play_player(&format!("DeusExSounds.Player.WaterStep{n}"), splash * volume * wet, range);
     let _ = pitch;
-    step
+    1.0 - (1.0 - step) * wet
+}
+
+/// How wet the ground out in the open is, 0..1 (eased by weather_system from the rain's density).
+static WETNESS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn wetness() -> f32 {
+    f32::from_bits(WETNESS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 fn rnd(seed: &mut u64) -> f64 {
@@ -283,6 +295,7 @@ pub fn weather_system(
             *d = 0.0;
         }
         EXPOSED.store(false, std::sync::atomic::Ordering::Relaxed);
+        WETNESS.store(0, std::sync::atomic::Ordering::Relaxed);
         for mut v in &mut vis {
             v.set_if_neq(Visibility::Hidden);
         }
@@ -319,6 +332,12 @@ pub fn weather_system(
     }
     if let Ok(mut d) = DENSITY.lock() {
         *d = st.density;
+    }
+    {
+        let want = ((st.density - 3.0) / 6.0).clamp(0.0, 1.0);
+        let w = wetness();
+        let w = if want > w { (w + dt / 30.0).min(want) } else { (w - dt / 90.0).max(want) };
+        WETNESS.store(w.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
     // The streak mesh (and the splash mesh), once a map.
     if !st.spawned {
@@ -684,6 +703,7 @@ pub fn reset_level() {
     if let Ok(mut d) = DENSITY.lock() {
         *d = 0.0;
     }
+    WETNESS.store(0, std::sync::atomic::Ordering::Relaxed);
     EXPOSED.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 

@@ -1594,7 +1594,15 @@ fn draw_security(u: &mut Ui<Wid>, sc: &mut Sec, wx: &Dv, actor: usize, dx: i32, 
         let y = dy + 30 + 34 * i as i32;
         let present = if i == 3 { has_turret } else { en[i] };
         action_button(u, Wid::Choice(i as u8), dx + 13, y, 143, &action, en[i]);
-        let value = if present { enum_text(u.hud, u.assets, i, sc.values[i]) } else { String::new() };
+        // Ours: a turret locked out because the computer was hacked below Advanced (the original only greys the
+        // button) says why.
+        let value = if i == 3 && present && sc.turret_disabled {
+            "Needs Advanced".to_string()
+        } else if present {
+            enum_text(u.hud, u.assets, i, sc.values[i])
+        } else {
+            String::new()
+        };
         info_button(u, dx + 13 + 154, y, 113, &value, if en[i] { m_btn(0) } else { m_btn(3) });
         u.hit(Wid::ChoiceInfo(i as u8), (dx + 167, y, 113, 19), en[i]);
     }
@@ -2423,6 +2431,32 @@ pub fn computer_system(
             mission,
         };
         t.clock += dt;
+        // Dev aid: DXVIEW_COMPTEST="user;pass;n" logs in once the login shows, then on the security screen presses
+        // the turret choice n times a second apart, printing the turret's mode each time.
+        if let Some(v) = env_val!("DXVIEW_COMPTEST") {
+            let parts: Vec<&str> = v.split(';').collect();
+            if let (Some(Screen::Login { user, pass, .. }), [u, p, ..]) = (t.screen.as_mut(), parts.as_slice()) {
+                user.text = u.chars().collect();
+                pass.text = p.chars().collect();
+                activate(t, Wid::Btn(Btn::Login), false, &mut wx);
+            } else if let Some(Screen::Security(sc)) = t.screen.as_ref() {
+                let want: u32 = parts.get(2).and_then(|n| n.parse().ok()).unwrap_or(4);
+                static DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let done = DONE.load(std::sync::atomic::Ordering::Relaxed);
+                let d = wx.data.get(&t.actor).unwrap();
+                let tag = d.views[sc.sel].turret.clone();
+                if done < want && (t.clock * 0.5) as u32 > done {
+                    DONE.store(done + 1, std::sync::atomic::Ordering::Relaxed);
+                    let en = choice_enabled(sc, d, wx.sec, wx.lvl);
+                    activate(t, Wid::Choice(3), false, &mut wx);
+                    let vals = match t.screen.as_ref() {
+                        Some(Screen::Security(sc)) => sc.values,
+                        _ => [9; 4],
+                    };
+                    println!("COMPTEST view turret tag {tag:?} enabled {:?} -> mode {:?} values {vals:?}", en, control::turret(wx.sec, &tag));
+                }
+            }
+        }
         // The player died (NetworkTerminal.Tick).
         if wx.ph.dead {
             t.close_screen("EXIT", &mut wx);

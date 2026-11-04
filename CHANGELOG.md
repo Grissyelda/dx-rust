@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Welcome screen, frame rate cap and fixes (November 3, night)
+- A welcome window on the main menu for players of the original: what's new, what to try, what to look out for,
+  and a note that Modern with everything on is still a work in progress for performance. OK closes it; Don't Show
+  Again keeps it closed.
+- New Frame Rate Cap in Settings > Enhancements > Display: Off, 30, 60, 120, 144, 200 or 240 fps.
+- Footsteps no longer splash on every step whenever it rains: the splash comes in as the ground gets wet, only in
+  the open, and stays quiet on hard floors.
+- The GEP gun's lock-on stops beeping during conversations, cut scenes and at computers.
+- Pieces of broken boxes are lit like everything else, including by dynamic lights.
+- People and objects are lit only on the sides facing a light, as in the original: the clone in the intro's tank has
+  his face in shadow again. Spotlights light objects all round as the original does, which brings back the training
+  range's wall switches (they had gone black).
+- Third-person crouching: JC sinks into the crouch and holds it, then walks in it; Lay D Denton's crouch is deeper and
+  leans forward like the male one.
+- Security computers: if you hacked in without Advanced Computer skill the turret choice stays locked, as in the
+  original, and now says why ("Needs Advanced"); a turret's attack mode is kept in saves.
+
 ### Bug reports, item rotation, blood and achievements (November 3, evening)
 - Classic lighting matches the original again where it was too bright, as in the training halls: spotlights now
   light only inside their cones (they lit all round like bulbs), and lights marked as flat or cylindrical work as

@@ -139,6 +139,8 @@ mod skeletal;
 mod ragdoll;
 mod gore;
 mod viewblood;
+mod framecap;
+mod welcome;
 mod bodyfx;
 mod healui;
 mod optfixes;
@@ -1175,6 +1177,8 @@ fn main() {
         .add_systems(Update, classic_hud::ui_gamma_system)
         .add_systems(First, save::save_first_system)
         .add_systems(Last, save::save_last_system)
+        // The frame rate cap waits last of all (framecap.rs).
+        .add_systems(Last, framecap::frame_cap_system.after(save::save_last_system))
         .init_resource::<menus::Menus>()
         .add_systems(
             Update,

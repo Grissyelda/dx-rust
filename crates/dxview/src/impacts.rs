@@ -326,6 +326,7 @@ pub fn impacts_system(
                     life: Some(10.0),
                     parts: Vec::new(),
                     lit_at: DVec3::ZERO,
+                    sig: 0,
                 };
                 let scale = 0.1 + rnd() as f32 * 0.25;
                 if let Some(e) = crate::destruct::spawn_loose(

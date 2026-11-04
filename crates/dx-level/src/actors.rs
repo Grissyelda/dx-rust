@@ -454,8 +454,10 @@ pub fn mesh_parts(
         apply(&mesh_axes, s)
     };
         let mut parts: Vec<MeshPart> = Vec::new();
-        let mut part_index: HashMap<(Option<usize>, SurfaceClass, bool, bool), usize> = HashMap::new();
+        let mut part_index: HashMap<(Option<usize>, SurfaceClass, bool, bool, bool), usize> = HashMap::new();
         let actor_env = matches!(find(p, "bMeshEnviroMap"), Some(Value::Bool(true)));
+        // A mirrored mesh (an odd number of negative scale axes) winds its faces the other way round.
+        let sg: f32 = if m.scale[0] * m.scale[1] * m.scale[2] < 0.0 { -1.0 } else { 1.0 };
         for face in &m.faces {
             let Some(mat) = m.materials.get(face.material as usize) else { continue };
             if mat.poly_flags & 0x1 != 0 {
@@ -487,8 +489,10 @@ pub fn mesh_parts(
             };
             let unlit = actor_unlit || mat.poly_flags & 0x0040_0000 != 0 || class == SurfaceClass::Modulated;
             let env = actor_env || mat.poly_flags & 0x10 != 0;
-            let pi = *part_index.entry((tidx, class, unlit, env)).or_insert_with(|| {
-                parts.push(MeshPart { texture: tidx, class, unlit, env, two_sided: true, positions: Vec::new(), normals: Vec::new(), uvs: Vec::new(), indices: Vec::new(), vert_ids: Vec::new(), slots: Vec::new() });
+            // PF_TwoSided sections are lit from both sides (|N.L|); the rest only from the side they face.
+            let two_sided = mat.poly_flags & 0x100 != 0;
+            let pi = *part_index.entry((tidx, class, unlit, env, two_sided)).or_insert_with(|| {
+                parts.push(MeshPart { texture: tidx, class, unlit, env, two_sided, positions: Vec::new(), normals: Vec::new(), uvs: Vec::new(), indices: Vec::new(), vert_ids: Vec::new(), slots: Vec::new() });
                 parts.len() - 1
             });
             let part = &mut parts[pi];
@@ -505,7 +509,7 @@ pub fn mesh_parts(
             let e2 = [pts[2][0] - pts[0][0], pts[2][1] - pts[0][1], pts[2][2] - pts[0][2]];
             let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
             let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
-            let n = [n[0] / nl, n[1] / nl, n[2] / nl];
+            let n = [sg * n[0] / nl, sg * n[1] / nl, sg * n[2] / nl];
             let base = part.positions.len() as u32;
             for (k, pt) in pts.iter().enumerate() {
                 let wd = w[k].unwrap();
@@ -526,7 +530,7 @@ pub fn mesh_parts(
             let e1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
             let e2 = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
             // Unnormalised cross product: its length is twice the area.
-            let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let n = [sg * (e1[1] * e2[2] - e1[2] * e2[1]), sg * (e1[2] * e2[0] - e1[0] * e2[2]), sg * (e1[0] * e2[1] - e1[1] * e2[0])];
             for &v in &[a, b, c] {
                 let s = sums.entry(part.vert_ids[v]).or_insert([0.0; 3]);
                 for k in 0..3 {
@@ -625,6 +629,9 @@ pub fn zone_ambient_at(p: [f32; 3]) -> [f32; 3] {
     g.as_ref().map(look).unwrap_or([0.0; 3])
 }
 
+/// Lights nearer than this to an actor's origin light it from the origin's side (see light_part).
+pub const INSIDE: f32 = 64.0;
+
 pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale_glow: f32, lights: &[LightInfo]) -> Vec<[f32; 4]> {
     if part.unlit {
         return vec![[1.0, 1.0, 1.0, 1.0]; part.positions.len()];
@@ -653,13 +660,21 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
                 if d >= l.radius {
                     continue;
                 }
-                let spot = l.spot(pt);
-                if spot <= 0.0 {
-                    continue;
-                }
-                // Facing: one-sided (a light behind the surface, or inside the head, leaves it dark - the intro's
-                // clone with the lamp in his head lit only on the shoulders), both sides on PF_TwoSided sections.
-                let d_n = (to[0] * n[0] + to[1] * n[1] + to[2] * n[2]) / len.max(1e-3);
+                // Spotlights light actors all round (Unreal's mesh lighting has no cone: the training range's wall
+                // switches went black under the hall's spots); only the level's lightmaps take the cone.
+                let spot = 1.0;
+                // Facing: one-sided, both sides on PF_TwoSided sections. A light inside the actor (within
+                // INSIDE of its origin) shines from the origin's side, as Unreal lights a mesh with one direction
+                // per light from the actor: the intro's clone has his tank lamp in his chest, and the original
+                // lights the top of his head and his shoulders and leaves the face in shadow (per vertex, the
+                // lamp lit him from inside).
+                let d_n = if (l.pos[0] - location[0]).powi(2) + (l.pos[1] - location[1]).powi(2) + (l.pos[2] - location[2]).powi(2) < INSIDE * INSIDE {
+                    let c = [l.pos[0] - location[0], l.pos[1] - location[1], l.pos[2] - location[2]];
+                    let cl = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt().max(1e-3);
+                    (c[0] * n[0] + c[1] * n[1] + c[2] * n[2]) / cl
+                } else {
+                    (to[0] * n[0] + to[1] * n[1] + to[2] * n[2]) / len.max(1e-3)
+                };
                 let ndl = if l.flat { 1.0 } else if part.two_sided { d_n.abs() } else { d_n.max(0.0) };
                 let att = (1.0 - d / l.radius) * ndl * spot;
                 for ch in 0..3 {
@@ -828,6 +843,60 @@ pub fn sound_actors(pkg: &Package, classes: &mut ClassDb) -> (Vec<AmbientSoundIn
 /// the last frame of Crouch (fully down) with each Walk frame's leg motion added - the movement of every vertex
 /// below the hips away from the walk's average pose, a little shortened. The upper body (and the weapon triangle)
 /// keep the crouch. Ours: the original has no such animation (LDDP loops Crouch).
+/// Deepens a mesh's Crouch when it stands much taller than GM_Trench's (the women's GFM_Trench crouches nearly upright:
+/// Lay D Denton): the body above the hips leans forward by up to DEEPEN_DEG (30), each Crouch frame in proportion to how
+/// far down it has come, so it ends hunched like the male crouch (head about two-thirds of the standing height, well
+/// ahead of the feet). Does nothing to a mesh that already crouches low. Run before `synth_crouch_walk`, which builds
+/// on Crouch's last frame.
+pub fn deepen_crouch(am: &mut AnimMesh) {
+    const DEEPEN_DEG: f32 = 30.0;
+    let find = |n: &str| am.seqs.iter().find(|s| s.name.eq_ignore_ascii_case(n)).cloned();
+    let Some(crouch) = find("Crouch") else { return };
+    let fv = am.frame_verts;
+    let (c0, cn) = (crouch.start_frame.max(0) as usize, crouch.num_frames.max(1) as usize);
+    if fv == 0 || (c0 + cn) * fv > am.verts.len() {
+        return;
+    }
+    let zr = |verts: &[[f32; 3]], f: usize| verts[f * fv..(f + 1) * fv].iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[2]), a.1.max(p[2])));
+    let (lo, stand_top) = zr(&am.verts, c0);
+    let (_, low_top) = zr(&am.verts, c0 + cn - 1);
+    let stand = (stand_top - lo).max(1.0);
+    // GM_Trench folds to 0.70 of Crouch's first frame, GFM_Trench to 0.76: leave anything under 0.72 alone.
+    if (low_top - lo) / stand < 0.72 {
+        return;
+    }
+    for f in c0..c0 + cn {
+        let (_, top) = zr(&am.verts, f);
+        let k = ((stand_top - top) / (stand_top - low_top).max(1e-3)).clamp(0.0, 1.0);
+        let a = (DEEPEN_DEG * k).to_radians();
+        if a <= 0.0 {
+            continue;
+        }
+        let vs = &mut am.verts[f * fv..(f + 1) * fv];
+        let h = top - lo;
+        // The hips: the middle of the band 40-55% up the crouched body.
+        let band: Vec<[f32; 3]> = vs.iter().filter(|v| v[2] >= lo + 0.4 * h && v[2] <= lo + 0.55 * h).copied().collect();
+        if band.is_empty() {
+            continue;
+        }
+        let px = band.iter().map(|v| v[0]).sum::<f32>() / band.len() as f32;
+        let pz = lo + 0.47 * h;
+        let (sa, ca) = a.sin_cos();
+        for v in vs.iter_mut() {
+            // Full above the hips, fading out over the 10 units below them.
+            let t = ((v[2] - (pz - 10.0)) / 10.0).clamp(0.0, 1.0);
+            let w = t * t * (3.0 - 2.0 * t);
+            if w <= 0.0 {
+                continue;
+            }
+            let (xr, zr) = (v[0] - px, v[2] - pz);
+            let (nx, nz) = (xr * ca + zr * sa, -xr * sa + zr * ca);
+            v[0] += (px + nx - v[0]) * w;
+            v[2] += (pz + nz - v[2]) * w;
+        }
+    }
+}
+
 pub fn synth_crouch_walk(am: &mut AnimMesh) {
     let has = |n: &str| am.seqs.iter().any(|s| s.name.eq_ignore_ascii_case(n));
     if has("CrouchWalk") {
@@ -861,13 +930,25 @@ pub fn synth_crouch_walk(am: &mut AnimMesh) {
         })
         .collect();
     const STRIDE: f32 = 0.5;
+    // The pose he walks in: GM_Trench's CrouchWalk stands about a sixth of the way back up from the bottom of Crouch
+    // (Crouch ends folded lower) - the same blend of Crouch's first and last frames here.
+    let first_f = crouch.start_frame.max(0) as usize;
+    let base: Vec<[f32; 3]> = (0..fv)
+        .map(|v| {
+            let (a, z) = (am.verts[base_f * fv + v], am.verts[first_f * fv + v]);
+            [a[0] + (z[0] - a[0]) * 0.16, a[1] + (z[1] - a[1]) * 0.16, a[2] + (z[2] - a[2]) * 0.16]
+        })
+        .collect();
+    // The feet never go through the floor the crouch stands on (the walk's foot lift is kept; its dip is not).
+    let floor = (0..fv).map(|v| am.verts[base_f * fv + v][2]).fold(f32::MAX, f32::min);
     let start = am.frames;
     for f in w0..w0 + wn {
         for v in 0..fv {
-            let b = am.verts[base_f * fv + v];
+            let b = base[v];
             let p = am.verts[f * fv + v];
             let k = weight[v] * STRIDE;
-            am.verts.push([b[0] + (p[0] - mean[v][0]) * k, b[1] + (p[1] - mean[v][1]) * k, b[2] + (p[2] - mean[v][2]) * k]);
+            let z = (b[2] + (p[2] - mean[v][2]) * k).max(floor.min(b[2]));
+            am.verts.push([b[0] + (p[0] - mean[v][0]) * k, b[1] + (p[1] - mean[v][1]) * k, z]);
         }
         if let Some(t) = am.weapon_tri.get(base_f).copied() {
             am.weapon_tri.push(t);

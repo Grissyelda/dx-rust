@@ -76,7 +76,7 @@ fn light_sum(level: &Level, pos: DVec3, gain: f32, dynamic: &[dx_level::lighting
             continue;
         }
         let lum = (l.color[0] + l.color[1] + l.color[2]) / 3.0;
-        sum += lum * (1.0 - d / l.radius) * gain * l.spot([pos.x as f32, pos.y as f32, pos.z as f32]);
+        sum += lum * (1.0 - d / l.radius) * gain;
     }
     sum.clamp(0.0, 1.0)
 }

@@ -171,6 +171,7 @@ pub fn blood_system(
                 life: Some(10.0),
                 parts: Vec::new(),
                 lit_at: DVec3::ZERO,
+                sig: 0,
             };
             if let Some(e) = crate::destruct::spawn_loose(
                 &mut commands,
@@ -205,6 +206,7 @@ pub fn blood_system(
             life: Some(10.0),
             parts: Vec::new(),
             lit_at: DVec3::ZERO,
+            sig: 0,
         };
         if let Some(e) = crate::destruct::spawn_loose(
             &mut commands,
@@ -389,6 +391,7 @@ pub fn gib_system(
                 life: Some(10.0 + rnd() as f32 * 5.0),
                 parts: Vec::new(),
                 lit_at: DVec3::ZERO,
+                sig: 0,
             };
             let mesh = if !robot && i % 3 == 1 {
                 "DeusExItems.FleshFragment2"

@@ -327,6 +327,16 @@ pub fn with_current_copy<R>(f: impl FnOnce(&[LightInfo]) -> R) -> R {
     })
 }
 
+/// Whether a dynamic light (flash, flare, flashlight beam...) reaches within `margin` of `p` this frame.
+pub fn dynamic_near(p: [f32; 3], margin: f32) -> bool {
+    with_current(|c| {
+        c.iter().any(|l| {
+            let d = ((l.pos[0] - p[0]).powi(2) + (l.pos[1] - p[1]).powi(2) + (l.pos[2] - p[2]).powi(2)).sqrt();
+            d < l.radius + margin
+        })
+    })
+}
+
 /// This frame's dynamic lights, read in place (no copy). `f` must not call back into this module's light lookups
 /// (`lights_at`, `current`): the list is locked while it runs.
 pub fn with_current<R>(f: impl FnOnce(&[LightInfo]) -> R) -> R {

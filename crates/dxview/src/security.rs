@@ -430,6 +430,9 @@ pub struct SecuritySave {
     pub turrets: Vec<(usize, bool, bool, (f64, f64), (f64, f64))>,
     /// (actor, bIsOn, HitPoints)
     pub lasers: Vec<(usize, bool, f32)>,
+    /// (actor, bTrackPlayersOnly, bTrackPawnsOnly): a mode picked at a security computer.
+    #[serde(default)]
+    pub turret_track: Vec<(usize, bool, bool)>,
 }
 
 impl Security {
@@ -446,6 +449,7 @@ impl Security {
                 .map(|t| (t.actor, t.active, t.disabled, t.rot, t.want))
                 .collect(),
             lasers: self.lasers.iter().map(|l| (l.actor, l.on, if l.gone { 0.0 } else { l.hp })).collect(),
+            turret_track: self.turrets.iter().filter(|t| !t.gone).map(|t| (t.actor, t.players_only, t.pawns_only)).collect(),
         }
     }
     pub fn restore(&mut self, s: &SecuritySave) {
@@ -465,6 +469,12 @@ impl Security {
                 t.rot = *rot;
                 t.want = *want;
                 t.target = None;
+            }
+        }
+        for (a, players, pawns) in &s.turret_track {
+            if let Some(t) = self.turrets.iter_mut().find(|t| t.actor == *a) {
+                t.players_only = *players;
+                t.pawns_only = *pawns;
             }
         }
         for (a, on, hp) in &s.lasers {

@@ -771,6 +771,8 @@ enum Body {
     Enhance(Enhance),
     /// Ours: the main menu's Achievements screen (every character's).
     Achieve(AchieveView),
+    /// Ours: the welcome window (welcome.rs), its text scroll.
+    Welcome(i32),
 }
 
 struct AchieveView {
@@ -995,6 +997,16 @@ impl Enhance {
                 labels: vals.iter().map(|v| if *v == 75 { "75 (original)".to_string() } else { v.to_string() }).collect(),
             };
             c.value = crate::weapons::base_fov();
+            c.saved = c.value;
+            items.push(tag(c, "Display"));
+        }
+        {
+            let mut c = debug_mode_choice();
+            c.key = "FPSLimit".into();
+            c.label = "Frame Rate Cap".into();
+            c.help = "The most frames a second the game draws. A cap keeps the frame rate steady and the graphics card cooler and quieter; Off lets it run as fast as it can (with Vertical Sync on, the monitor's refresh rate caps it anyway).".into();
+            c.kind = ChoiceKind::Enum(crate::framecap::LABELS.iter().map(|s| s.to_string()).collect());
+            c.value = setting!("FPSLimit");
             c.saved = c.value;
             items.push(tag(c, "Display"));
         }
@@ -1465,6 +1477,14 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 sl.edit.anchor = 0;
             }
             Body::SaveLoad(sl)
+        }
+        "MenuScreenWelcome" => {
+            f = frame(assets, "MenuScreenCustomizeKeys");
+            f.class = class.to_string();
+            f.title = crate::welcome::TITLE.into();
+            let ok = f.actions.iter().find(|a| a.1 == 1).map(|a| a.2.clone()).unwrap_or_else(|| "OK".into());
+            f.actions = vec![(0, 21, "Don't Show Again".into(), String::new()), (2, 20, ok, String::new())];
+            Body::Welcome(0)
         }
         "MenuScreenAchievements" => {
             f = frame(assets, "MenuScreenCustomizeKeys");
@@ -2195,6 +2215,10 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
             }
             list(u, 0, (cx + 11, cy + 23, 369, 268), &[240, 129], &rows, sel, &mut en.scroll, false);
         }
+        Body::Welcome(scroll) => {
+            header_button(u, W::Header(0), cx + 10, cy + 3, 322, "What's new for Deus Ex players");
+            text_area(u, 0, (cx + 11, cy + 23, 369, 268), crate::welcome::TEXT, false, scroll);
+        }
         Body::Achieve(av) => {
             let total = crate::achievements::LIST.len();
             let any = crate::achievements::LIST.iter().filter(|a| av.chars.iter().any(|c| c.unlocked.contains_key(a.0)) || av.global.contains_key(a.0)).count();
@@ -2693,6 +2717,11 @@ pub fn menu_system(
                 st.intro_menu_shown = true;
                 let w = open_window(&mut hud, &mut assets, "MenuMain");
                 st.push(w);
+                // Ours: the welcome window over it, until "Don't Show Again".
+                if crate::welcome::due() {
+                    let w = open_window(&mut hud, &mut assets, "MenuScreenWelcome");
+                    st.push(w);
+                }
             }
         }
     }
@@ -3620,6 +3649,7 @@ fn scroll_by(win: &mut Win, id: u8, d: i32) {
         Body::Enhance(en) if id == 0 => en.scroll = (en.scroll + d).max(0),
         Body::SaveLoad(sl) if id == 0 => sl.scroll = (sl.scroll + d).max(0),
         Body::Achieve(av) if id == 0 => av.scroll = (av.scroll + d).max(0),
+        Body::Welcome(sc) if id == 0 => *sc = (*sc + d).max(0),
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = (ng.desc_scroll + d).max(0),
         _ => {}
     }
@@ -3637,6 +3667,7 @@ fn set_scroll(win: &mut Win, id: u8, v: i32) {
         Body::Enhance(en) if id == 0 => en.scroll = v,
         Body::SaveLoad(sl) if id == 0 => sl.scroll = v,
         Body::Achieve(av) if id == 0 => av.scroll = v,
+        Body::Welcome(sc) if id == 0 => *sc = v,
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = v,
         _ => {}
     }
@@ -3805,6 +3836,15 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                     }
                 }
                 10..=12 => box_answer(st, top, action != 10, hud, assets, acts),
+                // The welcome window: OK, or Don't Show Again (welcome.rs).
+                20 | 21 => {
+                    if action == 21 {
+                        crate::settings::set("WelcomeSeen", crate::welcome::VERSION);
+                        crate::settings::save();
+                    }
+                    crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
+                    acts.push(Act::Pop);
+                }
                 _ => {}
             }
         }
@@ -3981,6 +4021,7 @@ mod tests {
             "MenuScreenSaveGame",
             "MenuScreenLoadGame",
             "MenuScreenAchievements",
+            "MenuScreenWelcome",
             "KEYPAD",
             "MSG",
         ] {
