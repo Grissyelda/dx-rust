@@ -9,6 +9,8 @@
 //!   the ground, blurring as the shadow stretches away (contact hardening).
 
 use bevy::anti_alias::smaa::Smaa;
+use bevy::camera::MsaaWriteback;
+use bevy::light::VolumetricFog;
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::prelude::*;
 use bevy::render::view::Msaa;
@@ -28,11 +30,25 @@ const POINT_SIZE: f32 = 0.12;
 pub fn postfx_system(
     mut commands: Commands,
     world: Query<(Entity, Has<ScreenSpaceAmbientOcclusion>), (With<crate::FlyCam>, Without<crate::SkyCam>)>,
-    cams: Query<(Entity, &Msaa, Has<Smaa>, Has<crate::weapons::ViewModelCam>), Or<(With<crate::FlyCam>, With<crate::SkyCam>, With<crate::weapons::ViewModelCam>, With<crate::augdisplay::HeatCam>, With<crate::upscale::UpscaleCam>)>>,
+    mut cams: Query<
+        (Entity, &Msaa, Has<Smaa>, Has<crate::weapons::ViewModelCam>, &mut Camera, Has<VolumetricFog>),
+        Or<(
+            With<crate::FlyCam>,
+            With<crate::SkyCam>,
+            With<crate::weapons::ViewModelCam>,
+            With<crate::augdisplay::HeatCam>,
+            With<crate::upscale::UpscaleCam>,
+        )>,
+    >,
     mut points: Query<(&mut SpotLight, &crate::shadowlight::ShadowLight), Without<crate::dynlight::FlashCone>>,
     mut spots: Query<&mut SpotLight, (With<crate::dynlight::FlashCone>, Without<crate::shadowlight::ShadowLight>)>,
     mut bsp: ResMut<Assets<crate::shadowlight::BspMaterial>>,
-    mut ao_gen: Local<Option<(bool, bool)>>,
+    // The mesh actors, whose shadow lights' walk goes with the BSP's (shadowlight.rs `actor_spot_shadows`).
+    (mut anim, mut actors): (
+        ResMut<Assets<crate::gpuanim::AnimMaterial>>,
+        ResMut<Assets<crate::skeletal::ActorMaterial>>,
+    ),
+    mut ao_gen: Local<Option<(bool, u32, bool, bool, bool, bool)>>,
 ) {
     // The cameras' make-up never changes in play: the SSAO pass, the depth / normal prepasses, MSAA off with SMAA.
     // Each of those is part of every material's pipeline, so adding or removing one recompiled them all (a long
@@ -40,14 +56,41 @@ pub fn postfx_system(
     // SSAO but no depth prepass for a frame). The Ambient Occlusion setting is now just how strongly the world's
     // shader uses it.
     let ao = ao_on();
+    // The BSP shader's shadow strength goes with it: 0 (Lean Rendering with no shadow lights) skips its walk over
+    // the lights in each fragment's cluster.
+    let strength = crate::shadowlight::shadow_strength();
     let detail = setting!("DetailTextures") > 0.5;
-    if *ao_gen != Some((ao, detail)) {
-        *ao_gen = Some((ao, detail));
+    // Lean Rendering's Classic lights (shadowlight.rs): a change re-specializes the level's pipelines, as does
+    // Flashlight Cone, the one spot light their walk may meet, and the lightmap lights (lmlights.rs), which take the
+    // walk away.
+    let classic = crate::shadowlight::classic_lights();
+    let cone = crate::dynlight::flashlight_cone();
+    let lm = crate::lmlights::active();
+    if *ao_gen != Some((ao, strength.to_bits(), detail, classic, cone, lm)) {
+        *ao_gen = Some((ao, strength.to_bits(), detail, classic, cone, lm));
         let ids: Vec<_> = bsp.ids().collect();
         for id in ids {
             if let Some(mut m) = bsp.get_mut(id) {
                 m.extension.params.q.x = if ao { 0.85 } else { 0.0 };
+                m.extension.params.p.x = strength;
                 m.extension.params.q.z = if detail { 1.0 } else { 0.0 };
+                m.extension.params.q.w = if classic { 1.0 } else { 0.0 };
+                m.extension.spot_lights = cone;
+                m.extension.lm_lights = lm;
+            }
+        }
+        // Only the materials whose walk changes: a material taken mutably is prepared again.
+        let walk = crate::shadowlight::actor_spot_shadows();
+        let ids: Vec<_> = anim.iter().filter(|(_, m)| m.extension.spot_shadows != walk).map(|(id, _)| id).collect();
+        for id in ids {
+            if let Some(mut m) = anim.get_mut(id) {
+                m.extension.spot_shadows = walk;
+            }
+        }
+        let ids: Vec<_> = actors.iter().filter(|(_, m)| m.extension.spot_shadows != walk).map(|(id, _)| id).collect();
+        for id in ids {
+            if let Some(mut m) = actors.get_mut(id) {
+                m.extension.spot_shadows = walk;
             }
         }
     }
@@ -71,9 +114,16 @@ pub fn postfx_system(
             commands.entity(e).remove::<ScreenSpaceAmbientOcclusion>();
         }
     }
+    // Anti-Aliasing off (perf.rs) leaves the edges alone; SSAO's SMAA still comes with Ambient Occlusion, and
+    // Upscaling brings its own antialiasing (TAA).
     let aa_off = ssao || crate::upscale::mode() > 0;
-    let want_msaa = if aa_off { Msaa::Off } else { Msaa::Sample4 };
-    for (e, msaa, smaa, last) in &cams {
+    let want_msaa = if aa_off || !crate::perf::msaa() { Msaa::Off } else { Msaa::Sample4 };
+    // Lean Rendering: the cameras drawing into the window share one multisampled picture. Nothing writes the
+    // resolved picture between cameras except volumetric fog, so without it the multisampled one already holds
+    // everything and the MSAA writebacks (a full-screen copy at the start of each camera after the first) are left
+    // out.
+    let writeback = if crate::perf::lean_rendering() && !cams.iter().any(|c| c.5) { MsaaWriteback::Off } else { MsaaWriteback::Auto };
+    for (e, msaa, smaa, last, mut cam, _) in &mut cams {
         if *msaa != want_msaa {
             commands.entity(e).insert(want_msaa);
         }
@@ -82,6 +132,9 @@ pub fn postfx_system(
             commands.entity(e).insert(Smaa { preset: bevy::anti_alias::smaa::SmaaPreset::Medium });
         } else if smaa && !aa_off {
             commands.entity(e).remove::<Smaa>();
+        }
+        if cam.msaa_writeback != writeback {
+            cam.msaa_writeback = writeback;
         }
     }
     let soft = soft_on() && crate::shadowlight::level() > 0;

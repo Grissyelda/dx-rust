@@ -61,8 +61,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var c = vec3<f32>(0.0);
     let count = u32(lights.misc.x);
     // Real-time shadows (shadowlight.rs): a light whose shadow map says this pixel is blocked (another actor, or
-    // the body's own arm) gives 85% less of its light here.
+    // the body's own arm) gives 85% less of its light here. Compiled in only where shadow lights can exist
+    // (ACTOR_SPOT_SHADOWS, shadowlight.rs `ActorShadowKey`).
+#ifdef ACTOR_SPOT_SHADOWS
     let nspots = spot_shadows::gather(in.world_position, n, in.position, false);
+#else
+    let nspots = 0u;
+#endif
     for (var i = 0u; i < 16u; i = i + 1u) {
         if (i >= count) {
             break;

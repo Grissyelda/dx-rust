@@ -1069,6 +1069,21 @@ impl Enhance {
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }
+        // Performance (perf.rs): by default 4x MSAA and HDR are on and the lean switches off.
+        for (key, lbl, help) in [
+            ("AntiAliasing", "Anti-Aliasing (4x MSAA)", "Smooths the edges of the world and the weapon with 4x multisampling. Off saves a lot of GPU time and memory on slow GPUs. (With Ambient Occlusion on, SMAA smooths the edges instead; with Upscaling, its own antialiasing.)"),
+            ("HDRRendering", "HDR Rendering", "Draws the scene in 16-bit colour before it reaches the screen. Off draws it in 8-bit, half the memory traffic; the picture is the same except for faint differences where bright things show through glass. Glow And Bloom turns it back on."),
+            ("LeanRendering", "Lean Rendering", "Leaves out GPU work that adds nothing to the picture, for slow GPUs. Dynamic lights (muzzle flashes, fires, flares, the flashlight) light the walls and floors as in the original game, with its broad falloff and no highlight."),
+            ("LeanUpdates", "Lean Updates", "Leaves out CPU work that changes nothing on screen, such as redrawing windows that haven't changed. For slow CPUs."),
+        ] {
+            let mut c = debug_mode_choice();
+            c.key = key.into();
+            c.label = lbl.into();
+            c.help = help.into();
+            c.value = crate::settings::get(key);
+            c.saved = c.value;
+            items.push(tag(c, "Performance"));
+        }
         // Remastered lighting (relight.rs): applied when the map next loads.
         for (key, label, help, values) in [
             ("RemasteredLighting", "Remastered Lighting", "Every wall and floor lit per pixel by the lamps that reach it, with real falloff and shape, and the original's shadows kept. Needed for Relief Maps and Material Highlights. Takes effect on the next map.", vec!["Off", "On"]),

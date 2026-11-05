@@ -3,14 +3,23 @@
 // colour x intensity carries the Unreal light's colour (x ENCODE), its range the Unreal radius. Where its shadow
 // map says the texel is blocked, the light's own term of the bake comes off the lightmap - in gamma space, as
 // dx-level's bake summed it: colour x (1 - d / r) x |N.L| x LIGHT_GAIN.
+//
+// BSP_SPOT_SHADOWS and BSP_RELIGHT (shadowlight.rs, BspShadowKey) compile the spot-shadow walk and remastered
+// lighting in only for materials that use them: the branches that guard them are uniform per material, so a material
+// without them never ran them, but the shader carried their code. BSP_CLASSIC_LIGHTS (Lean Rendering) lights the
+// surface with classic_lighting below instead of Bevy's apply_pbr_lighting. BSP_DETAIL samples the detail texture only
+// where the surface has one and Detail Textures is on, the only places it was ever used. BSP_NO_DYNLIGHTS leaves the
+// Classic lights' walk out where no dynamic light can reach (the sky room's faces), and BSP_SPOT_LIGHTS puts its spot
+// cone in only with Flashlight Cone on.
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
+    pbr_types::{PbrInput, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
     forward_io::{VertexOutput, FragmentOutput},
     mesh_view_bindings as view_bindings,
     mesh_view_types,
+    clustered_forward as clustering,
 }
 #import dxview::shadow_spots as spot_shadows
 
@@ -146,6 +155,84 @@ fn from_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3<f32>(0.04045));
 }
 
+#ifdef BSP_CLASSIC_LIGHTS
+// Lean Rendering's Classic lights (shadowlight.rs, classic_lights): the lit surface as Unreal 1 drew it, in place of
+// Bevy's apply_pbr_lighting, whose loop over the dynamic lights held this shader at 96 registers. The lightmap carries
+// the level's own lights; each dynamic light (dynlight.rs, marked by its Unreal brightness, negated, in the depth bias)
+// is added to it as dx-level's bake added the static ones: colour x brightness x (1 - d / r) x N.L x LIGHT_GAIN, in the
+// bake's gamma space, diffuse only. Unmarked lights (shadowlight's, Light Shafts') skip a lightmapped surface's diffuse
+// in Bevy's lighting too, so they add nothing here. Directional lights (lightning) add their diffuse in Bevy's units.
+// Where no light reaches, this is apply_pbr_lighting's lightmapped surface: exposure x lightmap x diffuse + emissive.
+// The walk over the cluster's lights is compiled in only where a dynamic light can reach (not the sky room's faces:
+// BspShadowKey), and its spot cone only with Flashlight Cone on (BSP_SPOT_LIGHTS); the surface's colour is worked out
+// after it, so the walk holds fewer values live.
+fn classic_lighting(in: PbrInput) -> vec4<f32> {
+    let base = in.material.base_color;
+#ifndef BSP_NO_DYNLIGHTS
+    let view_z = dot(vec4<f32>(
+        view_bindings::view.view_from_world[0].z,
+        view_bindings::view.view_from_world[1].z,
+        view_bindings::view.view_from_world[2].z,
+        view_bindings::view.view_from_world[3].z
+    ), in.world_position);
+    let cluster_index = clustering::view_fragment_cluster_index(in.frag_coord.xy, view_z, in.is_orthographic);
+    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster_index);
+#endif
+    var added = vec3<f32>(0.0);
+#ifndef BSP_NO_DYNLIGHTS
+    for (var i: u32 = ranges.first_point_light_index_offset;
+            i < ranges.first_reflection_probe_index_offset;
+            i = i + 1u) {
+        let light = &view_bindings::clustered_lights.data[clustering::get_clusterable_object_id(i)];
+        let brightness = -(*light).shadow_depth_bias;
+        if (brightness <= 0.0 ||
+            ((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE_BIT) == 0u) {
+            continue;
+        }
+        let to = (*light).position_radius.xyz - in.world_position.xyz;
+        let d = length(to);
+        let r = (*light).range;
+        if (d >= r || d < 1e-4) {
+            continue;
+        }
+        let l = to / d;
+        var reach = (1.0 - d / r) * max(dot(in.N, l), 0.0);
+#ifdef BSP_SPOT_LIGHTS
+        if (((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SPOT_LIGHT_BIT) != 0u) {
+            // Bevy's cone (spot_light in pbr_lighting.wgsl): the flashlight's, with Flashlight Cone on.
+            var spot_dir = vec3<f32>((*light).light_custom_data.x, 0.0, (*light).light_custom_data.y);
+            spot_dir.y = sqrt(max(0.0, 1.0 - spot_dir.x * spot_dir.x - spot_dir.z * spot_dir.z));
+            if (((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE) != 0u) {
+                spot_dir.y = -spot_dir.y;
+            }
+            let cone = saturate(dot(-l, spot_dir) * (*light).light_custom_data.z + (*light).light_custom_data.w);
+            reach = reach * cone * cone;
+        }
+#endif
+        // The colour: Bevy's colour x intensity scaled to its brightest channel (hsv_white's 1), back in gamma space.
+        let rgb = (*light).color_inverse_square_range.rgb;
+        added += to_srgb(rgb / max(max(rgb.r, rgb.g), max(rgb.b, 1e-8))) * (brightness * reach);
+    }
+#endif // BSP_NO_DYNLIGHTS
+    var lm = in.lightmap_light;
+    if (max(added.r, max(added.g, added.b)) > 0.0) {
+        lm = from_srgb(to_srgb(lm) + added * bsp.p.z);
+    }
+    let diffuse_color = base.rgb * (1.0 - in.material.metallic) * (1.0 - in.material.specular_transmission) *
+        (1.0 - in.material.diffuse_transmission);
+    var direct = vec3<f32>(0.0);
+    for (var i: u32 = 0u; i < view_bindings::lights.n_directional_lights; i = i + 1u) {
+        let dl = &view_bindings::lights.directional_lights[i];
+        if (((*dl).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE_BIT) != 0u) {
+            direct += diffuse_color * (*dl).color.rgb * (max(dot(in.N, (*dl).direction_to_light), 0.0) / 3.14159265);
+        }
+    }
+    let emissive_light = in.material.emissive.rgb * base.a *
+        mix(1.0, view_bindings::view.exposure, in.material.emissive.a);
+    return vec4<f32>(view_bindings::view.exposure * (direct + lm * diffuse_color) + emissive_light, base.a);
+}
+#endif // BSP_CLASSIC_LIGHTS
+
 // The surface's own share of one shadow light at this texel, as the bake had it: when the light is one of the
 // surface's three strongest (remastered lighting's ids, in the vertex colour) the bake's per-texel reach of it -
 // 0 where the map's own geometry already shadowed it, so a guard's shadow never darkens a wall twice.
@@ -238,21 +325,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.N = normalize(pbr_input.world_normal);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 #ifdef VERTEX_UVS_A
+#ifdef BSP_DETAIL
     // Detail textures (the original renderers' DetailTexture pass): within 380 units the surface is modulated by
-    // its detail picture (grey = no change, at half contrast), fading out by 760 units. q.y = the detail's UV scale
-    // (0: none), q.z = on.
-    let detail_uv = vin.uv * bsp.q.y;
-    let detail = detail_sample(detail_uv);
-    if (bsp.q.y > 0.0 && bsp.q.z > 0.5) {
-        let units = length(view_bindings::view.world_position.xyz - pbr_input.world_position.xyz) * 52.5;
-        let a = clamp(2.0 - units / 380.0, 0.0, 1.0);
-        let d = (detail.rgb - 0.5) * 0.5 + 1.0;
-        pbr_input.material.base_color = vec4<f32>(pbr_input.material.base_color.rgb * mix(vec3<f32>(1.0), d, a), pbr_input.material.base_color.a);
-    }
+    // its detail picture (grey = no change, at half contrast), fading out by 760 units. q.y = the detail's UV scale;
+    // compiled in only where it's above 0 with Detail Textures on (q.z), BspShadowKey.
+    let detail = detail_sample(vin.uv * bsp.q.y);
+    let units = length(view_bindings::view.world_position.xyz - pbr_input.world_position.xyz) * 52.5;
+    let a = clamp(2.0 - units / 380.0, 0.0, 1.0);
+    let d = (detail.rgb - 0.5) * 0.5 + 1.0;
+    pbr_input.material.base_color = vec4<f32>(pbr_input.material.base_color.rgb * mix(vec3<f32>(1.0), d, a), pbr_input.material.base_color.a);
 #endif
+#endif
+#ifdef BSP_RELIGHT
     var spec = vec3<f32>(0.0);
     var unlit_glow = 0.0;
+#endif
 #ifdef LIGHTMAP
+#ifdef BSP_SPOT_SHADOWS
     if (bsp.p.x > 0.0) {
         var ids = vec4<f32>(0.0);
         var has_ids = false;
@@ -271,9 +360,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             has_ids,
         );
     }
+#endif // BSP_SPOT_SHADOWS
 #endif
 #ifdef LIGHTMAP
 #ifdef VERTEX_COLORS
+#ifdef BSP_RELIGHT
     if (bsp.r.x > 0.5) {
         // Surfaces drawn full bright (PF_Unlit: lamps, screens, signs) have a white lightmap: they glow instead.
         // (Only faces the bake gave no lights: a face lit brightly enough to saturate its lightmap - Gunther's cell
@@ -287,6 +378,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             spec = r.spec * bsp.r.y;
         }
     }
+#endif // BSP_RELIGHT
 #endif
 #endif
 #ifdef SCREEN_SPACE_AMBIENT_OCCLUSION
@@ -298,16 +390,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #endif
     var out: FragmentOutput;
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+#ifdef BSP_CLASSIC_LIGHTS
+        out.color = classic_lighting(pbr_input);
+#else
         out.color = apply_pbr_lighting(pbr_input);
+#endif
     } else {
         out.color = pbr_input.material.base_color;
     }
-    // Highlights (metal tints them by its colour) and glow (bloom picks up what goes past white).
+    // Highlights (metal tints them by its colour) and glow (bloom picks up what goes past white). Without remastered
+    // lighting there's no highlight and no unlit glow, only the named glowing textures' (s.z, 0 or more).
     let base = pbr_input.material.base_color.rgb;
+#ifdef BSP_RELIGHT
     let tint = mix(vec3<f32>(1.0), base * 2.0, bsp.r.w);
     out.color = vec4<f32>(out.color.rgb + spec * tint, out.color.a);
     let lum = dot(base, vec3<f32>(0.299, 0.587, 0.114));
     let glow = max(bsp.s.z, unlit_glow * smoothstep(0.35, 0.85, lum));
+#else
+    let glow = bsp.s.z;
+#endif
     out.color = vec4<f32>(out.color.rgb + base * glow, out.color.a);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

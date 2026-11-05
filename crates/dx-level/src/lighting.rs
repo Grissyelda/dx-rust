@@ -26,6 +26,30 @@ pub struct Atlas {
     pub mask: Vec<u8>,
     /// The lights `Batch::light_ids` index.
     pub lights: Vec<LightInfo>,
+    /// Each lightmapped surface's block and where its texels are in the world, for adding lights to the atlas after
+    /// the bake (dxview's lmlights.rs). lib.rs keeps only the surfaces drawn lit outside the sky room.
+    pub patches: Vec<Patch>,
+}
+
+/// One surface's block of the atlas. Unreal units.
+#[derive(Clone, Copy, Debug)]
+pub struct Patch {
+    /// The surface (index into the BSP's surfaces).
+    pub surf: usize,
+    /// The block, its 1-texel border included: x, y, width, height in texels. The surface's texel (tx, ty) is at
+    /// (x + 1 + tx, y + 1 + ty), and the border repeats the edge texels.
+    pub rect: [u32; 4],
+    /// Where texel (0, 0) is in the world, and the steps to the next texel along a row and down a column.
+    pub origin: [f32; 3],
+    pub du: [f32; 3],
+    pub dv: [f32; 3],
+    /// The surface's unit normal.
+    pub normal: [f32; 3],
+    /// The texels' bounds in the world.
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// PF_TwoSided: lit from both sides.
+    pub two_sided: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -89,6 +113,7 @@ pub struct Baked {
     /// Surface -> its three strongest lights (indices into `table`, -1 = none), in mask channel order.
     surf_lights: HashMap<usize, [i32; 3]>,
     table: Vec<LightInfo>,
+    patches: Vec<Patch>,
 }
 
 fn byte(ps: &[props::Property], name: &str) -> Option<u8> {
@@ -214,6 +239,7 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb, zone_ambient: &
     let mut mask = vec![0u8; (atlas_w * height * 4) as usize];
     let mut surf_lights: HashMap<usize, [i32; 3]> = HashMap::new();
     let mut table: Vec<LightInfo> = Vec::new();
+    let mut patches: Vec<Patch> = Vec::new();
     let mut table_of: HashMap<i32, i32> = HashMap::new();
     // Reserved full-bright block.
     for yy in 0..2 {
@@ -243,6 +269,32 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb, zone_ambient: &
             continue;
         }
         let (e1, e2) = (scale(cross(tv, n), 1.0 / det), scale(cross(n, tu), 1.0 / det));
+        // The texel grid in the world: texel (tx, ty) is lit at origin + du * tx + dv * ty (the loop below).
+        let origin = [
+            base[0] + e1[0] * lm.pan[0] + e2[0] * lm.pan[1],
+            base[1] + e1[1] * lm.pan[0] + e2[1] * lm.pan[1],
+            base[2] + e1[2] * lm.pan[0] + e2[2] * lm.pan[1],
+        ];
+        let (du, dv) = (scale(e1, lm.u_scale), scale(e2, lm.v_scale));
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for (tx, ty) in [(0, 0), (u_clamp - 1, 0), (0, v_clamp - 1), (u_clamp - 1, v_clamp - 1)] {
+            for k in 0..3 {
+                let c = origin[k] + du[k] * tx as f32 + dv[k] * ty as f32;
+                lo[k] = lo[k].min(c);
+                hi[k] = hi[k].max(c);
+            }
+        }
+        patches.push(Patch {
+            surf: si,
+            rect: [ax, ay, aw, ah],
+            origin,
+            du,
+            dv,
+            normal: n,
+            min: lo,
+            max: hi,
+            two_sided: surf.poly_flags & 0x0000_0100 != 0,
+        });
 
         // Light list for this surface (terminated by a null reference).
         let mut infos: Vec<Option<LightInfo>> = Vec::new();
@@ -342,7 +394,7 @@ pub fn bake(pkg: &Package, model: &Model, classes: &mut ClassDb, zone_ambient: &
             }
         }
     }
-    Baked { width: atlas_w, height, rgba, mask, rects, surf_lights, table }
+    Baked { width: atlas_w, height, rgba, mask, rects, surf_lights, table, patches }
 }
 
 /// All static lights referenced by the level BSP.
@@ -405,6 +457,6 @@ impl Baked {
     }
 
     pub fn into_atlas(self) -> Atlas {
-        Atlas { width: self.width, height: self.height, rgba: self.rgba, mask: self.mask, lights: self.table }
+        Atlas { width: self.width, height: self.height, rgba: self.rgba, mask: self.mask, lights: self.table, patches: self.patches }
     }
 }

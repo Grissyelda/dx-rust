@@ -84,12 +84,16 @@ pub fn glow_system(
     cams: Query<(Entity, Has<Hdr>, Has<Bloom>, Has<crate::weapons::ViewModelCam>), Or<(With<crate::FlyCam>, With<crate::SkyCam>, With<crate::weapons::ViewModelCam>, With<crate::augdisplay::HeatCam>)>>,
 ) {
     let want = on();
-    // Every camera drawing into the window shares one HDR picture; the last (the view model camera, which also
-    // does the brightness pass) blooms all of it.
+    // HDR Rendering (perf.rs): HDR targets always (the PC's default), or only while Bloom wants them. HDR is in every
+    // material's pipeline, so switching it recompiles them all: it changes only when one of those settings does.
+    let hdr_wanted = crate::perf::hdr() || want;
+    // Every camera drawing into the window shares one picture; the last (the view model camera, which also does the
+    // brightness pass) blooms all of it.
     for (e, hdr, bloom, last) in &cams {
-        // HDR always (it's in every material's pipeline: switching it recompiled them all); Bloom comes and goes.
-        if !hdr {
+        if hdr_wanted && !hdr {
             commands.entity(e).insert(Hdr);
+        } else if !hdr_wanted && hdr {
+            commands.entity(e).remove::<Hdr>();
         }
         if want && last && !bloom {
             commands.entity(e).insert(Bloom {

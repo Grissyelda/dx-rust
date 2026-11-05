@@ -26,8 +26,10 @@ mod abilities;
 mod weather;
 mod shadowlight;
 mod relight;
+mod lmlights;
 mod threads;
 mod alloc;
+mod perf;
 mod skyfollow;
 mod glow;
 mod vision;
@@ -982,6 +984,7 @@ fn main() {
         .add_systems(Update, alertui::alert_ui_system.after(ai::npc_system))
         .add_systems(Update, hudfade::hud_fade_system)
         .add_plugins(upscale::UpscalePlugin)
+        .add_plugins(lmlights::LmLightsPlugin)
         .add_plugins(grass::GrassPlugin)
         .add_plugins(trees::TreesPlugin)
         .add_systems(PostUpdate, upscale::upscale_system.before(bevy::camera::CameraUpdateSystems))
@@ -1111,6 +1114,7 @@ fn main() {
                 dynlight::relight_system
                     .after(dynlight::dynlight_system)
                     .after(actors::deco_physics),
+                lmlights::lmlights_system.after(dynlight::dynlight_system),
             ),
         )
         .insert_resource(swim::Swim::default())
@@ -1350,6 +1354,9 @@ fn setup(
     prof::load_mark("start");
     // The tessellated water sheets' vertices (the open sea's first band meets them vertex to vertex).
     let mut sheet_pts: Vec<[f32; 3]> = Vec::new();
+    // Lean Rendering (perf.rs): Modern Water's dark backings are built only when Modern Water is on as the map loads
+    // (now, or in the Modern mix Classic / Modern remembers); they show only with it.
+    let modern_water = !perf::lean_rendering() || water::modern() || settings::get("Modern.ModernWater") > 0.5;
     let mut bsp_cache: std::collections::HashMap<(AssetId<StandardMaterial>, bool), Handle<shadowlight::BspMaterial>> = Default::default();
     let level = &level.0;
     let mut mirrors = mirror::Mirrors::default();
@@ -1372,6 +1379,15 @@ fn setup(
         });
         images.add(img)
     });
+    // Lean Rendering's lightmap lights (lmlights.rs): the level's own surfaces read a lit copy of the lightmap that
+    // the dynamic lights are drawn into; grass, water, glass, mirrors and the open sea keep the bake.
+    let lit_lightmap: Option<Handle<Image>> = match (level.lightmap.as_ref(), lightmap_handle.as_ref()) {
+        (Some(atlas), Some(base)) if !env_on!("DXVIEW_NO_LIGHTMAP") => lmlights::setup(&mut commands, &mut images, atlas, base),
+        _ => {
+            lmlights::clear(&mut commands);
+            None
+        }
+    };
     // The textures' GPU images, made on several threads (copying / decoding hundreds of mip chains was a good part
     // of each map's load).
     let made: Vec<Image> = {
@@ -1524,6 +1540,7 @@ fn setup(
             // A plain StandardMaterial multiplies the vertex colour in: the light ids made the pane blinding white.
             mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
         }
+        let mut lit_world = false;
         let mut e = match b.mirror {
             // Modern Glass: a frosted pane.
             _ if glass_img.is_some() => {
@@ -1541,7 +1558,7 @@ fn setup(
                 mirror::add_water(&mut mirrors, &wm, &b.positions);
                 // Flat sheets get a dark backing under their moving surface (see water::WaterBacking).
                 let (lo, hi) = b.positions.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[1]), a.1.max(p[1])));
-                if hi - lo < 0.05 {
+                if hi - lo < 0.05 && modern_water {
                     let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
                     commands.spawn((
                         Mesh3d(meshes.add(water::backing_mesh(&b.positions, &b.indices))),
@@ -1568,14 +1585,16 @@ fn setup(
             }
             // The lit world: StandardMaterial plus the real-time shadow pass over its lightmap (shadowlight.rs).
             None => {
+                lit_world = true;
                 let bm = bsp_cache
                     .entry((mat.id(), b.sky))
                     .or_insert_with(|| {
                         let mut bm = shadowlight::bsp_material(materials.get(&mat).cloned().unwrap_or_default());
                         // The sky room is drawn far out past the map by the world camera (skyfollow.rs): the
-                        // distance fog would swallow it.
+                        // distance fog would swallow it, and no dynamic light reaches it.
                         if b.sky {
                             bm.base.fog_enabled = false;
+                            bm.extension.sky = true;
                         }
                         relight::params(b.texture.map(|i| level.textures[i].name.as_str()), &mut bm.extension.params);
                         // DetailTexture (the Detail Textures setting switches it in the shader, q.z).
@@ -1612,7 +1631,8 @@ fn setup(
                 e.insert(skyline::SkyPanel);
             }
         }
-        if let Some(h) = lightmap_handle.as_ref().filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
+        let lm_img = if lit_world { lit_lightmap.as_ref().or(lightmap_handle.as_ref()) } else { lightmap_handle.as_ref() };
+        if let Some(h) = lm_img.filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
             e.insert(Lightmap {
                 image: h.clone(),
                 uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),

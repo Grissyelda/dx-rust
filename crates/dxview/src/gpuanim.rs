@@ -21,6 +21,7 @@ use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
 use bevy::shader::ShaderRef;
+use crate::shadowlight::ActorShadowKey;
 use std::collections::HashMap;
 
 pub type AnimMaterial = ExtendedMaterial<StandardMaterial, VertAnim>;
@@ -35,12 +36,21 @@ const TEX_W: usize = 4096;
 const MAX_FRAME: usize = 2046;
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[bind_group_data(ActorShadowKey)]
 #[bindless(index_table(range(101..103), binding(100)))]
 pub struct VertAnim {
     #[texture(101)]
     pub hi: Handle<Image>,
     #[texture(102)]
     pub lo: Handle<Image>,
+    /// Its fragment shader walks for shadow lights (shadowlight.rs `actor_spot_shadows`).
+    pub spot_shadows: bool,
+}
+
+impl From<&VertAnim> for ActorShadowKey {
+    fn from(m: &VertAnim) -> Self {
+        ActorShadowKey { spot_shadows: m.spot_shadows }
+    }
 }
 
 impl MaterialExtension for VertAnim {
@@ -60,6 +70,15 @@ impl MaterialExtension for VertAnim {
     fn enable_shadows() -> bool {
         // Shadow maps (shadowlight.rs, the flashlight cone) draw animated meshes in their current pose.
         true
+    }
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        key.bind_group_data.specialize(descriptor);
+        Ok(())
     }
 }
 
@@ -258,7 +277,11 @@ pub fn gpuanim_setup(
         for ((_, p), h) in &ga.mats {
             if *p == pi {
                 if let Some(mut m) = anim_mats.get_mut(h) {
-                    m.extension = VertAnim { hi: hi_img.clone(), lo: lo_img.clone() };
+                    m.extension = VertAnim {
+                        hi: hi_img.clone(),
+                        lo: lo_img.clone(),
+                        spot_shadows: crate::shadowlight::actor_spot_shadows(),
+                    };
                 }
             }
         }
@@ -272,7 +295,11 @@ pub fn gpuanim_setup(
                     let Some(base_mat) = std_mats.get(&std_mat).cloned() else { continue };
                     let h = anim_mats.add(AnimMaterial {
                         base: base_mat,
-                        extension: VertAnim { hi: hi_img.clone(), lo: lo_img.clone() },
+                        extension: VertAnim {
+                            hi: hi_img.clone(),
+                            lo: lo_img.clone(),
+                            spot_shadows: crate::shadowlight::actor_spot_shadows(),
+                        },
                     });
                     ga.mats.insert((std_mat.id(), page), h.clone());
                     h
