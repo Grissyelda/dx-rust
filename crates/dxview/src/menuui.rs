@@ -130,6 +130,10 @@ pub(crate) fn border_col() -> Rgb {
 pub(crate) fn h_col(i: usize) -> Rgb {
     HUD_COLORS.read().map(|c| c[i]).unwrap_or([255, 255, 255])
 }
+/// Both palettes as they are (Lean Updates: part of what a drawing in them is keyed on).
+pub(crate) fn palette() -> (Option<[Rgb; 13]>, Option<[Rgb; 14]>) {
+    (MENU_COLORS.read().ok().map(|c| *c), HUD_COLORS.read().ok().map(|c| *c))
+}
 
 fn theme_colors<const N: usize>(assets: &mut RuntimeAssets, class: &str) -> [Rgb; N] {
     let d = assets.classes.defaults(class);
@@ -691,12 +695,40 @@ pub(crate) fn place(
             }
         }
     }
-    if let Ok((mut n, mut v, _)) = nodes.get_mut(l.e) {
-        v.set_if_neq(Visibility::Inherited);
-        n.left = Val::Px(pos.0 as f32 * d / sf);
-        n.top = Val::Px(pos.1 as f32 * d / sf);
-        n.width = Val::Px(c.w as f32 * d / sf);
-        n.height = Val::Px(c.h as f32 * d / sf);
+    show(l, pos, (c.w, c.h), d, sf, nodes);
+}
+
+/// Shows a layer with the image it has at `pos`, `size` UI units big.
+#[allow(clippy::type_complexity)]
+pub(crate) fn show(
+    l: &Layer,
+    pos: (i32, i32),
+    size: (i32, i32),
+    d: f32,
+    sf: f32,
+    nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), impl bevy::ecs::query::QueryFilter>,
+) {
+    let Ok((mut n, mut v, _)) = nodes.get_mut(l.e) else { return };
+    let px = |u: i32| Val::Px(u as f32 * d / sf);
+    let (left, top, width, height) = (px(pos.0), px(pos.1), px(size.0), px(size.1));
+    if crate::perf::lean_updates() {
+        // Lean Updates: written only when they differ, so a layer that stays put isn't marked changed (and its
+        // layout and visibility aren't worked out again).
+        if *v != Visibility::Inherited {
+            *v = Visibility::Inherited;
+        }
+        if n.left != left || n.top != top || n.width != width || n.height != height {
+            n.left = left;
+            n.top = top;
+            n.width = width;
+            n.height = height;
+        }
+    } else {
+        *v = Visibility::Inherited;
+        n.left = left;
+        n.top = top;
+        n.width = width;
+        n.height = height;
     }
 }
 
