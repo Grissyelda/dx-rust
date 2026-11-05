@@ -147,6 +147,7 @@ mod bodyfx;
 mod healui;
 mod optfixes;
 mod alertui;
+mod fps;
 mod hudfade;
 mod upscale;
 mod grass;
@@ -813,6 +814,8 @@ fn main() {
         .add_systems(PostUpdate, cursor_record_system)
         .add_systems(Update, (loader::settle_system, loader::loading_screen_system).chain())
         .add_systems(Update, movers::mover_riders_system.after(movers::tick_movers).before(actors::deco_physics))
+        .add_systems(Startup, fps::spawn_fps_text)
+        .add_systems(Update, fps::fps_system)
         .add_systems(
             Update,
             (

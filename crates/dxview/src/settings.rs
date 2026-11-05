@@ -199,6 +199,8 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("HDRRendering", 1.0),
     ("LeanRendering", 0.0),
     ("LeanUpdates", 0.0),
+    // The FPS Counter (fps.rs).
+    ("FPSCounter", 0.0),
     // Mods (used only while the mod is on in the launcher): New Vision textures, HDTP item / decoration models,
     // HDTP characters. Taken up when the next map loads.
     ("HDTextures", 1.0),
