@@ -5,11 +5,17 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
-static VALUES: RwLock<Option<BTreeMap<String, f32>>> = RwLock::new(None);
+static VALUES: RwLock<Option<Arc<BTreeMap<String, f32>>>> = RwLock::new(None);
 /// Bumped on every change so systems can re-apply cheaply.
 static GENERATION: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// This thread's copy of the values and the generation it was taken at: `get` takes the lock only after a change
+    /// (it runs hundreds of times a frame, and the lock was most of its cost on the Switch).
+    static SNAPSHOT: std::cell::RefCell<(u64, Option<Arc<BTreeMap<String, f32>>>)> = const { std::cell::RefCell::new((0, None)) };
+}
 
 /// (key, default) for every setting; defaults are the original's (MenuChoice_* defaultValue, player defaults).
 pub const DEFAULTS: &[(&str, f32)] = &[
@@ -259,16 +265,22 @@ fn ensure() {
         }
     }
     if let Ok(mut w) = VALUES.write() {
-        *w = Some(m);
+        *w = Some(Arc::new(m));
     }
 }
 
 pub fn get(key: &str) -> f32 {
-    ensure();
-    VALUES
-        .read()
-        .ok()
-        .and_then(|v| v.as_ref().and_then(|m| m.get(key).copied()))
+    let gen = GENERATION.load(Ordering::Acquire);
+    SNAPSHOT
+        .with(|s| {
+            let mut s = s.borrow_mut();
+            if s.0 != gen || s.1.is_none() {
+                ensure();
+                s.1 = VALUES.read().ok().and_then(|v| v.clone());
+                s.0 = gen;
+            }
+            s.1.as_ref().and_then(|m| m.get(key).copied())
+        })
         .or_else(|| DEFAULTS.iter().find(|d| d.0 == key).map(|d| d.1))
         .unwrap_or(0.0)
 }
@@ -288,8 +300,8 @@ pub fn set(key: &str, v: f32) {
     if let Ok(mut w) = VALUES.write() {
         if let Some(m) = w.as_mut() {
             if m.get(key) != Some(&v) {
-                m.insert(key.to_string(), v);
-                GENERATION.fetch_add(1, Ordering::Relaxed);
+                Arc::make_mut(m).insert(key.to_string(), v);
+                GENERATION.fetch_add(1, Ordering::Release);
             }
         }
     }
@@ -305,7 +317,7 @@ pub fn save() {
     let Ok(r) = VALUES.read() else { return };
     let Some(m) = r.as_ref() else { return };
     let mut out = String::from("# Deus Ex rewrite settings (written by the Settings menus)\n");
-    for (k, v) in m {
+    for (k, v) in m.iter() {
         out.push_str(&format!("{k}={v}\n"));
     }
     let _ = std::fs::write(path(), out);

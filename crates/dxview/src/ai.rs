@@ -4233,30 +4233,34 @@ pub fn npc_system(
         let before = body.location;
         if !npc.sitting {
             let steps = ((dt as f64) / (1.0 / 60.0)).ceil().max(1.0) as usize;
-            // Pawns can't walk through the player either. (One buffer for every pawn: copied into, not allocated.)
-            let solid = &mut *solid_buf;
-            solid.clear();
-            solid.extend_from_slice(&blockers.list);
+            // Pawns can't walk through the player either, nor through what the player carries, and BlockMonsters
+            // stop pawns only: those few are swept after the live blocker list (WorldAnd), which isn't copied per
+            // pawn. (One buffer for every pawn: refilled, not allocated.)
+            let extra = &mut *solid_buf;
+            extra.clear();
             if !ph.dead {
-                solid.push(player_cyl);
+                extra.push(player_cyl);
             }
             // BlockMonsters stop pawns only.
-            solid.extend(lvl.monster_blocks.iter().map(|c| Cylinder { actor: usize::MAX, ..*c }));
+            extra.extend(lvl.monster_blocks.iter().map(|c| Cylinder { actor: usize::MAX, ..*c }));
             // ...nor through what the player is carrying.
             if let Some(h) = carrying.held.as_ref() {
-                solid.push(Cylinder {
+                extra.push(Cylinder {
                     center: blockers.list[h.blocker].center,
                     radius: h.radius,
                     height: h.height,
                     actor: usize::MAX,
                 });
             }
-            let world = World {
-                level: lvl,
-                blockers: &solid[..],
-                ignore: Some(npc.blocker),
-                pushable: None,
-                movers: Some(&mv.rt),
+            let world = crate::actors::WorldAnd {
+                world: World {
+                    level: lvl,
+                    blockers: &blockers.list,
+                    ignore: Some(npc.blocker),
+                    pushable: None,
+                    movers: Some(&mv.rt),
+                },
+                extra: &extra[..],
             };
             for _ in 0..steps {
                 body.tick(&world, &params, wish, false, dt as f64 / steps as f64);
