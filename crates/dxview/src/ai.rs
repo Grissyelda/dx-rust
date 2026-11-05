@@ -6406,6 +6406,7 @@ pub fn player_health_ui(
     mut player: ResMut<Player>,
     mut hud: ResMut<HudMessage>,
     mut flash: Single<&mut BackgroundColor, With<DamageFlash>>,
+    mut has_save: Local<Option<(u64, String, bool)>>,
 ) {
     let _prof = crate::prof::scope("ai::player_health_ui");
     let dt = time.delta_secs();
@@ -6425,9 +6426,21 @@ pub fn player_health_ui(
         }
     }
     if ph.dead {
-        // Ours: Enter (pad: the Jump button) loads the most recent save; worded for the device in use.
+        // Ours: Enter (pad: the Jump button) loads the most recent save; worded for the device in use. Whether there
+        // is one is asked again only after a save is written or deleted, or for another character: save::latest
+        // lists the save folder and looks at each file, every frame the death screen was up.
+        let g = crate::save::generation();
+        let who = crate::save::active_char();
+        let any = match &*has_save {
+            Some((at, of, any)) if *at == g && *of == who => *any,
+            _ => {
+                let any = crate::save::latest().is_some();
+                *has_save = Some((g, who, any));
+                any
+            }
+        };
         let f = crate::gamepad::frame();
-        let what = if crate::save::latest().is_some() { "load your last save" } else { "restart" };
+        let what = if any { "load your last save" } else { "restart" };
         let t = if f.connected && f.pad_last {
             let k = crate::gamepad::glyph_kind();
             let name = |a: &str, d: crate::gamepad::PadBtn| crate::gamepad::pad_name(k, crate::gamepad::button_for(a).unwrap_or(d));

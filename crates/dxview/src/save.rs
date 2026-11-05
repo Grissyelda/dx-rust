@@ -538,6 +538,13 @@ fn list_in(folder: &Path, id: &str) -> Vec<SaveInfo> {
     v
 }
 
+/// Bumped whenever a save is written or deleted, so a caller that keeps what [`latest`] said knows when to ask again.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The character's most recently written save of any kind (by file time; cheaper than reading every save).
 pub fn latest() -> Option<PathBuf> {
     let rd = std::fs::read_dir(active_dir()).ok()?;
@@ -563,6 +570,7 @@ pub fn read(path: &Path) -> Option<SaveGame> {
 pub fn delete(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(snapshot_path(path));
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub const SNAP_W: usize = 160;
@@ -1465,7 +1473,9 @@ fn write(path: &Path, s: &SaveGame) -> std::io::Result<()> {
     // Write beside and rename, so a crash mid-save never leaves half a file.
     let tmp = path.with_extension("ron.tmp");
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path)?;
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 
 /// Tests: write a save with just a description and a character into that character's folder.
