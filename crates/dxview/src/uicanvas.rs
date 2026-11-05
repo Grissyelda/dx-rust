@@ -153,6 +153,7 @@ fn box_line(line: &[[f32; 4]], rad: usize, mut put: impl FnMut(usize, [f32; 4]))
     }
 }
 
+#[derive(Clone)]
 pub struct Canvas {
     pub w: i32,
     pub h: i32,
