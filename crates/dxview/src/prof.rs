@@ -534,9 +534,11 @@ pub fn scene_stats_system(
         return;
     }
     st.frames += 1;
+    let mut mesh_ids = Vec::new();
     for e in mesh_ev.read() {
         if let AssetEvent::Modified { id } = e {
             st.mesh_mod += 1;
+            mesh_ids.push(*id);
             if let Some(m) = meshes.get(*id) {
                 st.mesh_bytes += m.count_vertices() as u64 * 48;
             }
@@ -550,10 +552,15 @@ pub fn scene_stats_system(
             }
         }
     }
+    let mut mat_ids = Vec::new();
     for e in mat_ev.read() {
-        if let AssetEvent::Modified { .. } = e {
+        if let AssetEvent::Modified { id } = e {
             st.mat_mod += 1;
+            mat_ids.push(*id);
         }
+    }
+    if let Ok(mut m) = MODIFIED.lock() {
+        *m = (mesh_ids, mat_ids);
     }
     let now = Instant::now();
     if let Some(l) = st.last {
@@ -1151,4 +1158,83 @@ pub fn census_system(world: &mut bevy::prelude::World, mut frame: bevy::prelude:
     for (k, n) in v.iter().take(40) {
         println!("PROF census {n:5}  {k}");
     }
+    // UI nodes by the tree they belong to, named by its root's distinctive components (the game's own, else Bevy's
+    // short names): what Bevy's UI layout, extract and drawing go through every frame, shown or not. "out" counts
+    // the nodes laid out of the flow with Display::None.
+    let mut nq = world.query_filtered::<(Entity, Option<&ChildOf>, &InheritedVisibility, &Node), With<Node>>();
+    let nodes: Vec<(Entity, Option<Entity>, bool, bool)> =
+        nq.iter(world).map(|(e, p, v, n)| (e, p.map(|p| p.parent()), v.get(), n.display == Display::None)).collect();
+    let up: HashMap<Entity, Entity> = nodes.iter().filter_map(|&(e, p, _, _)| Some((e, p?))).collect();
+    let mut trees: HashMap<Entity, (usize, usize, usize)> = HashMap::new();
+    for &(e, _, shown, out) in &nodes {
+        let mut root = e;
+        while let Some(&p) = up.get(&root) {
+            root = p;
+        }
+        let t = trees.entry(root).or_insert((0, 0, 0));
+        *t = (t.0 + 1, t.1 + usize::from(shown), t.2 + usize::from(out));
+    }
+    const COMMON: &[&str] = &[
+        "Node", "ComputedNode", "ComputedUiTargetCamera", "ComputedUiRenderTargetInfo", "UiTransform", "UiGlobalTransform",
+        "Visibility", "InheritedVisibility", "ViewVisibility", "ZIndex", "FocusPolicy", "ScrollPosition", "Children",
+        "BackgroundColor", "BorderColor", "BorderRadius", "Outline", "Pickable", "Transform", "GlobalTransform",
+        "TransformTreeChanged", "ChildOf", "Name", "LayoutConfig", "UiAntiAlias", "IsDefaultUiCamera",
+    ];
+    let mut named: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
+    for (root, (n, shown, out)) in trees {
+        let all: Vec<String> = world.inspect_entity(root).map(|it| it.map(|c| c.name().to_string()).collect()).unwrap_or_default();
+        let ours: Vec<String> = all.iter().filter_map(|c| c.strip_prefix("dxview::").map(str::to_string)).collect();
+        let mut names: Vec<String> = if ours.is_empty() {
+            all.iter()
+                .map(|c| c.split('<').next().unwrap_or(c).rsplit("::").next().unwrap_or(c).to_string())
+                .filter(|c| !COMMON.contains(&c.as_str()))
+                .collect()
+        } else {
+            ours
+        };
+        names.sort();
+        names.dedup();
+        let k = named.entry(names.join(",")).or_insert((0, 0, 0, 0));
+        *k = (k.0 + 1, k.1 + n, k.2 + shown, k.3 + out);
+    }
+    let mut v: Vec<_> = named.into_iter().collect();
+    v.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    for (k, (roots, n, shown, out)) in v.iter().take(25) {
+        println!("PROF census ui {n:5} nodes ({shown} shown, {out} out) in {roots} tree(s) [{k}]");
+    }
+    // The meshes and materials modified in the latest frame (each one is re-uploaded, a material's bind group made
+    // again), by the tree of the entity drawing them: who rewrites assets every frame.
+    let (mesh_ids, mat_ids) = MODIFIED.lock().map(|m| m.clone()).unwrap_or_default();
+    let mesh_ids: std::collections::HashSet<bevy::asset::AssetId<Mesh>> = mesh_ids.into_iter().collect();
+    let mat_ids: std::collections::HashSet<bevy::asset::AssetId<StandardMaterial>> = mat_ids.into_iter().collect();
+    let mut mq = world.query::<(Entity, &Mesh3d, Option<&MeshMaterial3d<StandardMaterial>>, Option<&ChildOf>)>();
+    let parts: Vec<(Entity, bool, bool, Option<Entity>)> = mq
+        .iter(world)
+        .map(|(e, m, mat, p)| (e, mesh_ids.contains(&m.0.id()), mat.is_some_and(|m| mat_ids.contains(&m.0.id())), p.map(|p| p.parent())))
+        .filter(|p| p.1 || p.2)
+        .collect();
+    let mut owners: HashMap<String, (usize, usize)> = HashMap::new();
+    for (e, mesh, mat, parent) in parts {
+        let mut root = parent.unwrap_or(e);
+        while let Some(p) = world.get::<ChildOf>(root) {
+            root = p.parent();
+        }
+        let mut names: Vec<String> = world
+            .inspect_entity(root)
+            .map(|it| it.filter_map(|c| c.name().to_string().strip_prefix("dxview::").map(str::to_string)).collect())
+            .unwrap_or_default();
+        names.sort();
+        let k = owners.entry(names.join(",")).or_insert((0, 0));
+        *k = (k.0 + usize::from(mesh), k.1 + usize::from(mat));
+    }
+    let mut v: Vec<_> = owners.into_iter().collect();
+    v.sort_by(|a, b| (b.1 .0 + b.1 .1).cmp(&(a.1 .0 + a.1 .1)));
+    for (k, (meshes, mats)) in v.iter().take(15) {
+        println!("PROF census modified {meshes:4} meshes {mats:3} materials [{k}]");
+    }
 }
+
+/// The mesh and material assets modified in the latest frame (scene_stats_system), for the census.
+#[allow(clippy::type_complexity)]
+static MODIFIED: Mutex<(Vec<bevy::asset::AssetId<bevy::prelude::Mesh>>, Vec<bevy::asset::AssetId<bevy::prelude::StandardMaterial>>)> =
+    Mutex::new((Vec::new(), Vec::new()));

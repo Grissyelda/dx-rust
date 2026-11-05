@@ -423,6 +423,26 @@ pub fn mirror_system(
             }
         }
     }
+    // DXVIEW_PROF: a line when the reflected planes change, for the pop-in check. A plane gets a reflection only within 40 m
+    // and in view; until then its face shows its texture, or the 16x16 placeholder.
+    if crate::prof::on() {
+        static LAST: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+        static START: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+        if let Ok(mut last) = LAST.lock() {
+            if *last != want {
+                let nearest = mirrors.planes.iter().map(|p| eye.clamp(p.min, p.max).distance(eye)).fold(f32::MAX, f32::min);
+                eprintln!(
+                    "[MIRROR] {:.1} s: reflecting {:?} (was {:?}); nearest plane {:.1} m; eye {:?}",
+                    START.elapsed().as_secs_f32(),
+                    want,
+                    *last,
+                    nearest,
+                    eye
+                );
+                *last = want.clone();
+            }
+        }
+    }
     // Keep planes in the slot they had; free the rest; give the newcomers free slots.
     let mut changed: Vec<usize> = Vec::new();
     for s in mirrors.slots.iter_mut() {
