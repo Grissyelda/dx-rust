@@ -26,6 +26,7 @@ use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, MonitorSelection, WindowMode};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::hash::{Hash, Hasher};
 use unreal_pkg::props::{find, Property, Value};
 use unreal_pkg::Reader;
 
@@ -1897,6 +1898,135 @@ fn slider(u: &mut Ui<W>, w: W, x: i32, y: i32, c: &Choice, scale_w: i32, show_te
     }
 }
 
+/// Lean Updates (perf.rs): a window layer's last drawing.
+#[derive(Default)]
+struct Drawn {
+    /// What its image was drawn from (`win_key` and the frame's inputs), when drawing again from the same would
+    /// give the same picture and leave the window as it is; None draws it again.
+    key: Option<u64>,
+    /// The hit rectangles that drawing made.
+    hits: Vec<(W, Rect, bool)>,
+    /// Its canvas, kept for the next drawing.
+    canvas: Option<Canvas>,
+}
+
+/// Feeds a value's Debug text to a hasher (for key parts without Hash).
+fn hash_debug(h: &mut impl Hasher, v: &impl std::fmt::Debug) {
+    struct Feed<'a, H>(&'a mut H);
+    impl<H: Hasher> std::fmt::Write for Feed<'_, H> {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.write(s.as_bytes());
+            Ok(())
+        }
+    }
+    let _ = std::fmt::Write::write_fmt(&mut Feed(h), format_args!("{v:?}"));
+}
+
+fn edit_key(e: &Edit, h: &mut impl Hasher) {
+    let Edit { text, cur, anchor, max, scroll, org } = e;
+    (text, cur, anchor, max, scroll, org).hash(h);
+}
+
+fn choice_key(c: &Choice, h: &mut impl Hasher) {
+    let Choice { key, label, help, kind, value, saved, info_w, info_x, control_x, voff, dropdown } = c;
+    (key, label, help, value.to_bits(), saved.to_bits(), info_w, info_x, control_x, voff, dropdown).hash(h);
+    match kind {
+        ChoiceKind::Enum(v) => (0u8, v).hash(h),
+        ChoiceKind::Slider { ticks, start, end, labels } => (1u8, ticks, start.to_bits(), end.to_bits(), labels).hash(h),
+        ChoiceKind::Action { action, invoke } => (2u8, action, invoke).hash(h),
+    }
+}
+
+/// Lean Updates: the window's part of what `draw_win` reads - all of the window (destructured, so a new field
+/// can't be missed) and the outside state its body's drawing asks for.
+fn win_key(win: &Win, h: &mut impl Hasher) {
+    let Win { f, body, pos, focus, hides_below, drop } = win;
+    let Frame {
+        class, title, cw, ch, voff, textures, cols, left_edge, right_edge, bar, help, help_always, help_y, actions,
+        shadow, escape_saves, min_title, cuts,
+    } = f;
+    (class, title, cw, ch, voff, textures, cols, left_edge, right_edge, bar, help, help_always).hash(h);
+    (help_y, actions, shadow, escape_saves, min_title, cuts).hash(h);
+    (pos, hides_below, drop).hash(h);
+    hash_debug(h, focus);
+    std::mem::discriminant(body).hash(h);
+    match body {
+        Body::Menu { buttons, x, w } => {
+            (x, w, buttons.len()).hash(h);
+            for MenuBtn { label, y, action, invoke, key, enabled } in buttons {
+                (label, y, action, invoke, key, enabled).hash(h);
+            }
+        }
+        Body::Choices { choices } => {
+            choices.len().hash(h);
+            for c in choices {
+                choice_key(c, h);
+            }
+        }
+        Body::NewGame(NewGame { name, portrait, retro_morpheus, male_interactions, skills, order, sel, difficulty, desc_scroll }) => {
+            edit_key(name, h);
+            (portrait, retro_morpheus, male_interactions, order, sel, difficulty.to_bits(), desc_scroll).hash(h);
+            hash_debug(h, skills);
+            crate::travel::lddp().hash(h);
+        }
+        Body::Keys(Keys { sel, scroll, waiting, map, note, pad, pad_map }) => {
+            (sel, scroll, waiting, map, note, pad, pad_map).hash(h);
+            hash_debug(h, &crate::gamepad::glyph_kind());
+        }
+        Body::Msg(Msg { text, yes_no, purpose }) => {
+            (text, yes_no).hash(h);
+            hash_debug(h, purpose);
+        }
+        Body::SaveLoad(SaveLoad { saving, games, chars, open, list, sel, scroll, edit, confirm_delete, snap }) => {
+            (saving, sel, scroll, confirm_delete, chars).hash(h);
+            let mut opened: Vec<&String> = open.iter().collect();
+            opened.sort();
+            opened.hash(h);
+            hash_debug(h, games);
+            hash_debug(h, list);
+            edit_key(edit, h);
+            // The picture is loaded into `snap` only when the selected file changes: its file stands for it.
+            snap.as_ref().map(|(p, t)| (p, t.is_some())).hash(h);
+            // The Save button, and the dates (the time zone).
+            (crate::save::can_save(false), crate::save::format_date(0)).hash(h);
+        }
+        Body::Welcome(scroll) => scroll.hash(h),
+        Body::Achieve(AchieveView { scroll, chars, global }) => {
+            scroll.hash(h);
+            for c in chars {
+                let mut u: Vec<_> = c.unlocked.iter().collect();
+                u.sort();
+                (&c.name, u).hash(h);
+            }
+            let mut g: Vec<_> = global.iter().collect();
+            g.sort();
+            g.hash(h);
+        }
+        Body::Keypad(KeypadWin { blocker, valid, input, wait, instant, noted }) => {
+            // The drawing reads whether a result shows and which, not the time left on it.
+            (blocker, valid, input, wait.map(|w| w.1), instant, noted).hash(h);
+            (crate::diegetic::keypad_active(), crate::gamepad::pad_in_use()).hash(h);
+            hash_debug(h, &crate::gamepad::glyph_kind());
+        }
+        Body::Enhance(Enhance { items, search, sel, scroll, open, modern, mode_changed, memory }) => {
+            items.len().hash(h);
+            for c in items {
+                choice_key(c, h);
+            }
+            edit_key(search, h);
+            hash_debug(h, sel);
+            (scroll, modern, mode_changed, open.len(), memory.len()).hash(h);
+            // (The same set iterates in the same order; another order only draws again.)
+            for g in open {
+                g.hash(h);
+            }
+            for (k, v) in memory {
+                (k, v.to_bits()).hash(h);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waiting_keys: bool) {
     let f = win.f.clone();
@@ -2438,6 +2568,9 @@ pub struct Menus {
     box_save: Option<(std::path::PathBuf, String)>,
     applied_gen: u64,
     themes_applied: bool,
+    /// Lean Updates (perf.rs): each window layer's last drawing, and the (scale, colour) the cursor was drawn at.
+    drawn: Vec<Drawn>,
+    cursor_drawn: Option<(i32, Rgb)>,
 }
 
 impl Menus {
@@ -2903,6 +3036,8 @@ pub fn menu_system(
                 v.set_if_neq(Visibility::Hidden);
             }
         }
+        // (The kept canvases go: the next menu draws its windows afresh.)
+        st.drawn.clear();
         if st.intro.is_none() {
             wheel.clear();
         }
@@ -3604,6 +3739,21 @@ pub fn menu_system(
     let n_layers = st.win_layers.len();
     let top_i = st.stack.len() - 1;
     let pressed = st.pressed;
+    // Lean Updates (perf.rs): a window is drawn and uploaded again only when something its drawing reads has
+    // changed - the window (win_key) or these.
+    let lean = crate::perf::lean_updates();
+    let frame_key = lean.then(|| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (s, crate::settings::generation(), palette(), waiting).hash(&mut h);
+        (std::sync::Arc::as_ptr(&fonts.title), std::sync::Arc::as_ptr(&fonts.small), std::sync::Arc::as_ptr(&fonts.headers)).hash(&mut h);
+        h
+    });
+    if lean {
+        st.drawn.resize_with(n_layers.max(st.drawn.len()), Drawn::default);
+    } else {
+        st.drawn.clear();
+        st.cursor_drawn = None;
+    }
     for (li, wi) in (first..st.stack.len()).enumerate() {
         if li >= n_layers {
             break;
@@ -3611,22 +3761,58 @@ pub fn menu_system(
         let pos = pos_of(&st.stack[wi]);
         let (ww, wh) = win_size(&st.stack[wi].f, &fonts);
         let is_top = wi == top_i;
+        let (w_pressed, w_hover) = if is_top { (pressed, hover_w) } else { (None, None) };
+        let w_help = if is_top { help.as_str() } else { "" };
+        let key = |win: &Win| {
+            frame_key.clone().map(|mut h| {
+                (pos, w_help).hash(&mut h);
+                // The pointer only matters over the pressed widget (Ui::state, draw_keypad).
+                hash_debug(&mut h, &(w_pressed, w_pressed.is_some() && w_pressed == w_hover));
+                win_key(win, &mut h);
+                h.finish()
+            })
+        };
+        let before = key(&st.stack[wi]);
+        if let Some(dr) = st.drawn.get(li).filter(|dr| before.is_some() && dr.key == before) {
+            // Nothing it reads has changed: the layer keeps its image and the hit rectangles that drawing made.
+            let l = &st.win_layers[li];
+            crate::hud::set_filter(&mut images, &l.img, s.max(1), d);
+            show(l, pos, (ww, wh), d, sf, &mut nodes);
+            if is_top {
+                hits = dr.hits.clone();
+            }
+            continue;
+        }
         let mut layer_hits: Vec<(W, Rect, bool)> = Vec::new();
         let focus = st.stack[wi].focus;
+        let canvas = match st.drawn.get_mut(li).and_then(|dr| dr.canvas.take()) {
+            Some(mut c) => {
+                c.reset(ww, wh, s);
+                c
+            }
+            None => Canvas::new(ww, wh, s),
+        };
         let mut ui = Ui {
-            c: Canvas::new(ww, wh, s),
+            c: canvas,
             hud: &mut hud,
             assets: &mut assets,
             f: &fonts,
             o: pos,
             hits: &mut layer_hits,
-            pressed: if is_top { pressed } else { None },
-            hover: if is_top { hover_w } else { None },
+            pressed: w_pressed,
+            hover: w_hover,
             focus,
         };
-        draw_win(&mut ui, &mut st.stack[wi], &fonts, if is_top { &help } else { "" }, waiting);
+        draw_win(&mut ui, &mut st.stack[wi], &fonts, w_help, waiting);
         let Ui { c, .. } = ui;
         place(&mut st.win_layers[li], &c, pos, d, sf, &mut images, &mut layers, &mut nodes);
+        if let Some(dr) = st.drawn.get_mut(li) {
+            // A drawing that changed the window (a scroll clamped, a snapshot loaded) isn't kept: the next frame
+            // draws again from what it left.
+            dr.key = before.filter(|&k| key(&st.stack[wi]) == Some(k));
+            dr.hits.clone_from(&layer_hits);
+            dr.canvas = Some(c);
+        }
         if is_top {
             hits = layer_hits;
         }
@@ -3646,15 +3832,34 @@ pub fn menu_system(
     );
     // Cursor: the same DeusExCursor2 as the in-game screens (ours: the original menus used Cursor1).
     if let Some(cl) = st.cursor.as_mut() {
-        let mut cc = Canvas::new(64, 64, s);
-        if let Some(tx) = hud.ui(&mut assets, "DeusExCursor2") {
-            cc.drop_shadow(0, 0, &tx, (2.0, 2.5), 2.5, 0.6);
-            cc.texture(0, 0, 64, 64, 0, 0, &tx, Style::Masked, m_col(12));
-        }
-        place(cl, &cc, (mouse.0 - 32, mouse.1 - 32), d, sf, &mut images, &mut layers, &mut nodes);
-        if window.cursor_position().is_none() {
+        let at = (mouse.0 - 32, mouse.1 - 32);
+        let shown = window.cursor_position().is_some();
+        // Lean Updates: its image (the blurred shadow too) is drawn once per scale and theme, then only moved; a
+        // hidden cursor is left alone.
+        let cursor_key = (s, m_col(12));
+        if lean && !shown {
             if let Ok((_, mut v, _)) = nodes.get_mut(cl.e) {
-                v.set_if_neq(Visibility::Hidden);
+                if *v != Visibility::Hidden {
+                    *v = Visibility::Hidden;
+                }
+            }
+        } else if lean && st.cursor_drawn == Some(cursor_key) {
+            crate::hud::set_filter(&mut images, &cl.img, s.max(1), d);
+            show(cl, at, (64, 64), d, sf, &mut nodes);
+        } else {
+            let mut cc = Canvas::new(64, 64, s);
+            if let Some(tx) = hud.ui(&mut assets, "DeusExCursor2") {
+                cc.drop_shadow(0, 0, &tx, (2.0, 2.5), 2.5, 0.6);
+                cc.texture(0, 0, 64, 64, 0, 0, &tx, Style::Masked, m_col(12));
+            }
+            place(cl, &cc, at, d, sf, &mut images, &mut layers, &mut nodes);
+            if lean {
+                st.cursor_drawn = Some(cursor_key);
+            }
+            if !shown {
+                if let Ok((_, mut v, _)) = nodes.get_mut(cl.e) {
+                    *v = Visibility::Hidden;
+                }
             }
         }
     }

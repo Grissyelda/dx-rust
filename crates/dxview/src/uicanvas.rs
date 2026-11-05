@@ -174,6 +174,18 @@ impl Canvas {
         }
     }
 
+    /// Makes this canvas what `Canvas::new(w, h, s)` would, keeping its allocation (Lean Updates: a menu window
+    /// redrawn into the canvas it had).
+    pub fn reset(&mut self, w: i32, h: i32, s: i32) {
+        let s = s.max(1);
+        self.w = w;
+        self.h = h;
+        self.s = s;
+        self.px.clear();
+        self.px.resize((w * s * h * s).max(0) as usize, [0.0; 4]);
+        self.clip = (0, 0, w, h);
+    }
+
     /// Limit drawing to a rectangle (a child window's area); `None` resets to the whole canvas.
     pub fn set_clip(&mut self, r: Option<(i32, i32, i32, i32)>) {
         self.clip = match r {
