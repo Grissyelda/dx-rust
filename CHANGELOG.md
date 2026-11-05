@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Performance settings and speed-ups (thanks to JohnUzoka, PRs #17-#36)
+From his Nintendo Switch port of DX RUST, one change per pull request:
+- New Settings > Enhancements > Performance group: Anti-Aliasing, HDR Rendering, Lean Rendering, Lean Updates and an
+  FPS Counter (frames a second and frame time, top right). The first two are on and the rest off by default, so the
+  picture is as before.
+- Lean Rendering leaves out GPU work that adds nothing to the picture: the level shader is compiled per material with
+  only what it uses, the dynamic lights are lit the way Unreal 1 did (drawn into a copy of the lightmap where they
+  reach, so the level shader walks no lights), the shadow-light walk on meshes only where shadow lights exist, and
+  still decorations that share a material are drawn as batches.
+- Lean Updates redraws menus, the cursor, conversation windows and the HUD only when they change, keeps hidden HUD
+  windows out of the layout and skips critters nobody sees; the InfoLink portrait is a HUD window of its own.
+- Open Sea (Visuals, off by default): without Modern Water, the sea runs on to the horizon in the Classic look.
+- Faster everywhere: the BSP sweep walks each node with only its part of the sweep, fewer collision checks and copies
+  on the main thread, settings read without the lock, sounds and speech decoded off the frame, the death screen's
+  save lookup only after saves change, and the WetTexture / WaveTexture water pictures made at an eighth of the cost
+  (the same picture to the bit).
+- Controller: separate horizontal and vertical look sensitivity, a light push on the stick walks, and either face
+  button goes on in a conversation and picks the highlighted choice.
+- Mouse look keeps working after Load Game, after Escape skips a line and on the death screen.
+- The profiler (DXVIEW_PROF) has more scopes, a UI and modified-asset census and a mirror line.
+
 ### macOS (thanks to poltak, PR #5)
 - Apple Silicon Macs run the game natively on Metal. `BUILD_MAC.sh` makes `dist/DX RUST.app`.
 - The launcher and the game find the Deus Ex folder in the Steam library, in the folder that Steam's

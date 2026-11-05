@@ -237,4 +237,6 @@ were on and what you did.
 - The HDTP team, the New Vision team, the authors of Visible Attachments, Augmentique, Helios, Precipitation and
   GMDX (CyberP, and Sarge and the Augmented Edition team), for their mods.
 - The Machine God team, for the rebuilt human bodies, rig and animations behind Skeletal Characters.
+- Contributors: JohnUzoka (the Performance settings, Lean Rendering / Lean Updates, the FPS counter, Open Sea and many
+  speed-ups, from his Nintendo Switch port) and poltak (macOS support).
 - The Bevy, egui, gilrs and hidapi projects, and the Rust community.
