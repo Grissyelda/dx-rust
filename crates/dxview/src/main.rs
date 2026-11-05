@@ -535,9 +535,7 @@ fn install_crash_log() {
     std::panic::set_hook(Box::new(move |info| {
         let msg = format!("dxview crashed: {info}\n{}\n", std::backtrace::Backtrace::force_capture());
         eprintln!("{msg}");
-        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
-            let _ = std::fs::write(dir.join("crash.log"), &msg);
-        }
+        let _ = std::fs::write(unreal_pkg::paths::data_dir().join("crash.log"), &msg);
         prev(info);
     }));
 }
@@ -599,8 +597,7 @@ fn main() {
         .filter(|a| !a.starts_with("--"))
         .cloned()
         .or_else(|| {
-            let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-            std::fs::read_to_string(dir.join("launcher.txt"))
+            std::fs::read_to_string(unreal_pkg::paths::data_dir().join("launcher.txt"))
                 .ok()?
                 .lines()
                 .find_map(|l| l.strip_prefix("GamePath=").map(|v| v.trim().to_string()))
@@ -612,7 +609,7 @@ fn main() {
     // Mods (unreal_pkg::mods): the launcher's Mods page writes Mod.<id>= / ModOn.<id>= lines in launcher.txt (Lay D
     // Denton's older LDDPPath= still counts). Overlays (Lay D Denton) are laid over the game folder, addons searched
     // after it, HD texture packs used texture by texture. DXVIEW_MOD (';'-separated folders) adds overlays for tests.
-    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or_default();
+    let exe_dir = unreal_pkg::paths::data_dir();
     let launcher_lines = unreal_pkg::mods::read_launcher_txt(&exe_dir.join("launcher.txt"));
     let mut mod_settings = unreal_pkg::mods::from_lines(&launcher_lines);
     // ModAssets=<folder>: one folder holding every mod (the launcher's Mod Assets row).
@@ -729,7 +726,7 @@ fn main() {
     let level = match dx_level::load_level(&PathBuf::from(&root), &map) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("ERROR: {e}\nUsage: dxview.exe [\"C:\\Games\\Deus Ex\"] [map.dx]");
+            eprintln!("ERROR: {e}\nUsage: dxview [\"path to Deus Ex\"] [map.dx]");
             eprintln!("Press Enter to close.");
             let _ = std::io::stdin().read_line(&mut String::new());
             std::process::exit(1);
@@ -957,6 +954,7 @@ fn main() {
             (gamepad::poll_system, keybinds::remap_system).chain().after(bevy::input::InputSystems),
         )
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
+        .add_plugins(PlatformPlugin)
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
         .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system))
         .init_resource::<consys::ConSetup>()
@@ -2126,6 +2124,37 @@ fn cursor_grab(
     if mouse.just_pressed(MouseButton::Left) && !menu.open && !consys::third_person() && !menus::open() {
         cursor.visible = false;
         cursor.grab_mode = CursorGrabMode::Locked;
+    }
+}
+
+/// What only one platform needs.
+struct PlatformPlugin;
+
+impl Plugin for PlatformPlugin {
+    #[allow(unused_variables)]
+    fn build(&self, app: &mut App) {
+        #[cfg(target_os = "macos")]
+        app.add_systems(Update, release_cursor_without_focus.after(cursor_grab));
+    }
+}
+
+/// A locked cursor on macOS holds the mouse for the whole system, and neither winit nor Bevy lets go when the window
+/// loses focus: without this, Cmd-Tab leaves the player with a mouse that doesn't move in the other app.
+#[cfg(target_os = "macos")]
+fn release_cursor_without_focus(
+    mut focus: MessageReader<bevy::window::WindowFocused>,
+    mut cursor: Single<&mut CursorOptions>,
+    mut was_locked: Local<bool>,
+) {
+    for e in focus.read() {
+        if !e.focused && cursor.grab_mode == CursorGrabMode::Locked {
+            *was_locked = true;
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+        } else if e.focused && std::mem::take(&mut *was_locked) {
+            cursor.grab_mode = CursorGrabMode::Locked;
+            cursor.visible = false;
+        }
     }
 }
 

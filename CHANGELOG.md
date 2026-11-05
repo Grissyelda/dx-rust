@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### macOS (thanks to poltak, PR #5)
+- Apple Silicon Macs run the game natively on Metal. `BUILD_MAC.sh` makes `dist/DX RUST.app`.
+- The launcher and the game find the Deus Ex folder in the Steam library, in the folder that Steam's
+  `download_depot` command writes, and in the usual folders.
+- An app bundle keeps settings and saves in Application Support.
+- The mouse is released when the game loses focus, and the window keeps its size on a Retina display.
+- Upscaling works without temporal antialiasing on macOS, because Metal can't draw the skeletal bodies with its
+  motion vectors. Native AA only sharpens there.
+
 ### GitHub fixes (November 5)
 - A thrown body flies as the original's flat carcass instead of a standing person's tall cylinder, so it lands on
   the training med room's table (and anywhere with a low ceiling) instead of hitting an invisible wall (#40).

@@ -50,10 +50,7 @@ static SESSION: RwLock<Option<NewGame>> = RwLock::new(None);
 static LOADED: std::sync::Once = std::sync::Once::new();
 
 fn path() -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.join("session.txt")))
-        .unwrap_or_else(|| "session.txt".into())
+    unreal_pkg::paths::data_dir().join("session.txt")
 }
 
 pub fn decode(t: &str) -> NewGame {

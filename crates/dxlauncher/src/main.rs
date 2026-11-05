@@ -136,7 +136,7 @@ struct Launcher {
 
 impl Launcher {
     fn load() -> Launcher {
-        let dir = exe_dir();
+        let dir = unreal_pkg::paths::data_dir();
         let lk = read_kv(&dir.join("launcher.txt"));
         // DXL_GAME overrides the saved folder (for DXL_DUMP checks).
         let game = std::env::var("DXL_GAME").ok().unwrap_or_else(|| {
@@ -221,7 +221,7 @@ impl Launcher {
     }
 
     fn save(&mut self) -> bool {
-        let dir = exe_dir();
+        let dir = unreal_pkg::paths::data_dir();
         let mut lk = vec![("GamePath".to_string(), self.game.clone())];
         // Keep lines the launcher doesn't edit (DiscordAppId and the like).
         for (k, v) in read_kv(&dir.join("launcher.txt")) {
@@ -255,7 +255,7 @@ impl Launcher {
 
     fn play(&mut self) -> bool {
         if !valid_game(Path::new(&self.game)) {
-            self.status = "That folder has no System\\DeusEx.u - choose the Deus Ex folder.".into();
+            self.status = "That folder has no System/DeusEx.u - choose the Deus Ex folder.".into();
             return false;
         }
         if !self.save() {
@@ -366,7 +366,7 @@ impl Launcher {
             Some(Wid::Play) => "Save these settings and start the game",
             Some(Wid::Save) => "Keep these settings without starting the game",
             Some(Wid::Quit) => "Close the launcher",
-            None if !valid_game(Path::new(&self.game)) => "There is no System\\DeusEx.u in that folder",
+            None if !valid_game(Path::new(&self.game)) => "There is no System/DeusEx.u in that folder",
             None => "",
         }
         .to_string()
@@ -706,9 +706,9 @@ impl Launcher {
                 }
             });
             ui.label(if valid_game(Path::new(&self.game)) {
-                "Found System\\DeusEx.u, but its DeusExUI.u couldn't be read."
+                "Found System/DeusEx.u, but its DeusExUI.u couldn't be read."
             } else {
-                "There is no System\\DeusEx.u in that folder yet."
+                "There is no System/DeusEx.u in that folder yet."
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -770,7 +770,8 @@ impl eframe::App for Launcher {
             return;
         }
         // Pixel-exact: one egui point per physical pixel, the canvas carries its own whole-number scale.
-        if ctx.pixels_per_point() != 1.0 {
+        // macOS sizes windows in points, so there the canvas is drawn in points and a Retina display doubles it.
+        if !cfg!(target_os = "macos") && ctx.pixels_per_point() != 1.0 {
             ctx.set_pixels_per_point(1.0);
         }
         let (w, h) = Self::size();

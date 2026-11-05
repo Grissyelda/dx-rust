@@ -13,7 +13,7 @@ one-to-one:
 - conversations, infolinks, computers, keypads;
 - saves and the original menus and HUD.
 
-It runs as a native Windows program and on Steam Deck / Linux, with no old engine underneath.
+It runs as a native Windows program, on Steam Deck / Linux and on Apple Silicon Macs, with no old engine underneath.
 
 ![DX RUST: the training course, playing as the female JC from the Lay D Denton Project](docs/screenshot-training.png)
 
@@ -127,6 +127,28 @@ It runs as a native Windows program and on Steam Deck / Linux, with no old engin
 4. Add `dxrust.sh` (or `dxlauncher`) to Steam as a *Non-Steam Game* to play from Game Mode. Use Steam Input's
    *Gamepad* template.
 
+### macOS (Apple Silicon)
+There is no download for macOS yet, so build the app from source (see *Building from source*). You need the Windows
+files of the game. Both Steam and GOG sell only the Windows version, but the game files are the same.
+
+1. Get the game folder and put it at `~/Games/Deus Ex`. Use one of these:
+   - **Steam:** Steam for Mac won't install the game, but its console can download the files. Run
+     `open steam://open/console` in Terminal, then type `download_depot 6910 6911` in the console. When the download
+     ends, move the `depot_6911` folder that the console names to `~/Games/Deus Ex`, or leave it there: DX RUST finds
+     it.
+   - **GOG:** download the offline Windows installer, then run
+     `brew install innoextract` and `innoextract --gog -d ~/Games/Deus\ Ex setup_deus_ex_goty_*.exe`. If `System` is
+     in a folder called `app`, use that folder.
+2. Run `./BUILD_MAC.sh`, and copy `dist/DX RUST.app` to Applications.
+3. Open the app, choose a display mode and resolution, then click **Play**.
+
+Settings and saves are in `~/Library/Application Support/DX RUST`. Resolutions are window sizes in points, so a
+Retina display draws twice as many pixels in each direction. On the heaviest street map an M2 Max holds 60 fps in
+Classic at 3840x2160 pixels and in Modern at 2560x1440 pixels (a 1280x720 window on Retina), so choose a smaller size
+for Modern if the frame rate is low. macOS uses some function keys itself: turn on *Use F1, F2, etc. keys as standard function keys* in System Settings, or bind
+the augmentations to other keys. gilrs has no rumble on macOS, so only a DualSense rumbles there (it uses HID). Upscaling has no
+temporal antialiasing on macOS, so *Native AA* only sharpens there.
+
 ### Mods (optional)
 1. Download the mods you want and unzip each one into its own folder:
    [Lay D Denton Project](https://www.moddb.com/mods/the-lay-d-denton-project),
@@ -148,8 +170,8 @@ of them. GMDX's own copy of the game code isn't run: its perks are rewritten in 
 and icons from your copy of the mod.
 
 ## Building from source
-You need Rust (stable) and a C compiler: on Windows, the Visual Studio C++ build tools. On Linux, also the
-development packages for Wayland, ALSA, udev and xkbcommon:
+You need Rust (stable, 1.95 or later) and a C compiler: on Windows, the Visual Studio C++ build tools; on macOS,
+the Xcode command line tools. On Linux, also the development packages for Wayland, ALSA, udev and xkbcommon:
 
     # Debian / Ubuntu / Kubuntu
     sudo apt install build-essential pkg-config libwayland-dev wayland-protocols libasound2-dev libudev-dev libxkbcommon-dev
@@ -162,7 +184,7 @@ development packages for Wayland, ALSA, udev and xkbcommon:
     cargo build --release --manifest-path crates/dxlauncher/Cargo.toml    # the launcher
     target/release/dxview "C:\path\to\Deus Ex"                            # or run the launcher
 
-On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder.
+On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder. On macOS, `BUILD_MAC.sh` makes `dist/DX RUST.app`.
 
 | Crate | What it does |
 | --- | --- |

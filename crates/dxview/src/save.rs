@@ -407,15 +407,12 @@ fn unsimple(v: &SimpleValue) -> Value {
 
 // ------------------------------------------------------------------------------------------------ files
 
-/// The save folder beside the exe (DXVIEW_SAVE_DIR for test runs).
+/// The save folder (DXVIEW_SAVE_DIR for test runs).
 pub fn dir() -> PathBuf {
     if let Some(d) = env_val!("DXVIEW_SAVE_DIR") {
         return PathBuf::from(d);
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.join("Save")))
-        .unwrap_or_else(|| PathBuf::from("Save"))
+    unreal_pkg::paths::data_dir().join("Save")
 }
 
 /// Ours: every character keeps its saves, five autosaves, quick save and achievements in its own folder
@@ -658,7 +655,7 @@ pub fn format_date(unix: u64) -> String {
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .map(|h| (h * 60.0) as i64)
-        .unwrap_or_else(local_offset_minutes);
+        .unwrap_or_else(|| local_offset_minutes(unix as i64));
     let t = unix as i64 + off_min * 60;
     let days = t.div_euclid(86400);
     let secs = t.rem_euclid(86400);
@@ -683,9 +680,10 @@ pub fn format_date(unix: u64) -> String {
     format!("{m}/{d}/{y} {h12}:{min:02} {ap}")
 }
 
-/// The system's UTC offset in minutes (Windows: GetTimeZoneInformation; elsewhere UTC unless TZ_OFFSET_HOURS).
+/// The system's UTC offset in minutes (Windows: GetTimeZoneInformation, as it is now; Unix: localtime_r, as it was
+/// at `unix`, so that a summer save shows summer time in winter).
 #[cfg(windows)]
-fn local_offset_minutes() -> i64 {
+fn local_offset_minutes(_unix: i64) -> i64 {
     #[repr(C)]
     struct SystemTime([u16; 8]);
     #[repr(C)]
@@ -708,8 +706,26 @@ fn local_offset_minutes() -> i64 {
     let bias = tz.bias + if r == 2 { tz.daylight_bias } else { tz.standard_bias };
     -(bias as i64)
 }
-#[cfg(not(windows))]
-fn local_offset_minutes() -> i64 {
+#[cfg(unix)]
+fn local_offset_minutes(unix: i64) -> i64 {
+    /// `struct tm` up to tm_gmtoff, the same on 64-bit Linux and macOS.
+    #[repr(C)]
+    struct Tm {
+        fields: [std::ffi::c_int; 9],
+        gmtoff: std::ffi::c_long,
+        zone: *const std::ffi::c_char,
+    }
+    extern "C" {
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let mut tm: Tm = unsafe { std::mem::zeroed() };
+    if unsafe { localtime_r(&unix, &mut tm) }.is_null() {
+        return 0;
+    }
+    tm.gmtoff as i64 / 60
+}
+#[cfg(not(any(windows, unix)))]
+fn local_offset_minutes(_unix: i64) -> i64 {
     0
 }
 

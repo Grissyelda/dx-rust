@@ -119,10 +119,7 @@ impl Default for Bindings {
 }
 
 fn save_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("keybinds.txt")))
-        .unwrap_or_else(|| PathBuf::from("keybinds.txt"))
+    unreal_pkg::paths::data_dir().join("keybinds.txt")
 }
 
 /// Inputs that can be bound (and parsed back from the save file).

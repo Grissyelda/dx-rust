@@ -427,6 +427,15 @@ pub fn present_mode(v: f32) -> bevy::window::PresentMode {
     }
 }
 
+/// Settings > Display resolution. macOS sizes windows in points, and the game opens with the saved size in points,
+/// so a pick there is points too: physical pixels would make the window half the size on a Retina display.
+fn set_window_size(window: &mut Window, w: u32, h: u32) {
+    #[cfg(target_os = "macos")]
+    window.resolution.set(w as f32, h as f32);
+    #[cfg(not(target_os = "macos"))]
+    window.resolution.set_physical_resolution(w, h);
+}
+
 /// The Bevy window mode for a DisplayMode setting.
 /// The window mode for a DisplayMode setting. The primary monitor, not "current": at startup there is no window
 /// yet, so winit has no current monitor and Bevy panics ("Unable to get monitor").
@@ -1059,6 +1068,9 @@ impl Enhance {
             c.key = "Upscaling".into();
             c.label = "Upscaling".into();
             c.help = "Native AA smooths edges with temporal antialiasing at full resolution. Quality, Balanced, Performance and Ultra Performance draw the world at 1/1.5, 1/1.7, 1/2 or 1/3 the window's size and upscale it with an edge-aware filter (AMD FSR 1) and sharpening - more frames on slower graphics cards. The weapon, HUD and menus always stay at full resolution.".into();
+            if cfg!(target_os = "macos") {
+                c.help.push_str(" On a Mac there is no temporal antialiasing: Native AA only sharpens.");
+            }
             c.kind = ChoiceKind::Enum(crate::upscale::NAMES.iter().map(|s| s.to_string()).collect());
             c.value = setting!("Upscaling");
             c.saved = c.value;
@@ -3696,7 +3708,7 @@ pub fn menu_system(
                 window.present_mode = present_mode(v);
             }
             Act::Resolution(w, h) => {
-                window.resolution.set_physical_resolution(w, h);
+                set_window_size(&mut window, w, h);
             }
         }
     }
@@ -4092,7 +4104,7 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                     ("FullScreen", _) => acts.push(Act::ToggleFullscreen),
                     ("RenderDevice", _) => acts.push(Act::Msg(
                         "Rendering Device".into(),
-                        "This version always renders with wgpu (Vulkan / DirectX 12).".into(),
+                        "This version always renders with wgpu (Vulkan, DirectX 12 or Metal).".into(),
                         false,
                         MsgPurpose::Restart,
                     )),

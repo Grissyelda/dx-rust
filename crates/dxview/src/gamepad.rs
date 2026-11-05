@@ -356,10 +356,7 @@ fn any_kbm() -> bool {
 // ------------------------------------------------------------------------------------------------ bindings
 
 fn save_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("padbinds.txt")))
-        .unwrap_or_else(|| PathBuf::from("padbinds.txt"))
+    unreal_pkg::paths::data_dir().join("padbinds.txt")
 }
 
 static BINDS: Mutex<Option<Vec<Option<PadBtn>>>> = Mutex::new(None);
