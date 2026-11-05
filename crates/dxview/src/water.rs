@@ -795,9 +795,10 @@ pub fn ocean_system(
     // water shows what's under it, deep water turns to its own colour.
     // Attached once Modern Water is on now or in the Modern mix Classic / Modern remembers, then kept for the session
     // (see postfx.rs: taking it off while SSAO was on crashed Bevy, and adding it recompiles every material - the
-    // switch's wipe waits for that). A player who stays in Classic never pays for the extra depth pass.
+    // switch's wipe waits for that). Lean Rendering wants it too, for what it saves: with the depth laid down first,
+    // the opaque pass shades only what ends up in front.
     static WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if modern() || setting!("Modern.ModernWater") > 0.5 {
+    if modern() || setting!("Modern.ModernWater") > 0.5 || crate::perf::lean_rendering() {
         WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     for (e, _, has) in &cam {

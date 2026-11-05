@@ -1349,6 +1349,9 @@ fn setup(
     prof::load_mark("start");
     // The tessellated water sheets' vertices (the open sea's first band meets them vertex to vertex).
     let mut sheet_pts: Vec<[f32; 3]> = Vec::new();
+    // Lean Rendering (perf.rs): Modern Water's dark backings are built only when Modern Water is on as the map loads
+    // (now, or in the Modern mix Classic / Modern remembers); they show only with it.
+    let modern_water = !perf::lean_rendering() || water::modern() || settings::get("Modern.ModernWater") > 0.5;
     let mut bsp_cache: std::collections::HashMap<(AssetId<StandardMaterial>, bool), Handle<shadowlight::BspMaterial>> = Default::default();
     let level = &level.0;
     let mut mirrors = mirror::Mirrors::default();
@@ -1540,7 +1543,7 @@ fn setup(
                 mirror::add_water(&mut mirrors, &wm, &b.positions);
                 // Flat sheets get a dark backing under their moving surface (see water::WaterBacking).
                 let (lo, hi) = b.positions.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[1]), a.1.max(p[1])));
-                if hi - lo < 0.05 {
+                if hi - lo < 0.05 && modern_water {
                     let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
                     commands.spawn((
                         Mesh3d(meshes.add(water::backing_mesh(&b.positions, &b.indices))),

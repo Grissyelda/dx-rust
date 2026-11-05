@@ -103,7 +103,7 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
         base,
         extension: BspShadow {
             params: BspShadowParams {
-                p: Vec4::new(STRENGTH, 1.0 / ENCODE, dx_level::lighting::LIGHT_GAIN, env_val!("DXVIEW_SHADOW_DEBUG").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(0.0)),
+                p: Vec4::new(shadow_strength(), 1.0 / ENCODE, dx_level::lighting::LIGHT_GAIN, env_val!("DXVIEW_SHADOW_DEBUG").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(0.0)),
                 q: Vec4::new(if crate::postfx::ao_on() { 0.85 } else { 0.0 }, 0.0, 0.0, 0.0),
                 r: Vec4::ZERO,
                 s: Vec4::new(1.0, 0.0, 0.0, 0.0),
@@ -131,6 +131,38 @@ pub fn setup_bsp_shader(mut shaders: ResMut<Assets<Shader>>) {
 
 pub fn level() -> u8 {
     setting!("RealtimeShadows").round().clamp(0.0, 2.0) as u8
+}
+
+/// The BSP shader's shadow strength. With Lean Rendering and no shadow lights it's 0, which skips the shader's walk
+/// over the lights in each fragment's cluster: with nothing casting, that walk takes nothing off the lightmap.
+pub fn shadow_strength() -> f32 {
+    if crate::perf::lean_rendering() && level() == 0 {
+        0.0
+    } else {
+        STRENGTH
+    }
+}
+
+/// Whether the mesh actors' fragment shaders (anim_frag.wgsl, actor_lit.wgsl) walk each fragment's cluster for shadow
+/// lights: with the BSP's (`shadow_strength` above 0). With Lean Rendering and Realtime Shadows off no shadow light is
+/// ever shown, so the walk found nothing in any fragment, and leaving it out (`ActorShadowKey`) keeps the picture.
+pub fn actor_spot_shadows() -> bool {
+    shadow_strength() > 0.0
+}
+
+/// A mesh actor material's pipeline key (gpuanim.rs `VertAnim`, skeletal.rs `ActorLit`): the shadow lights' walk
+/// (`ACTOR_SPOT_SHADOWS`) compiled in or not. postfx.rs sets it again when Realtime Shadows or Lean Rendering change.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ActorShadowKey {
+    pub spot_shadows: bool,
+}
+
+impl ActorShadowKey {
+    pub fn specialize(self, descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor) {
+        if let (true, Some(fragment)) = (self.spot_shadows, descriptor.fragment.as_mut()) {
+            fragment.shader_defs.push("ACTOR_SPOT_SHADOWS".into());
+        }
+    }
 }
 
 fn wanted() -> usize {

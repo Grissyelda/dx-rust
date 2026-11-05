@@ -31,6 +31,7 @@ use std::sync::OnceLock;
 
 use crate::actors::{Animated, MeshActorRef};
 use crate::LevelRes;
+use crate::shadowlight::ActorShadowKey;
 
 // ------------------------------------------------------------------------------------------------ data
 
@@ -381,15 +382,24 @@ pub struct ActorLights {
 
 /// Bindless like StandardMaterial: all bodies' sections share a few bind groups and draw as GPU multi-draws.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[bind_group_data(ActorShadowKey)]
 #[data(100, ActorLights, binding_array(111))]
 #[bindless(index_table(range(100..101), binding(110)))]
 pub struct ActorLit {
     pub lights: ActorLights,
+    /// Its fragment shader walks for shadow lights (shadowlight.rs `actor_spot_shadows`).
+    pub spot_shadows: bool,
 }
 
 impl<'a> From<&'a ActorLit> for ActorLights {
     fn from(m: &'a ActorLit) -> Self {
         m.lights
+    }
+}
+
+impl From<&ActorLit> for ActorShadowKey {
+    fn from(m: &ActorLit) -> Self {
+        ActorShadowKey { spot_shadows: m.spot_shadows }
     }
 }
 
@@ -402,6 +412,15 @@ impl MaterialExtension for ActorLit {
     }
     fn enable_shadows() -> bool {
         true
+    }
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        key.bind_group_data.specialize(descriptor);
+        Ok(())
     }
 }
 
@@ -764,6 +783,7 @@ fn build(
                         wet: Vec4::new(0.0, if matches!(sec.style.as_str(), "MODULATED" | "TRANSLUCENT") { 1.0 } else { 0.0 }, 0.0, 0.0),
                         ..default()
                     },
+                    spot_shadows: crate::shadowlight::actor_spot_shadows(),
                 },
             });
             let layer = layers.clone().unwrap_or_else(|| {
