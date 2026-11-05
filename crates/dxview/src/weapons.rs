@@ -2883,7 +2883,9 @@ pub fn weapon_system(
         }
         let clicked = cursor.grab_mode == CursorGrabMode::Locked
             && weapons.corpse_armed
-            && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right));
+            && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right))
+            // A right click on a door or device frobs it instead (pickups::frob_system, ParseRightClick).
+            && !(mouse.just_pressed(MouseButton::Right) && crate::frobui::body_frob());
         if clicked {
             let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64).normalize();
             let fw = conv(cam.forward().as_vec3());

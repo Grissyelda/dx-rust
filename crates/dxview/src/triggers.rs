@@ -99,6 +99,9 @@ pub struct Trig {
     last_time: f32,
     message: String,
     touching: bool,
+    /// Whether the touch that `touching` records was the player's (UnTouch's IsRelevant(Other) is about the
+    /// actor that leaves, not whoever is still inside: the player has already left when it runs).
+    touch_player: bool,
     destroyed: bool,
     kind: Kind,
     group: String,
@@ -151,6 +154,7 @@ impl Triggers {
                 t.collide = s.collide;
                 t.destroyed = s.destroyed;
                 t.touching = s.touching;
+                t.touch_player = s.touching;
                 t.state = s.state.clone();
             }
         }
@@ -371,6 +375,7 @@ fn build(level: &dx_level::Level) -> Vec<Trig> {
             last_time: -1000.0,
             message: s(p, "Message"),
             touching: false,
+            touch_player: false,
             destroyed: false,
             group: group_of(p),
             kind,
@@ -485,6 +490,9 @@ fn fem_con(flags: &imsim_core::flags::FlagBase, con: &str) -> String {
 }
 
 fn set_flag(flags: &mut imsim_core::flags::FlagBase, name: &str, v: bool, expiration: i32) {
+    if env_on!("DXVIEW_FLAGLOG") {
+        println!("FLAGTRIGGER {name} = {v}");
+    }
     // flagExpiration -1: SetBool without an expiration = the flag base's default (the next mission).
     if expiration == -1 {
         flags.set_bool(name, v);
@@ -1047,13 +1055,15 @@ pub fn trigger_system(
         let inside = player_in || pawn_in;
         if inside && !t.touching {
             t.touching = true;
+            t.touch_player = player_in;
             let who = if player_in { pc } else { pawn_hit.map_or(pc, |p| p.0) };
             if from_front(t, who) {
                 touch(t, player_in, fl, now, &mut out);
             }
         } else if !inside && t.touching {
             t.touching = false;
-            untouch(t, player_in, fl, &mut out);
+            let was_player = t.touch_player;
+            untouch(t, was_player, fl, &mut out);
         } else if inside {
             // DataLinkTrigger.Timer: recheck the flag every second while touched.
             let retry = if let Kind::DataLink {

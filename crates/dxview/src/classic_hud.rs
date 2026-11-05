@@ -2092,7 +2092,7 @@ fn draw_belt(
                 )
             }
             None if slot == 0 => (
-                None,
+                Some("NanoKeyRing".to_string()),
                 hud.str_default(assets, "NanoKeyRing", "beltDescription")
                     .unwrap_or_else(|| "KEY RING".into()),
                 hud.path_default(assets, "NanoKeyRing", "Icon"),

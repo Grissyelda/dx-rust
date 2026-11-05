@@ -253,7 +253,10 @@ pub fn frob_system(
     let wants = mouse.just_pressed(MouseButton::Right) || req.0 || left_tool;
     let only_tool = left_tool && !mouse.just_pressed(MouseButton::Right) && !req.0;
     req.0 = false;
-    if !wants || carrying.consumed || carrying.held.is_some() || weapons.corpse.is_some() {
+    // Carrying a body (POVCorpse in hand), ParseRightClick still frobs a door or a device it points at; anything
+    // else and the click throws the body (weapons.rs, which asks frobui::body_frob() first).
+    let with_body = weapons.corpse.is_some();
+    if !wants || carrying.consumed || carrying.held.is_some() || (with_body && !crate::frobui::body_frob()) {
         return;
     }
     // Ray from the eye, MaxFrobDistance (112 units) long.
@@ -302,14 +305,7 @@ pub fn frob_system(
             }
             continue;
         }
-        if find(p, "GroundSpeed").is_some()
-            || !(crate::devices::is_hackable(p)
-                || crate::fixtures::is_fixture(&level.actors[c.actor].class)
-                || crate::augmentique::is_spawner(&level.actors[c.actor].class)
-                || crate::computers::is_terminal(&level.actors[c.actor].class)
-                || !crate::devices::name_prop(p, "Event").is_empty()
-                || !crate::devices::name_prop(p, "textTag").is_empty())
-        {
+        if !device_like(&level.actors[c.actor]) {
             continue;
         }
         if let Some(t) = ray_cylinder(eye, end, c.center, c.radius + 2.0, c.height + 2.0) {
@@ -421,6 +417,13 @@ pub fn frob_system(
             {
                 Some((Target::Device(b), t))
             }
+            _ => None,
+        };
+    }
+    if with_body {
+        best = match best {
+            Some((Target::Mover(i), t)) => Some((Target::Mover(i), t)),
+            Some((Target::Device(b), t)) => Some((Target::Device(b), t)),
             _ => None,
         };
     }
@@ -1043,4 +1046,17 @@ pub fn belt_ui(
     }
     // The classic HUD has no credits readout (they show in the inventory screen); the stand-in label stays empty.
     credits.0 = String::new();
+}
+
+/// A decoration that frobbing uses (not a pawn): a hackable device, a fixture, an outfit box, a terminal, or
+/// something with an Event or text to show.
+pub fn device_like(a: &dx_level::actors::ActorInfo) -> bool {
+    let p = &a.props;
+    find(p, "GroundSpeed").is_none()
+        && (crate::devices::is_hackable(p)
+            || crate::fixtures::is_fixture(&a.class)
+            || crate::augmentique::is_spawner(&a.class)
+            || crate::computers::is_terminal(&a.class)
+            || !crate::devices::name_prop(p, "Event").is_empty()
+            || !crate::devices::name_prop(p, "textTag").is_empty())
 }

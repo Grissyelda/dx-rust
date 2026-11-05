@@ -524,6 +524,16 @@ pub fn frob_target_system(
     }
     LADDER_AIM.store(ladder_aim, std::sync::atomic::Ordering::Relaxed);
     HAS_TARGET.store(best.is_some(), std::sync::atomic::Ordering::Relaxed);
+    // What a click can frob with a body in hand: a door, or a device that isn't a pawn (pickups::device_like).
+    let body_ok = best.as_ref().is_some_and(|h| {
+        h.mover_idx.is_some()
+            || h.blocker.is_some_and(|b| {
+                blockers.list.get(b).is_some_and(|c| {
+                    !crate::consys::has_conversations(b) && crate::pickups::device_like(&lvl.actors[c.actor])
+                })
+            })
+    });
+    BODY_FROB.store(body_ok, std::sync::atomic::Ordering::Relaxed);
     hl.target = best;
 }
 
@@ -531,6 +541,12 @@ pub fn frob_target_system(
 pub static LADDER_AIM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The player is on a ladder (no "Climb Ladder" prompt then).
 pub static LADDER_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The highlighted thing is a door or device, which a right click frobs even while carrying a body.
+static BODY_FROB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn body_frob() -> bool {
+    BODY_FROB.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Something is highlighted to frob (the pad's X: use it, else reload).
 static HAS_TARGET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

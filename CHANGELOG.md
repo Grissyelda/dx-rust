@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### GitHub fixes (November 5)
+- Things you pick up in the training no longer vanish (#11): the "stand here" triggers (the munitions trooper's)
+  never reset once you walked out of them, so the training kept taking your inventory away, the hazmat suit too.
+  Every trigger the player walks out of now reacts the way the original's do.
+- The key ring is highlighted on the belt when it's in your hand (#12).
+- Classic water is see-through again (#13): additive water was being drawn solid, hiding the pool floor and its
+  lights.
+- Carrying a body, a right click on a door or a switch uses it instead of dropping the body (#14).
+- Mouse look no longer stops after dying and loading (#16): when the window couldn't take the pointer for a moment,
+  it was never asked again until you clicked.
+- Modern Water's screen-space reflections are steadier: rays leave the flat surface and the waves only bend the
+  picture, so the grey shimmer of stray samples is gone; bright lamps no longer leave white sparks. Both
+  reflection modes are a little stronger.
+
 ## v0.11.0
 
 The highlights since v0.10.0 (the detailed notes for each day follow):

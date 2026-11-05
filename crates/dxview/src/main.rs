@@ -806,6 +806,8 @@ fn main() {
         .add_systems(loader::LevelSetup, setup)
         .add_systems(Startup, (detect_bc1, loader::first_level_setup).chain())
         .add_systems(First, loader::loader_system.before(save::save_first_system))
+        .add_systems(First, cursor_watchdog_system)
+        .add_systems(PostUpdate, cursor_record_system)
         .add_systems(Update, (loader::settle_system, loader::loading_screen_system).chain())
         .add_systems(Update, movers::mover_riders_system.after(movers::tick_movers).before(actors::deco_physics))
         .add_systems(
@@ -2031,6 +2033,46 @@ fn texture_pixels_due(mut seen: Local<u64>, mut wait: Local<u8>) -> bool {
     }
     *wait -= 1;
     *wait == 0
+}
+
+/// What the game last asked the pointer to be (set by cursor_record_system when a system changed it this frame).
+static CURSOR_WANT: std::sync::Mutex<(Option<CursorGrabMode>, Option<CursorGrabMode>)> = std::sync::Mutex::new((None, None));
+
+/// Bevy's winit side puts CursorOptions.grab_mode back to what it was when the grab fails (the window not focused
+/// for a moment, say while a save loads after dying), and nothing in the game asks again, so the mouse stopped
+/// looking until a click. Re-ask while the game still wants the pointer locked and the window has focus.
+fn cursor_watchdog_system(
+    mut cursor: Single<&mut CursorOptions>,
+    window: Single<&Window>,
+    time: Res<Time<Real>>,
+    mut last_try: Local<f32>,
+    mut was_focused: Local<bool>,
+) {
+    let Ok(mut w) = CURSOR_WANT.lock() else { return };
+    let focused = window.focused;
+    let regained = focused && !*was_focused;
+    *was_focused = focused;
+    if w.0 == Some(CursorGrabMode::Locked) && focused {
+        let now = time.elapsed_secs();
+        if cursor.grab_mode != CursorGrabMode::Locked && now - *last_try > 0.25 {
+            *last_try = now;
+            cursor.grab_mode = CursorGrabMode::Locked;
+            cursor.visible = false;
+        } else if regained {
+            // Back in the window: have the grab applied again.
+            cursor.set_changed();
+        }
+    }
+    w.1 = Some(cursor.grab_mode);
+}
+
+/// Notes the pointer mode a game system set this frame (anything different from what the watchdog left in First).
+fn cursor_record_system(cursor: Single<&CursorOptions>) {
+    if let Ok(mut w) = CURSOR_WANT.lock() {
+        if w.1 != Some(cursor.grab_mode) {
+            w.0 = Some(cursor.grab_mode);
+        }
+    }
 }
 
 fn cursor_grab(

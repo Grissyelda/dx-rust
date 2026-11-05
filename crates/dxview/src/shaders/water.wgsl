@@ -210,8 +210,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         out.color = vec4<f32>(color.rgb * water.far.z + vec3<f32>(0.3, 0.0, 0.0), 1.0);
         return out;
     }
+    // Keep the alpha main_pass_post_lighting_processing left: Bevy draws AlphaMode::Add with the premultiplied blend
+    // and an alpha of 0 is what makes it add (an alpha of 1 covered what's under the water: issue #13).
     let lit = color.rgb * water.t.z;
-    out.color = vec4<f32>(lit, 1.0);
+    out.color = vec4<f32>(lit, color.a);
     return out;
 }
 
@@ -238,15 +240,23 @@ fn ssr_edge(px: vec2<f32>) -> f32 {
 
 fn ssr_color(px: vec2<f32>) -> vec3<f32> {
     let uv = (px - view.viewport.xy) / view.viewport.zw;
-    return textureSampleLevel(view_transmission_texture, view_transmission_sampler, uv, 0.0).rgb;
+    let c = textureSampleLevel(view_transmission_texture, view_transmission_sampler, uv, 0.0).rgb;
+    // HDR lamps and coronas picked up by a stray ray came out as white sparks (with bloom on top): keep the
+    // reflection in the range of what a lit wall gives.
+    let l = max(max(c.r, c.g), c.b);
+    return c * min(1.0, 1.5 / max(l, 1e-4));
+}
+
+fn ssr_clamp_px(px: vec2<f32>) -> vec2<f32> {
+    return clamp(px, view.viewport.xy + vec2<f32>(0.5), view.viewport.xy + view.viewport.zw - vec2<f32>(0.5));
 }
 
 // The reflected ray from `p0` along `r`, stepping out with growing strides through the scene's depth; on the first
 // step that passes behind a surface (by less than the surface could be thick) the step is refined and the colour
 // there taken. Rays that pass everything take what lies far off in their direction (the sky, the skyline) when it
 // is on screen. rgb = colour, a = how much to trust it.
-fn ssr_trace(p0: vec3<f32>, r: vec3<f32>, dist: f32, steps: i32) -> vec4<f32> {
-    var s = 0.3 + dist * 0.012;
+fn ssr_trace(p0: vec3<f32>, r: vec3<f32>, dist: f32, steps: i32, bend_px: vec2<f32>) -> vec4<f32> {
+    var s = 0.25 + dist * 0.008;
     var prev = 0.0;
     for (var i = 0; i < steps; i += 1) {
         let q = ssr_project(p0 + r * s);
@@ -266,7 +276,7 @@ fn ssr_trace(p0: vec3<f32>, r: vec3<f32>, dist: f32, steps: i32) -> vec4<f32> {
                 // Refine between the last step in front and this one.
                 var a = prev;
                 var b = s;
-                for (var k = 0; k < 4; k += 1) {
+                for (var k = 0; k < 5; k += 1) {
                     let m = 0.5 * (a + b);
                     let qm = ssr_project(p0 + r * m);
                     let sm = prepass_utils::prepass_depth(vec4<f32>(qm.xy, 0.0, 0.0), 0u);
@@ -279,11 +289,14 @@ fn ssr_trace(p0: vec3<f32>, r: vec3<f32>, dist: f32, steps: i32) -> vec4<f32> {
                 let qh = ssr_project(p0 + r * b);
                 // Rays coming back toward the eye see the backs of things the picture doesn't have.
                 let facing = smoothstep(-0.2, 0.15, dot(r, -normalize(view.world_position.xyz - p0)));
-                return vec4<f32>(ssr_color(qh.xy), ssr_edge(qh.xy) * facing);
+                // Far along the ray the hit is less sure (coarse steps): fade it.
+                let sure = 1.0 - smoothstep(60.0, 160.0, b);
+                let hp = ssr_clamp_px(qh.xy + bend_px);
+                return vec4<f32>(ssr_color(hp), ssr_edge(qh.xy) * facing * sure);
             }
         }
         prev = s;
-        s *= 1.5;
+        s *= 1.32;
     }
     // Past everything: what's far off that way, if the picture has it and it is far (sky, skyline, distant towers).
     let far = ssr_project(p0 + r * 20000.0);
@@ -291,7 +304,7 @@ fn ssr_trace(p0: vec3<f32>, r: vec3<f32>, dist: f32, steps: i32) -> vec4<f32> {
         let scene = prepass_utils::prepass_depth(vec4<f32>(far.xy, 0.0, 0.0), 0u);
         let far_enough = scene <= 0.0 || -depth_ndc_to_view_z(scene) > 150.0;
         if (far_enough) {
-            return vec4<f32>(ssr_color(far.xy), ssr_edge(far.xy));
+            return vec4<f32>(ssr_color(ssr_clamp_px(far.xy + bend_px)), ssr_edge(far.xy));
         }
     }
     return vec4<f32>(0.0);
@@ -376,17 +389,19 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
         // Waves bend the reflection, less far away (where a pixel spans more water).
         uv += vec2<f32>(-g.x, g.y) * water.m.w * (1.0 / (1.0 + dist * 0.08) + 0.04 * far_k) * (0.4 + 0.6 * ndv_flat);
         uv = clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999));
-        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.5;
+        refl = textureSampleLevel(reflection_texture, reflection_sampler, uv, 0.0).rgb * 0.6;
     }
 #ifdef DEPTH_PREPASS
     // Screen-space: the reflected ray marched through the depth of the scene already drawn (Bevy's transmission
     // copy of it) - no second view of the world for the CPU to build.
     if (water.ssr.x > 0.5 && up > 0.0) {
-        let bend = 0.45 * (1.0 / (1.0 + dist * 0.05) + 0.06 * far_k) * (0.4 + 0.6 * ndv_flat);
-        let rn = normalize(vec3<f32>(-g.x * bend, 1.0, -g.y * bend));
-        let r = reflect(-v, rn);
-        let hit = ssr_trace(in.world_position.xyz + rn * 0.02, r, dist, i32(water.ssr.y));
-        refl = mix(refl, hit.rgb * 0.5, hit.a);
+        // The ray leaves the flat surface (so neighbouring pixels find the same thing from frame to frame: rays bent
+        // by every wave hit something different each frame - a grey shimmer of stray samples); the waves bend where
+        // the picture is read instead, like the planar reflection's.
+        let r = reflect(-v, vec3<f32>(0.0, 1.0, 0.0));
+        let bend_px = vec2<f32>(-g.x, g.y) * view.viewport.w * water.m.w * (1.0 / (1.0 + dist * 0.08) + 0.04 * far_k) * (0.4 + 0.6 * ndv_flat);
+        let hit = ssr_trace(in.world_position.xyz + vec3<f32>(0.0, 0.02, 0.0), r, dist, i32(water.ssr.y), bend_px);
+        refl = mix(refl, hit.rgb * 0.6, hit.a);
     }
 #endif
     // The water body: its own deep colour, lit a little by the light falling into it (lamp pools glow blue-green).

@@ -262,7 +262,7 @@ pub fn water_system(
                 // with any specular transmission is drawn in the transmissive pass, after the opaque world is
                 // copied (the shader turns the transmission itself off again).
                 m.base.specular_transmission = if ssr && !opaque { 1e-3 } else { 0.0 };
-                m.extension.params.ssr = Vec4::new(if ssr && !opaque { 1.0 } else { 0.0 }, 20.0, 0.0, 0.0);
+                m.extension.params.ssr = Vec4::new(if ssr && !opaque { 1.0 } else { 0.0 }, 28.0, 0.0, 0.0);
             }
         }
     }
