@@ -167,6 +167,15 @@ fn pose(
     crate::actors::pose_parts_in_place(meshes, mesh, clip.start, clip.frames, clip.frame(), parts, handles);
 }
 
+/// Lean Updates: was this mesh (any of its parts) drawn last frame? Like actors::animate, a critter nobody saw
+/// isn't posed; its clock still runs, so it is posed on time once seen. Always true without Lean Updates.
+fn drawn(e: Entity, kids: &Query<&Children>, seen: &Query<&ViewVisibility>) -> bool {
+    !crate::perf::lean_updates()
+        || kids
+            .get(e)
+            .map_or(true, |k| k.iter().any(|c| seen.get(c).map_or(true, |v| v.get())))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn trash_system(
     mut commands: Commands,
@@ -182,6 +191,7 @@ pub fn trash_system(
         ResMut<Assets<Mesh>>,
         ResMut<Assets<StandardMaterial>>,
     ),
+    (kids, seen): (Query<&Children>, Query<&ViewVisibility>),
 ) {
     let _prof = crate::prof::scope("trash::trash_system");
     let lvl = &level.0;
@@ -372,8 +382,9 @@ pub fn trash_system(
             }
             t.clip.t += dt;
         }
-        // Paper at rest holds a one-frame clip: posed once, then left alone.
-        if t.clip.frames > 1 || !t.posed_still {
+        // Paper at rest holds a one-frame clip: posed once, then left alone. Lean Updates: only paper drawn last
+        // frame is posed (its clock still runs).
+        if drawn(e, &kids, &seen) && (t.clip.frames > 1 || !t.posed_still) {
             t.posed_still = t.clip.frames <= 1;
             pose(&mut meshes, &t.mesh, &t.clip, &t.parts, &t.handles);
         }
@@ -502,7 +513,7 @@ pub fn trash_system(
             lit_at: DVec3::splat(1e9),
         });
     }
-    for (_, mut f, mut tf) in &mut flies {
+    for (e, mut f, mut tf) in &mut flies {
         let f = &mut *f;
         let Some(g) = st.flies.get(f.gen) else {
             continue;
@@ -531,7 +542,9 @@ pub fn trash_system(
             f.pos = next;
         }
         f.clip.t += dt;
-        pose(&mut meshes, &f.mesh, &f.clip, &f.parts, &f.handles);
+        if drawn(e, &kids, &seen) {
+            pose(&mut meshes, &f.mesh, &f.clip, &f.parts, &f.handles);
+        }
         let yaw = (f.vel.y.atan2(f.vel.x) / std::f64::consts::TAU * 65536.0) as i32;
         let rot = [0, yaw, 0];
         tf.translation = Vec3::from(ue_to_bevy(f.pos.as_vec3().to_array()));

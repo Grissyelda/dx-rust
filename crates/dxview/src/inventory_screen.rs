@@ -2043,6 +2043,28 @@ pub(crate) fn upload(
     last: &mut Vec<u8>,
     c: &Canvas,
 ) -> bool {
+    if crate::perf::lean_updates() {
+        // Lean Updates: converted straight into `last` (no frame-sized buffer allocated, compared and cloned), and
+        // into the image's own bytes when it changed.
+        if !c.to_rgba8_into(last) {
+            return false;
+        }
+        let mut resized = false;
+        if let Some(mut img) = images.get_mut(handle) {
+            let (w, h) = ((c.w * c.s) as u32, (c.h * c.s) as u32);
+            if img.width() != w || img.height() != h {
+                let sampler = img.sampler.clone();
+                *img = blank(w, h);
+                img.sampler = sampler;
+                resized = true;
+            }
+            match &mut img.data {
+                Some(data) if data.len() == last.len() => data.copy_from_slice(last),
+                data => *data = Some(last.clone()),
+            }
+        }
+        return resized;
+    }
     let bytes = c.to_rgba8();
     if *last == bytes {
         return false;

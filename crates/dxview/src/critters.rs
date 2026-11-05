@@ -251,6 +251,7 @@ pub fn critter_system(
         ResMut<Assets<Mesh>>,
         ResMut<Assets<StandardMaterial>>,
     ),
+    (kids, seen): (Query<&Children>, Query<&ViewVisibility>),
 ) {
     let _prof = crate::prof::scope("critters::critter_system");
     let lvl = &level.0;
@@ -783,9 +784,12 @@ pub fn critter_system(
             b.anim_rate
         };
         b.clip.t += dt * rate;
-        // Far birds are posed every third frame (as actors::animate does for far pawns).
+        // Far birds are posed every third frame (as actors::animate does for far pawns). Lean Updates: like
+        // actors::animate, only a bird drawn last frame is posed (its clock above still runs).
         let far = b.pos.distance(player.body.location) > 1500.0;
-        if !far || (frame_no + i).is_multiple_of(3) {
+        let drawn = !crate::perf::lean_updates()
+            || kids.get(e).map_or(true, |k| k.iter().any(|c| seen.get(c).map_or(true, |v| v.get())));
+        if drawn && (!far || (frame_no + i).is_multiple_of(3)) {
             crate::actors::pose_parts_in_place(&mut meshes, &b.mesh, b.clip.start, b.clip.frames, b.clip.frame(), &b.parts, &b.handles);
         }
         let rot = [

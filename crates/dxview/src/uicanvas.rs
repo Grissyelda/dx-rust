@@ -483,13 +483,32 @@ impl Canvas {
     pub fn to_rgba8(&self) -> Vec<u8> {
         let mut out = vec![0u8; self.px.len() * 4];
         for (o, p) in out.chunks_exact_mut(4).zip(&self.px) {
-            for c in 0..4 {
-                // (`as u8` saturates: below 0 is 0, above 255 is 255.)
-                o[c] = (p[c] * 255.0 + 0.5) as u8;
-            }
+            o.copy_from_slice(&rgba8(p));
         }
         out
     }
+
+    /// `to_rgba8` written into `out` in place; true when any byte of it changed (Lean Updates: no frame-sized
+    /// buffer allocated and compared).
+    pub fn to_rgba8_into(&self, out: &mut Vec<u8>) -> bool {
+        let n = self.px.len() * 4;
+        let mut changed = out.len() != n;
+        out.resize(n, 0);
+        for (o, p) in out.chunks_exact_mut(4).zip(&self.px) {
+            let b = rgba8(p);
+            if *o != b {
+                o.copy_from_slice(&b);
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+#[inline(always)]
+fn rgba8(p: &[f32; 4]) -> [u8; 4] {
+    // (`as u8` saturates: below 0 is 0, above 255 is 255.)
+    [0, 1, 2, 3].map(|c| (p[c] * 255.0 + 0.5) as u8)
 }
 
 #[inline(always)]

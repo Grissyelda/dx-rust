@@ -1047,6 +1047,19 @@ pub fn classic_hud_system(
                 (ww, wh, s).hash(&mut h);
                 Some(h.finish())
             }
+            // Lean Updates: the conversation windows (a cut scene is all conversation). The upper one is only its
+            // background; the lower one is the speaker, the line and the choices, where the letterbox puts it (the
+            // choice rows for the mouse stay as last drawn).
+            Win::ConUpper if crate::perf::lean_updates() => Some(hkey(&(ww, wh, s))),
+            Win::ConLower if crate::perf::lean_updates() => {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (ww, wh, s, y, sw).hash(&mut h);
+                con.play.as_ref().map(|p| (&p.name, &p.text, p.player_line, p.forced, &p.choices, p.focus)).hash(&mut h);
+                crate::gamepad::pad_in_use().hash(&mut h);
+                std::mem::discriminant(&crate::gamepad::glyph_kind()).hash(&mut h);
+                Some(h.finish())
+            }
             _ => None,
         };
         // A settings change (theme, translucency, borders) redraws everything.
