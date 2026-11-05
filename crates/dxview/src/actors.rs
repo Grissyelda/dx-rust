@@ -77,13 +77,18 @@ impl CollisionWorld for World<'_> {
             normal: h.normal,
             actor: None,
         };
-        // The box the swept shape covers: anything wholly outside it can't be hit (most cylinders and movers on
-        // the map, for a short trace), so it is skipped before the exact test.
-        let lo = start.min(end) - extent;
-        let hi = start.max(end) + extent;
+        // The box the swept shape covers up to the nearest hit so far (and a unit past it, for the tenth of a unit a
+        // hit backs off): anything wholly outside it can't be hit first (most cylinders and movers on the map, for a
+        // short trace or one that meets a wall), so it is skipped before the exact test.
+        let seg = end - start;
+        let len = seg.length();
+        let before_hit = |f: f64| {
+            let e = start + seg * (f + 1.0 / len).min(1.0);
+            (start.min(e) - extent, start.max(e) + extent)
+        };
+        let (lo, hi) = before_hit(best.fraction);
         if let Some(rts) = self.movers {
             let ext_len = extent.length();
-            let seg = end - start;
             let seg_len2 = seg.length_squared();
             for (info, rt) in self.level.movers.iter().zip(rts) {
                 // A mover reaches at most info.reach from its Location, however it's turned.
@@ -103,6 +108,7 @@ impl CollisionWorld for World<'_> {
                 }
             }
         }
+        let (lo, hi) = before_hit(best.fraction);
         for (i, c) in self.blockers.iter().enumerate() {
             // Destroyed decorations and gibbed pawns keep a zero-size cylinder: nothing to hit.
             if Some(i) == self.ignore || c.radius <= 0.0 || c.height <= 0.0 {
@@ -137,6 +143,43 @@ impl CollisionWorld for World<'_> {
 
     fn pushable_mass(&self, actor: usize) -> Option<f64> {
         self.pushable.and_then(|m| m.get(&actor).copied())
+    }
+}
+
+/// `World` with a few more cylinders than its blockers (for pawns: the player, the monster-only blocks, what the
+/// player carries), swept after them and reported with the indices past the list's end that they would have if
+/// appended to it. Pawn movement traces the live blocker list this way instead of copying it for every pawn.
+pub struct WorldAnd<'a> {
+    pub world: World<'a>,
+    pub extra: &'a [Cylinder],
+}
+
+impl CollisionWorld for WorldAnd<'_> {
+    fn trace(&self, start: DVec3, end: DVec3, extent: DVec3) -> Hit {
+        let mut best = self.world.trace(start, end, extent);
+        let base = self.world.blockers.len();
+        for (j, c) in self.extra.iter().enumerate() {
+            if Some(base + j) == self.world.ignore || c.radius <= 0.0 || c.height <= 0.0 {
+                continue;
+            }
+            if self.world.pushable.is_none() && self.world.level.players_only.contains(&c.actor) {
+                continue;
+            }
+            if let Some(hc) = trace_cylinder(c, start, end, extent) {
+                if hc.fraction < best.fraction {
+                    best = Hit { fraction: hc.fraction, normal: hc.normal, actor: Some(base + j) };
+                }
+            }
+        }
+        best
+    }
+
+    fn pushable_mass(&self, actor: usize) -> Option<f64> {
+        self.world.pushable_mass(actor)
+    }
+
+    fn water_at(&self, p: DVec3) -> Option<f64> {
+        self.world.water_at(p)
     }
 }
 

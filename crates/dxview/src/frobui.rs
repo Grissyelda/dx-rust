@@ -247,6 +247,10 @@ pub fn frob_target_system(
         if c.radius <= 0.0 || Some(b) == carried || items.get(e).is_ok() {
             continue;
         }
+        // The ray first: it is short and rules out nearly every actor, and the property lookups below are what cost.
+        if ray_cylinder(eye, end, c.center, c.radius, c.height).is_none_or(|t| t > wall + 0.01) {
+            continue;
+        }
         let a = &lvl.actors[c.actor];
         if !highlighted(&a.props) || a.class.ends_with("Carcass") {
             continue;
