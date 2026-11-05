@@ -477,12 +477,19 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
     let suppressed = h.suppress.clone();
     let held = |b: PadBtn| f.held.contains(&b) && !suppressed.contains(&b);
     let just = |b: PadBtn| f.just.contains(&b) && !suppressed.contains(&b);
+    // A conversation's choices take either face button: the bottom one (A on an Xbox pad, B on a Switch) and the right
+    // one (B, or A on a Switch) both pick the highlighted choice, as both go on to the next line (below), so no button
+    // skips the lines while the other picks the choices.
+    let choosing = crate::consys::choosing();
+    if ui && choosing && (just(PadBtn::South) || just(PadBtn::East)) {
+        h.taps.push((Input::Key(KeyCode::Enter), 2));
+    }
     if ui {
         // The pad as a mouse: left stick cursor (with acceleration), A click, X right click, B / Start Escape,
         // D-pad arrows, right stick scroll.
         let speed = 900.0 * (0.4 + 0.6 * f.ls.length());
         out.cursor = Vec2::new(f.ls.x, -f.ls.y) * speed * dt;
-        if held(PadBtn::South) {
+        if held(PadBtn::South) && !choosing {
             out.inputs.push(Input::Mouse(MouseButton::Left));
         }
         // Ours: with Dialogue Hotkeys on, conversation choices 1-4 are X / Y / LB / RB (A still takes the
@@ -517,7 +524,7 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
         // Start on the menus closes them all (back to the game); elsewhere it's Escape like B.
         if just(PadBtn::Start) && crate::menus::open() && crate::menus::request_close_all() {
             h.suppress.push(PadBtn::Start);
-        } else if held(PadBtn::East) || held(PadBtn::Start) {
+        } else if (held(PadBtn::East) && !choosing) || held(PadBtn::Start) {
             out.inputs.push(Input::Key(KeyCode::Escape));
         }
         let dirs = [
@@ -580,6 +587,10 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
         return out;
     }
     h.scroll_acc = 0.0;
+    // A conversation's lines: either face button goes on (Enter), whatever Jump and Crouch are bound to.
+    if crate::consys::third_person() && (just(PadBtn::South) || just(PadBtn::East)) {
+        h.taps.push((Input::Key(KeyCode::Enter), 2));
+    }
     // In play a touchpad flick turns the belt (like the mouse wheel).
     let t = crate::dualsense::take_touch();
     out.scroll += -(t.swipe as f32);
