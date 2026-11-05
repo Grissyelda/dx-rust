@@ -1496,6 +1496,10 @@ fn setup(
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
             mesh.insert_indices(Indices::U32(b.indices.clone()));
         } else {
+            // The open sea meets a Classic sheet at its own vertices (Open Sea, water.rs).
+            if b.class == SurfaceClass::Water && !b.sky {
+                sheet_pts.extend_from_slice(&b.positions);
+            }
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
