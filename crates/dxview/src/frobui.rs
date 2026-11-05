@@ -28,6 +28,17 @@ pub struct Highlight {
     pub mover_idx: Option<usize>,
     /// The decoration or pawn's blocker, when it is one.
     pub blocker: Option<usize>,
+    /// FrobDisplayWindow's coloured strength bars (a locked door, a hackable device).
+    pub bars: Option<Bars>,
+}
+
+/// The strength bars FrobDisplayWindow draws right of the text, each with its tool count on it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Bars {
+    /// A locked door: lockStrength on the second line (picks on it when bPickable), doorStrength on the third.
+    Door { lock: f32, door: f32, picks: Option<String> },
+    /// A hackable device: hackStrength in the lower half (tools on it when bHackable).
+    Hack { strength: f32, tools: Option<String> },
 }
 
 impl Highlight {
@@ -47,10 +58,8 @@ pub struct FrobCorner {
     index: usize,
     shadow: bool,
 }
-#[derive(Component)]
+#[derive(Component, Default)]
 pub struct FrobLabel;
-#[derive(Component)]
-pub struct FrobLabelText;
 
 fn str_prop(p: &[Property], n: &str) -> String {
     match find(p, n) {
@@ -97,32 +106,7 @@ pub fn spawn_frob_ui(commands: &mut Commands) {
             ));
         }
     }
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                border: UiRect::all(Val::Px(1.0)),
-                padding: UiRect::all(Val::Px(4.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
-            BorderColor::all(Color::srgba(0.6, 0.6, 0.6, 0.8)),
-            Visibility::Hidden,
-            Pickable::IGNORE,
-            FrobLabel,
-        ))
-        .with_children(|c| {
-            c.spawn((
-                Text::new(""),
-                TextFont {
-                    font_size: bevy::text::FontSize::Px(12.0),
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-                Pickable::IGNORE,
-                FrobLabelText,
-            ));
-        });
+    // The label (FrobLabel) is a canvas image spawned by frob_draw_system when there is something to show.
 }
 
 /// HighlightCenterObject, ten times a second: pawns take precedence, a door only if it's the first thing
@@ -200,28 +184,24 @@ pub fn frob_target_system(
                     w.y += (ax[k][1] * c[k]) as f64;
                     w.z += (ax[k][2] * c[k]) as f64;
                 }
-                let text = if rt.locked {
+                // FrobDisplayWindow: "Locked / Lock Str: NN% / Door Str: NN%" (INF when not pickable / breakable),
+                // a colour bar for each strength and the number of picks it takes drawn on the lock's bar.
+                let brk = matches!(find(&a.props, "bBreakable"), Some(Value::Bool(true)));
+                let pct = |v: f64| format!("{}%", ((v * 100.0) + 0.5) as i32);
+                let (text, bars) = if rt.locked {
                     let pick = rt.pickable;
-                    let brk = matches!(find(&a.props, "bBreakable"), Some(Value::Bool(true)));
-                    let pct = |v: f64| format!("{}%", ((v * 100.0) + 0.5) as i32);
-                    format!(
+                    let text = format!(
                         "Locked\nLock Str: {}\nDoor Str: {}",
-                        if pick {
-                            // The number of lockpicks it takes at the current Lockpicking skill.
-                            let n = ((rt.lock_strength / crate::movers::lockpick_skill()) + 0.99)
-                                as i32;
-                            format!("{}  ({})", pct(rt.lock_strength), tool_text(n, "Lockpick", "pick", "picks"))
-                        } else {
-                            "INF".into()
-                        },
-                        if brk {
-                            pct(rt.door_strength)
-                        } else {
-                            "INF".into()
-                        }
-                    )
+                        if pick { pct(rt.lock_strength) } else { "INF".into() },
+                        if brk { pct(rt.door_strength) } else { "INF".into() }
+                    );
+                    let picks = pick.then(|| {
+                        let n = ((rt.lock_strength / crate::movers::lockpick_skill()) + 0.99) as i32;
+                        tool_text(n, "Lockpick", "pick", "picks")
+                    });
+                    (text, Some(Bars::Door { lock: rt.lock_strength as f32, door: rt.door_strength as f32, picks }))
                 } else {
-                    "Unlocked".into()
+                    ("Unlocked".to_string(), None)
                 };
                 hits.push((
                     h.fraction,
@@ -234,6 +214,7 @@ pub fn frob_target_system(
                         mover: true,
                         text,
                         mover_idx: Some(idx),
+                        bars,
                         blocker: None,
                     },
                 ));
@@ -263,8 +244,9 @@ pub fn frob_target_system(
         if let Some(t) = ray_cylinder(eye, end, c.center, c.radius, c.height) {
             if t <= wall + 0.01 {
                 let mut text = display_name(&a.props);
-                // HackableDevices: "Bypass Str: NN%" and how many multitools it will take (untrained 0.1 each), or
-                // "Bypassed" / "INF".
+                let mut bars = None;
+                // HackableDevices: "Bypass Str: NN%" with a bar and how many multitools it will take (untrained 0.1
+                // each) drawn on it, or "Bypassed" / "INF".
                 if crate::devices::is_hackable(&a.props) {
                     let hackable = !matches!(find(&a.props, "bHackable"), Some(Value::Bool(false)));
                     let s = *hacking.strength.get(&b).unwrap_or(&match find(
@@ -274,17 +256,19 @@ pub fn frob_target_system(
                         Some(Value::Float(v)) => *v as f64,
                         _ => 0.2,
                     });
+                    if s != 0.0 {
+                        let tools = hackable.then(|| {
+                            let n = ((s / crate::devices::tech_skill()) + 0.99) as i32;
+                            tool_text(n, "Multitool", "tool", "tools")
+                        });
+                        bars = Some(Bars::Hack { strength: s as f32, tools });
+                    }
                     text = if !hackable {
                         format!("{text}\nBypass Str: INF")
                     } else if s <= 0.0 {
                         format!("{text}: Bypassed")
                     } else {
-                        let tools = ((s / crate::devices::tech_skill()) + 0.99) as i32;
-                        format!(
-                            "{text}\nBypass Str: {}%  ({})",
-                            (s * 100.0 + 0.5) as i32,
-                            tool_text(tools, "Multitool", "tool", "tools")
-                        )
+                        format!("{text}\nBypass Str: {}%", (s * 100.0 + 0.5) as i32)
                     };
                 }
                 hits.push((
@@ -298,6 +282,7 @@ pub fn frob_target_system(
                         mover: false,
                         text,
                         mover_idx: None,
+                        bars,
                         blocker: Some(b),
                     },
                 ));
@@ -314,12 +299,8 @@ pub fn frob_target_system(
                 _ => 0.2,
             });
             let tools = ((s / crate::devices::tech_skill()) + 0.99) as i32;
-            let text = format!(
-                "{}\nBypass Str: {}%  ({})",
-                display_name(&a.props),
-                (s * 100.0 + 0.5) as i32,
-                tool_text(tools, "Multitool", "tool", "tools")
-            );
+            let text = format!("{}\nBypass Str: {}%", display_name(&a.props), (s * 100.0 + 0.5) as i32);
+            let bars = Some(Bars::Hack { strength: s as f32, tools: Some(tool_text(tools, "Multitool", "tool", "tools")) });
             hits.push((
                 t,
                 c.radius,
@@ -331,6 +312,7 @@ pub fn frob_target_system(
                     mover: false,
                     text,
                     mover_idx: None,
+                    bars,
                     blocker: Some(b),
                 },
             ));
@@ -356,6 +338,7 @@ pub fn frob_target_system(
                         center: g.pos,
                         ext: DVec3::new(6.0, 6.0, 6.0),
                         mover_idx: None,
+                        bars: None,
                         blocker: None,
                         mover: false,
                         text: name.to_string(),
@@ -409,6 +392,7 @@ pub fn frob_target_system(
                         center,
                         ext: DVec3::new(r, r, h),
                         mover_idx: None,
+                        bars: None,
                         blocker: None,
                         mover: false,
                         text: if name.is_empty() {
@@ -454,6 +438,7 @@ pub fn frob_target_system(
                         mover: false,
                         text,
                         mover_idx: None,
+                        bars: None,
                         blocker: None,
                     },
                 ));
@@ -518,6 +503,7 @@ pub fn frob_target_system(
                 mover: false,
                 text: format!("Climb Ladder [{key}]"),
                 mover_idx: None,
+                bars: None,
                 blocker: None,
             });
         }
@@ -573,8 +559,13 @@ pub fn frob_draw_system(
         ),
         Without<FrobLabel>,
     >,
-    mut label: Single<(&mut Node, &mut Visibility), (With<FrobLabel>, Without<FrobCorner>)>,
-    mut text: Single<(&mut Text, &mut TextFont), With<FrobLabelText>>,
+    mut label: Query<(Entity, &mut Node, &mut Visibility), (With<FrobLabel>, Without<FrobCorner>)>,
+    mut commands: Commands,
+    mut hud: ResMut<crate::classic_hud::ClassicHud>,
+    mut assets: ResMut<crate::weapons::RuntimeAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut layers: ResMut<Assets<crate::classic_hud::HudLayer>>,
+    mut label_state: Local<(Option<Handle<Image>>, u64)>,
 ) {
     let _prof = crate::prof::scope("frobui::frob_draw_system");
     let Some(win) = windows.iter().next() else {
@@ -600,12 +591,12 @@ pub fn frob_draw_system(
         ),
         Without<FrobLabel>,
     >,
-                label: &mut Visibility| {
+                label: &mut Query<(Entity, &mut Node, &mut Visibility), (With<FrobLabel>, Without<FrobCorner>)>| {
         for (_, _, _, mut v) in corners.iter_mut() {
             v.set_if_neq(Visibility::Hidden);
         }
-        if *label != Visibility::Hidden {
-            *label = Visibility::Hidden;
+        for (_, _, mut v) in label.iter_mut() {
+            v.set_if_neq(Visibility::Hidden);
         }
     };
     let Some(t) = hl
@@ -613,11 +604,11 @@ pub fn frob_draw_system(
         .as_ref()
         .filter(|_| !crate::consys::third_person())
     else {
-        hide(&mut corners, &mut label.1);
+        hide(&mut corners, &mut label);
         return;
     };
     let Some(c) = project(t.center) else {
-        hide(&mut corners, &mut label.1);
+        hide(&mut corners, &mut label);
         return;
     };
     let offset = 24.0 * (time.elapsed_secs() % 0.3);
@@ -677,23 +668,108 @@ pub fn frob_draw_system(
         }
         vis.set_if_neq(Visibility::Inherited);
     }
-    // Name label at the box's top-left corner, kept on screen.
-    // Object Names (Game Options) off: the box only.
-    if t.text.is_empty() || !crate::settings::object_names() {
-        label.1.set_if_neq(Visibility::Hidden);
+    // The info window at the box's top-left corner + 10, kept on screen, drawn as FrobDisplayWindow does it with
+    // FontMenuSmall_DS: darkened background, coloured strength bars, text, two translucent outline boxes and the
+    // tool count on the bar. Object Names (Game Options) off: the box only - but doors and devices always show.
+    if t.text.is_empty() || (!crate::settings::object_names() && t.bars.is_none() && !t.mover) {
+        for (_, _, mut v) in label.iter_mut() {
+            v.set_if_neq(Visibility::Hidden);
+        }
         return;
     }
-    if text.0 .0 != t.text {
-        text.0 .0 = t.text.clone();
+    let Some(font) = hud.font(&mut assets, "FontMenuSmall_DS") else { return };
+    let lines: Vec<&str> = t.text.split('\n').collect();
+    const BAR_LEN: i32 = 50;
+    let mut iw = lines.iter().map(|l| font.width(l)).max().unwrap_or(0) + 8;
+    let ih = font.height * lines.len() as i32 + 8;
+    let has_bar = matches!(t.bars, Some(Bars::Door { .. }) | Some(Bars::Hack { .. }));
+    if has_bar {
+        iw += BAR_LEN + 2;
     }
-    let size = bevy::text::FontSize::Px(7.0 * px);
-    if text.1.font_size != size {
-        text.1.font_size = size;
+    let ix = (tlx + 10.0).clamp(iw as f32 / 2.0 + 10.0, (w - 10.0 - iw as f32 / 2.0).max(iw as f32 / 2.0 + 10.0));
+    let iy = (tly + 10.0).clamp(ih as f32 / 2.0 + 10.0, (h - 10.0 - ih as f32 / 2.0).max(ih as f32 / 2.0 + 10.0));
+    let si = s.max(1.0) as i32;
+    let k = si as f32 / win.scale_factor();
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hs = std::collections::hash_map::DefaultHasher::new();
+        t.text.hash(&mut hs);
+        format!("{:?}", t.bars).hash(&mut hs);
+        si.hash(&mut hs);
+        (crate::menuui::h_col(0), crate::menuui::h_col(1), crate::menuui::h_col(7)).hash(&mut hs);
+        hs.finish()
+    };
+    let pos = Vec2::new(ix.floor() * k, iy.floor() * k);
+    if key != label_state.1 || label.is_empty() {
+        label_state.1 = key;
+        let c = draw_info(&font, &lines, iw, ih, t.bars.as_ref(), si);
+        crate::prompts::present::<FrobLabel, _>(
+            &mut commands, &mut images, &mut layers, &mut label, &mut label_state.0, Some(&c), (iw, ih), si, pos, k,
+        );
+    } else {
+        for (_, mut nd, mut v) in label.iter_mut() {
+            if nd.left != Val::Px(pos.x) || nd.top != Val::Px(pos.y) {
+                nd.left = Val::Px(pos.x);
+                nd.top = Val::Px(pos.y);
+            }
+            v.set_if_neq(Visibility::Inherited);
+        }
     }
-    let pad = UiRect::all(Val::Px(4.0 * px));
-    if label.0.padding != pad {
-        label.0.padding = pad;
+}
+
+/// FrobDisplayWindow.DrawWindow's info box, in UI units (iw x ih).
+fn draw_info(
+    font: &crate::uicanvas::UiFont,
+    lines: &[&str],
+    iw: i32,
+    ih: i32,
+    bars: Option<&Bars>,
+    s: i32,
+) -> crate::uicanvas::Canvas {
+    use crate::uicanvas::{color_scaled, Canvas, HAlign, Style, VAlign};
+    const BAR_LEN: f32 = 50.0;
+    let mut c = Canvas::new(iw, ih, s);
+    // DSTY_Modulated black over ConWindowBackground: the world behind darkened.
+    c.shade(0, 0, iw, ih, 0.75);
+    let bx = iw - BAR_LEN as i32 - 4;
+    let bar = |c: &mut Canvas, y: i32, h: i32, v: f32| {
+        let bw = (BAR_LEN * v.clamp(0.0, 1.0)) as i32;
+        if bw > 0 && h > 0 {
+            c.fill(bx, y, bw, h, Style::Translucent, color_scaled(v));
+        }
+    };
+    let third = (ih - 8) / 3;
+    match bars {
+        Some(Bars::Door { lock, door, .. }) => {
+            bar(&mut c, 4 + third, third - 2, *lock);
+            bar(&mut c, 4 + 2 * third, third - 2, *door);
+        }
+        Some(Bars::Hack { strength, .. }) => bar(&mut c, ih / 2, ih / 2 - 6, *strength),
+        None => {}
     }
-    crate::uinode::set_pos(&mut label.0, (tlx + 10.0).clamp(10.0, w - 60.0) * px, (tly + 10.0).clamp(10.0, h - 30.0) * px);
-    label.1.set_if_neq(Visibility::Inherited);
+    let text = crate::menuui::h_col(7);
+    for (i, l) in lines.iter().enumerate() {
+        c.text(font, 4, 4 + i as i32 * font.height, iw - 8, font.height, HAlign::Left, VAlign::Top, text, l);
+    }
+    // The two highlight boxes (1-pixel outlines, translucent): borders, then background inside it.
+    let outline = |c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col| {
+        c.fill(x, y, w, 1, Style::Translucent, col);
+        c.fill(x, y + h - 1, w, 1, Style::Translucent, col);
+        c.fill(x, y + 1, 1, h - 2, Style::Translucent, col);
+        c.fill(x + w - 1, y + 1, 1, h - 2, Style::Translucent, col);
+    };
+    outline(&mut c, 0, 0, iw, ih, crate::menuui::h_col(1));
+    outline(&mut c, 1, 1, iw - 2, ih - 2, crate::menuui::h_col(0));
+    // The number of picks / tools on top of the bar.
+    let tx = iw - BAR_LEN as i32 - 2;
+    match bars {
+        Some(Bars::Door { picks: Some(p), .. }) => {
+            c.text(font, tx, 4 + third, BAR_LEN as i32, third - 2, HAlign::Left, VAlign::Top, text, p);
+        }
+        Some(Bars::Hack { tools: Some(p), .. }) => {
+            c.text(font, tx, ih / 2, BAR_LEN as i32, ih / 2 - 6, HAlign::Left, VAlign::Top, text, p);
+        }
+        _ => {}
+    }
+    c
 }

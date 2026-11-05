@@ -2679,9 +2679,11 @@ fn fly(
                 params.ground_speed *= 0.3;
             }
         }
-        // WaterSpeed = Default.WaterSpeed x SkillSwimming (untrained 1.0).
+        // WaterSpeed = Default.WaterSpeed x SkillSwimming (untrained 1.0), at the walking pace: PlayerSwimming's
+        // PlayerTick sets bIsWalking = True every frame ("don't let the player run if swimming"), and walking is
+        // 0.3 of the speed as on land - at the full 300 JC swam about three times faster than in the original (#39).
         params.water_speed =
-            player.params.water_speed * crate::abilities::skill("SkillSwimming") as f64;
+            player.params.water_speed * crate::abilities::skill("SkillSwimming") as f64 * 0.3;
         player.body.bumped.clear();
         let dt = test_dt.unwrap_or((time.delta_secs_f64()).min(0.1));
         let steps = (dt / (1.0 / 120.0)).ceil().max(1.0) as usize;

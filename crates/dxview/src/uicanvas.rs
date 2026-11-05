@@ -326,6 +326,24 @@ impl Canvas {
         }
     }
 
+    /// Ours: darkens what's behind a box (premultiplied black "over" at `a`): DSTY_Modulated black windows.
+    pub fn shade(&mut self, x: i32, y: i32, w: i32, h: i32, a: f32) {
+        let (x0, y0, x1, y1) = self.clip;
+        let s = self.s;
+        let (xa, xb) = ((x.max(x0)) * s, ((x + w).min(x1)) * s);
+        let (ya, yb) = ((y.max(y0)) * s, ((y + h).min(y1)) * s);
+        let stride = (self.w * s) as usize;
+        for py in ya.max(0)..yb {
+            for px in xa.max(0)..xb {
+                let p = &mut self.px[py as usize * stride + px as usize];
+                p[0] *= 1.0 - a;
+                p[1] *= 1.0 - a;
+                p[2] *= 1.0 - a;
+                p[3] = a + p[3] * (1.0 - a);
+            }
+        }
+    }
+
     /// GC.DrawPattern with Texture'Solid': a flat box.
     pub fn fill(&mut self, x: i32, y: i32, w: i32, h: i32, style: Style, col: Rgb) {
         let rgb = [

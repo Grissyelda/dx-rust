@@ -1707,7 +1707,9 @@ fn draw_damage(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas)
         }
     }
     if hud.absorb != 0.0 {
-        if let Some(f) = hud.font(assets, "TechSmall") {
+        // Font'TechSmall' lives in Extension.u (DeusEx.u imports it from there): looked up in DeusExUI.u it was
+        // never found, so the percent was never drawn.
+        if let Some(f) = hud.font(assets, "Extension.TechSmall") {
             let s = format!("{}% Absorb", (hud.absorb * 100.0) as i32);
             let tw = f.width(&s);
             let col = [0, (255.0 * max_alpha.max(0.0)) as u8, 0];

@@ -31,7 +31,7 @@ fn bar_width(items: &[(PadBtn, &str)], font: &crate::uicanvas::UiFont) -> i32 {
 
 /// Show / place / (re)build one image node.
 #[allow(clippy::too_many_arguments)]
-fn present<T: Component + Default, F: bevy::ecs::query::QueryFilter>(
+pub(crate) fn present<T: Component + Default, F: bevy::ecs::query::QueryFilter>(
     commands: &mut Commands,
     images: &mut Assets<Image>,
     layers: &mut Assets<HudLayer>,

@@ -2711,6 +2711,21 @@ pub fn weapon_system(
     } else if !lock_text.0 .0.is_empty() {
         lock_text.0 .0.clear();
     }
+    // NanoKeyRing: DeusExMover.Frob calls PlayUseAnim (UseIt: UseBegin, then UseLoop) and nothing ever calls
+    // StopUseAnim for it, so the ring stays turned in the lock until it's put away or used again.
+    let ring_used = KEYRING_USE.swap(false, std::sync::atomic::Ordering::Relaxed);
+    if h.stats.class == "NanoKeyRing" && h.state == WState::Idle {
+        if ring_used && !h.using {
+            h.using = true;
+            if let Some(c) = Clip::named(&h.mesh, "UseBegin", false) {
+                h.clip = c;
+            }
+        } else if h.using && h.clip.done() && !h.clip.looping {
+            if let Some(c) = Clip::named(&h.mesh, "UseLoop", true) {
+                h.clip = c;
+            }
+        }
+    }
     // SkilledTool: UseBegin then a looping UseLoop while picking or hacking; UseEnd when it stops.
     if matches!(h.stats.class.as_str(), "Lockpick" | "Multitool") && h.state == WState::Idle {
         let active = picking.0.is_some() || hacking.job.is_some();
@@ -2730,7 +2745,9 @@ pub fn weapon_system(
             }
         }
     }
-    if h.using {
+    // (UseIt also holds the ring's useSound as its AmbientSound for as long as it stays turned; the rattle is
+    // played once per use instead - pickups.rs.)
+    if h.using && h.stats.class != "NanoKeyRing" {
         if let Some(snd) = &h.stats.snd.use_loop {
             crate::sound::hold(crate::sound::key_of("tool-use"), snd, None, 0.7, 825.0, 1.0);
         }
@@ -3870,6 +3887,12 @@ mod mod_tests {
         apply_mods(&mut x, &m);
         assert_eq!(x.reload_count, 7);
     }
+}
+
+/// The NanoKey ring was used on a lock this frame (NanoKeyRing.PlayUseAnim, set by pickups.rs).
+pub static KEYRING_USE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn play_keyring_use() {
+    KEYRING_USE.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What using a pickup did (DeusExPickup Activated states): whether a copy was used up, the message to show,

@@ -473,6 +473,7 @@ pub fn frob_system(
             };
             if with_ring && !key_needed.is_empty() && mv.rt[idx].lock_strength > 0.0 {
                 crate::sound::play_player("DeusExSounds.Generic.KeysRattling", 1.0, 0.0);
+                crate::weapons::play_keyring_use();
                 hud.text = if crate::keys::has(&key_needed) {
                     let lock = !mv.rt[idx].locked;
                     let tag = level.movers[idx].tag.clone();

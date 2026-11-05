@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### GitHub fixes (November 5)
+- The key ring turns in the lock when you use it on a door, as in the original (#37).
+- The info boxes over doors, keypads and items use the game's own bitmap font with its shadow, darkened
+  background and the coloured Lock / Door / Bypass strength bars with the pick or tool count on them (#38).
+- The toxic pool in the training works as in the original (#39): it only starts to hurt once your swim timer runs
+  out, you swim at the original's (walking) pace instead of about three times faster, and the damage display shows
+  how much the hazmat suit absorbs (its font was looked up in the wrong package, so the percentage never showed).
 - Things you pick up in the training no longer vanish (#11): the "stand here" triggers (the munitions trooper's)
   never reset once you walked out of them, so the training kept taking your inventory away, the hazmat suit too.
   Every trigger the player walks out of now reacts the way the original's do.

@@ -300,6 +300,8 @@ pub fn swim_system(
     } else {
         ph.breath = None;
         sw.tread = 0.0;
+        // PlayerSwimming.BeginState refills swimTimer each time swimming starts.
+        sw.duration = 0.0;
     }
 
     // Pawn.FootZoneChange / PainTimer for pain zones (the training's toxic pool, 20 'Radiation' a second): the
@@ -314,6 +316,11 @@ pub fn swim_system(
     if let Some((dps, ty)) = foot_pain.as_ref() {
         if sw.zone_pain_time < 0.0 {
             sw.zone_pain_time = 0.01;
+        }
+        // PlayerSwimming's PlayerTick keeps PainTime = swimTimer while there's breath left (it is one timer for
+        // drowning and pain zones): the toxic pool only starts to hurt once the swim timer has run out (#39).
+        if player.swimming && sw.timer > 0.0 {
+            sw.zone_pain_time = sw.timer;
         }
         sw.zone_pain_time -= dt;
         if sw.zone_pain_time <= 0.0 {
