@@ -527,6 +527,7 @@ pub fn scene_stats_system(
     ents: bevy::prelude::Query<bevy::prelude::Entity>,
     ui: bevy::prelude::Query<&bevy::prelude::Node>,
     lights: bevy::prelude::Query<(), bevy::prelude::Or<(bevy::prelude::With<bevy::prelude::PointLight>, bevy::prelude::With<bevy::prelude::SpotLight>)>>,
+    batches: bevy::prelude::Query<(&crate::batches::StaticBatch, &bevy::prelude::ViewVisibility)>,
 ) {
     use bevy::asset::AssetEvent;
     if !ON.load(Ordering::Relaxed) {
@@ -587,6 +588,22 @@ pub fn scene_stats_system(
         images.len(),
         mats.len()
     );
+    // Lean Rendering's batches (batches.rs): each draws many parts that are out of the counts above.
+    let (left, rebuilt) = crate::batches::churn();
+    if !batches.is_empty() || left > 0 {
+        let (mut n_b, mut vis_b, mut parts, mut vis_parts) = (0, 0, 0, 0);
+        for (b, v) in &batches {
+            n_b += 1;
+            parts += b.members.len();
+            if v.get() {
+                vis_b += 1;
+                vis_parts += b.members.len();
+            }
+        }
+        println!(
+            "PROF batches: {n_b} ({vis_b} visible) drawing {parts} parts ({vis_parts} in the visible ones); {left} parts left their batch and {rebuilt} batches were rebuilt since the map was batched"
+        );
+    }
     println!(
         "PROF uploads/frame: {:.1} meshes ({:.0} KB), {:.1} images ({:.0} KB), {:.1} materials",
         st.mesh_mod as f64 / f,

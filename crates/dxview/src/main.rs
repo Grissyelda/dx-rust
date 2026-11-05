@@ -155,6 +155,7 @@ mod uicanvas;
 mod weapons;
 mod wisp;
 mod gpudrive;
+mod batches;
 mod scope;
 mod seethrough;
 mod paddiagram;
@@ -1000,6 +1001,10 @@ fn main() {
         .add_systems(PostUpdate, weapons::view_glass_system.after(scope::scope_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, scope::scope_system.after(mirror::mirror_system).before(gpudrive::refile_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, gpudrive::refile_system.after(skyfollow::follow_system).after(mirror::mirror_system).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
+        // Lean Rendering: still mesh-actor parts that share a material and a cell drawn as one mesh (batches.rs);
+        // after the transforms (a part that moved leaves its batch the same frame) and before this frame's asset
+        // events go out (a rebuilt batch reaches the render world with the part it lost).
+        .add_systems(PostUpdate, batches::batch_system.after(bevy::transform::TransformSystems::Propagate).before(bevy::asset::AssetEventSystems).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
         .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
         .add_systems(Update, diegetic::hide_glass_system.after(diegetic::diegetic_system))
