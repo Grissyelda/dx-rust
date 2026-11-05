@@ -2288,10 +2288,13 @@ fn fly(
             wish -= ru;
         }
         let mut wish = wish.normalize_or_zero();
-        // The gamepad's left stick: analog direction (a light push also holds Walk, gamepad.rs).
+        // The gamepad's left stick: analog direction. A light push walks and a full push runs, whatever Always
+        // Run says (gamepad.rs WALK_PUSH); the stick doesn't press the Walk key.
+        let mut stick_walk = None;
         if let Some(a) = gamepad::move_axes() {
             if !crate::inventory_screen::screen_open() && !crate::consys::third_person() {
                 wish = (fu * a.y as f64 + ru * a.x as f64).normalize_or_zero();
+                stick_walk = Some(a.length() < gamepad::WALK_PUSH);
             }
         }
         // Free third-person camera: JC turns to face the way he moves, or where the camera looks while aiming or
@@ -2699,14 +2702,15 @@ fn fly(
                 && carrying.held.is_none()
                 && weapons_res.corpse.is_none();
             let sprint = crate::stamina::tick(time.delta_secs(), keys.pressed(KeyCode::ShiftLeft), can);
-            if player.crouched {
+            // A light push of the pad's stick walks.
+            if player.crouched || stick_walk == Some(true) {
                 params.ground_speed *= 0.3;
             } else if sprint {
                 params.ground_speed *= crate::stamina::SPRINT_MULT;
             }
         } else {
-            // Always Run: Shift walks; off, you walk unless Shift is held.
-            let walk_key = keys.pressed(KeyCode::ShiftLeft) != !crate::settings::always_run();
+            // A stick push decides. Otherwise Always Run: Shift walks; off, you walk unless Shift is held.
+            let walk_key = stick_walk.unwrap_or_else(|| keys.pressed(KeyCode::ShiftLeft) != !crate::settings::always_run());
             if walk_key || player.crouched {
                 params.ground_speed *= 0.3;
             }

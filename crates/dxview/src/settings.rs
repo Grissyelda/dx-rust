@@ -83,7 +83,8 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     // speed (steps 0..4); look invert; aim slowdown on enemies; D-pad aug hotkey pages instead of belt stepping.
     ("PadGlyphs", 0.0),
     ("PadDeadzone", 2.0),
-    ("PadLookSensitivity", 2.0),
+    ("PadLookSensitivityH", 2.0),
+    ("PadLookSensitivityV", 2.0),
     ("PadInvertLook", 0.0),
     ("PadAimSlowdown", 0.0),
     ("PadAugPages", 0.0),

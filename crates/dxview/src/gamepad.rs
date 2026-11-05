@@ -4,7 +4,7 @@
 //! The pad drives the same layer the keyboard does (keybinds.rs). Each pad button is bound to a pad action. A plain
 //! action presses whatever physical key or mouse button that action is bound to on the keyboard screen, so keyboard
 //! rebinding and every system that reads keys keep working unchanged. On top of that:
-//! * the left stick gives analog movement (`move_axes`; a light push walks, like holding Walk) and the right stick
+//! * the left stick gives analog movement (`move_axes`; a light push walks, a full push runs) and the right stick
 //!   turns the view (`look_delta`: rate with a response curve, sensitivity and invert from the settings);
 //! * when the mouse cursor is free (menus, the inventory, computers, conversation choices) the pad becomes a mouse:
 //!   the left stick moves the cursor, A clicks, X right-clicks, B / Start are Escape, the D-pad gives arrow keys,
@@ -686,13 +686,6 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
             h.taps.push((inp, 2));
         }
     }
-    // A light push of the left stick walks (Walk held), as an analog stick's half tilt does in console games.
-    let m = f.ls.length();
-    if m > 0.0 && m < 0.5 && !crate::stamina::enabled() {
-        if let Some(k) = bound(key_map, "Walk (hold)") {
-            out.inputs.push(k);
-        }
-    }
     // The stick also presses the movement keys (swimming, the spy drone, ladders read them).
     for (cond, action) in [
         (f.ls.y > 0.35, "Move forward"),
@@ -709,6 +702,9 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
     out
 }
 
+/// A left-stick push (after the deadzone) under this walks; at or over it, runs.
+pub const WALK_PUSH: f32 = 0.5;
+
 /// Analog movement (forward, right) for walking, or None when the stick is centred.
 pub fn move_axes() -> Option<Vec2> {
     let f = frame();
@@ -716,8 +712,8 @@ pub fn move_axes() -> Option<Vec2> {
 }
 
 /// View turn this frame (yaw, pitch) in radians from the right stick: an exponent-2 curve, up to 220 deg/s
-/// horizontally and 150 vertically at default sensitivity, scaled by Pad Look Sensitivity and inverted with
-/// Invert Pad Look.
+/// horizontally and 150 vertically at default sensitivity, scaled by the horizontal and vertical Look Sensitivity
+/// and inverted with Invert Pad Look.
 pub fn look_delta(dt: f32) -> Vec2 {
     let f = frame();
     // The aug wheel has the right stick while it's up.
@@ -729,13 +725,15 @@ pub fn look_delta(dt: f32) -> Vec2 {
         return Vec2::ZERO;
     }
     let curved = f.rs / m * m.powf(2.0);
-    let sens = [0.5, 0.75, 1.0, 1.4, 1.9][(setting!("PadLookSensitivity") as usize).min(4)];
+    let table = [0.5, 0.75, 1.0, 1.4, 1.9];
+    let sens_h = table[(setting!("PadLookSensitivityH") as usize).min(4)];
+    let sens_v = table[(setting!("PadLookSensitivityV") as usize).min(4)];
     let inv = if setting!("PadInvertLook") > 0.5 { -1.0 } else { 1.0 };
     // Aim slowdown (Enhancement): 40% slower while the crosshair is on an enemy.
     let slow = if setting!("PadAimSlowdown") > 0.5 && crate::hud::on_enemy() { 0.6 } else { 1.0 };
     Vec2::new(
-        curved.x * 220f32.to_radians() * sens * slow * dt,
-        curved.y * 150f32.to_radians() * sens * slow * inv * dt,
+        curved.x * 220f32.to_radians() * sens_h * slow * dt,
+        curved.y * 150f32.to_radians() * sens_v * slow * inv * dt,
     )
 }
 
