@@ -1203,20 +1203,23 @@ impl ConState {
             .as_ref()?;
         let e = au.export(sound_id)?;
         let path = format!("DeusExConAudio{pkg}.{}", e.name);
-        // Decoded already (prefetched in the background when the conversation began)?
-        let clip = match crate::sound::cached(&path) {
-            Some(c) => c,
-            None => {
-                let snd = unreal_pkg::objects::read_sound(&au.package, e).ok()?;
-                let c = imsim_audio::decode(&snd.data).map(Arc::new);
-                crate::sound::remember(&path, c.clone());
-                c
+        match crate::sound::cached(&path) {
+            // Decoded already (prefetched in the background when the conversation began): its exact length and lips.
+            Some(Some(clip)) => {
+                let (len, lips) = (clip.duration(), phonemes(&clip));
+                self.lips.insert((pkg.clone(), sound_id), Arc::new(lips));
+                self.lens.insert((pkg, sound_id), len);
+                Some(len)
             }
-        };
-        let (len, lips) = (clip.as_ref()?.duration(), phonemes(clip.as_ref()?));
-        self.lips.insert((pkg.clone(), sound_id), Arc::new(lips));
-        self.lens.insert((pkg, sound_id), len);
-        Some(len)
+            Some(None) => None,
+            // Not decoded yet: the length comes from the MP3 frame headers, so no frame waits on a decode. The
+            // background decoder gets the clip; this line has no lip shapes.
+            None => {
+                crate::sound::prefetch([path]);
+                let snd = unreal_pkg::objects::read_sound(&au.package, e).ok()?;
+                wav_seconds(&snd.data)
+            }
+        }
     }
 
     /// Queue every spoken line of a conversation for background decoding.
@@ -2392,6 +2395,47 @@ impl ConState {
     }
 }
 
+/// Length of a speech payload in seconds: a WAV from its data chunk, an MP3 from its frame headers.
+fn wav_seconds(b: &[u8]) -> Option<f32> {
+    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        // MP3 (conversation speech): from the frame headers, without decoding.
+        return imsim_audio::mp3_seconds(b);
+    }
+    let mut i = 12;
+    let mut byte_rate = 0u32;
+    let mut block_align = 0u16;
+    let mut channels = 1u16;
+    let mut sample_rate = 0u32;
+    let mut fmt_tag = 1u16;
+    while i + 8 <= b.len() {
+        let id = &b[i..i + 4];
+        let len = u32::from_le_bytes(b[i + 4..i + 8].try_into().ok()?) as usize;
+        let body = &b[i + 8..(i + 8 + len).min(b.len())];
+        if id == b"fmt " && body.len() >= 16 {
+            fmt_tag = u16::from_le_bytes([body[0], body[1]]);
+            channels = u16::from_le_bytes([body[2], body[3]]);
+            sample_rate = u32::from_le_bytes(body[4..8].try_into().ok()?);
+            byte_rate = u32::from_le_bytes(body[8..12].try_into().ok()?);
+            block_align = u16::from_le_bytes([body[12], body[13]]);
+        } else if id == b"data" {
+            if fmt_tag == 2 || fmt_tag == 0x11 {
+                // ADPCM: count frames from the block layout.
+                if let Some(c) = imsim_audio::decode_wav(b) {
+                    return Some(c.duration());
+                }
+            }
+            let _ = (channels, block_align);
+            if byte_rate > 0 {
+                return Some(len as f32 / byte_rate as f32);
+            }
+            if sample_rate > 0 {
+                return Some(len as f32 / sample_rate as f32);
+            }
+        }
+        i += 8 + len + (len & 1);
+    }
+    None
+}
 /// Actors the player can see this frame (CanActorSeePlayer), filled by the update.
 static SIGHT: Mutex<Vec<Who>> = Mutex::new(Vec::new());
 /// Inventory classes the player carries (for CheckObject), refreshed each frame.

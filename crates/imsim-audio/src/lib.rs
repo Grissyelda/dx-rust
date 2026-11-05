@@ -92,6 +92,95 @@ pub fn decode_mp3(b: &[u8]) -> Option<Clip> {
     })
 }
 
+/// Length of an MPEG-1/2/2.5 layer III payload in seconds, from its frame headers alone (no decoding). An ID3v2 tag
+/// in front is skipped, and a Xing or Info frame at the start (a header, not audio) isn't counted. None when no valid
+/// frame is found.
+pub fn mp3_seconds(b: &[u8]) -> Option<f32> {
+    let start = id3v2_end(b);
+    let mut pos = start;
+    let (mut frames, mut rate, mut per_frame) = (0u64, 0u32, 0u32);
+    while pos + 4 <= b.len() {
+        let Some(f) = mp3_frame(&b[pos..]) else {
+            // Before the first frame, look a little way on (past junk); after it, anything else ends the audio.
+            if rate == 0 && pos < start + 4096 {
+                pos += 1;
+                continue;
+            }
+            break;
+        };
+        if pos + f.len > b.len() {
+            break;
+        }
+        if rate == 0 {
+            rate = f.rate;
+            per_frame = f.per_frame;
+            let tag = b.get(pos + f.tag_at..).unwrap_or(&[]);
+            if tag.len() >= 4 && (&tag[..4] == b"Xing" || &tag[..4] == b"Info") {
+                pos += f.len;
+                continue;
+            }
+        }
+        frames += 1;
+        pos += f.len;
+    }
+    (frames > 0 && rate > 0).then(|| frames as f32 * per_frame as f32 / rate as f32)
+}
+
+/// The byte after an ID3v2 tag at the start of an MP3 (0 when there isn't one).
+fn id3v2_end(b: &[u8]) -> usize {
+    if b.len() < 10 || &b[..3] != b"ID3" {
+        return 0;
+    }
+    let size = b[6..10].iter().fold(0usize, |n, &x| (n << 7) | (x & 0x7f) as usize);
+    10 + size + if b[5] & 0x10 != 0 { 10 } else { 0 }
+}
+
+/// One MPEG-1/2/2.5 layer III frame header at the start of a slice.
+struct Mp3Frame {
+    /// Frame length in bytes, padding included.
+    len: usize,
+    rate: u32,
+    per_frame: u32,
+    /// Offset of a Xing or Info tag inside the frame.
+    tag_at: usize,
+}
+
+fn mp3_frame(h: &[u8]) -> Option<Mp3Frame> {
+    const MPEG1_KBPS: [u32; 16] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+    const MPEG2_KBPS: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+    if h.len() < 4 || h[0] != 0xff || h[1] & 0xe0 != 0xe0 || (h[1] >> 1) & 3 != 1 {
+        return None; // no sync word, or not layer III
+    }
+    let version = (h[1] >> 3) & 3; // 3 MPEG-1, 2 MPEG-2, 0 MPEG-2.5
+    let bitrate_idx = (h[2] >> 4) as usize;
+    let rate_idx = ((h[2] >> 2) & 3) as usize;
+    if bitrate_idx == 0 || bitrate_idx == 15 || rate_idx == 3 {
+        return None; // free format, bad bitrate, reserved rate
+    }
+    let mpeg1 = version == 3;
+    let rate = match version {
+        3 => [44100, 48000, 32000][rate_idx],
+        2 => [22050, 24000, 16000][rate_idx],
+        0 => [11025, 12000, 8000][rate_idx],
+        _ => return None,
+    };
+    let kbps = if mpeg1 { MPEG1_KBPS[bitrate_idx] } else { MPEG2_KBPS[bitrate_idx] };
+    let padding = ((h[2] >> 1) & 1) as usize;
+    let side = match (mpeg1, h[3] >> 6 == 3) {
+        (true, true) => 17,
+        (true, false) => 32,
+        (false, true) => 9,
+        (false, false) => 17,
+    };
+    let crc = if h[1] & 1 == 0 { 2 } else { 0 }; // protection bit clear: a CRC follows the header
+    Some(Mp3Frame {
+        len: (if mpeg1 { 144 } else { 72 }) * kbps as usize * 1000 / rate as usize + padding,
+        rate,
+        per_frame: if mpeg1 { 1152 } else { 576 },
+        tag_at: 4 + crc + side,
+    })
+}
+
 /// Decode a RIFF WAVE file holding 8- or 16-bit PCM (mono or stereo). Reads `smpl` loop points if present.
 pub fn decode_wav(b: &[u8]) -> Option<Clip> {
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
@@ -1129,5 +1218,38 @@ mod tests {
         // Silent before the shortest comb, ringing after it.
         assert!(out[..200].iter().all(|x| x.abs() < 1e-9));
         assert!(out[2400..].iter().any(|x| x.abs() > 1e-5));
+    }
+
+    /// An MPEG-1 layer III frame: 128 kbps at 44.1 kHz, stereo, no CRC, no padding, 417 bytes.
+    fn mp3_frame_bytes() -> Vec<u8> {
+        let mut f = vec![0u8; 417];
+        f[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x00]);
+        f
+    }
+
+    #[test]
+    fn mp3_length_from_frame_headers() {
+        let b: Vec<u8> = (0..100).flat_map(|_| mp3_frame_bytes()).collect();
+        let secs = mp3_seconds(&b).expect("frames");
+        assert!((secs - 100.0 * 1152.0 / 44100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn mp3_xing_frame_is_not_audio() {
+        let mut first = mp3_frame_bytes();
+        first[36..40].copy_from_slice(b"Xing");
+        let b: Vec<u8> = std::iter::once(first).chain((0..100).map(|_| mp3_frame_bytes())).flatten().collect();
+        let secs = mp3_seconds(&b).expect("frames");
+        assert!((secs - 100.0 * 1152.0 / 44100.0).abs() < 1e-4);
+    }
+
+    /// Against the decoder, on a real file: DX_MP3_SAMPLE=<file.mp3> (skipped when unset).
+    #[test]
+    fn mp3_length_matches_the_decoder() {
+        let Some(path) = std::env::var_os("DX_MP3_SAMPLE") else { return };
+        let b = std::fs::read(path).expect("sample");
+        let decoded = decode_mp3(&b).expect("decodes").duration();
+        let walked = mp3_seconds(&b).expect("walks");
+        assert!((decoded - walked).abs() < 0.05, "decoded {decoded} walked {walked}");
     }
 }
