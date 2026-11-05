@@ -2711,17 +2711,27 @@ pub fn weapon_system(
     } else if !lock_text.0 .0.is_empty() {
         lock_text.0 .0.clear();
     }
-    // NanoKeyRing: DeusExMover.Frob calls PlayUseAnim (UseIt: UseBegin, then UseLoop) and nothing ever calls
-    // StopUseAnim for it, so the ring stays turned in the lock until it's put away or used again.
+    // NanoKeyRing: DeusExMover.Frob calls PlayUseAnim. The ring's own UseIt state (NanoKeyRing.uc, not
+    // SkilledTool's) plays UseBegin, finishes it, starts UseLoop and goes straight to StopIt, which plays UseEnd
+    // and returns to Idle at DontPlaySelect (finish, then Idle1). So: UseBegin -> UseEnd -> idle (#37). Using it
+    // again while UseEnd plays (StopIt isn't UseIt) starts over.
     let ring_used = KEYRING_USE.swap(false, std::sync::atomic::Ordering::Relaxed);
     if h.stats.class == "NanoKeyRing" && h.state == WState::Idle {
-        if ring_used && !h.using {
+        let use_end = Clip::named(&h.mesh, "UseEnd", false);
+        let in_end = h.using && use_end.as_ref().is_some_and(|e| e.start == h.clip.start);
+        if ring_used && (!h.using || in_end) {
             h.using = true;
             if let Some(c) = Clip::named(&h.mesh, "UseBegin", false) {
                 h.clip = c;
             }
-        } else if h.using && h.clip.done() && !h.clip.looping {
-            if let Some(c) = Clip::named(&h.mesh, "UseLoop", true) {
+        } else if h.using && h.clip.done() && !in_end {
+            match use_end {
+                Some(c) => h.clip = c,
+                None => h.using = false,
+            }
+        } else if in_end && h.clip.done() {
+            h.using = false;
+            if let Some(c) = Clip::named(&h.mesh, "Idle1", false) {
                 h.clip = c;
             }
         }

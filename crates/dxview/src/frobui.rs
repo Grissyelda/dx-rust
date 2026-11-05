@@ -221,6 +221,13 @@ pub fn frob_target_system(
             }
         }
     }
+    if env_on!("DXVIEW_FROBLOG") {
+        let near = blockers.deco.keys().map(|&b| (b, blockers.list[b])).min_by(|a, b| a.1.center.distance(end).total_cmp(&b.1.center.distance(end)));
+        if let Some((b, c)) = near {
+            println!("FROBLOG eye {eye:.1} end {end:.1} wall {wall:.3} nearest {} at {:.1} r {} h {} ray {:?}", lvl.actors[c.actor].name, c.center, c.radius, c.height, ray_cylinder(eye, end, c.center, c.radius, c.height));
+            let _ = b;
+        }
+    }
     // Decorations and pawns (live actor cylinders).
     let carried = carrying.held.as_ref().map(|h| h.blocker);
     for (&b, &e) in &blockers.deco {
@@ -606,7 +613,8 @@ pub fn frob_draw_system(
     let Some(t) = hl
         .target
         .as_ref()
-        .filter(|_| !crate::consys::third_person())
+        // (InformationDevices.Frob hides the frob display while its text is up.)
+        .filter(|_| !crate::consys::third_person() && !crate::info::reading())
     else {
         hide(&mut corners, &mut label);
         return;

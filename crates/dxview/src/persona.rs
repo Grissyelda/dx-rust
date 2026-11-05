@@ -105,6 +105,14 @@ pub enum PB {
     BackLogs,
     /// A crowded nav bar's scroll arrow (0 left, 1 right).
     NavArrow(usize),
+    /// PersonaScrollAreaWindow's up / down buttons and its scale (bar id: 0 the screen's main scroll, 1 the
+    /// conversations list).
+    ScrollUp(u8),
+    ScrollDown(u8),
+    ScrollTrack(u8),
+    /// The Images screen's picture (a click there places a note in Add Note mode) and a note on it.
+    ImageArea,
+    ImageNote(usize),
 }
 
 /// What the screen asks the frame to do.
@@ -163,6 +171,158 @@ pub struct PersonaUi {
     /// The outfits screen's 3D view this frame (screen rect), and the widgets drawn over it.
     pub(crate) view: Option<(i32, i32, i32, i32)>,
     pub(crate) overlay: Option<Canvas>,
+    /// The scroll bars drawn last frame (their buttons are this frame's widgets), the conversation list's own
+    /// scroll, and how long a scroll button has been held (it repeats).
+    bars: Vec<Bar>,
+    con_scroll: i32,
+    bar_hold: f32,
+    /// PersonaImageWindow.noteMode (0 normal, 1 NM_PreAdd, 2 NM_Adding) and the image note being edited
+    /// (image class, note index), which then has the keyboard.
+    img_mode: u8,
+    edit_img: Option<(String, usize)>,
+}
+
+/// A PersonaScrollAreaWindow's vertical bar: its id, the scroll area (the bar is its right 11 columns), the
+/// furthest scroll, and the area's height.
+#[derive(Clone, Copy, Debug)]
+struct Bar {
+    id: u8,
+    r: (i32, i32, i32, i32),
+    max: i32,
+}
+
+/// The bars the draw functions ask for this frame (drawn and kept by `page`).
+static BARS: std::sync::Mutex<Vec<Bar>> = std::sync::Mutex::new(Vec::new());
+
+/// The scroll bar's width (PersonaScrollUpButton is 11 x 12).
+const SB_W: i32 = 11;
+const SB_BTN_H: i32 = 12;
+
+/// A scroll area `r` whose content runs `max` past its bottom: ask for its bar (it shows only when needed, the
+/// content then 11 narrower).
+fn want_bar(id: u8, r: (i32, i32, i32, i32), max: i32) {
+    if max > 0 {
+        if let Ok(mut b) = BARS.lock() {
+            b.push(Bar { id, r, max });
+        }
+    }
+}
+
+fn bar_scroll(ui: &mut PersonaUi, id: u8) -> &mut i32 {
+    if id == 1 {
+        &mut ui.con_scroll
+    } else {
+        &mut ui.scroll
+    }
+}
+
+/// The thumb's (top, height) inside the scale for a bar at `scroll`.
+fn thumb_of(b: &Bar, scroll: i32) -> (i32, i32) {
+    let (_, y, _, h) = b.r;
+    let (ty, th) = (y + SB_BTN_H, (h - SB_BTN_H * 2).max(1));
+    let content = h + b.max;
+    let len = ((th * h) / content.max(1)).clamp(10, th.max(10));
+    (ty + ((th - len) * scroll.clamp(0, b.max)) / b.max.max(1), len)
+}
+
+/// PersonaScrollAreaWindow: up button, scale with the thumb, down button, in the HUD theme's button face,
+/// translucent.
+fn draw_bar(c: &mut Canvas, ctx: &mut Ctx, b: &Bar, scroll: i32, pressed: Option<PB>, hover: Option<PB>) {
+    let st = |pb: PB| if pressed == Some(pb) { 2 } else if hover == Some(pb) { 1 } else { 0 };
+    draw_scroll_bar(c, ctx.hud, ctx.assets, b.r, b.max, scroll, st(PB::ScrollUp(b.id)), st(PB::ScrollDown(b.id)));
+}
+
+/// The bar of a scroll area `r` (its right 11 columns) scrolled to `scroll` of `max`; button states 0 normal,
+/// 1 focus, 2 pressed. Also used by the inventory screen's info pane.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_scroll_bar(
+    c: &mut Canvas,
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    r: (i32, i32, i32, i32),
+    max: i32,
+    scroll: i32,
+    up: u8,
+    down: u8,
+) {
+    let b = Bar { id: 0, r, max };
+    let (x, y, w, h) = r;
+    let sx = x + w - SB_W;
+    let col = crate::menuui::h_col(3);
+    let st = |n: u8| ["Normal", "Focus", "Pressed"][n.min(2) as usize];
+    let mut put = |c: &mut Canvas, name: &str, x: i32, y: i32, w: i32, h: i32| {
+        if let Some(t) = hud.ui(assets, name) {
+            c.texture(x, y, w, h, 0, 0, &t, Style::Translucent, col);
+        }
+    };
+    put(c, &format!("PersonaScrollUpButton_{}", st(up)), sx, y, SB_W, SB_BTN_H);
+    put(c, &format!("PersonaScrollDownButton_{}", st(down)), sx, y + h - SB_BTN_H, SB_W, SB_BTN_H);
+    put(c, "PersonaScrollScale", sx, y + SB_BTN_H, SB_W, h - SB_BTN_H * 2);
+    let (ty, len) = thumb_of(&b, scroll);
+    put(c, "PersonaScrollThumb_Top", sx + 2, ty, 7, 4);
+    put(c, "PersonaScrollThumb_Center", sx + 2, ty + 4, 7, (len - 8).max(0));
+    put(c, "PersonaScrollThumb_Bottom", sx + 2, ty + len - 4, 7, 4);
+}
+
+/// Where the mouse at `my` on a bar's scale puts the scroll (the thumb's middle under it).
+pub(crate) fn scroll_at(r: (i32, i32, i32, i32), max: i32, my: i32) -> i32 {
+    let b = Bar { id: 0, r, max };
+    let (_, y, _, h) = r;
+    let th = (h - SB_BTN_H * 2).max(1);
+    let (_, len) = thumb_of(&b, 0);
+    let t = (my - (y + SB_BTN_H) - len / 2) as f32 / (th - len).max(1) as f32;
+    (t.clamp(0.0, 1.0) * max as f32).round() as i32
+}
+
+/// The bar's parts in a scroll area: 0 up button, 1 scale, 2 down button.
+pub(crate) fn bar_part(r: (i32, i32, i32, i32), m: (i32, i32)) -> Option<u8> {
+    let (x, y, w, h) = r;
+    let sx = x + w - SB_W;
+    if m.0 < sx || m.0 >= x + w || m.1 < y || m.1 >= y + h {
+        return None;
+    }
+    Some(if m.1 < y + SB_BTN_H { 0 } else if m.1 >= y + h - SB_BTN_H { 2 } else { 1 })
+}
+
+pub(crate) const SCROLL_BAR_W: i32 = SB_W;
+
+/// The bars' widgets (from last frame's layout).
+fn bar_hits(ui: &PersonaUi, hits: &mut Vec<(PB, (i32, i32, i32, i32), bool)>) {
+    for b in &ui.bars {
+        let (x, y, w, h) = b.r;
+        let sx = x + w - SB_W;
+        hits.push((PB::ScrollUp(b.id), (sx, y, SB_W, SB_BTN_H), true));
+        hits.push((PB::ScrollDown(b.id), (sx, y + h - SB_BTN_H, SB_W, SB_BTN_H), true));
+        hits.push((PB::ScrollTrack(b.id), (sx, y + SB_BTN_H, SB_W, h - SB_BTN_H * 2), true));
+    }
+}
+
+/// Held scroll buttons step (and repeat after 0.4 s every 0.05 s); a held scale drags the thumb to the mouse.
+fn bar_input(ui: &mut PersonaUi, inp: &Input, step: i32) {
+    let Some(p) = ui.pressed else {
+        ui.bar_hold = 0.0;
+        return;
+    };
+    let (id, dir) = match p {
+        PB::ScrollUp(id) => (id, -1),
+        PB::ScrollDown(id) => (id, 1),
+        PB::ScrollTrack(id) => {
+            if let Some(b) = ui.bars.iter().find(|b| b.id == id).copied() {
+                *bar_scroll(ui, id) = scroll_at(b.r, b.max, inp.mouse.1);
+            }
+            return;
+        }
+        _ => return,
+    };
+    let first = ui.bar_hold == 0.0;
+    let before = ui.bar_hold;
+    ui.bar_hold += inp.dt.max(1e-4);
+    let repeats = if ui.bar_hold > 0.4 { ((ui.bar_hold - 0.4) / 0.05) as i32 - ((before - 0.4).max(0.0) / 0.05) as i32 } else { 0 };
+    let n = i32::from(first) + repeats.max(0);
+    if n > 0 {
+        let s = bar_scroll(ui, id);
+        *s += dir * step * n;
+    }
 }
 
 /// Editing state of the focused note: cursor and selection anchor as char indices, blink clock, and the column
@@ -188,7 +348,8 @@ impl PersonaUi {
     }
     /// A message box is up (Escape answers it instead of closing the screen).
     pub fn modal(&self) -> bool {
-        self.asking_delete
+        // (PersonaImageWindow.VirtualKeyPressed takes Escape while a note is being placed or written.)
+        self.asking_delete || self.img_mode != 0
     }
     pub(crate) fn set_status(&mut self, s: String) {
         self.status = s;
@@ -528,14 +689,21 @@ fn draw_info(
         crate::menuui::h_col(7),
         title,
     );
-    c.set_clip(Some((x0, y0 + 20, w, h - 20)));
-    let lines = wrap(&f.small, text, w - 8);
+    // In a PersonaScrollAreaWindow: when the text doesn't fit, the bar takes the right 11 columns.
+    let mut lines = wrap(&f.small, text, w - 8);
+    let mut tw = w;
+    if lines.len() as i32 * f.small.height > h - 20 {
+        tw = w - SB_W;
+        lines = wrap(&f.small, text, tw - 8);
+        want_bar(0, (x0, y0 + 20, w, h - 20), lines.len() as i32 * f.small.height - (h - 20));
+    }
+    c.set_clip(Some((x0, y0 + 20, tw, h - 20)));
     for (i, l) in lines.iter().enumerate() {
         c.text(
             &f.small,
             x0 + 4,
             y0 + 20 + i as i32 * f.small.height - scroll,
-            w - 8,
+            tw - 8,
             f.small.height,
             HAlign::Left,
             VAlign::Top,
@@ -650,7 +818,11 @@ pub fn page(
     if let Some(ed) = ui.edit.as_mut() {
         ed.blink += inp.dt;
     }
-    if screen != SCREEN_GOALS {
+    if screen != SCREEN_IMAGES {
+        ui.edit_img = None;
+        ui.img_mode = 0;
+    }
+    if screen != SCREEN_GOALS && ui.edit_img.is_none() {
         ui.edit = None;
         ui.asking_delete = false;
     }
@@ -722,6 +894,7 @@ pub fn page(
         SCREEN_OUTFITS => outfits_hits(ui, ctx, cx, cy, &mut hits),
         _ => {}
     }
+    bar_hits(ui, &mut hits);
     if let Some(m) = crate::snap::page_map() {
         crate::snap::offer(crate::snap::LAYER_PERSONA, m, hits.iter().filter(|h| h.2).map(|h| h.1));
     }
@@ -770,9 +943,13 @@ pub fn page(
             act = Some(Act::Nav(n));
         }
     }
+    bar_input(ui, inp, if screen == SCREEN_ACHIEVEMENTS { 23 } else { ctx.fonts.small.height });
     if inp.wheel != 0.0 {
         let step = if screen == SCREEN_ACHIEVEMENTS { 23 } else { ctx.fonts.small.height };
-        ui.scroll -= (inp.wheel * step as f32) as i32;
+        // Over the conversation list the wheel scrolls the list, elsewhere the screen's text.
+        let on_list = screen == SCREEN_CONVERSATIONS && inside(inp.mouse, (cx + CON_LIST.0, cy + CON_LIST.1, CON_LIST.2, CON_LIST.3));
+        let s = if on_list { &mut ui.con_scroll } else { &mut ui.scroll };
+        *s -= (inp.wheel * step as f32) as i32;
     }
     // Keys.
     match screen {
@@ -780,6 +957,26 @@ pub fn page(
             if ui.asking_delete {
                 // Keys go to the message box.
             } else if ui.edit.is_some() {
+                edit_note_keys(ui, inp, ctx.fonts);
+            }
+        }
+        SCREEN_IMAGES => {
+            let escape = inp.typed.iter().any(|(k, _)| *k == bevy::input::keyboard::KeyCode::Escape);
+            if escape && ui.img_mode == 1 {
+                ui.img_mode = 0;
+            } else if escape && ui.img_mode == 2 {
+                // A note left as "New Note" (or emptied) is dropped; otherwise it stays.
+                let new_label = s_default(ctx, "PersonaImageWindow", "NewNoteLabel", "New Note");
+                if let Some((cl, k)) = ui.edit_img.clone() {
+                    let t = image_note_text(&cl, k).unwrap_or_default();
+                    if t == new_label || t.is_empty() {
+                        delete_image_note(&cl, k);
+                        ui.edit_img = None;
+                    }
+                }
+                ui.edit = None;
+                ui.img_mode = 0;
+            } else if ui.edit_img.is_some() && ui.edit.is_some() {
                 edit_note_keys(ui, inp, ctx.fonts);
             }
         }
@@ -871,6 +1068,9 @@ pub fn page(
             0
         }
     };
+    if let Ok(mut b) = BARS.lock() {
+        b.clear();
+    }
     let max_scroll = match screen {
         SCREEN_SKILLS => draw_skills(&mut c, ctx, ui, cx, cy, &state),
         SCREEN_AUGS => draw_augs(&mut c, ctx, ui, cx, cy, &state),
@@ -884,6 +1084,13 @@ pub fn page(
         _ => 0,
     };
     ui.scroll = ui.scroll.clamp(0, max_scroll.max(0));
+    // The scroll bars the screen asked for, over it.
+    let bars = BARS.lock().map(|mut b| std::mem::take(&mut *b)).unwrap_or_default();
+    for b in &bars {
+        let sc = *bar_scroll(ui, b.id);
+        draw_bar(&mut c, ctx, b, sc, ui.pressed, hover);
+    }
+    ui.bars = bars;
     (c, act)
 }
 
@@ -1038,6 +1245,45 @@ fn screen_action(screen: usize, ui: &mut PersonaUi, ctx: &mut Ctx, b: PB) -> Opt
             ui.edit = Some(NoteEdit::default());
             ui.note_click = Some((i, ui.last_mouse));
         }
+        (SCREEN_IMAGES, PB::AddNote) => {
+            // PersonaImageWindow.SetAddNoteMode: the next click on the image places a note.
+            ui.img_mode = 1;
+            ui.edit = None;
+            ui.edit_img = None;
+        }
+        (SCREEN_IMAGES, PB::DeleteNote) => {
+            if let Some((cl, k)) = ui.edit_img.take() {
+                delete_image_note(&cl, k);
+            }
+            ui.edit = None;
+            ui.img_mode = 0;
+        }
+        (SCREEN_IMAGES, PB::ImageArea) => {
+            // MouseButtonReleased in NM_PreAdd: a "New Note" there, focused with all its text selected.
+            if let Some(cl) = ui.image_sel.and_then(|i| images().get(i).cloned()) {
+                let label = s_default(ctx, "PersonaImageWindow", "NewNoteLabel", "New Note");
+                let (cx, cy, _, _) = client_rect(ctx, SCREEN_IMAGES);
+                let (ix, iy) = (cx + 15, cy + 20);
+                let (mx, my) = ui.last_mouse;
+                let n = crate::consys::ImageNote { x: (mx - ix).clamp(0, 399), y: (my - iy).clamp(0, 399), text: label.clone() };
+                if let Some(st) = crate::consys::lock().as_mut() {
+                    // AddNote puts it first in the chain.
+                    st.image_notes.entry(cl.clone()).or_default().insert(0, n);
+                }
+                ui.edit_img = Some((cl, 0));
+                ui.edit = Some(NoteEdit { cursor: label.chars().count(), anchor: Some(0), ..Default::default() });
+                ui.img_mode = 2;
+            }
+        }
+        (SCREEN_IMAGES, PB::ImageNote(k)) => {
+            // FocusEnteredDescendant: this note takes the keyboard.
+            if let Some(cl) = ui.image_sel.and_then(|i| images().get(i).cloned()) {
+                let n = image_note_text(&cl, k).map_or(0, |t| t.chars().count());
+                ui.edit_img = Some((cl, k));
+                ui.edit = Some(NoteEdit { cursor: n, ..Default::default() });
+                ui.img_mode = 2;
+            }
+        }
         (_, PB::AddNote) => {
             // AddNote: player.AddNote(defaultNoteText, True) (the newest note goes first), its edit window gets
             // the focus with the whole default text selected, so typing replaces it.
@@ -1087,6 +1333,9 @@ fn screen_action(screen: usize, ui: &mut PersonaUi, ctx: &mut Ctx, b: PB) -> Opt
         }
         (_, PB::ImageRow(i)) => {
             ui.image_sel = Some(i);
+            ui.edit = None;
+            ui.edit_img = None;
+            ui.img_mode = 0;
             if let Some(cl) = images().get(i) {
                 ui.viewed.insert(cl.clone());
             }
@@ -1281,6 +1530,7 @@ fn draw_perks(c: &mut Canvas, ctx: &mut Ctx, ui: &PersonaUi, cx: i32, cy: i32, s
         }
     }
     c.set_clip(None);
+    want_bar(0, (x0, y0 + 20, w, h - 20), (total - (h - 20)).max(0));
     (total - (h - 20)).max(0)
 }
 
@@ -2605,10 +2855,18 @@ fn draw_logs(
     let f = ctx.fonts;
     // The log text window (a scrolling text area across the client).
     let (x, y, w, h) = (cx + 14, cy + 30, 400, 346);
-    let lines: Vec<String> = {
+    let wrap_all = |w: i32| -> Vec<String> {
         let l = LOG.lock().unwrap_or_else(|e| e.into_inner());
         l.iter().flat_map(|m| wrap(&f.small, m, w - 8)).collect()
     };
+    let mut lines = wrap_all(w);
+    let mut tw = w;
+    if lines.len() as i32 * f.small.height > h {
+        tw = w - SB_W;
+        lines = wrap_all(tw);
+        want_bar(0, (x, y, w, h), lines.len() as i32 * f.small.height - h);
+    }
+    let w = tw;
     c.set_clip(Some((x, y, w, h)));
     for (i, l) in lines.iter().enumerate() {
         c.text(
@@ -2646,6 +2904,7 @@ fn draw_achievements(c: &mut Canvas, ctx: &mut Ctx, ui: &mut PersonaUi, cx: i32,
     let f = ctx.fonts;
     let (x, y, w, h) = (cx + 14, cy + 30, 400, 346);
     let max = crate::achievements::draw_list(c, &f.headers, &f.small, x, y, w, h, ui.scroll);
+    want_bar(0, (x, y, w + SB_W + 2, h), max);
     draw_button(c, ctx.hud, ctx.assets, &f.headers, cx + 10, cy + 384, 90, "|&Logs", state(PB::BackLogs), false);
     let n = crate::achievements::unlocked_count();
     c.text(
@@ -3014,6 +3273,7 @@ fn draw_goals(
     );
     let r = checkbox_rect(f, cx, 604, 13, cy + 412, &conf);
     draw_checkbox(c, ctx, r, &conf, !ui.no_confirm_notes, true);
+    want_bar(0, (nx, ny, nw, nh), (total - nh).max(0));
     (total - nh).max(0)
 }
 
@@ -3125,16 +3385,22 @@ fn set_note_text(i: usize, t: String) {
 /// (FilterChar). The text goes straight into the note (SaveNote).
 fn edit_note_keys(ui: &mut PersonaUi, inp: &Input, f: &Fonts) {
     use bevy::input::keyboard::KeyCode as K;
-    let (Some(i), Some(mut ed)) = (ui.note_sel, ui.edit) else {
-        return;
+    // The goals screen's note (PersonaNotesEditWindow) or a note on an image (PersonaImageNoteWindow: the same
+    // multi-line editor, sized to its text, at most 200 characters).
+    let img = ui.edit_img.clone();
+    let Some(mut ed) = ui.edit else { return };
+    let i = ui.note_sel.unwrap_or(0);
+    let text = match &img {
+        Some((cl, k)) => image_note_text(cl, *k),
+        None => ui.note_sel.and_then(note_text),
     };
-    let Some(text) = note_text(i) else {
+    let Some(text) = text else {
         ui.edit = None;
         return;
     };
     let mut chars: Vec<char> = text.chars().collect();
     let mut changed = false;
-    let width = NOTES_AREA.2 - 20;
+    let width = if img.is_some() { 4000 } else { NOTES_AREA.2 - 20 };
     for (k, t) in &inp.typed {
         ed.blink = 0.0;
         let sel = ed.anchor.filter(|a| *a != ed.cursor).map(|a| (a.min(ed.cursor), a.max(ed.cursor)));
@@ -3247,9 +3513,50 @@ fn edit_note_keys(ui: &mut PersonaUi, inp: &Input, f: &Fonts) {
         }
     }
     if changed {
-        set_note_text(i, chars.into_iter().collect());
+        match &img {
+            Some((cl, k)) => {
+                chars.truncate(200);
+                ed.cursor = ed.cursor.min(chars.len());
+                set_image_note_text(cl, *k, chars.into_iter().collect());
+            }
+            None => set_note_text(i, chars.into_iter().collect()),
+        }
     }
     ui.edit = Some(ed);
+}
+
+fn image_notes(class: &str) -> Vec<crate::consys::ImageNote> {
+    crate::consys::lock().as_ref().and_then(|s| s.image_notes.get(class).cloned()).unwrap_or_default()
+}
+
+fn image_note_text(class: &str, k: usize) -> Option<String> {
+    crate::consys::lock().as_ref().and_then(|s| s.image_notes.get(class).and_then(|v| v.get(k)).map(|n| n.text.clone()))
+}
+
+fn set_image_note_text(class: &str, k: usize, t: String) {
+    if let Some(st) = crate::consys::lock().as_mut() {
+        if let Some(n) = st.image_notes.get_mut(class).and_then(|v| v.get_mut(k)) {
+            n.text = t;
+        }
+    }
+}
+
+/// DataVaultImage.DeleteNote.
+fn delete_image_note(class: &str, k: usize) {
+    if let Some(st) = crate::consys::lock().as_mut() {
+        if let Some(v) = st.image_notes.get_mut(class) {
+            if k < v.len() {
+                v.remove(k);
+            }
+        }
+    }
+}
+
+/// A note's box on the image: (x, y, w, h) image-relative (PersonaImageNoteWindow: text margins 2, sized to it).
+fn image_note_box(f: &crate::uicanvas::UiFont, n: &crate::consys::ImageNote) -> (i32, i32, i32, i32) {
+    let lines: Vec<&str> = n.text.split('\n').collect();
+    let w = lines.iter().map(|l| f.width(l)).max().unwrap_or(0).max(4) + 4 + 1;
+    (n.x, n.y, w, lines.len().max(1) as i32 * f.height + 4)
 }
 
 // ------------------------------------------------------------------------------------------------ conversations
@@ -3289,18 +3596,16 @@ fn cons_hits(ui: &PersonaUi, cx: i32, cy: i32, hits: &mut Vec<(PB, (i32, i32, i3
     for (i, (x, w)) in [(14, 162), (176, 194), (370, 46)].into_iter().enumerate() {
         hits.push((PB::ConSort(i), (cx + x, cy + 19, w, 16), true));
     }
+    // The list scrolls in its own PersonaScrollAreaWindow: rows (or the parts of them) in view are hit.
     let n = con_rows(ui.con_sort).len() as i32;
-    for i in 0..n.min(CON_LIST.3 / CON_ROW_H) {
-        hits.push((
-            PB::ConRow(i as usize),
-            (
-                cx + CON_LIST.0,
-                cy + CON_LIST.1 + i * CON_ROW_H,
-                CON_LIST.2,
-                CON_ROW_H,
-            ),
-            true,
-        ));
+    let (lx, ly, lw, lh) = (cx + CON_LIST.0, cy + CON_LIST.1, CON_LIST.2, CON_LIST.3);
+    let w = if n * CON_ROW_H > lh { lw - SB_W } else { lw };
+    for i in 0..n {
+        let ry = ly + i * CON_ROW_H - ui.con_scroll;
+        let (top, bot) = (ry.max(ly), (ry + CON_ROW_H).min(ly + lh));
+        if bot > top {
+            hits.push((PB::ConRow(i as usize), (lx, top, w, bot - top), true));
+        }
     }
 }
 
@@ -3344,10 +3649,19 @@ fn draw_cons(
     }
     let rows = con_rows(ui.con_sort);
     let wing = ctx.hud.font(ctx.assets, "FontHUDWingDings");
-    let (lx, ly, lw, lh) = (cx + CON_LIST.0, cy + CON_LIST.1, CON_LIST.2, CON_LIST.3);
+    let (lx, ly, mut lw, lh) = (cx + CON_LIST.0, cy + CON_LIST.1, CON_LIST.2, CON_LIST.3);
+    let list_max = (rows.len() as i32 * CON_ROW_H - lh).max(0);
+    ui.con_scroll = ui.con_scroll.clamp(0, list_max);
+    if list_max > 0 {
+        want_bar(1, (lx, ly, lw, lh), list_max);
+        lw -= SB_W;
+    }
     c.set_clip(Some((lx, ly, lw, lh)));
     for (i, h) in rows.iter().enumerate() {
-        let y = ly + i as i32 * CON_ROW_H;
+        let y = ly + i as i32 * CON_ROW_H - ui.con_scroll;
+        if y + CON_ROW_H <= ly || y >= ly + lh {
+            continue;
+        }
         let sel = ui.con_sel == Some(i);
         if sel {
             c.fill(lx, y, lw, CON_ROW_H, Style::Normal, [128, 128, 128]);
@@ -3394,7 +3708,21 @@ fn draw_cons(
     let Some(h) = ui.con_sel.and_then(|i| rows.get(i)) else {
         return 0;
     };
-    let (tx, ty, tw, th) = (cx + CON_TEXT.0, cy + CON_TEXT.1, CON_TEXT.2, CON_TEXT.3);
+    let (tx, ty, mut tw, th) = (cx + CON_TEXT.0, cy + CON_TEXT.1, CON_TEXT.2, CON_TEXT.3);
+    let height = |tw: i32| -> i32 {
+        let mut y = 0;
+        for (k, (_, line)) in h.lines.iter().enumerate() {
+            y += f.headers.height + 4 + wrap(&f.small, line, tw - 20).len() as i32 * f.small.height + 4;
+            if k + 1 < h.lines.len() {
+                y += 5;
+            }
+        }
+        y
+    };
+    if height(tw) > th {
+        want_bar(0, (tx, ty, tw, th), (height(tw - SB_W) - th).max(0));
+        tw -= SB_W;
+    }
     c.set_clip(Some((tx, ty, tw, th)));
     let mut y = ty - ui.scroll;
     for (k, (who, line)) in h.lines.iter().enumerate() {
@@ -3444,6 +3772,9 @@ fn images() -> Vec<String> {
 
 const IMG_LIST: (i32, i32, i32, i32) = (417, 21, 184, 398);
 
+/// The note boxes drawn last on the Images screen: (image class, note index, box image-relative).
+static IMG_NOTE_BOXES: std::sync::Mutex<Vec<(String, usize, (i32, i32, i32, i32))>> = std::sync::Mutex::new(Vec::new());
+
 fn images_hits(
     _ui: &PersonaUi,
     cx: i32,
@@ -3463,8 +3794,23 @@ fn images_hits(
             true,
         ));
     }
-    hits.push((PB::AddNote, (cx + 10, cy + 422, 129, 16), false));
-    hits.push((PB::DeleteNote, (cx + 140, cy + 422, 129, 16), false));
+    // PersonaScreenImages.EnableButtons: Add Note with an image up, Delete Note with a note focused.
+    hits.push((PB::AddNote, (cx + 10, cy + 422, 129, 16), _ui.image_sel.is_some()));
+    hits.push((PB::DeleteNote, (cx + 140, cy + 422, 129, 16), _ui.edit_img.is_some()));
+    if let Some(cl) = _ui.image_sel.and_then(|i| images().get(i).cloned()) {
+        let (ix, iy) = (cx + 15, cy + 20);
+        if _ui.img_mode == 1 {
+            hits.push((PB::ImageArea, (ix, iy, 400, 400), true));
+        }
+        if !_ui.hide_image_notes {
+            for (k, b) in IMG_NOTE_BOXES.lock().map(|v| v.clone()).unwrap_or_default().into_iter().enumerate() {
+                if b.0 == cl {
+                    hits.push((PB::ImageNote(b.1), (ix + b.2 .0, iy + b.2 .1, b.2 .2, b.2 .3), true));
+                }
+                let _ = k;
+            }
+        }
+    }
     hits.push((
         PB::ShowImageNotes,
         (cx + 617 - 203 - 100, cy + 424, 100, 14),
@@ -3508,6 +3854,57 @@ fn draw_images(
                         c.texture(ix + x, iy + y, w, h, 0, 0, &t, Style::Normal, WHITE);
                     }
                 }
+            }
+            // The notes (PersonaImageNoteWindow): NoteEditBackground modulated, FontMenuSmall, the focused one
+            // white with its selection and insertion point.
+            let mut boxes = Vec::new();
+            if !ui.hide_image_notes {
+                let bg = ctx.hud.ui(ctx.assets, "NoteEditBackground");
+                for (k, n) in image_notes(&cl).iter().enumerate() {
+                    let (bx, by, bw, bh) = image_note_box(&f.small, n);
+                    let (bx, by) = (ix + bx, iy + by);
+                    boxes.push((cl.clone(), k, (bx - ix, by - iy, bw, bh)));
+                    match &bg {
+                        Some(t) => c.texture(bx, by, bw, bh, 0, 0, t, Style::Modulated, [32, 32, 32]),
+                        None => c.fill(bx, by, bw, bh, Style::Normal, [32, 32, 32]),
+                    }
+                    let focused = ui.edit_img.as_ref().is_some_and(|(c2, k2)| *c2 == cl && *k2 == k);
+                    let col = if focused { WHITE } else { [0, 200, 200] };
+                    let chars: Vec<char> = n.text.chars().collect();
+                    let ed = ui.edit.filter(|_| focused);
+                    let sel = ed.and_then(|e| e.anchor.filter(|a| *a != e.cursor).map(|a| (a.min(e.cursor), a.max(e.cursor))));
+                    let mut start = 0;
+                    for (li, line) in n.text.split('\n').enumerate() {
+                        let len = line.chars().count();
+                        let ly = by + 2 + li as i32 * f.small.height;
+                        if let Some((a, b)) = sel {
+                            let (a, b) = (a.clamp(start, start + len), b.clamp(start, start + len));
+                            if b > a {
+                                let x0 = x_of(&f.small, &chars, start, a);
+                                let x1 = x_of(&f.small, &chars, start, b);
+                                c.fill(bx + 2 + x0, ly, x1 - x0, f.small.height, Style::Normal, WHITE);
+                            }
+                        }
+                        // Selected text in the background colour over the white.
+                        let mut x = bx + 2;
+                        for (ci, ch) in line.chars().enumerate() {
+                            let one = ch.to_string();
+                            let inside_sel = sel.is_some_and(|(a, b)| start + ci >= a && start + ci < b);
+                            c.text(&f.small, x, ly, 40, f.small.height, HAlign::Left, VAlign::Top, if inside_sel { [32, 32, 32] } else { col }, &one);
+                            x += f.small.width(&one);
+                        }
+                        if let Some(e) = ed {
+                            if e.cursor >= start && e.cursor <= start + len && (e.blink % 1.0) < 0.5 {
+                                let cxp = x_of(&f.small, &chars, start, e.cursor);
+                                c.fill(bx + 2 + cxp, ly, 1, f.small.height, Style::Normal, WHITE);
+                            }
+                        }
+                        start += len + 1;
+                    }
+                }
+            }
+            if let Ok(mut g) = IMG_NOTE_BOXES.lock() {
+                *g = boxes;
             }
             let title = desc(ctx, &cl);
             c.text(
@@ -3923,6 +4320,12 @@ mod tests {
             ],
             vec!["Image01_LibertyIsland".into()],
         );
+        if let Some(st) = crate::consys::lock().as_mut() {
+            st.image_notes.insert(
+                "Image01_LibertyIsland".into(),
+                vec![crate::consys::ImageNote { x: 150, y: 120, text: "NSF inside the statue".into() }],
+            );
+        }
         {
             let d = assets.classes.defaults("AugmentationCannister");
             let def = crate::pickups::item_def("AugmentationCannister", &d);
@@ -3953,7 +4356,16 @@ mod tests {
             (SCREEN_GOALS, None, "goals_select"),
             (SCREEN_GOALS, None, "goals_delete"),
             (SCREEN_ACHIEVEMENTS, None, "achievements"),
+            (SCREEN_CONVERSATIONS, None, "cons_many"),
+            (SCREEN_IMAGES, None, "images_edit"),
         ] {
+            if name == "cons_many" {
+                if let Some(st) = crate::consys::lock().as_mut() {
+                    for i in 0..14 {
+                        st.history.push(History { owner: format!("Person {i}"), location: "NYC - Battery Park".into(), description: String::new(), infolink: i % 2 == 0, lines: vec![("JC Denton".into(), "Hello.".into())] });
+                    }
+                }
+            }
             let mut ui = PersonaUi::default();
             ui.show_completed = true;
             ui.note_sel = Some(1);
@@ -3994,6 +4406,16 @@ mod tests {
                 "goals_delete" => {
                     ui.note_sel = Some(0);
                     screen_action(SCREEN_GOALS, &mut ui, &mut ctx, PB::DeleteNote);
+                }
+                "images_edit" => {
+                    // Add Note, a click on the image, then typing over "New Note".
+                    screen_action(SCREEN_IMAGES, &mut ui, &mut ctx, PB::AddNote);
+                    let (cx, cy, _, _) = client_rect(&mut ctx, SCREEN_IMAGES);
+                    ui.last_mouse = (cx + 15 + 60, cy + 20 + 300);
+                    screen_action(SCREEN_IMAGES, &mut ui, &mut ctx, PB::ImageArea);
+                    for ch in "Dock exit".chars() {
+                        typed.push((K::KeyA, Some(ch.to_string())));
+                    }
                 }
                 _ => {}
             }

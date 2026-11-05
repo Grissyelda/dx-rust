@@ -288,6 +288,17 @@ impl PlayerHealth {
             _ => [0.6, 0.0, 0.0],
         };
         let was_dead = self.dead;
+        // DeusExPlayer.TakeDamage: "don't let the player die in the training mission" - in mission 0 a blow that
+        // would kill keeps the torso and head at 10 or more (the toxic pool can't kill: #39).
+        if crate::menus::training() {
+            let p = &self.parts;
+            let crit = p[P_HEAD] <= 0.0 || p[P_TORSO] <= 0.0;
+            let ave = (p[P_LEG_L] + p[P_LEG_R] + p[P_ARM_L] + p[P_ARM_R]) / 4.0;
+            if crit || (ave + (p[P_HEAD] + p[P_TORSO]) / 2.0) / 2.0 <= 0.0 {
+                self.parts[P_TORSO] = self.parts[P_TORSO].max(10.0);
+                self.parts[P_HEAD] = self.parts[P_HEAD].max(10.0);
+            }
+        }
         self.total();
         // Human.PlayDyingSound / PlayTakeHitSound (at most one cry every 0.5..1.5 s).
         if self.dead && !was_dead {

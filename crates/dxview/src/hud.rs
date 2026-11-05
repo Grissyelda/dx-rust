@@ -310,7 +310,9 @@ pub fn crosshair_system(
     let zoomed = zoom.0.is_some();
     let menu = crate::inventory_screen::screen_open() || crate::consys::third_person() || crate::cinematic::active();
     for (mut img, mut node, size, mut vis) in &mut cross {
-        vis.set_if_neq(if zoomed || menu || !crate::settings::crosshairs() { Visibility::Hidden } else { Visibility::Inherited });
+        // (Reading a datacube hides the crosshair: InformationDevices.Frob, SetCrosshair(False).)
+        let reading = crate::info::reading();
+        vis.set_if_neq(if zoomed || menu || reading || !crate::settings::crosshairs() { Visibility::Hidden } else { Visibility::Inherited });
         let col = color.with_alpha(color.alpha() * crate::hudfade::alpha());
         if img.color != col {
             img.color = col;

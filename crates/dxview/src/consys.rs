@@ -368,6 +368,7 @@ pub struct ConState {
     pub goals: Vec<Goal>,
     pub notes: Vec<String>,
     pub images: Vec<String>,
+    pub image_notes: HashMap<String, Vec<ImageNote>>,
     pub time: f32,
     last_first: Option<(Who, f32)>,
     last_third: Option<(Who, f32)>,
@@ -596,6 +597,17 @@ pub struct ConSave {
     pub notes: Vec<String>,
     pub images: Vec<String>,
     pub history: Vec<History>,
+    /// DataVaultImage.firstNote chains, by image class.
+    #[serde(default)]
+    pub image_notes: std::collections::HashMap<String, Vec<ImageNote>>,
+}
+
+/// DataVaultImageNote: a note placed on a DataVault image (persona Images screen).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ImageNote {
+    pub x: i32,
+    pub y: i32,
+    pub text: String,
 }
 
 impl ConState {
@@ -617,7 +629,13 @@ impl ConState {
     }
 
     pub fn save_state(&self) -> ConSave {
-        ConSave { goals: self.goals.clone(), notes: self.notes.clone(), images: self.images.clone(), history: self.history.clone() }
+        ConSave {
+            goals: self.goals.clone(),
+            notes: self.notes.clone(),
+            images: self.images.clone(),
+            history: self.history.clone(),
+            image_notes: self.image_notes.clone(),
+        }
     }
     /// Put the logs back and drop anything the fresh level started (its opening infolink, barks): the saved
     /// flags say what's been played.
@@ -626,6 +644,7 @@ impl ConState {
         self.notes = s.notes.clone();
         self.images = s.images.clone();
         self.history = s.history.clone();
+        self.image_notes = s.image_notes.clone();
         self.play = None;
         self.link = None;
         self.link_queue.clear();
@@ -942,6 +961,17 @@ pub fn has_vault_note(text: &str) -> bool {
     lock().as_ref().is_some_and(|st| st.notes.iter().any(|n| n.trim() == text))
 }
 
+/// DeusExPlayer.AddImage: a DataVaultImage class for the Images screen; false when the player already has it.
+pub fn add_image(class: &str) -> bool {
+    let mut g = lock();
+    let Some(st) = g.as_mut() else { return false };
+    if st.images.iter().any(|c| c.eq_ignore_ascii_case(class)) {
+        return false;
+    }
+    st.images.insert(0, class.to_string());
+    true
+}
+
 pub fn add_vault_note(text: &str) {
     let text = text.trim().to_string();
     if text.is_empty() {
@@ -1113,6 +1143,7 @@ impl ConState {
             goals: Vec::new(),
             notes: Vec::new(),
             images: Vec::new(),
+            image_notes: HashMap::new(),
             time: 0.0,
             last_first: None,
             last_third: None,

@@ -429,6 +429,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::info::reset_level();
     crate::stamina::reset_level();
     crate::smartai::reset_level();
     crate::diegetic::reset_level();
@@ -716,6 +717,25 @@ fn dev_goto(world: &mut World) {
                 *crate::actors::BODY_LOG.lock().unwrap() = Some(name.clone());
                 println!("GOTO threw {name}");
             }
+            return;
+        }
+        // "secs;x,y,z;look": the view turns to look at that point; "secs;;use" frobs what's under the crosshair.
+        Some("look") => {
+            let v: Vec<f64> = map.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            if v.len() == 3 {
+                let p = world.resource::<crate::Player>();
+                let eye = p.body.location + glam::DVec3::new(0.0, 0.0, p.eye_height);
+                let d = glam::DVec3::new(v[0], v[1], v[2]) - eye;
+                let mut q = world.query::<&mut crate::FlyCam>();
+                for mut c in q.iter_mut(world) {
+                    c.yaw = (-d.x).atan2(-d.y) as f32;
+                    c.pitch = (d.z.atan2(d.truncate().length())) as f32;
+                }
+            }
+            return;
+        }
+        Some("use") => {
+            world.resource_mut::<crate::pickups::FrobRequest>().0 = true;
             return;
         }
         // "secs;x,y,z;tp": the player is moved there (trigger tests).

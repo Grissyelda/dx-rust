@@ -314,12 +314,15 @@ pub fn swim_system(
     };
     let foot_pain = if active { pain_of(loc - DVec3::Z * (h - 1.0)) } else { None };
     if let Some((dps, ty)) = foot_pain.as_ref() {
-        if sw.zone_pain_time < 0.0 {
+        // Pawn.FootZoneChange: the feet entering a pain zone set PainTime 0.01. Zone changes happen during the
+        // move, after PlayerTick, so that one fires in the same frame even while swimming: every entry hurts.
+        let entered = sw.zone_pain_time < 0.0;
+        if entered {
             sw.zone_pain_time = 0.01;
         }
         // PlayerSwimming's PlayerTick keeps PainTime = swimTimer while there's breath left (it is one timer for
-        // drowning and pain zones): the toxic pool only starts to hurt once the swim timer has run out (#39).
-        if player.swimming && sw.timer > 0.0 {
+        // drowning and pain zones): fully under, the toxic pool only hurts again once the swim timer runs out.
+        if player.swimming && sw.timer > 0.0 && !entered {
             sw.zone_pain_time = sw.timer;
         }
         sw.zone_pain_time -= dt;

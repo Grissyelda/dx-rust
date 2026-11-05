@@ -55,6 +55,12 @@ pub fn open() -> bool {
     OPEN.load(Ordering::Relaxed)
 }
 
+/// The map has a DeusExLevelInfo whose MissionNumber is 0 (the training maps, which don't store it).
+static TRAINING: AtomicBool = AtomicBool::new(false);
+pub fn training() -> bool {
+    TRAINING.load(Ordering::Relaxed)
+}
+
 /// DeusExRootWindow.AtIntroMap: the logo map (no HUD, no saving).
 pub fn intro_map() -> bool {
     MISSION.load(Ordering::Relaxed) < 0
@@ -594,6 +600,9 @@ enum MsgPurpose {
     Delete,
     /// DeusExRootWindow.ConfirmQuickLoad.
     QuickLoad,
+    /// MenuUIWindow.ConfirmTraining / ConfirmIntro (MB_Training / MB_Intro).
+    Training,
+    Intro,
     /// root.MessageBox asked for by another screen (the persona screen's Delete Note?): the answer goes back.
     External,
     /// Ours: the controller layout picture (Settings > Enhancements > Controller Layout; once at the first map for
@@ -2046,6 +2055,31 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// MenuScreenAdjustColorsExample.DrawWindow (207 x 135): background and borders in the HUD theme's colours and
+/// translucency, then the title / header / normal text and the two button labels.
+fn draw_colors_example(u: &mut Ui<W>, x: i32, y: i32) {
+    let d = u.assets.classes.defaults("MenuScreenAdjustColorsExample");
+    let bg = if crate::settings::hud_translucent() { Style::Translucent } else { Style::Masked };
+    u.draw("MenuColorHUDBackground", x, y, 207, 135, bg, crate::menuui::h_col(0));
+    if crate::settings::hud_borders() {
+        let bs = if crate::settings::hud_border_translucent() { Style::Translucent } else { Style::Masked };
+        u.draw("MenuColorHUDBorders", x, y, 207, 135, bs, crate::menuui::h_col(1));
+    }
+    let (headers, small) = (u.f.headers.clone(), u.f.small.clone());
+    let rows = [
+        (&headers, 23, 19, 90, 11, 2, "TitleBarLabel", "Title Bar"),
+        (&headers, 27, 37, 90, 11, 7, "TextHeaderLabel", "Text Header"),
+        (&small, 27, 56, 90, 11, 8, "TextNormalLabel", "Normal Text"),
+        (&headers, 28, 110, 54, 10, 4, "ButtonPressedLabel", "Normal"),
+        (&headers, 94, 110, 54, 10, 5, "ButtonNormalLabel", "Focus"),
+    ];
+    for (f, tx, ty, tw, th, col, key, def) in rows {
+        let t = pstr(&d, key);
+        let t = if t.is_empty() { def.to_string() } else { t };
+        u.c.text(f, x + tx, y + ty, tw, th, HAlign::Left, VAlign::Top, crate::menuui::h_col(col), &t);
+    }
+}
+
 fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waiting_keys: bool) {
     let f = win.f.clone();
     let (so, _) = f.shadow.unwrap_or(((0, 0), (0, 0)));
@@ -2212,6 +2246,11 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
                     }
                     ChoiceKind::Action { .. } => {}
                 }
+            }
+            // MenuScreenAdjustColors: the MenuScreenAdjustColorsExample window at (395, 25) in the client, a
+            // sample HUD window in the current HUD theme.
+            if win.f.class == "MenuScreenAdjustColors" {
+                draw_colors_example(u, cx + 395, cy + 25);
             }
             // An open drop-down: the list under (or, near the bottom, over) its value box.
             if let Some((di, mut scroll)) = win.drop {
@@ -2665,8 +2704,20 @@ fn menu_action(b: &MenuBtn, hud: &mut ClassicHud, assets: &mut RuntimeAssets, ou
                 out.push(Act::Push("MenuSelectDifficulty".into()));
             }
         }
-        4 => out.push(Act::Training),
-        5 => out.push(Act::Intro),
+        // MenuUIWindow.ConfirmTraining / ConfirmIntro: with a game running (a map with a mission, the player not
+        // dying or in a cut scene) ask first, as the game would be lost.
+        4 | 5 => {
+            let running = !intro_map() && !DEAD.load(Ordering::Relaxed) && !crate::cinematic::active();
+            let training = b.action == 4;
+            if running {
+                let d = assets.classes.defaults("MenuMain");
+                let key = if training { "TrainingWarningMessage" } else { "IntroWarningMessage" };
+                let purpose = if training { MsgPurpose::Training } else { MsgPurpose::Intro };
+                out.push(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, key), true, purpose));
+            } else {
+                out.push(if training { Act::Training } else { Act::Intro });
+            }
+        }
         6 => {
             let d = assets.classes.defaults("MenuMain");
             out.push(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, "ExitMessage"), true, MsgPurpose::Exit));
@@ -2815,6 +2866,7 @@ pub fn menu_system(
             .map(|a| pint(&a.props, "missionNumber", 0))
             .unwrap_or(0);
         MISSION.store(mission, Ordering::Relaxed);
+        TRAINING.store(level.0.level_info().is_some() && mission == 0, Ordering::Relaxed);
         if let Some(Value::Str(loc)) = level.0.level_info().and_then(|a| find(&a.props, "MissionLocation")) {
             if let Ok(mut l) = LOCATION.lock() {
                 *l = loc.clone();
@@ -3963,6 +4015,16 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
         MsgPurpose::QuickLoad => {
             if yes {
                 acts.push(Act::LoadGame(crate::save::quick_path()));
+            }
+        }
+        MsgPurpose::Training => {
+            if yes {
+                acts.push(Act::Training);
+            }
+        }
+        MsgPurpose::Intro => {
+            if yes {
+                acts.push(Act::Intro);
             }
         }
         MsgPurpose::Info | MsgPurpose::NameBlank | MsgPurpose::Restart | MsgPurpose::PadMap => {}

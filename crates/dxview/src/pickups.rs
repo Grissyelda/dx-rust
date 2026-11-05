@@ -219,7 +219,7 @@ pub fn frob_system(
         Query<&mut Visibility, With<crate::ai::Npc>>,
         ResMut<movers::Picking>,
     ),
-    (blockers, mut hacking, mut events, mut info, root_dir, _ph): (
+    (blockers, mut hacking, mut events, mut info, _root_dir, _ph): (
         Res<crate::actors::Blockers>,
         ResMut<crate::devices::Hacking>,
         ResMut<crate::devices::GameEvents>,
@@ -813,16 +813,44 @@ pub fn frob_system(
                 crate::computers::frob(blockers.list[b].actor);
                 return;
             }
-            // Datacubes and other readables show their text.
-            let tag = crate::devices::name_prop(&a.props, "textTag");
-            if !tag.is_empty() {
-                if let Some(msg) = info.toggle(&root_dir.0, &tag, blockers.list[b].center) {
-                    hud.text = msg;
-                    hud.time_left = 2.0;
-                } else if matches!(unreal_pkg::props::find(&a.props, "bAddToVault"), Some(unreal_pkg::props::Value::Bool(true))) {
-                    if let Some(t) = info.text.as_ref() {
-                        crate::consys::add_vault_note(t);
-                    }
+            // Datacubes and other readables show their text (InformationDevices.Frob).
+            if crate::classtree::is_a(&a.class, "InformationDevices") || find(&a.props, "textTag").is_some() {
+                let tag = crate::devices::name_prop(&a.props, "textTag");
+                let str_p = |k: &str, d: &str| match find(&a.props, k) {
+                    Some(unreal_pkg::props::Value::Str(v)) => v.clone(),
+                    _ => d.to_string(),
+                };
+                let package = str_p("TextPackage", "DeusExText");
+                let no_text = str_p("msgNoText", "There's nothing interesting to read");
+                let image_label = str_p("ImageLabel", "[Image: %s]");
+                let added = str_p("AddedToDatavaultLabel", "Image %s added to DataVault");
+                let image_class = match find(&a.props, "imageClass") {
+                    Some(unreal_pkg::props::Value::Path(p)) => p.rsplit('.').next().map(str::to_string),
+                    _ => None,
+                };
+                let image = image_class.map(|c| {
+                    let d = assets.classes.defaults(&c);
+                    let desc = match find(&d, "imageDescription") {
+                        Some(unreal_pkg::props::Value::Str(v)) => v.clone(),
+                        _ => c.clone(),
+                    };
+                    (c, desc)
+                });
+                let vault = matches!(find(&a.props, "bAddToVault"), Some(unreal_pkg::props::Value::Bool(true)));
+                let system = assets.lib.system_dir().to_path_buf();
+                match info.frob(
+                    &system,
+                    &package,
+                    &tag,
+                    b,
+                    blockers.list[b].center,
+                    image.as_ref().map(|(c, d)| (c.as_str(), d.as_str())),
+                    vault,
+                    (&image_label, &added),
+                ) {
+                    crate::info::Frobbed::Opened(Some(v)) => crate::consys::add_vault_note(&v),
+                    crate::info::Frobbed::NoText => crate::classic_hud::client_message(&no_text),
+                    _ => {}
                 }
                 return;
             }

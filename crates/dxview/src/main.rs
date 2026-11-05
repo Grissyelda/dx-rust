@@ -187,9 +187,6 @@ pub struct FlyCam {
 #[derive(Component)]
 struct Overlay;
 
-#[derive(Component)]
-struct HudText;
-
 /// The player body: Unreal-style walking/falling against the level BSP.
 #[derive(Resource)]
 pub struct Player {
@@ -811,7 +808,6 @@ fn main() {
         .add_systems(PostUpdate, cursor_record_system)
         .add_systems(Update, (loader::settle_system, loader::loading_screen_system).chain())
         .add_systems(Update, movers::mover_riders_system.after(movers::tick_movers).before(actors::deco_physics))
-        .add_systems(Startup, fps::spawn_fps_text)
         .add_systems(Update, fps::fps_system)
         .add_systems(
             Update,
@@ -1903,7 +1899,6 @@ fn setup(
     commands.insert_resource(devices::Hacking::default());
     commands.insert_resource(devices::GameEvents::default());
     frobui::spawn_frob_ui(&mut commands);
-    info::spawn_info_panel(&mut commands);
     charged::spawn_goggles(&mut commands, &mut meshes, &mut materials);
     commands.insert_resource(info::InfoDisplay::default());
     explosion::spawn_flash_overlay(&mut commands);
@@ -1913,21 +1908,6 @@ fn setup(
     commands.insert_resource(grenades::GrenadeThrows::default());
     commands.insert_resource(projectiles::GasClouds::default());
     commands.insert_resource(effects::Gibs::default());
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: bevy::text::FontSize::Px(20.0),
-            ..default()
-        },
-        TextColor(Color::srgb(1.0, 1.0, 1.0)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Percent(40.0),
-            bottom: Val::Px(80.0),
-            ..default()
-        },
-        HudText,
-    ));
     commands.insert_resource(scrollers);
 
     prof::load_mark("fire textures / HUD");
@@ -3159,18 +3139,10 @@ fn uv_scroll(
     }
 }
 
-fn hud_text(
-    time: Res<Time>,
-    mut hud: ResMut<movers::HudMessage>,
-    mut text: Single<&mut Text, With<HudText>>,
-) {
+/// HudMessage's timer (classic_hud.rs shows the message: the log takes short ones, the death prompt stays).
+fn hud_text(time: Res<Time>, mut hud: ResMut<movers::HudMessage>) {
     let _prof = crate::prof::scope("main::hud_text");
     if hud.time_left > 0.0 {
         hud.time_left -= time.delta_secs();
-        if text.0 != hud.text {
-            text.0 = hud.text.clone();
-        }
-    } else if !text.0.is_empty() {
-        text.0.clear();
     }
 }

@@ -668,7 +668,8 @@ pub fn bind_menu_system(
         b.built = true;
         build(&mut commands);
     }
-    let menu_key = b.keys.just_pressed(MENU_KEY);
+    // Our own quick bindings editor is a debug tool (Settings > Customize Keys is the original's screen).
+    let menu_key = b.keys.just_pressed(MENU_KEY) && (crate::settings::debug_mode() || b.open);
     let close_clicked = b.open && close.iter().any(|i| *i == Interaction::Pressed);
     if menu_key || close_clicked {
         b.open = menu_key && !b.open;

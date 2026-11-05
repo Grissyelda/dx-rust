@@ -22,7 +22,7 @@ use crate::weapons::RuntimeAssets;
 use crate::LevelRes;
 
 pub fn enabled() -> bool {
-    setting!("FluidBlood") > 0.5
+    setting!("FluidBlood") > 0.5 && !crate::settings::low_gore()
 }
 
 enum Req {

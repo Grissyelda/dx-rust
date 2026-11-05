@@ -83,6 +83,11 @@ pub fn blood_system(
             .wrapping_add(1442695040888963407);
         ((*seed >> 33) as f64) / (1u64 << 31) as f64
     };
+    // Gore Level Low: BloodSpurt / BloodDrop destroy themselves at once (their "Gore check").
+    if crate::settings::low_gore() {
+        fx.0.clear();
+        drips.0.clear();
+    }
     for (at, dir) in fx.0.drain(..) {
         crate::fx::blood(at, dir);
         crate::gore::spray(at, dir, 10.0);

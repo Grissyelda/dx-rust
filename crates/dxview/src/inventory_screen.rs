@@ -268,6 +268,8 @@ pub struct InvScreen {
     persona: crate::persona::PersonaUi,
     /// The medical (true) or repair bot whose screen this is.
     bot: Option<(Entity, bool)>,
+    /// The info pane's scroll bar part held (0 up, 1 scale, 2 down) and for how long.
+    bar: Option<(u8, f32)>,
 }
 
 impl Default for InvScreen {
@@ -288,6 +290,7 @@ impl Default for InvScreen {
             last_cursor: Vec::new(),
             built: false,
             grabbed_before: false,
+            bar: None,
             screen: 0,
             persona: Default::default(),
             bot: None,
@@ -1034,7 +1037,7 @@ fn hit_test(
     }
     if inside(
         p,
-        (INFO.0, INFO.1 + INFO_TEXT_Y, INFO.2, INFO.3 - INFO_TEXT_Y),
+        (INFO.0, INFO.1 + INFO_TEXT_Y, info_w(), INFO.3 - INFO_TEXT_Y),
     ) {
         for (y, h, row) in info_rows {
             let y = INFO.1 + INFO_TEXT_Y + y - scroll;
@@ -1052,7 +1055,7 @@ fn hit_test(
                 }
                 Row::Checkbox(..) => return Hit::Checkbox,
                 Row::Skin(_) => {
-                    let right = INFO.0 + INFO.2 - 6;
+                    let right = INFO.0 + info_w() - 6;
                     if inside(p, (right - 84, y, 40, 16)) {
                         return Hit::SkinPrev;
                     }
@@ -1069,8 +1072,14 @@ fn hit_test(
 }
 
 /// Height of each info row (TileWindow ORDER_Down, margins 4/1): (y, height, row).
+/// The info pane's scroll bar is up (PersonaScrollAreaWindow): the text is 11 narrower.
+static INFO_NARROW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn info_w() -> i32 {
+    INFO.2 - if INFO_NARROW.load(std::sync::atomic::Ordering::Relaxed) { crate::persona::SCROLL_BAR_W } else { 0 }
+}
+
 fn layout_rows(rows: &[Row], f: &Fonts) -> Vec<(i32, i32, Row)> {
-    let width = INFO.2 - 8;
+    let width = info_w() - 8;
     let mut y = 1;
     let mut out = Vec::new();
     for r in rows {
@@ -1508,9 +1517,14 @@ pub fn inventory_screen_system(
             None => (String::new(), Vec::new()),
         }
     };
-    let rows = layout_rows(&info_rows, &fonts);
-    let content_h = rows.last().map_or(0, |r| r.0 + r.1) + 1;
     let view_h = INFO.3 - INFO_TEXT_Y;
+    INFO_NARROW.store(false, std::sync::atomic::Ordering::Relaxed);
+    let mut rows = layout_rows(&info_rows, &fonts);
+    if rows.last().map_or(0, |r| r.0 + r.1) + 1 > view_h {
+        INFO_NARROW.store(true, std::sync::atomic::Ordering::Relaxed);
+        rows = layout_rows(&info_rows, &fonts);
+    }
+    let content_h = rows.last().map_or(0, |r| r.0 + r.1) + 1;
     for w in wheel.read() {
         let lines = if w.unit == bevy::input::mouse::MouseScrollUnit::Line {
             w.y * 3.0
@@ -1543,7 +1557,39 @@ pub fn inventory_screen_system(
             action = Some(Btn::Nav(n));
         }
     }
+    // The info pane's PersonaScrollAreaWindow bar: the buttons step a line (repeating while held), the scale
+    // drags the thumb.
+    let bar_r = (INFO.0, INFO.1 + INFO_TEXT_Y, INFO.2, view_h);
+    let bar_max = (content_h - view_h).max(0);
+    let on_bar = (bar_max > 0).then(|| crate::persona::bar_part(bar_r, mouse)).flatten();
     if left_down {
+        if let Some(part) = on_bar {
+            st.bar = Some((part, 0.0));
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+        }
+    }
+    if !binds.buttons.pressed(MouseButton::Left) {
+        st.bar = None;
+    }
+    if let Some((part, held)) = st.bar.as_mut() {
+        let line = fonts.small.height;
+        let before = *held;
+        // (Virtual time stops while the screen is up: the wall clock paces the repeat.)
+        thread_local! { static LAST: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) }; }
+        let now = std::time::Instant::now();
+        let dt = LAST.with(|l| { let d = l.get().map_or(0.0, |t| now.duration_since(t).as_secs_f32()); l.set(Some(now)); d });
+        *held += if before == 0.0 { 1e-4 } else { dt.min(0.1) };
+        match *part {
+            1 => st.scroll = crate::persona::scroll_at(bar_r, bar_max, mouse.1),
+            p => {
+                let rep = |t: f32| if t > 0.4 { ((t - 0.4) / 0.05) as i32 } else { 0 };
+                let n = i32::from(before == 0.0) + (rep(*held) - rep(before)).max(0);
+                st.scroll += if p == 0 { -line * n } else { line * n };
+            }
+        }
+        st.scroll = st.scroll.clamp(0, bar_max);
+    }
+    if left_down && on_bar.is_none() {
         match &hit {
             Hit::Button(b) => st.pressed = Some(*b),
             Hit::Item(c) => {
@@ -1885,6 +1931,14 @@ pub fn inventory_screen_system(
         &rows,
         &view,
     );
+    if bar_max > 0 {
+        let (up, down) = match st.bar {
+            Some((0, _)) => (2, 0),
+            Some((2, _)) => (0, 2),
+            _ => (u8::from(on_bar == Some(0)), u8::from(on_bar == Some(2))),
+        };
+        crate::persona::draw_scroll_bar(&mut c, &mut hud, &mut assets, bar_r, bar_max, st.scroll, up, down);
+    }
     draw_details(&mut c, &mut hud, &mut assets, &fonts, st);
     draw_belt(&mut c, &mut hud, &mut assets, &fonts, st, &view, &hit);
     // Status line.
@@ -2865,7 +2919,8 @@ fn draw_info(
     rows: &[(i32, i32, Row)],
     view: &View,
 ) {
-    let (x0, y0, w, h) = INFO;
+    let (x0, y0, _, h) = INFO;
+    let w = info_w();
     c.text(
         &f.headers,
         x0 + 2,
@@ -3037,7 +3092,7 @@ fn draw_info(
                 }
             }
             Row::Skin(text) => {
-                let right = INFO.0 + INFO.2 - 6;
+                let right = INFO.0 + info_w() - 6;
                 c.text(&f.headers, x, y + 1, width - 90, 16, HAlign::Left, VAlign::Center, crate::menuui::h_col(7), text);
                 draw_button(c, hud, assets, &f.headers, right - 84, y, 40, "Prev", 0, true);
                 draw_button(c, hud, assets, &f.headers, right - 42, y, 40, "Next", 0, true);

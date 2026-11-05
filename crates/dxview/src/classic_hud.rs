@@ -137,6 +137,12 @@ enum Win {
     ConCursor,
     /// HUDMissionStartTextDisplay: the map's startupMessage lines typed out mid-screen.
     Start,
+    /// HUDInformationDisplay: a datacube's, book's or newspaper's text (info.rs).
+    Info,
+    /// A message that stays up (the death prompt), above the belt.
+    Msg,
+    /// The FPS counter (fps.rs), top right.
+    Fps,
 }
 
 /// HUDMissionStartTextDisplay state: the message, characters shown so far, seconds left once it's all out.
@@ -165,7 +171,7 @@ pub fn quote_text(lines: &[String], secs: f32) {
 }
 
 impl Win {
-    const ALL: [Win; 16] = [
+    const ALL: [Win; 19] = [
         Win::Hit,
         Win::Compass,
         Win::Ammo,
@@ -182,6 +188,9 @@ impl Win {
         Win::Bark,
         Win::ConCursor,
         Win::Start,
+        Win::Info,
+        Win::Msg,
+        Win::Fps,
     ];
     /// Fixed window sizes in UI units (InitWindow SetSize / ParentRequestedPreferredSize); the log is sized
     /// by the layout.
@@ -198,7 +207,10 @@ impl Win {
             | Win::ConUpper
             | Win::ConLower
             | Win::Bark
-            | Win::Start => (0, 0),
+            | Win::Start
+            | Win::Info
+            | Win::Msg
+            | Win::Fps => (0, 0),
             Win::ConCursor | Win::InfoLinkFace => (64, 64),
             Win::InfoLink => crate::conui::INFOLINK_SIZE,
             // DamageHUDDisplay: arrowiconWidth + iconMargin, (iconHeight + iconMargin) x 7 + arrowiconHeight.
@@ -526,7 +538,7 @@ pub fn spawn_classic_hud(
             Pickable::IGNORE,
             GlobalZIndex(-2),
             // The windows share a GlobalZIndex, so ZIndex decides: the InfoLink's portrait lies over the InfoLink.
-            ZIndex(if w == Win::InfoLinkFace { 1 } else { 0 }),
+            ZIndex(if w == Win::InfoLinkFace || w == Win::Fps { 1 } else { 0 }),
             HudWindow(w),
         ));
     }
@@ -690,7 +702,9 @@ pub fn classic_hud_system(
         let g = crate::abilities::lock();
         let mut n = 0;
         if let Some(a) = g.as_ref() {
-            for x in a.augs.list.iter().filter(|x| x.has && !x.def.always_active) {
+            // (Augmentation Display "Active Only": just the running ones, as AddAugmentationDisplay adds them.)
+            let all = crate::settings::hud_show_all_augs();
+            for x in a.augs.list.iter().filter(|x| x.has && !x.def.always_active && (all || x.active)) {
                 if n == snap.augs.len() {
                     snap.augs.push((0, String::new(), false));
                 }
@@ -845,6 +859,46 @@ pub fn classic_hud_system(
         }
         _ => (1, 1),
     };
+    // HUDInformationDisplay (DeusExHUD.ConfigurationChanged): as wide as its longest paragraph, at most
+    // Min(width - 170, 800), the paragraphs word-wrapped to that; centred between the InfoLink and the belt.
+    let info = crate::info::shown();
+    let info_font = hud.font(assets, "FontMenuSmall_DS");
+    let info_lines: Vec<(u8, [u8; 3], Vec<String>)> = match (&info, &info_font) {
+        (Some((_, paras)), Some(f)) => {
+            let max_w = (sw - 170).min(800);
+            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
+            let inner = pref.min(max_w) - INFO_SIDE * 2;
+            paras
+                .iter()
+                .map(|p| {
+                    let l = if p.text.is_empty() { vec![String::new()] } else { crate::uicanvas::wrap(f, &p.text, inner.max(1)) };
+                    (p.align, p.color, l)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let (info_w, info_h) = match (&info, &info_font) {
+        (Some((_, paras)), Some(f)) => {
+            let max_w = (sw - 170).min(800);
+            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
+            let lines: usize = info_lines.iter().map(|l| l.2.len()).sum();
+            (pref.min(max_w), (lines as i32 * f.height + INFO_TOP + INFO_BOTTOM).max(INFO_MIN_H))
+        }
+        _ => (1, 1),
+    };
+    // A message that stays up: the death prompt.
+    let stay_msg = (msg.time_left > 100.0 && !msg.text.is_empty()).then(|| msg.text.clone());
+    let msg_font = hud.font(assets, "FontMenuSmall_DS");
+    let fps_text = crate::fps::text().filter(|t| !t.is_empty());
+    let (fps_w, fps_h) = match (&fps_text, &msg_font) {
+        (Some(t), Some(f)) => (f.width(t) + 2, f.height + 2),
+        _ => (1, 1),
+    };
+    let (msg_w, msg_h) = match (&stay_msg, &msg_font) {
+        (Some(t), Some(f)) => (f.width(t) + 2, f.height + 2),
+        _ => (1, 1),
+    };
     let ammo_visible = snap.held.as_ref().is_some_and(|h| !h.item) && !snap.dead && !menu;
     let log_font = hud.font(assets, "FontMenuSmall_DS");
     // msgLog: right of the hit display, as wide as the screen allows (no active items column yet).
@@ -934,6 +988,29 @@ pub fn classic_hud_system(
                 // scene too.
                 start.is_some() && !snap.dead && (!menu || START_CENTRED.load(std::sync::atomic::Ordering::Relaxed)),
             ),
+            Win::Info => {
+                // infoTop: under the InfoLink when it's up (the log doesn't count: DeusExHUD sets logTop there);
+                // infoBottom: the top of the belt.
+                let link_h = if con.link.is_some() { crate::conui::INFOLINK_SIZE.1 } else { 0 };
+                let link_y = if log_visible { log_h + 20 } else { 0 };
+                let top = if con.link.is_some() { 10 + link_h + link_y } else { 0 };
+                let bottom = sh - Win::Belt.size().1;
+                (
+                    sw / 2 - info_w / 2,
+                    top + ((bottom - top) / 2 - info_h / 2) + 10,
+                    info_w.max(1),
+                    info_h.max(1),
+                    info.is_some() && !snap.dead && !menu,
+                )
+            }
+            Win::Fps => (sw - fps_w - 4, 2, fps_w.max(1), fps_h.max(1), fps_text.is_some()),
+            Win::Msg => (
+                sw / 2 - msg_w / 2,
+                sh - Win::Belt.size().1 - msg_h - 20,
+                msg_w.max(1),
+                msg_h.max(1),
+                stay_msg.is_some() && !menu,
+            ),
             Win::ConCursor => {
                 let pos = window.cursor_position().map(|c| {
                     let k = window.scale_factor() / s as f32;
@@ -1010,6 +1087,9 @@ pub fn classic_hud_system(
             Win::Bark => "hud::Bark",
             Win::ConCursor => "hud::ConCursor",
             Win::Start => "hud::Start",
+            Win::Info => "hud::Info",
+            Win::Msg => "hud::Msg",
+            Win::Fps => "hud::Fps",
         });
         // Windows that only change with what they show are redrawn only when that changes.
         let key: Option<u64> = match w {
@@ -1044,6 +1124,9 @@ pub fn classic_hud_system(
                 (ww, wh, s).hash(&mut h);
                 Some(h.finish())
             }
+            Win::Info => Some(hkey(&(info.as_ref().map(|i| i.0), ww, wh, s))),
+            Win::Msg => Some(hkey(&(&stay_msg, ww, wh, s))),
+            Win::Fps => Some(hkey(&(&fps_text, ww, wh, s))),
             Win::ConCursor => Some(hkey(&(ww, wh, s))),
             // The ammo display changes with the gun, its rounds, the pool and the lock line.
             Win::Ammo => {
@@ -1176,6 +1259,19 @@ pub fn classic_hud_system(
                             canvas.text(f, 2, y + 2, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
                             canvas.text(f, 0, y, ww, f.height, HAlign::Left, VAlign::Top, [255, 255, 255], l);
                         }
+                    }
+                }
+                Win::Info => draw_info(hud, assets, &mut canvas, info_font.as_deref(), &info_lines),
+                Win::Fps => {
+                    if let (Some(f), Some(t)) = (&msg_font, &fps_text) {
+                        canvas.text(f, 1, 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], t);
+                        canvas.text(f, 0, 0, ww, f.height, HAlign::Left, VAlign::Top, [255, 242, 140], t);
+                    }
+                }
+                Win::Msg => {
+                    if let (Some(f), Some(t)) = (&msg_font, &stay_msg) {
+                        canvas.text(f, 2, 2, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], t);
+                        canvas.text(f, 0, 0, ww, f.height, HAlign::Left, VAlign::Top, [255, 255, 255], t);
                     }
                 }
                 Win::ConLower => {
@@ -1601,6 +1697,42 @@ fn wrap_log(font: &UiFont, log: &[(String, f32)], width: i32) -> Vec<String> {
 }
 
 /// HUDLogDisplay: shared border window (tiled background + border), the log icon, the lines.
+/// HUDInformationDisplay metrics: TopMargin 13, BottomMargin 10, MinHeight 40, the tile's side margins 20.
+const INFO_TOP: i32 = 13;
+const INFO_BOTTOM: i32 = 10;
+const INFO_MIN_H: i32 = 40;
+const INFO_SIDE: i32 = 20;
+
+/// HUDSharedBorderWindow's background and border, then each paragraph's TextWindow (FontMenuSmall_DS, word
+/// wrapped, aligned in the full width) one under the other.
+fn draw_info(
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    c: &mut Canvas,
+    font: Option<&UiFont>,
+    paras: &[(u8, [u8; 3], Vec<String>)],
+) {
+    let names = ["TL", "TR", "BL", "BR", "Left", "Right", "Top", "Bottom", "Center"];
+    let bg: [Option<Arc<UiTex>>; 9] = names.map(|n| hud.ui(assets, &format!("HUDWindowBackground_{n}")));
+    let border: [Option<Arc<UiTex>>; 9] = names.map(|n| hud.ui(assets, &format!("HUDWindowBorder_{n}")));
+    let (w, h) = (c.w, c.h);
+    c.borders(0, 0, w, h, &bg, crate::menuui::bg_style(), crate::menuui::h_col(0));
+    c.borders(0, 0, w, h, &border, crate::menuui::border_style(), crate::menuui::border_col());
+    let Some(f) = font else { return };
+    let mut y = INFO_TOP;
+    for (align, col, lines) in paras {
+        let ha = match align {
+            1 => HAlign::Center,
+            2 => HAlign::Right,
+            _ => HAlign::Left,
+        };
+        for l in lines {
+            c.text(f, INFO_SIDE, y, w - INFO_SIDE * 2, f.height, ha, VAlign::Top, *col, l);
+            y += f.height;
+        }
+    }
+}
+
 fn draw_log(
     hud: &mut ClassicHud,
     assets: &mut RuntimeAssets,

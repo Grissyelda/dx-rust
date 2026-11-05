@@ -34,6 +34,28 @@ From his Nintendo Switch port of DX RUST, one change per pull request:
 - The README walks Mac users through building the app step by step: Apple's command line tools, Rust, the
   source, `BUILD_MAC.sh`, and opening a copied app.
 
+### Classic mode completeness (November 5, afternoon)
+- Datacubes, books and newspapers show their text in the original's information window: the game's bitmap font,
+  the HUD window background and border, each paragraph on its own, headlines centred, placed between the InfoLink
+  and the belt; the crosshair and the frob box hide while you read, and it closes when you look away (#38).
+  Readables that hold a DataVault image now give it to you ("Image ... added to DataVault"), and one with nothing to
+  read says "There's nothing interesting to read".
+- The death prompt and the FPS counter use the game's bitmap font too; no smooth system font is left on screen in
+  normal play (our quick key editor on Home is now a Debug Mode tool; Settings > Customize Keys is the original's).
+- The key ring turns in the lock and comes back, as the original's does (UseBegin, then UseEnd) (#37).
+- The training can't kill you, as in the original (it keeps your head and torso at 10 or more), and feet stepping
+  into a pain zone always hurt at once; under water the toxic pool waits until your breath runs out, as the
+  original's script does (#39).
+- Persona screens have the original's scroll bars (up / down buttons and a draggable thumb) on every scrolling
+  pane, the inventory's item description included; the conversation list scrolls on its own, so older
+  conversations can be reached.
+- The Images screen's notes work: Add Note, click on the picture, type; click a note to edit it, Delete Note
+  removes it, Show Notes hides them. Notes are kept in saves.
+- Settings > Game: Augmentation Display (show only running augs) and Gore Level (Low: no blood spurts, drops,
+  splats or pools) now do what they say.
+- Choosing Training or Play Intro with a game running asks first, as the original does.
+- Settings > Colors shows the original's sample HUD window in the chosen theme.
+
 ### GitHub fixes (November 5)
 - A thrown body flies as the original's flat carcass instead of a standing person's tall cylinder, so it lands on
   the training med room's table (and anywhere with a low ceiling) instead of hitting an invisible wall (#40).

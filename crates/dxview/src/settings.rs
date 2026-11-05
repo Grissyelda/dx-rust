@@ -334,6 +334,14 @@ pub fn auto_reload() -> bool {
 pub fn subtitles() -> bool {
     setting!("Subtitles") >= 0.5
 }
+/// Gore Level Low (GameInfo.bLowGore): no BloodDrop / BloodPool / BloodSplat / BloodSpurt.
+pub fn low_gore() -> bool {
+    setting!("GoreLevel") < 0.5
+}
+/// Augmentation Display (bHUDShowAllAugs): every installed aug on the HUD, or only the running ones.
+pub fn hud_show_all_augs() -> bool {
+    setting!("HUDAugDisplay") > 0.5
+}
 pub fn crosshairs() -> bool {
     setting!("Crosshairs") < 0.5
 }
