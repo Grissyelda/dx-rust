@@ -193,6 +193,12 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("SoundOcclusion", 0.0),
     ("RoomReverb", 0.0),
     ("Soundscape", 0.0),
+    // Performance (ours, perf.rs): these defaults keep the PC's picture and behaviour. 4x MSAA, HDR render targets,
+    // skipping GPU work that adds no pixels, skipping CPU work that changes nothing.
+    ("AntiAliasing", 1.0),
+    ("HDRRendering", 1.0),
+    ("LeanRendering", 0.0),
+    ("LeanUpdates", 0.0),
     // Mods (used only while the mod is on in the launcher): New Vision textures, HDTP item / decoration models,
     // HDTP characters. Taken up when the next map loads.
     ("HDTextures", 1.0),

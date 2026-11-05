@@ -28,6 +28,7 @@ mod shadowlight;
 mod relight;
 mod threads;
 mod alloc;
+mod perf;
 mod skyfollow;
 mod glow;
 mod vision;

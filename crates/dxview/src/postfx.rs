@@ -71,8 +71,10 @@ pub fn postfx_system(
             commands.entity(e).remove::<ScreenSpaceAmbientOcclusion>();
         }
     }
+    // Anti-Aliasing off (perf.rs) leaves the edges alone; SSAO's SMAA still comes with Ambient Occlusion, and
+    // Upscaling brings its own antialiasing (TAA).
     let aa_off = ssao || crate::upscale::mode() > 0;
-    let want_msaa = if aa_off { Msaa::Off } else { Msaa::Sample4 };
+    let want_msaa = if aa_off || !crate::perf::msaa() { Msaa::Off } else { Msaa::Sample4 };
     for (e, msaa, smaa, last) in &cams {
         if *msaa != want_msaa {
             commands.entity(e).insert(want_msaa);
