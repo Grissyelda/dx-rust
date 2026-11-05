@@ -81,7 +81,8 @@ pub struct BspCollision {
 }
 
 thread_local! {
-    static STACK: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The walk's pending nodes, each with the part of the sweep (as fractions of it) that can reach its region.
+    static STACK: std::cell::RefCell<Vec<(i32, f64, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl std::fmt::Debug for BspCollision {
@@ -186,6 +187,12 @@ impl BspCollision {
     }
 
     /// Sweep a box with half-size `extent` from `start` to `end`. Returns the first blocking hit.
+    ///
+    /// The walk carries, for each node, the part of the sweep (fractions `t0..t1` of it) along which the box can
+    /// reach the node's region: a child gets only the stretch of its parent's part on its own side of the split
+    /// plane, so a long sweep crossing many planes tests the hulls deep in the tree only against the stretch near
+    /// them. A hull is tested against the whole sweep, as in `trace_reference`, so the hits are the same; its
+    /// bounding box is checked against the box swept along the node's part first.
     pub fn trace(&self, start: DVec3, end: DVec3, extent: DVec3) -> Hit {
         if self.nodes.is_empty() {
             return Hit::NONE;
@@ -196,22 +203,24 @@ impl BspCollision {
             return Hit::NONE;
         }
         let mut best = Hit::NONE;
-        // The swept box's bounds, grown by a unit: a hull wholly outside them can't produce a hit under 1.0.
-        let mut lo = start.min(end) - extent - DVec3::ONE;
-        let mut hi = start.max(end) + extent + DVec3::ONE;
         let pad = extent * 1.1;
-        // Once something is hit, only the part of the sweep before it can hold a nearer hit: nodes and hulls
-        // are tested against that shortened sweep (with a unit of slack), so the walk stops descending past it.
-        let mut cut_end = end;
+        // Once something is hit, only the sweep up to it (and a unit past it) can hold a nearer hit.
+        let mut t_cut = 1.0f64;
         STACK.with(|st| {
             // Iterative walk (no deep recursion on large trees), on a per-thread stack reused between traces.
             let mut stack = st.borrow_mut();
             stack.clear();
-            stack.push(0);
-            while let Some(ni) = stack.pop() {
+            stack.push((0, 0.0, 1.0));
+            while let Some((ni, t0, t1)) = stack.pop() {
                 let Some(node) = self.nodes.get(ni as usize) else { continue };
+                if t0 > t1.min(t_cut) {
+                    continue;
+                }
                 if node.hull >= 0 {
                     let h = &self.hulls[node.hull as usize];
+                    let (a, b) = (start + delta * t0, start + delta * t1.min(t_cut));
+                    let lo = a.min(b) - extent - DVec3::ONE;
+                    let hi = a.max(b) + extent + DVec3::ONE;
                     if h.bmax.cmpge(lo).all() && h.bmin.cmple(hi).all() {
                         let mut c = Sweep::new(start, end, extent);
                         let planes = &self.planes[h.first as usize..(h.first + h.count) as usize];
@@ -219,22 +228,31 @@ impl BspCollision {
                             if let Some(h) = c.result() {
                                 if h.fraction < best.fraction {
                                     best = h;
-                                    let t = (best.fraction + 1.0 / len).min(1.0);
-                                    cut_end = start + delta * t;
-                                    lo = start.min(cut_end) - extent - DVec3::ONE;
-                                    hi = start.max(cut_end) + extent + DVec3::ONE;
+                                    t_cut = (best.fraction + 1.0 / len).min(1.0);
                                 }
                             }
                         }
                     }
                 }
-                let s0 = side(node.plane, start, pad);
-                let s1 = side(node.plane, cut_end, pad);
-                if node.front >= 0 && (s0 <= 0 || s1 <= 0) {
-                    stack.push(node.front);
+                let t1 = t1.min(t_cut);
+                if t0 > t1 {
+                    continue;
                 }
-                if node.back >= 0 && (s0 >= 0 || s1 >= 0) {
-                    stack.push(node.back);
+                // The box reaches the front side where the centre's distance is above -e, the back where it is
+                // below e (e: the padded box's reach along the normal, plus a unit for rounding).
+                let n = node.plane.truncate();
+                let e = pad.x * n.x.abs() + pad.y * n.y.abs() + pad.z * n.z.abs() + 1.0;
+                let fa = n.dot(start + delta * t0) - node.plane.w;
+                let fb = n.dot(start + delta * t1) - node.plane.w;
+                if node.front >= 0 {
+                    if let Some((u0, u1)) = stretch(t0, t1, fa + e, fb + e) {
+                        stack.push((node.front, u0, u1));
+                    }
+                }
+                if node.back >= 0 {
+                    if let Some((u0, u1)) = stretch(t0, t1, e - fa, e - fb) {
+                        stack.push((node.back, u0, u1));
+                    }
                 }
             }
         });
@@ -341,6 +359,16 @@ fn side(plane: DVec4, center: DVec3, extent: DVec3) -> i32 {
         1
     } else {
         0
+    }
+}
+
+/// The stretch of `t0..t1` where a quantity that is `ga` at `t0`, `gb` at `t1` and linear between is not negative.
+fn stretch(t0: f64, t1: f64, ga: f64, gb: f64) -> Option<(f64, f64)> {
+    match (ga >= 0.0, gb >= 0.0) {
+        (true, true) => Some((t0, t1)),
+        (false, false) => None,
+        (true, false) => Some((t0, t0 + (t1 - t0) * (ga / (ga - gb)))),
+        (false, true) => Some((t0 + (t1 - t0) * (ga / (ga - gb)), t1)),
     }
 }
 
