@@ -31,6 +31,9 @@ use unreal_pkg::props::{find, Property, Value};
 use unreal_pkg::Reader;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
+/// The menu was up when a map change cleared it (Load Game keeps its window until the loader resets this module), so
+/// the next frame is back in the game as when it closes.
+static CLOSED_BY_MAP: AtomicBool = AtomicBool::new(false);
 /// DeusExLevelInfo.MissionNumber of this map (< 0: the logo / splash maps).
 static MISSION: AtomicI32 = AtomicI32::new(0);
 static DEAD: AtomicBool = AtomicBool::new(false);
@@ -3005,7 +3008,7 @@ pub fn menu_system(
         cursor_opts.grab_mode = bevy::window::CursorGrabMode::None;
         cursor_opts.visible = false;
     }
-    if !is_open && was_open {
+    if !is_open && (was_open || CLOSED_BY_MAP.swap(false, Ordering::Relaxed)) {
         if st.paused_game {
             vtime.unpause();
             st.paused_game = false;
@@ -4312,7 +4315,9 @@ mod tests {
 
 /// A new map is going in (loader.rs): this module's state of the map being left.
 pub fn reset_level() {
-    OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    if OPEN.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        CLOSED_BY_MAP.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     DEAD.store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut v) = KEYPAD_OPEN.lock() {
         *v = None;
