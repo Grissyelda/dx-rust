@@ -171,8 +171,8 @@ pub struct WaterMats {
     rings: [Vec4; RINGS],
     next: usize,
     modern: Option<bool>,
-    /// The global parameters last written (modern, rain, moon).
-    last: Option<[f32; 5]>,
+    /// The global parameters last written (modern, rain, moon, open sea).
+    last: Option<[f32; 6]>,
 }
 
 /// Enhancement "Modern Water" (setting ModernWater): reflections, a body colour and see-through depth, detailed
@@ -190,6 +190,13 @@ pub fn planar() -> bool {
 /// Screen-Space, the default): no second view for the CPU to prepare and record.
 pub fn ssr() -> bool {
     modern() && setting!("WaterReflections") < 0.5
+}
+
+/// Enhancement "Open Sea" (setting OpenSea, ours; off by default): without Modern Water, the open sea (`ocean_ring`)
+/// still runs past the map's edge to the horizon, drawn the Classic way, the edge walls go, and the
+/// map's water no longer fades out with distance. Classic alone ends the water 30-120 m from the eye in black.
+pub fn open_sea() -> bool {
+    crate::settings::get("OpenSea") > 0.5
 }
 
 /// Each frame: time and the live rings into every water material.
@@ -227,8 +234,16 @@ pub fn water_system(
     let modern = modern();
     let switched = wm.modern != Some(modern);
     wm.modern = Some(modern);
+    let open_sea = open_sea();
     let ssr = ssr();
-    let key = [if modern { 1.0 } else { 0.0 } + if ssr { 2.0 } else { 0.0 }, storm(), moon_dir.x, moon_dir.y, moon_dir.z];
+    let key = [
+        if modern { 1.0 } else { 0.0 } + if ssr { 2.0 } else { 0.0 },
+        storm(),
+        moon_dir.x,
+        moon_dir.y,
+        moon_dir.z,
+        if open_sea { 1.0 } else { 0.0 },
+    ];
     let switched = switched || wm.last.is_some_and(|l| l[0] != key[0]);
     if wm.last != Some(key) {
         wm.last = Some(key);
@@ -246,6 +261,12 @@ pub fn water_system(
             m.extension.params.m.z = rain;
             m.extension.params.moon = moon_dir.extend(1.0);
             m.extension.params.far.w = if modern { wave_m() } else { 0.0 };
+            // Classic water fades out between far.x and far.y metres from the eye; the open sea goes to the horizon.
+            let (near, far) = if open_sea { (1.0e6, 2.0e6) } else { (30.0, 120.0) };
+            if m.extension.params.far.x != near {
+                m.extension.params.far.x = near;
+                m.extension.params.far.y = far;
+            }
             if switched {
                 let opaque = wm.opaque.get(i).copied().unwrap_or(false);
                 m.base.alpha_mode = match (opaque, modern) {
@@ -780,7 +801,7 @@ pub fn backing_material() -> StandardMaterial {
     }
 }
 
-/// The open sea shows only with Modern Water (and the edge walls go).
+/// The open sea shows only with Modern Water or Open Sea (and the edge walls go).
 #[allow(clippy::type_complexity)]
 pub fn ocean_system(
     mut commands: Commands,
@@ -820,7 +841,7 @@ pub fn ocean_system(
             *v = gwant;
         }
     }
-    let on = modern() && !q.is_empty();
+    let on = (modern() || open_sea()) && !q.is_empty();
     let want = if on { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut q {
         if *v != want {

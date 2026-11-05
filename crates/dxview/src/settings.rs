@@ -150,6 +150,8 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("Weather", 2.0),
     // Shader-pack style water (reflections, water body, fine waves, rain rings): off.
     ("ModernWater", 0.0),
+    // Classic water on to the horizon (water.rs open_sea): off.
+    ("OpenSea", 0.0),
     ("WaterReflections", 0.0),
     ("RealtimeShadows", 0.0),
     ("ModernAim", 0.0),

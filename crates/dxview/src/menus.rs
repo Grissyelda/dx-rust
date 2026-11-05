@@ -916,6 +916,7 @@ impl Enhance {
             ("FogVolumes", "Visuals", "Local Fog", "Low mist lying over the water in sewers and other indoor waterways, and a smoky haze in the bars and clubs that catches the light."),
             ("Clouds", "Visuals", "Night Clouds", "Volumetric clouds drifting over the open-air maps, lit by the moon and the city; in the rain they close into a dark overcast with lightning and thunder."),
             ("ModernWater", "Visuals", "Modern Water", "Water with real reflections of what's around it, a dark see-through body, fine wind waves, rain rings and glints from the lights - like a modern shader pack. See Water Reflections for how the reflections are made."),
+            ("OpenSea", "Visuals", "Open Sea", "Without Modern Water: the sea runs on past the edge of the map to the horizon, in the original water's look, instead of fading into black before the walls at the map's edge. Costs almost nothing. Takes effect on the next map."),
             ("NoStrobeLights", "Visuals", "No Flickering Lights", "Flickering and blinking lights burn steady (GMDX's Lighting Accessibility, for photosensitive players)."),
         ] {
             let mut c = debug_mode_choice();
