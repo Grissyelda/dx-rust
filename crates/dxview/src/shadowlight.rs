@@ -82,6 +82,8 @@ pub struct BspShadow {
     pub sky: bool,
     /// A dynamic light here can be a spot light: only the flashlight with Flashlight Cone on (dynlight.rs).
     pub spot_lights: bool,
+    /// The dynamic lights are in the lightmap (lmlights.rs): no walk for them at all.
+    pub lm_lights: bool,
 }
 
 impl<'a> From<&'a BspShadow> for BspShadowParams {
@@ -97,7 +99,8 @@ impl<'a> From<&'a BspShadow> for BspShadowParams {
 /// lights.
 ///
 /// The Classic lights' walk over each pixel's cluster (bsp_shadow.wgsl) only where a dynamic light can reach: not on
-/// the sky room's faces, and its spot-light cone only with Flashlight Cone on.
+/// the sky room's faces, and its spot-light cone only with Flashlight Cone on. With the lightmap lights (lmlights.rs)
+/// the dynamic lights come with the lightmap and no material walks.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BspShadowKey {
     spot_shadows: bool,
@@ -115,7 +118,7 @@ impl From<&BspShadow> for BspShadowKey {
             relight: m.params.r.x > 0.5,
             classic_lights: m.params.q.w > 0.5,
             detail: m.params.q.y > 0.0 && m.params.q.z > 0.5,
-            walk: !m.sky,
+            walk: !m.sky && !m.lm_lights,
             spot_lights: m.spot_lights,
         }
     }
@@ -178,6 +181,7 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
             detail: None,
             sky: false,
             spot_lights: crate::dynlight::flashlight_cone(),
+            lm_lights: crate::lmlights::active(),
         },
     }
 }

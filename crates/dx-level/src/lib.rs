@@ -1121,6 +1121,8 @@ pub fn build_level(
     let mut walls: Vec<WallFace> = Vec::new();
     let mut floor_groups: Vec<String> = Vec::new();
     let mut floor_mat: HashMap<i32, u16> = HashMap::new();
+    // The surfaces drawn lit outside the sky room: the atlas patches that dynamic lights can reach (lmlights.rs).
+    let mut lit_surfs: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for node in &model.nodes {
         if node.num_vertices < 3 {
             continue;
@@ -1259,6 +1261,9 @@ pub fn build_level(
             }
             None => false,
         } };
+        if !is_sky && surf.poly_flags & 0x0040_0000 == 0 {
+            lit_surfs.insert(node.surf as usize);
+        }
 
         let cached = *tex_cache
             .entry(surf.material)
@@ -1575,7 +1580,11 @@ pub fn build_level(
         textures,
         batches,
         player_start,
-        lightmap: Some(baked.into_atlas()),
+        lightmap: Some({
+            let mut atlas = baked.into_atlas();
+            atlas.patches.retain(|p| lit_surfs.contains(&p.surf));
+            atlas
+        }),
         collision: bsp_collision,
         blockers: actors::blockers(&actor_list),
         players_only: actors::players_only(&actor_list),
