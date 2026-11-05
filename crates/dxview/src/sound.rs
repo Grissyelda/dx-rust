@@ -386,6 +386,24 @@ pub fn prefetch(paths: impl IntoIterator<Item = String>) {
     }
 }
 
+/// Asks the background decoder for a sound it hasn't decoded yet. A path already waiting isn't queued twice.
+fn want_decode(path: &str) {
+    if let Ok(mut w) = WANT.lock() {
+        if !w.iter().any(|p| p == path) {
+            w.push(path.to_string());
+        }
+    }
+}
+
+/// Puts a request back in the queue for the next frame.
+fn defer(r: Req) {
+    if let Ok(mut q) = QUEUE.lock() {
+        if q.len() < 256 {
+            q.push(r);
+        }
+    }
+}
+
 /// The map the decoder reads map-embedded sounds (MyLevel.*) from; it follows each new map.
 static DECODER_MAP: Mutex<String> = Mutex::new(String::new());
 
@@ -414,10 +432,6 @@ pub fn start_decoder(root: PathBuf, map_name: String) {
                         let old = std::mem::replace(&mut bank.map_name, want_map).to_ascii_lowercase();
                         bank.packages.remove("mylevel");
                         bank.packages.remove(&old);
-                        bank.clips.retain(|k, _| {
-                            let k = k.to_ascii_lowercase();
-                            !k.starts_with("mylevel.") && !k.starts_with(&format!("{old}."))
-                        });
                     }
                     let next = WANT.lock().ok().and_then(|mut w| w.pop());
                     let Some(path) = next else {
@@ -428,6 +442,9 @@ pub fn start_decoder(root: PathBuf, map_name: String) {
                         continue;
                     }
                     let c = bank.decode(&path);
+                    if c.is_none() {
+                        eprintln!("sound: can't play {path}");
+                    }
                     remember(&path, c);
                 }
             });
@@ -439,7 +456,6 @@ pub struct SoundBank {
     root: PathBuf,
     map_name: String,
     packages: HashMap<String, Option<Package>>,
-    clips: HashMap<String, Option<Arc<Clip>>>,
 }
 
 impl SoundBank {
@@ -448,7 +464,6 @@ impl SoundBank {
             root,
             map_name,
             packages: HashMap::new(),
-            clips: HashMap::new(),
         }
     }
 
@@ -482,26 +497,6 @@ impl SoundBank {
             .find_export_by_path(rest)
             .or_else(|| pkg.find_export_by_name(rest.rsplit('.').next().unwrap_or(rest)))?;
         unreal_pkg::objects::read_sound(pkg, e).ok()
-    }
-
-    /// The decoded sound at an object path like "DeusExSounds.Weapons.PistolFire".
-    pub fn clip(&mut self, path: &str) -> Option<Arc<Clip>> {
-        if let Some(c) = self.clips.get(path) {
-            return c.clone();
-        }
-        let c = match cached(path) {
-            Some(c) => c,
-            None => {
-                let c = self.decode(path);
-                remember(path, c.clone());
-                c
-            }
-        };
-        if c.is_none() {
-            eprintln!("sound: can't play {path}");
-        }
-        self.clips.insert(path.to_string(), c.clone());
-        c
     }
 
     fn decode(&mut self, path: &str) -> Option<Arc<Clip>> {
@@ -869,6 +864,19 @@ pub fn sound_system(
         .map(|mut q| std::mem::take(&mut *q))
         .unwrap_or_default();
     for r in reqs {
+        // The clip comes from the background decoder. A sound it hasn't decoded yet waits in the queue for the
+        // next frame, so no frame decodes on the main thread.
+        let clip = match cached(&r.sound) {
+            Some(c) => c,
+            None => {
+                want_decode(&r.sound);
+                defer(r);
+                continue;
+            }
+        };
+        let Some(clip) = clip else {
+            continue;
+        };
         let radius = if r.radius > 0.0 {
             r.radius
         } else {
@@ -892,9 +900,6 @@ pub fn sound_system(
         if gain <= 0.0 {
             continue;
         }
-        let Some(clip) = st.bank.clip(&r.sound) else {
-            continue;
-        };
         let talk = r.slot == slot::TALK;
         let (g2, filter, reverb) = fx(&mut st.occl, r.pos, talk);
         let id = st.audio.play(
@@ -1037,7 +1042,15 @@ pub fn sound_system(
                 if let Some((id, _)) = other {
                     st.audio.stop(*id);
                 }
-                if let Some(clip) = st.bank.clip(h.sound) {
+                let clip = match cached(&h.sound) {
+                    Some(c) => c,
+                    None => {
+                        // Not decoded yet: the background decoder gets it, and the loop starts on a later frame.
+                        want_decode(&h.sound);
+                        None
+                    }
+                };
+                if let Some(clip) = clip {
                     let id = st.audio.play(
                         clip,
                         VoiceParams {
@@ -1245,12 +1258,12 @@ mod tests {
             return;
         }
         let mut b = SoundBank::new(root, "01_NYC_UNATCOIsland".into());
-        let c = b.clip("DeusExSounds.Weapons.PistolFire").expect("pistol");
+        let c = b.decode("DeusExSounds.Weapons.PistolFire").expect("pistol");
         assert!(c.duration() > 0.1);
-        assert!(b.clip("Ambient.Ambient.Ocean").is_some());
+        assert!(b.decode("Ambient.Ambient.Ocean").is_some());
         assert!(
-            b.clip("MoverSFX.Door.MetalDoorOpen").is_some()
-                || b.clip("MoverSFX.Door.WoodDoorOpen").is_some()
+            b.decode("MoverSFX.Door.MetalDoorOpen").is_some()
+                || b.decode("MoverSFX.Door.WoodDoorOpen").is_some()
                 || true
         );
         assert!(b.song("LibertyIsland_Music.LibertyIsland_Music").is_some());
