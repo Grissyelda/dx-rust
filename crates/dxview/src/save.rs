@@ -1336,6 +1336,7 @@ fn restore_level_part(world: &mut World, s: &SaveGame, l: &LevelSave) {
 /// First schedule: count frames, record the map's placed actors, put the global part of a save back before the
 /// game runs its first frame.
 pub fn save_first_system(world: &mut World) {
+    let _prof = crate::prof::scope("save::save_first_system");
     let f = FRAME.fetch_add(1, Ordering::Relaxed);
     if f == 0 {
         PLACED.store(world.resource::<LevelRes>().0.actors.len(), Ordering::Relaxed);

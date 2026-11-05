@@ -1707,6 +1707,7 @@ pub fn attach_npcs(
     mut map_gen: Local<u64>,
     mut done: Local<bool>,
 ) {
+    let _prof = crate::prof::scope("ai::attach_npcs");
     // A new map (loader.rs): start this system's per-map state over.
     if crate::loader::new_map(&mut map_gen) {
         *done = false;

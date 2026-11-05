@@ -1343,6 +1343,7 @@ fn setup(
     mut water_mats: ResMut<Assets<water::WaterMaterial>>,
     mut bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
 ) {
+    let _prof = crate::prof::scope("main::setup");
     let mut water_list = water::WaterMats::default();
     let mut backing_mat: Option<Handle<StandardMaterial>> = None;
     prof::load_mark("start");

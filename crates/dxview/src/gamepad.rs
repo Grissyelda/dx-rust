@@ -218,6 +218,7 @@ fn dead(v: Vec2, dz: f32) -> Vec2 {
 
 /// PreUpdate, before keybinds::remap_system: poll the pads.
 pub fn poll_system(gilrs: Option<NonSendMut<GilrsRes>>, mut prev: Local<Vec<PadBtn>>) {
+    let _prof = crate::prof::scope("gamepad::poll_system");
     let mut f = PadFrame::default();
     let mut any_event = false;
     if let Some(g) = gilrs {
