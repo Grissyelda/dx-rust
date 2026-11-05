@@ -956,9 +956,13 @@ pub fn classic_hud_system(
         if !visible {
             // Hidden windows keep their last image: no canvas, no upload (a hidden ConLower alone was a
             // screen-wide f32 canvas allocated, cleared and converted every frame).
-            for (hw, _, mut vis, _) in &mut nodes {
-                if hw.0 == w && *vis != Visibility::Hidden {
+            for (hw, mut node, mut vis, _) in &mut nodes {
+                if hw.0 == w {
                     vis.set_if_neq(Visibility::Hidden);
+                    // Lean Updates: out of Bevy's layout too (Visibility keeps a node in it).
+                    if crate::perf::lean_updates() && node.display != Display::None {
+                        node.display = Display::None;
+                    }
                 }
             }
             continue;
@@ -1166,6 +1170,10 @@ pub fn classic_hud_system(
             };
             if *vis != want {
                 *vis = want;
+            }
+            // Back in layout when shown (a parked window is Display::None).
+            if node.display != Display::Flex {
+                node.display = Display::Flex;
             }
             // Sized about the screen corner it sits nearest.
             let (sx, sy) = if k == 1.0 {
