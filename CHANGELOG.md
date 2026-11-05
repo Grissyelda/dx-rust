@@ -31,6 +31,8 @@ From his Nintendo Switch port of DX RUST, one change per pull request:
 - The mouse is released when the game loses focus, and the window keeps its size on a Retina display.
 - Upscaling works without temporal antialiasing on macOS, because Metal can't draw the skeletal bodies with its
   motion vectors. Native AA only sharpens there.
+- The README walks Mac users through building the app step by step: Apple's command line tools, Rust, the
+  source, `BUILD_MAC.sh`, and opening a copied app.
 
 ### GitHub fixes (November 5)
 - A thrown body flies as the original's flat carcass instead of a standing person's tall cylinder, so it lands on

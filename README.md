@@ -128,19 +128,52 @@ It runs as a native Windows program, on Steam Deck / Linux and on Apple Silicon 
    *Gamepad* template.
 
 ### macOS (Apple Silicon)
-There is no download for macOS yet, so build the app from source (see *Building from source*). You need the Windows
-files of the game. Both Steam and GOG sell only the Windows version, but the game files are the same.
+There is no download for macOS yet, so you build the app yourself. It takes a few commands in Terminal. You also need
+the Windows files of the game: Steam and GOG sell only the Windows version, but the game files are the same.
 
+**Build the app**
+1. Install Apple's command line tools (the C compiler and linker). In Terminal:
+
+       xcode-select --install
+
+   A window asks to install them; click *Install*. If it says they are already installed, go on.
+2. Install Rust with [rustup](https://rustup.rs) and choose the default option when it asks:
+
+       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+       source "$HOME/.cargo/env"
+
+   You need Rust 1.95 or later; `rustc --version` shows yours and `rustup update` brings it up to date.
+3. Get the source. With git (it comes with the command line tools):
+
+       git clone https://github.com/Grissyelda/dx-rust.git
+       cd dx-rust
+
+   Or download the ZIP from GitHub (*Code > Download ZIP*), unzip it and `cd` into the folder.
+4. Build:
+
+       ./BUILD_MAC.sh
+
+   The first build takes a while (often 10-30 minutes: it compiles the Bevy engine with full optimisation); later
+   builds are faster. It makes `dist/DX RUST.app` and `dist/dxrust-macos.zip`. If macOS says the script can't be
+   run, use `bash BUILD_MAC.sh`.
+5. Copy `dist/DX RUST.app` to Applications. The app is signed on your own Mac, so it opens without a warning. If
+   you give the zip to someone else, their Mac will say the app can't be checked: they can right-click it and choose
+   *Open*, or run `xattr -dr com.apple.quarantine "/Applications/DX RUST.app"` once.
+
+To update later, run `git pull` in the `dx-rust` folder (or download the ZIP again) and run `./BUILD_MAC.sh` again;
+your settings and saves are kept.
+
+**Get the game files and play**
 1. Get the game folder and put it at `~/Games/Deus Ex`. Use one of these:
    - **Steam:** Steam for Mac won't install the game, but its console can download the files. Run
      `open steam://open/console` in Terminal, then type `download_depot 6910 6911` in the console. When the download
      ends, move the `depot_6911` folder that the console names to `~/Games/Deus Ex`, or leave it there: DX RUST finds
      it.
-   - **GOG:** download the offline Windows installer, then run
+   - **GOG:** download the offline Windows installer, then (with [Homebrew](https://brew.sh)) run
      `brew install innoextract` and `innoextract --gog -d ~/Games/Deus\ Ex setup_deus_ex_goty_*.exe`. If `System` is
      in a folder called `app`, use that folder.
-2. Run `./BUILD_MAC.sh`, and copy `dist/DX RUST.app` to Applications.
-3. Open the app, choose a display mode and resolution, then click **Play**.
+2. Open *DX RUST* from Applications. The launcher finds the game folder on its own (or click *Game Folder...* and
+   choose it), then choose a display mode and resolution and click **Play**.
 
 Settings and saves are in `~/Library/Application Support/DX RUST`. Resolutions are window sizes in points, so a
 Retina display draws twice as many pixels in each direction. On the heaviest street map an M2 Max holds 60 fps in
@@ -184,7 +217,7 @@ the Xcode command line tools. On Linux, also the development packages for Waylan
     cargo build --release --manifest-path crates/dxlauncher/Cargo.toml    # the launcher
     target/release/dxview "C:\path\to\Deus Ex"                            # or run the launcher
 
-On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder. On macOS, `BUILD_MAC.sh` makes `dist/DX RUST.app`.
+On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder. On macOS, `BUILD_MAC.sh` makes `dist/DX RUST.app` (step by step under *Getting started > macOS*).
 
 | Crate | What it does |
 | --- | --- |
