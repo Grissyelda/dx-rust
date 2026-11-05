@@ -706,8 +706,11 @@ fn dev_goto(world: &mut World) {
                     b.list[blocker].radius = 0.0;
                     b.list[blocker].height = 0.0;
                 }
-                let vel = glam::DVec3::new(300.0, 0.0, 220.0);
-                world.resource_mut::<crate::weapons::CorpseDrops>().0.push((e, ploc + glam::DVec3::new(15.0, 0.0, 40.0), vel));
+                // "secs;vx,vy,vz;throwbody" throws it that way (default +X), from 16 units ahead at eye height.
+                let v: Vec<f64> = map.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                let vel = if v.len() == 3 { glam::DVec3::new(v[0], v[1], v[2]) } else { glam::DVec3::new(300.0, 0.0, 220.0) };
+                let flat = glam::DVec3::new(vel.x, vel.y, 0.0).normalize_or_zero();
+                world.resource_mut::<crate::weapons::CorpseDrops>().0.push((e, ploc + flat * 16.0 + glam::DVec3::new(0.0, 0.0, 40.0), vel));
                 *crate::actors::BODY_LOG.lock().unwrap() = Some(name.clone());
                 println!("GOTO threw {name}");
             }

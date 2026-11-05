@@ -271,6 +271,10 @@ pub fn carry_system(
     let _ = &mut d;
 }
 
+/// DeusExCarcass's default collision size.
+const CARCASS_RADIUS: f64 = 20.0;
+const CARCASS_HEIGHT: f64 = 7.0;
+
 /// A thrown body becomes a carcass again: shown, falling from where it left our hands.
 pub fn corpse_drop_system(
     mut drops: ResMut<crate::weapons::CorpseDrops>,
@@ -287,6 +291,16 @@ pub fn corpse_drop_system(
             continue;
         };
         npc.carried = false;
+        // DeusExPlayer.DropItem spawns a carcass (DeusExCarcass: CollisionRadius 20, CollisionHeight 7) at the drop
+        // point: the body flies as that flat box, not as the standing pawn's 48-high cylinder, which caught on the
+        // training med room's hanging lamp and dropped short of the table (#40). The drawn body keeps its place
+        // over the floor (the drop in centre height goes into the draw offset).
+        if d.body.height > CARCASS_HEIGHT {
+            let dh = d.body.height - CARCASS_HEIGHT;
+            d.body.height = CARCASS_HEIGHT;
+            d.pre.z += dh;
+        }
+        d.body.radius = d.body.radius.min(CARCASS_RADIUS);
         d.body.location = pos;
         d.body.velocity = vel;
         d.body.physics = BodyPhysics::Falling;

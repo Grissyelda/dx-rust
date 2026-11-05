@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### GitHub fixes (November 5)
+- A thrown body flies as the original's flat carcass instead of a standing person's tall cylinder, so it lands on
+  the training med room's table (and anywhere with a low ceiling) instead of hitting an invisible wall (#40).
 - The key ring turns in the lock when you use it on a door, as in the original (#37).
 - The info boxes over doors, keypads and items use the game's own bitmap font with its shadow, darkened
   background and the coloured Lock / Door / Bypass strength bars with the pick or tool count on them (#38).
