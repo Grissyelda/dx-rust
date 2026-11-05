@@ -11,8 +11,14 @@ use bevy::prelude::*;
 use dx_level::ue_to_bevy;
 use unreal_pkg::props::{find, Value};
 
+/// A volumetric light's glow, by its actor (a switched-off light's glow goes: the NSF HQ's halon gas clouds are
+/// TriggerLights the vent switches turn off).
 #[derive(Component)]
-pub struct FogBall;
+pub struct FogBall {
+    actor: usize,
+    /// TriggerLight.bInitiallyOn (other lights start lit).
+    initially: bool,
+}
 
 fn byte(p: &[unreal_pkg::props::Property], n: &str, d: u8) -> u8 {
     match find(p, n) {
@@ -75,7 +81,7 @@ pub fn fogball_system(
     mut commands: Commands,
     level: Res<LevelRes>,
     cam: Single<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<FogBall>)>,
-    mut balls: Query<&mut Transform, With<FogBall>>,
+    mut balls: Query<(&mut Transform, &mut Visibility, &FogBall)>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -84,7 +90,7 @@ pub fn fogball_system(
     if crate::loader::new_map(&mut map_gen) {
         let mut img: Option<Handle<Image>> = None;
         let quad = meshes.add(Rectangle::new(1.0, 1.0));
-        for a in &level.0.actors {
+        for (ai, a) in level.0.actors.iter().enumerate() {
             let p = &a.props;
             let vr = byte(p, "VolumeRadius", 0);
             let vb = byte(p, "VolumeBrightness", 64);
@@ -107,8 +113,9 @@ pub fn fogball_system(
                 ..default()
             });
             let l = a.location();
+            let initially = a.class != "TriggerLight" || matches!(find(p, "bInitiallyOn"), Some(Value::Bool(true)));
             commands.spawn((
-                FogBall,
+                FogBall { actor: ai, initially },
                 Mesh3d(quad.clone()),
                 MeshMaterial3d(mat),
                 Transform::from_translation(Vec3::from(ue_to_bevy(l)))
@@ -117,7 +124,11 @@ pub fn fogball_system(
             ));
         }
     }
-    for mut t in &mut balls {
-        t.rotation = cam.rotation;
+    for (mut t, mut vis, b) in &mut balls {
+        let lit = b.initially != crate::dynlight::is_toggled(b.actor);
+        vis.set_if_neq(if lit { Visibility::Inherited } else { Visibility::Hidden });
+        if lit {
+            t.rotation = cam.rotation;
+        }
     }
 }

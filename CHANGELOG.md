@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Hazards and the quest rig (November 5, evening)
+- Pain zones work on every map, not only the training's pool, and switch off the way the original's do: the NSF
+  HQ's halon gas stops when the switches are thrown, the airfield's steam vent when its valve is turned and the
+  Area 51 fan shaft once the fan is destroyed (they used to hurt forever). The halon gas's glowing clouds clear with
+  it, and any switched-off light loses its glow. NPCs standing in a pain zone are hurt too, as
+  ScriptedPawn.PainTimer does. Pain zones switched on or off are kept in saves.
+- Water currents push you while you swim (the Hong Kong storage pipes lift you, the training's last pool drifts).
+- Map exits that name a spot in the next map ("map#spot", and the Ocean Lab's "map.dx #spot") arrive there instead
+  of at the start; the Ocean Lab silo exit to Area 51 named its map in a way the loader couldn't read.
+- Hanging things sway: lanterns, hanging meat, shop and pool-table lights, chandeliers, traffic lights and clothes
+  racks swing when bumped, shot or blown at, and the ones the maps set to drift in the wind drift. Hanging chickens
+  and pigs bleed when shot. On the freighter, every blast swings them and rolls the carts.
+- Utility carts roll when pushed, as the original's do: a bump sends them along at almost your walking speed for
+  two seconds, with their rattle.
+- A quest rig for testing the whole game (Debug Mode, the Insert menu): warp to any map with the earlier missions'
+  story flags set, complete every goal, set this mission's flags, and write the goals and flags to quest_state.txt.
+  `QUESTRUN.bat` loads every map in mission order unattended and writes questrun.log: each map's mission script,
+  conversations, pawns, load time, the goals and flags it set by itself, and anything that went wrong.
+- A whole-game audit (`QUEST_GAME=<Deus Ex folder> cargo test -p dxview quest_audit -- --nocapture`) checks the
+  install against our code: every name in the original mission scripts, every flag an original class sets, flags
+  nothing sets, map exits and the portals they name, events nothing receives, placed classes with their own
+  script, locked doors with no way through, zone hazards and conversations without their speaker.
+
 ### Performance settings and speed-ups (thanks to JohnUzoka, PRs #17-#36)
 From his Nintendo Switch port of DX RUST, one change per pull request:
 - New Settings > Enhancements > Performance group: Anti-Aliasing, HDR Rendering, Lean Rendering, Lean Updates and an

@@ -475,7 +475,7 @@ pub fn warm_db(sys: PathBuf) {
     });
 }
 
-fn cached_db(sys: &std::path::Path) -> Option<std::sync::Arc<ConDb>> {
+pub(crate) fn cached_db(sys: &std::path::Path) -> Option<std::sync::Arc<ConDb>> {
     static DB: Mutex<Option<(PathBuf, std::sync::Arc<ConDb>)>> = Mutex::new(None);
     let path = unreal_pkg::paths::find_ci(sys, "DeusExConText.u")?;
     let mut g = DB.lock().ok()?;
@@ -659,6 +659,11 @@ impl ConState {
 }
 
 impl ConState {
+    /// How many conversations this mission lists (the quest rig's report).
+    pub fn mission_conversations(&self) -> usize {
+        self.db.missions.get(&self.mission).map_or(0, |m| m.len())
+    }
+
     /// The conversation called `name`, this mission's first.
     fn con_named(&self, name: &str) -> Option<usize> {
         let mine = self.db.missions.get(&self.mission);

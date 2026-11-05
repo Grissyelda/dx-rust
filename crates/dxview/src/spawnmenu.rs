@@ -113,7 +113,7 @@ fn item_classes(assets: &mut RuntimeAssets) -> Vec<(String, String, String)> {
     out
 }
 
-fn build(commands: &mut Commands, assets: &mut RuntimeAssets, images: &mut Assets<Image>) {
+fn build(commands: &mut Commands, assets: &mut RuntimeAssets, images: &mut Assets<Image>, maps: &[String]) {
     let items = item_classes(assets);
     commands
         .spawn((
@@ -160,10 +160,16 @@ fn build(commands: &mut Commands, assets: &mut RuntimeAssets, images: &mut Asset
                     ("CHEAT:AllSkills".to_string(), "AllSkills: every skill Master".to_string(), (0.16, 0.12, 0.08)),
                     ("ALLAUGS".to_string(), "AllAugs: every augmentation".to_string(), (0.16, 0.12, 0.08)),
                     ("INVISIBLE".to_string(), "Invisible: AI can't see you (toggle)".to_string(), (0.16, 0.12, 0.08)),
+                    // The quest rig (questrun.rs).
+                    ("QUEST:goals".to_string(), "Quest: complete every goal".to_string(), (0.08, 0.16, 0.16)),
+                    ("QUEST:flags".to_string(), "Quest: story flags up to this mission".to_string(), (0.08, 0.16, 0.16)),
+                    ("QUEST:report".to_string(), "Quest: write quest_state.txt".to_string(), (0.08, 0.16, 0.16)),
                 ]
                     .into_iter()
                     .chain(cans)
                     .chain(AUGS.iter().map(|a| (format!("AUG:{a}"), format!("Install / upgrade {}", &a[3..]), (0.10, 0.12, 0.20))))
+                // Warps: every map, with the earlier missions' story flags.
+                .chain(maps.iter().map(|m| (format!("WARP:{m}"), format!("Warp: {m}"), (0.10, 0.18, 0.12))))
                 {
                     grid.spawn((
                         Button,
@@ -246,13 +252,16 @@ pub fn spawn_menu_system(
         ResMut<crate::movers::HudMessage>,
     ),
     mut inv: ResMut<crate::pickups::PlayerInventory>,
+    game_root: Res<crate::pickups::GameRoot>,
 ) {
     // Debug Mode (Settings > Enhancements) off: no spawn menu, and its god mode goes too.
     if !crate::settings::debug_mode() {
         if menu.open {
             menu.open = false;
         }
-        crate::ai::GOD_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+        if !crate::questrun::active() {
+            crate::ai::GOD_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     let toggle = (keys.just_pressed(KeyCode::Insert) && crate::settings::debug_mode())
         || (menu.open && keys.just_pressed(KeyCode::Escape));
@@ -264,7 +273,7 @@ pub fn spawn_menu_system(
             // Built the first time it opens (hundreds of nodes with icons: not worth laying out before).
             if !menu.built {
                 menu.built = true;
-                build(&mut commands, &mut assets, &mut images);
+                build(&mut commands, &mut assets, &mut images, &crate::questrun::all_maps(&game_root.0));
             }
         }
     }
@@ -318,6 +327,19 @@ pub fn spawn_menu_system(
                     let on = !crate::abilities::CHEAT_INVISIBLE.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
                     hud.text = format!("Invisible {}", if on { "ON" } else { "OFF" });
                     hud.time_left = 2.0;
+                    continue;
+                }
+                if let Some(a) = b.0.strip_prefix("QUEST:") {
+                    crate::questrun::action(match a {
+                        "goals" => "goals",
+                        "flags" => "flags",
+                        _ => "report",
+                    });
+                    continue;
+                }
+                if let Some(m) = b.0.strip_prefix("WARP:") {
+                    crate::questrun::warp(m, true);
+                    menu.open = false;
                     continue;
                 }
                 if b.0 == "QUOTES" {

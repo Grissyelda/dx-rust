@@ -84,6 +84,11 @@ pub fn suppress_actor_light(actor: usize) {
     }
 }
 
+/// Is a placed actor's light switched from how the map left it?
+pub fn is_toggled(actor: usize) -> bool {
+    TOGGLED.lock().ok().is_some_and(|t| t.as_ref().is_some_and(|s| s.contains(&actor)))
+}
+
 /// Flip a placed actor's light on/off (Lamp: LightType LT_Steady <-> LT_None).
 pub fn toggle_actor_light(actor: usize) {
     if let Ok(mut t) = TOGGLED.lock() {

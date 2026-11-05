@@ -196,6 +196,9 @@ impl CollisionWorld for SwimWorld<'_> {
     fn water_at(&self, p: DVec3) -> Option<f64> {
         water_at(self.0.level, p)
     }
+    fn zone_velocity(&self, p: DVec3) -> DVec3 {
+        crate::zones::velocity(self.0.level, p)
+    }
 }
 
 /// The fluid friction of the water zone at `p`, if it is one.
@@ -676,7 +679,8 @@ pub fn apply_pushes(
         let Ok(mut d) = decos.get_mut(e) else {
             continue;
         };
-        if !d.pushable {
+        // Cart.Bump replaces DeusExDecoration.Bump (hanging.rs).
+        if !d.pushable || crate::hanging::is_cart(*b) {
             continue;
         }
         // Not when bumped from above or below.

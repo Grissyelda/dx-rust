@@ -36,7 +36,16 @@ pub trait CollisionWorld {
     fn water_at(&self, _p: DVec3) -> Option<f64> {
         None
     }
+
+    /// ZoneInfo.ZoneVelocity of the zone containing `p` (water currents).
+    fn zone_velocity(&self, _p: DVec3) -> DVec3 {
+        DVec3::ZERO
+    }
 }
+
+/// The engine moves walkers and swimmers by Velocity + ZoneVelocity x DeltaTime x 25 (SurrealEngine's
+/// PhysWalking / PhysSwimming): frame-rate dependent, so it's taken at the original's usual 60 Hz.
+pub const ZONE_VELOCITY_SCALE: f64 = 25.0 / 60.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Physics {
@@ -112,6 +121,10 @@ pub struct Character {
 // (Unreal's own literal, not sqrt(1/2): the engine compares against exactly this.)
 #[allow(clippy::approx_constant)]
 const WALKABLE_Z: f64 = 0.7071;
+
+fn flat_z(v: DVec3) -> DVec3 {
+    DVec3::new(v.x, v.y, 0.0)
+}
 
 impl Character {
     pub fn new(location: DVec3) -> Character {
@@ -285,7 +298,9 @@ impl Character {
 
         let up = DVec3::Z * p.max_step_height;
         let down = -DVec3::Z * p.max_step_height;
-        let mut vel = self.velocity;
+        // The current carries the walker without becoming its own speed.
+        let zv = flat_z(w.zone_velocity(self.location)) * ZONE_VELOCITY_SCALE;
+        let mut vel = self.velocity + zv;
         let mut time_left = dt;
         let mut keep_velocity = false;
 
@@ -353,7 +368,7 @@ impl Character {
             return;
         }
         // Velocity follows what actually happened (walls stop you).
-        self.velocity = (self.location - start) / dt;
+        self.velocity = (self.location - start) / dt - zv;
         self.velocity.z = 0.0;
     }
 
@@ -422,7 +437,8 @@ impl Character {
         let rate = p.accel_rate * 0.3;
         let accel = if wish.length_squared() > 1e-6 { wish.normalize() * rate * wish.length().min(1.0) } else { DVec3::ZERO };
         self.apply_accel(dt, accel, rate, friction, p.water_speed);
-        let mut vel = self.velocity;
+        let zv = w.zone_velocity(self.location) * ZONE_VELOCITY_SCALE;
+        let mut vel = self.velocity + zv;
         vel.z += p.gravity.z * (1.0 - p.buoyancy / p.mass) * dt;
         self.intended_velocity = vel;
         let start = self.location;
@@ -466,7 +482,7 @@ impl Character {
                 }
             }
         }
-        self.velocity = (self.location - start) / dt;
+        self.velocity = (self.location - start) / dt - zv;
         if w.water_at(self.location).is_none() {
             self.physics = Physics::Falling;
         }

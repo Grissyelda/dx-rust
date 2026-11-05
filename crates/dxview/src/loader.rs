@@ -171,7 +171,16 @@ fn prefetch_tick(world: &mut World) {
 
 /// Go to `map` (file name; ".dx" added if missing).
 pub fn request(map: &str, goal: Goal) {
-    let mut m = map.to_string();
+    // A URL as maps write it: "Map#Portal", "Map.dx #Portal" (14_Oceanlab_Silo's MapExit), "Map?options".
+    let (name, portal) = match map.split_once('#') {
+        Some((m, t)) => (m, Some(t.split('?').next().unwrap_or("").trim().to_string()).filter(|t| !t.is_empty())),
+        None => (map, None),
+    };
+    let goal = match goal {
+        Goal::Travel(None) => Goal::Travel(portal),
+        g => g,
+    };
+    let mut m = name.split('?').next().unwrap_or("").trim().to_string();
     if !crate::util::ends_with_ci(&m, ".dx") {
         m.push_str(".dx");
     }
@@ -369,7 +378,10 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
                 };
                 level.player_start = Some(dx_level::PlayerStart { position: dx_level::ue_to_bevy(l), yaw });
             }
-            None => eprintln!("loader: no actor tagged {tag} on {map}; arriving at the PlayerStart"),
+            None => {
+                eprintln!("loader: no actor tagged {tag} on {map}; arriving at the PlayerStart");
+                crate::questrun::note(format!("no portal '{tag}'"));
+            }
         }
     }
 
@@ -430,6 +442,8 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// is put back afterwards from the captured save.
 fn reset_modules() {
     crate::info::reset_level();
+    crate::zones::reset_level();
+    crate::hanging::reset_level();
     crate::stamina::reset_level();
     crate::smartai::reset_level();
     crate::diegetic::reset_level();

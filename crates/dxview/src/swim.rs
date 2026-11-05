@@ -308,15 +308,25 @@ pub fn swim_system(
     // feet entering one start the timer at once, then every second DamagePerSec x depth (0.4 for the feet, +0.4
     // for the body, +0.2 for the head) in the zone's damage type. In one, drowning doesn't run (its PainTime is
     // the pain zone's).
-    let pain_of = |p: DVec3| {
-        let z = lvl.collision.zone_at(p);
-        lvl.zone_pain.get(z.max(0) as usize).cloned().flatten()
-    };
+    let pain_of = |p: DVec3| crate::zones::pain(lvl, p);
+    // (bKillZone: the Hong Kong helibase's only one holds its PlayerStart and hiding spots, and the original lets
+    // you walk there, so Deus Ex's engine doesn't kill in it; neither do we.)
+    // A switch turned a pain zone on: ZoneInfo.Trigger calls PainTimer at once.
+    let kicked = crate::zones::take_kick(lvl);
     let foot_pain = if active { pain_of(loc - DVec3::Z * (h - 1.0)) } else { None };
+    if env_on!("DXVIEW_ZONELOG") && (now * 1.0).floor() != ((now - dt) * 1.0).floor() {
+        println!(
+            "ZONECHECK feet zone {} at {:.0?} active {active} pain {:?} t {:.2}",
+            lvl.collision.zone_at(loc - DVec3::Z * (h - 1.0)),
+            loc,
+            foot_pain,
+            sw.zone_pain_time
+        );
+    }
     if let Some((dps, ty)) = foot_pain.as_ref() {
         // Pawn.FootZoneChange: the feet entering a pain zone set PainTime 0.01. Zone changes happen during the
         // move, after PlayerTick, so that one fires in the same frame even while swimming: every entry hurts.
-        let entered = sw.zone_pain_time < 0.0;
+        let entered = sw.zone_pain_time < 0.0 || kicked;
         if entered {
             sw.zone_pain_time = 0.01;
         }
@@ -338,6 +348,9 @@ pub fn swim_system(
                 let dmg = (*dps * depth).floor();
                 if dmg > 0.0 {
                     ph.damage(dmg, ty, DVec3::ZERO);
+                    if env_on!("DXVIEW_ZONELOG") {
+                        println!("ZONEPAIN {dmg} {ty} hp {:.0}", ph.hp);
+                    }
                 }
             }
             sw.zone_pain_time = if ph.dead { -1.0 } else { 1.0 };

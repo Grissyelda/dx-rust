@@ -54,6 +54,11 @@ impl FlagBase {
         self.flags.clear();
     }
 
+    /// Every flag: (lower-cased name, value, expiration mission).
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &FlagValue, i32)> {
+        self.flags.iter().map(|(k, (v, e))| (k.as_str(), v, *e))
+    }
+
     pub fn len(&self) -> usize {
         self.flags.len()
     }

@@ -243,7 +243,7 @@ pub fn deco_damage_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut booms: ResMut<crate::explosion::Explosions>,
     mut debug_frames: Local<u32>,
-    player: Res<crate::Player>,
+    (player, mut blood): (Res<crate::Player>, ResMut<crate::effects::BloodFx>),
 ) {
     // A new map (loader.rs): start this system's per-map state over.
     if crate::loader::new_map(&mut map_gen) {
@@ -365,6 +365,18 @@ pub fn deco_damage_system(
     }
     for hit in std::mem::take(&mut hits.0) {
         let b = hit.blocker;
+        // HangingDecoration.TakeDamage: shots and blasts swing it (from the player's side; bullets carry 1000).
+        if matches!(hit.damage_type, "Shot" | "Exploded") {
+            crate::hanging::hit(b, player.body.location, if hit.damage_type == "Shot" { 1000.0 } else { 2000.0 });
+            // HangingChicken / HKHangingPig.SpawnBlood: meat bleeds where it's hit.
+            if let Some(c) = blockers.list.get(b).filter(|c| c.radius > 0.0) {
+                let cls = &lvl.actors[c.actor].class;
+                if cls == "HangingChicken" || cls == "HKHangingPig" {
+                    let dir = (c.center - player.body.location).normalize_or_zero();
+                    blood.0.push((c.center - dir * c.radius, dir));
+                }
+            }
+        }
         let Some(&e) = blockers.deco.get(&b) else {
             continue;
         };

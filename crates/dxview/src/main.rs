@@ -108,6 +108,9 @@ mod frobui;
 mod grenades;
 mod hud;
 mod info;
+mod zones;
+mod questrun;
+mod hanging;
 mod inventory_screen;
 mod keybinds;
 mod gamepad;
@@ -136,6 +139,8 @@ mod smartai;
 mod achievements;
 #[cfg(test)]
 mod achtest;
+#[cfg(test)]
+mod questtest;
 mod diegetic;
 mod skeletal;
 mod ragdoll;
@@ -961,6 +966,9 @@ fn main() {
         .add_systems(Update, missions::mission_fx_system.after(mission::mission_system))
         .add_systems(Update, credits::credits_system)
         .add_systems(Update, projgen::projgen_system)
+        .add_systems(Update, zones::npc_pain_system)
+        .add_systems(Update, questrun::quest_system)
+        .add_systems(Update, hanging::hanging_system.after(fly).before(actors::deco_physics))
         .add_systems(Update, fogball::fogball_system)
         // Shadow map sizes: the real-time shadows' cube maps (4 lights x 6 faces) and the spot / moon maps.
         .insert_resource(bevy::light::PointLightShadowMap { size: 512 })
@@ -2884,6 +2892,7 @@ fn fly(
         }
         if !player.body.bumped.is_empty() {
             let b = &player.body;
+            hanging::bumped(&b.bumped, b.location, b.intended_velocity, params.mass);
             actors::apply_pushes(
                 &b.bumped,
                 b.location,

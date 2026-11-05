@@ -300,6 +300,7 @@ pub fn device_system(
         crate::security::event(&name, on);
         crate::cinematic::event(&name, on);
         crate::dynlight::trigger_event(lvl, &name, on);
+        crate::zones::event(lvl, &name, on);
         crate::sound::tag_state(&name, on);
         for (j, info) in lvl.movers.iter().enumerate() {
             if on && info.tag.eq_ignore_ascii_case(&name) {

@@ -186,6 +186,21 @@ pub struct ZoneEcho {
     pub cutoff_hz: i32,
 }
 
+/// One BSP zone's ZoneInfo rules.
+#[derive(Clone, Debug, Default)]
+pub struct ZoneRule {
+    pub tag: String,
+    /// bPainZone at the start.
+    pub pain: bool,
+    pub dps: f32,
+    pub damage_type: String,
+    pub kill: bool,
+    pub neutral: bool,
+    pub velocity: [f32; 3],
+    pub player_event: String,
+    pub no_inventory: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Level {
     pub name: String,
@@ -219,6 +234,9 @@ pub struct Level {
     /// Per BSP zone: a pain zone (ZoneInfo bPainZone) - its DamagePerSec and DamageType (the training's toxic pool:
     /// 20 'Radiation').
     pub zone_pain: Vec<Option<(f32, String)>>,
+    /// Per BSP zone: the ZoneInfo's rules (Tag, pain zone - also one that starts off but has DamagePerSec, since
+    /// ZoneInfo.Trigger toggles bPainZone - kill zone, neutral zone, current, player event).
+    pub zone_rules: Vec<ZoneRule>,
     /// Per BSP zone: open to the sky (it has fake-backdrop faces looking into the sky room; the sky room itself
     /// excluded) - where weather falls.
     pub zone_sky: Vec<bool>,
@@ -1046,6 +1064,40 @@ pub fn build_level(
             Some((dps, ty))
         })
         .collect();
+    let zone_rules: Vec<ZoneRule> = model
+        .zone_actors
+        .iter()
+        .map(|&za| {
+            if za <= 0 {
+                return ZoneRule::default();
+            }
+            let Some(e) = pkg.exports.get(za as usize - 1) else { return ZoneRule::default() };
+            let ps = classes.actor_properties(pkg, e).unwrap_or_default();
+            let b = |k: &str| matches!(props::find(&ps, k), Some(Value::Bool(true)));
+            let name = |k: &str| match props::find(&ps, k) {
+                Some(Value::Name(n)) if !n.eq_ignore_ascii_case("None") => n.clone(),
+                _ => String::new(),
+            };
+            let vel = match props::find(&ps, "ZoneVelocity") {
+                Some(Value::Vector(v)) => *v,
+                _ => [0.0; 3],
+            };
+            ZoneRule {
+                tag: name("Tag"),
+                pain: b("bPainZone"),
+                dps: match props::find(&ps, "DamagePerSec") {
+                    Some(Value::Int(v)) => *v as f32,
+                    _ => 0.0,
+                },
+                damage_type: name("DamageType"),
+                kill: b("bKillZone"),
+                neutral: b("bNeutralZone"),
+                velocity: vel,
+                player_event: name("ZonePlayerEvent"),
+                no_inventory: b("bNoInventory"),
+            }
+        })
+        .collect();
     // Zone ambient light (ZoneInfo AmbientBrightness / Hue / Saturation; the level's own LevelInfo for zone 0),
     // which the engine starts every lightmap texel from.
     let level_info = pkg.exports.iter().find(|e| pkg.class_name(e.class_index) == "LevelInfo");
@@ -1594,6 +1646,7 @@ pub fn build_level(
         nav,
         zone_water,
         zone_pain,
+        zone_rules,
         zone_sky,
         sky_area,
         lights,

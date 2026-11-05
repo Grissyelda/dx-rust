@@ -1379,7 +1379,10 @@ fn ship_explosions(c: &mut Ctx, fragments: bool) {
         });
         c.shake(0.5 + size, 512.0 + 1024.0 * size, 8.0 + 16.0 * size);
         let v = c.vrand();
-        player_req(PlayerReq::Push(DVec3::new(300.0, 300.0, 200.0) + v * (500.0 * size as f64)));
+        let bobble = DVec3::new(300.0, 300.0, 200.0) + v * (500.0 * size as f64);
+        player_req(PlayerReq::Push(bobble));
+        // Every hanging decoration swings and every cart rolls.
+        crate::hanging::ship_shake(bobble, size as f64);
         if fragments {
             for _ in 0..(size * 20.0) as i32 {
                 let v = c.vrand();
