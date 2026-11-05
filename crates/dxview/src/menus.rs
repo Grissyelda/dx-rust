@@ -1734,7 +1734,8 @@ fn pad_option_choices() -> Vec<Choice> {
     };
     vec![
         e("PadGlyphs", "|&Button Icons", "Which controller's button icons the game shows: the connected one's, Xbox or PlayStation.", &["Automatic", "Xbox", "PlayStation"]),
-        e("PadLookSensitivity", "Controller |&Look Speed", "How fast the right stick turns the view.", &["Very Slow", "Slow", "Normal", "Fast", "Very Fast"]),
+        e("PadLookSensitivityH", "Controller |&Horizontal Sensitivity", "How fast the right stick turns the view left and right.", &["Very Slow", "Slow", "Normal", "Fast", "Very Fast"]),
+        e("PadLookSensitivityV", "Controller |&Vertical Sensitivity", "How fast the right stick tilts the view up and down.", &["Very Slow", "Slow", "Normal", "Fast", "Very Fast"]),
         e("PadInvertLook", "|&Invert Controller Look", "Push the right stick up to look down.", &["Disabled", "Enabled"]),
         e("PadDeadzone", "Stick |&Deadzone", "How far a stick moves before it counts.", &["Very Small", "Small", "Normal", "Large", "Very Large"]),
         e("PadAimSlowdown", "|&Aim Slowdown", "The right stick turns more slowly while the crosshair is on an enemy.", &["Disabled", "Enabled"]),
