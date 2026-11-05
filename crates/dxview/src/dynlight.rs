@@ -8,7 +8,10 @@
 //! meshes include them ([`lights`]); [`relight_system`] re-lights decorations and pawns near them.
 //!
 //! Unreal light values: LightRadius r covers 25 x (r + 1) units; LightHue/LightSaturation as in the lightmaps
-//! (saturation inverted); LightBrightness / 255. Falloff on meshes is the lightmap's (1 - d / radius).
+//! (saturation inverted); LightBrightness / 255. Falloff on meshes is the lightmap's (1 - d / radius). Each Bevy light
+//! made here carries its Unreal brightness, negated, in its shadow depth bias, which Bevy never reads for a light
+//! without shadows: Lean Rendering's Classic level shader (bsp_shadow.wgsl, `BSP_CLASSIC_LIGHTS`) lights the BSP with
+//! colour x brightness x (1 - d / radius) x N.L, as the bake did.
 
 use crate::actors::Deco;
 use crate::{FlyCam, LevelRes, Player, SkyCam};
@@ -579,6 +582,7 @@ pub fn dynlight_system(
                 pl.color = Color::srgb(c[0], c[1], c[2]);
                 pl.intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * st.gain;
                 pl.range = r_m;
+                pl.shadow_depth_bias = -b;
                 tf.translation = Vec3::from(ue_to_bevy(l.pos));
                 vis.set_if_neq(Visibility::Inherited);
             }
@@ -813,6 +817,7 @@ pub fn aug_light_system(
         }
         for (mut sl, mut t, mut vis, spill) in &mut cone {
             sl.intensity = intensity * if spill { 0.22 } else { 1.0 };
+            sl.shadow_depth_bias = -(192.0 / 255.0) * if spill { 0.22 } else { 1.0 };
             sl.color = Color::srgb(c[0], c[1], c[2]);
             *t = tf;
             vis.set_if_neq(Visibility::Inherited);

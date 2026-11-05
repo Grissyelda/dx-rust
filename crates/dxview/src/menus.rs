@@ -1073,7 +1073,7 @@ impl Enhance {
         for (key, lbl, help) in [
             ("AntiAliasing", "Anti-Aliasing (4x MSAA)", "Smooths the edges of the world and the weapon with 4x multisampling. Off saves a lot of GPU time and memory on slow GPUs. (With Ambient Occlusion on, SMAA smooths the edges instead; with Upscaling, its own antialiasing.)"),
             ("HDRRendering", "HDR Rendering", "Draws the scene in 16-bit colour before it reaches the screen. Off draws it in 8-bit, half the memory traffic; the picture is the same except for faint differences where bright things show through glass. Glow And Bloom turns it back on."),
-            ("LeanRendering", "Lean Rendering", "Leaves out GPU work that adds nothing to the picture. For slow GPUs; the picture stays the same."),
+            ("LeanRendering", "Lean Rendering", "Leaves out GPU work that adds nothing to the picture, for slow GPUs. Dynamic lights (muzzle flashes, fires, flares, the flashlight) light the walls and floors as in the original game, with its broad falloff and no highlight."),
             ("LeanUpdates", "Lean Updates", "Leaves out CPU work that changes nothing on screen, such as redrawing windows that haven't changed. For slow CPUs."),
         ] {
             let mut c = debug_mode_choice();

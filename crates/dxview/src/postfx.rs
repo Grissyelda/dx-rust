@@ -48,7 +48,7 @@ pub fn postfx_system(
         ResMut<Assets<crate::gpuanim::AnimMaterial>>,
         ResMut<Assets<crate::skeletal::ActorMaterial>>,
     ),
-    mut ao_gen: Local<Option<(bool, u32, bool)>>,
+    mut ao_gen: Local<Option<(bool, u32, bool, bool, bool)>>,
 ) {
     // The cameras' make-up never changes in play: the SSAO pass, the depth / normal prepasses, MSAA off with SMAA.
     // Each of those is part of every material's pipeline, so adding or removing one recompiled them all (a long
@@ -60,14 +60,20 @@ pub fn postfx_system(
     // the lights in each fragment's cluster.
     let strength = crate::shadowlight::shadow_strength();
     let detail = setting!("DetailTextures") > 0.5;
-    if *ao_gen != Some((ao, strength.to_bits(), detail)) {
-        *ao_gen = Some((ao, strength.to_bits(), detail));
+    // Lean Rendering's Classic lights (shadowlight.rs): a change re-specializes the level's pipelines, as does
+    // Flashlight Cone, the one spot light their walk may meet.
+    let classic = crate::shadowlight::classic_lights();
+    let cone = crate::dynlight::flashlight_cone();
+    if *ao_gen != Some((ao, strength.to_bits(), detail, classic, cone)) {
+        *ao_gen = Some((ao, strength.to_bits(), detail, classic, cone));
         let ids: Vec<_> = bsp.ids().collect();
         for id in ids {
             if let Some(mut m) = bsp.get_mut(id) {
                 m.extension.params.q.x = if ao { 0.85 } else { 0.0 };
                 m.extension.params.p.x = strength;
                 m.extension.params.q.z = if detail { 1.0 } else { 0.0 };
+                m.extension.params.q.w = if classic { 1.0 } else { 0.0 };
+                m.extension.spot_lights = cone;
             }
         }
         // Only the materials whose walk changes: a material taken mutably is prepared again.

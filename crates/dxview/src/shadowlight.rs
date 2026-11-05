@@ -46,7 +46,7 @@ pub struct BspShadowParams {
     /// x: strength (0 = no shadows), y: 1 / ENCODE, z: dx-level's LIGHT_GAIN.
     pub p: Vec4,
     /// x: Ambient Occlusion's strength on the lightmap (0 = off; the SSAO pass itself always runs, so switching it
-    /// never recompiles every material).
+    /// never recompiles every material). w: 1 = the dynamic lights as Unreal 1 drew them (`classic_lights`).
     pub q: Vec4,
     /// Remastered lighting (relight.rs): x 1 = on, y highlight strength, z roughness, w metalness.
     pub r: Vec4,
@@ -62,6 +62,7 @@ pub struct BspShadowParams {
 /// render thread records a fraction of the commands. Without binding arrays (old GPUs) it falls back to one bind
 /// group per material, as before.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[bind_group_data(BspShadowKey)]
 #[data(100, BspShadowParams, binding_array(111))]
 #[bindless(index_table(range(100..106), binding(110)))]
 pub struct BspShadow {
@@ -77,11 +78,46 @@ pub struct BspShadow {
     #[texture(104)]
     #[sampler(105)]
     pub detail: Option<Handle<Image>>,
+    /// The sky room's faces, drawn far past the map (skyfollow.rs): no dynamic light reaches them.
+    pub sky: bool,
+    /// A dynamic light here can be a spot light: only the flashlight with Flashlight Cone on (dynlight.rs).
+    pub spot_lights: bool,
 }
 
 impl<'a> From<&'a BspShadow> for BspShadowParams {
     fn from(m: &'a BspShadow) -> Self {
         m.params
+    }
+}
+
+/// What a BSP material's fragment shader compiles in: its spot shadows (`p.x` > 0) and its remastered lighting
+/// (`r.x` on) only when it uses them, and its detail texture only when it has one with Detail Textures on (`q.y` > 0,
+/// `q.z` on). The branches they replace were already skipped at run time, so the picture is the same, but the shader
+/// carried their code and the registers it needs. `classic_lights` (`q.w`) replaces Bevy's lighting of the dynamic
+/// lights.
+///
+/// The Classic lights' walk over each pixel's cluster (bsp_shadow.wgsl) only where a dynamic light can reach: not on
+/// the sky room's faces, and its spot-light cone only with Flashlight Cone on.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BspShadowKey {
+    spot_shadows: bool,
+    relight: bool,
+    classic_lights: bool,
+    detail: bool,
+    walk: bool,
+    spot_lights: bool,
+}
+
+impl From<&BspShadow> for BspShadowKey {
+    fn from(m: &BspShadow) -> Self {
+        BspShadowKey {
+            spot_shadows: m.params.p.x > 0.0,
+            relight: m.params.r.x > 0.5,
+            classic_lights: m.params.q.w > 0.5,
+            detail: m.params.q.y > 0.0 && m.params.q.z > 0.5,
+            walk: !m.sky,
+            spot_lights: m.spot_lights,
+        }
     }
 }
 
@@ -96,6 +132,34 @@ impl MaterialExtension for BspShadow {
     fn enable_prepass() -> bool {
         true
     }
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            if key.bind_group_data.spot_shadows {
+                fragment.shader_defs.push("BSP_SPOT_SHADOWS".into());
+            }
+            if key.bind_group_data.relight {
+                fragment.shader_defs.push("BSP_RELIGHT".into());
+            }
+            if key.bind_group_data.classic_lights {
+                fragment.shader_defs.push("BSP_CLASSIC_LIGHTS".into());
+            }
+            if key.bind_group_data.detail {
+                fragment.shader_defs.push("BSP_DETAIL".into());
+            }
+            if !key.bind_group_data.walk {
+                fragment.shader_defs.push("BSP_NO_DYNLIGHTS".into());
+            }
+            if key.bind_group_data.spot_lights {
+                fragment.shader_defs.push("BSP_SPOT_LIGHTS".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
@@ -104,7 +168,7 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
         extension: BspShadow {
             params: BspShadowParams {
                 p: Vec4::new(shadow_strength(), 1.0 / ENCODE, dx_level::lighting::LIGHT_GAIN, env_val!("DXVIEW_SHADOW_DEBUG").map(str::to_owned).and_then(|v| v.parse().ok()).unwrap_or(0.0)),
-                q: Vec4::new(if crate::postfx::ao_on() { 0.85 } else { 0.0 }, 0.0, 0.0, 0.0),
+                q: Vec4::new(if crate::postfx::ao_on() { 0.85 } else { 0.0 }, 0.0, 0.0, if classic_lights() { 1.0 } else { 0.0 }),
                 r: Vec4::ZERO,
                 s: Vec4::new(1.0, 0.0, 0.0, 0.0),
                 u: Vec4::ZERO,
@@ -112,8 +176,17 @@ pub fn bsp_material(base: StandardMaterial) -> BspMaterial {
             mask: None,
             lights: None,
             detail: None,
+            sky: false,
+            spot_lights: crate::dynlight::flashlight_cone(),
         },
     }
+}
+
+/// Lean Rendering lights the level's surfaces the way Unreal 1 did (bsp_shadow.wgsl, `BSP_CLASSIC_LIGHTS`): each
+/// dynamic light (dynlight.rs) added to the lightmap as the bake added the static ones, diffuse only, instead of
+/// Bevy's PBR lighting, whose light loop sets the BSP shader's register count.
+pub fn classic_lights() -> bool {
+    crate::perf::lean_rendering()
 }
 
 pub const SPOTS_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("2c7d9a51-6e3b-4f08-8a1c-5b9e0d4f7a63");

@@ -1575,9 +1575,10 @@ fn setup(
                     .or_insert_with(|| {
                         let mut bm = shadowlight::bsp_material(materials.get(&mat).cloned().unwrap_or_default());
                         // The sky room is drawn far out past the map by the world camera (skyfollow.rs): the
-                        // distance fog would swallow it.
+                        // distance fog would swallow it, and no dynamic light reaches it.
                         if b.sky {
                             bm.base.fog_enabled = false;
+                            bm.extension.sky = true;
                         }
                         relight::params(b.texture.map(|i| level.textures[i].name.as_str()), &mut bm.extension.params);
                         // DetailTexture (the Detail Textures setting switches it in the shader, q.z).
