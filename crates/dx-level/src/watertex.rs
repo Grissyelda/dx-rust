@@ -205,19 +205,26 @@ impl WaterSim {
         }
         self.drops = out;
         // The wave equation (wrapping, so the picture tiles).
+        self.waves();
+    }
+
+    /// The wave equation's step over the height field, wrapping at the edges.
+    fn waves(&mut self) {
         let (w, h) = (self.gw, self.gh);
         for yy in 0..h {
-            let up = ((yy + h - 1) % h) * w;
-            let dn = ((yy + 1) % h) * w;
+            let up = (if yy == 0 { h - 1 } else { yy - 1 }) * w;
+            let dn = (if yy + 1 == h { 0 } else { yy + 1 }) * w;
             let row = yy * w;
             for xx in 0..w {
-                let l = row + (xx + w - 1) % w;
-                let r = row + (xx + 1) % w;
+                // The wrapped neighbour columns: (xx + w - 1) % w and (xx + 1) % w, without the division.
+                let (xl, xr) = (if xx == 0 { w - 1 } else { xx - 1 }, if xx + 1 == w { 0 } else { xx + 1 });
+                let l = row + xl;
+                let r = row + xr;
                 let i = row + xx;
                 // Eight neighbours (sides and corners weighted 2:1, summing to 2): the four-neighbour form lets the
                 // finest wavelength through as a checkerboard.
-                let (lu, ru) = (up + (xx + w - 1) % w, up + (xx + 1) % w);
-                let (ld, rd) = (dn + (xx + w - 1) % w, dn + (xx + 1) % w);
+                let (lu, ru) = (up + xl, up + xr);
+                let (ld, rd) = (dn + xl, dn + xr);
                 let sides = self.cur[l] + self.cur[r] + self.cur[up + xx] + self.cur[dn + xx];
                 let corners = self.cur[lu] + self.cur[ru] + self.cur[ld] + self.cur[rd];
                 let v = (sides * 2.0 + corners) / 6.0 - self.old[i];
@@ -239,10 +246,56 @@ impl WaterSim {
         a * (1.0 - fy) + b * fy
     }
 
+    /// `height_at` at every texture pixel, into `out`, for a field at exactly half the texture's size: a pixel then
+    /// sits on a cell (`f` 0) or half way between two (`f` 0.5), and only the far edge wraps, so these are the same
+    /// products and sums as `height_at`'s without its divisions (`rem_euclid`).
+    fn heights(&self, out: &mut Vec<f32>) {
+        let (w, h, gw, gh) = (self.width, self.height, self.gw, self.gh);
+        out.resize(w * h, 0.0);
+        for y in 0..h {
+            let (y0, fy) = (y / 2, if y % 2 == 1 { 0.5f32 } else { 0.0 });
+            let y1 = if y0 + 1 == gh { 0 } else { y0 + 1 };
+            let (r0, r1) = (y0 * gw, y1 * gw);
+            for x in 0..w {
+                let (x0, fx) = (x / 2, if x % 2 == 1 { 0.5f32 } else { 0.0 });
+                let x1 = if x0 + 1 == gw { 0 } else { x0 + 1 };
+                let a = self.cur[r0 + x0] * (1.0 - fx) + self.cur[r0 + x1] * fx;
+                let b = self.cur[r1 + x0] * (1.0 - fx) + self.cur[r1 + x1] * fx;
+                out[y * w + x] = a * (1.0 - fy) + b * fy;
+            }
+        }
+    }
+
     /// The current picture as RGBA8.
     pub fn rgba(&self, out: &mut Vec<u8>) {
         let (w, h) = (self.width, self.height);
         out.resize(w * h * 4, 0);
+        if w == 2 * self.gw && h == 2 * self.gh {
+            // Every texture from 4x4 up: each pixel's height once, and the slope from the pixels beside it (the
+            // field tiles at the texture's size, so `height_at` one pixel past an edge is the pixel at the other).
+            HEIGHTS.with_borrow_mut(|hgt| {
+                self.heights(hgt);
+                self.shade(out, |x, y| {
+                    let (xl, xr) = (if x == 0 { w - 1 } else { x - 1 }, if x + 1 == w { 0 } else { x + 1 });
+                    let (yu, yd) = (if y == 0 { h - 1 } else { y - 1 }, if y + 1 == h { 0 } else { y + 1 });
+                    (hgt[y * w + xr] - hgt[y * w + xl], hgt[yd * w + x] - hgt[yu * w + x])
+                });
+            });
+        } else {
+            self.shade(out, |x, y| {
+                let (fx, fy) = (x as f32, y as f32);
+                (
+                    self.height_at(fx + 1.0, fy) - self.height_at(fx - 1.0, fy),
+                    self.height_at(fx, fy + 1.0) - self.height_at(fx, fy - 1.0),
+                )
+            });
+        }
+    }
+
+    /// Each pixel of the picture from the water's slope there: `slope(x, y)` is the height's change across the
+    /// pixel, along x and along y.
+    fn shade(&self, out: &mut [u8], slope: impl Fn(usize, usize) -> (f32, f32)) {
+        let (w, h) = (self.width, self.height);
         match &self.look {
             Look::Wet { source } => {
                 // WaveAmp pixels of displacement per unit of slope.
@@ -250,9 +303,7 @@ impl WaterSim {
                 let k = self.wave_amp / 6.0;
                 for y in 0..h {
                     for x in 0..w {
-                        let (fx, fy) = (x as f32, y as f32);
-                        let gx = self.height_at(fx + 1.0, fy) - self.height_at(fx - 1.0, fy);
-                        let gy = self.height_at(fx, fy + 1.0) - self.height_at(fx, fy - 1.0);
+                        let (gx, gy) = slope(x, y);
                         let sx = (x as i32 + (gx * k).round() as i32).rem_euclid(w as i32) as usize;
                         let sy = (y as i32 + (gy * k).round() as i32).rem_euclid(h as i32) as usize;
                         let c = source.get(sy * w + sx).copied().unwrap_or([0, 0, 0, 255]);
@@ -264,9 +315,7 @@ impl WaterSim {
                 let (lx, ly) = (angle.cos(), angle.sin());
                 for y in 0..h {
                     for x in 0..w {
-                        let (fx, fy) = (x as f32, y as f32);
-                        let gx = self.height_at(fx + 1.0, fy) - self.height_at(fx - 1.0, fy);
-                        let gy = self.height_at(fx, fy + 1.0) - self.height_at(fx, fy - 1.0);
+                        let (gx, gy) = slope(x, y);
                         let slope = (gx * lx + gy * ly) * self.wave_amp / 64.0;
                         let mut v = 128.0 + slope * *light;
                         // The Phong highlight where the surface turns to the light.
@@ -278,6 +327,111 @@ impl WaterSim {
                     }
                 }
             }
+        }
+    }
+}
+
+thread_local! {
+    /// `rgba`'s height field, kept between calls on each thread (the viewer draws its water textures on the task
+    /// pool's threads): no allocation per picture.
+    static HEIGHTS: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wave step as first written (wrapping by `%`).
+    fn reference_waves(s: &mut WaterSim) {
+        let (w, h) = (s.gw, s.gh);
+        for yy in 0..h {
+            let up = ((yy + h - 1) % h) * w;
+            let dn = ((yy + 1) % h) * w;
+            let row = yy * w;
+            for xx in 0..w {
+                let l = row + (xx + w - 1) % w;
+                let r = row + (xx + 1) % w;
+                let i = row + xx;
+                let (lu, ru) = (up + (xx + w - 1) % w, up + (xx + 1) % w);
+                let (ld, rd) = (dn + (xx + w - 1) % w, dn + (xx + 1) % w);
+                let sides = s.cur[l] + s.cur[r] + s.cur[up + xx] + s.cur[dn + xx];
+                let corners = s.cur[lu] + s.cur[ru] + s.cur[ld] + s.cur[rd];
+                let v = (sides * 2.0 + corners) / 6.0 - s.old[i];
+                s.old[i] = v * (1.0 - 1.0 / 40.0);
+            }
+        }
+        std::mem::swap(&mut s.cur, &mut s.old);
+    }
+
+    /// The picture as first written: four `height_at` lookups for every pixel's slope.
+    fn reference_rgba(s: &WaterSim) -> Vec<u8> {
+        let mut out = vec![0; s.width * s.height * 4];
+        s.shade(&mut out, |x, y| {
+            let (fx, fy) = (x as f32, y as f32);
+            (s.height_at(fx + 1.0, fy) - s.height_at(fx - 1.0, fy), s.height_at(fx, fy + 1.0) - s.height_at(fx, fy - 1.0))
+        });
+        out
+    }
+
+    fn looks(w: usize, h: usize) -> [Look; 2] {
+        let mut palette = [[0u8; 4]; 256];
+        for (i, p) in palette.iter_mut().enumerate() {
+            *p = [i as u8, (255 - i) as u8, (i * 7) as u8, 255];
+        }
+        let source = (0..w * h).map(|i| [(i * 13) as u8, (i * 29) as u8, (i / 3) as u8, 255]).collect();
+        [
+            Look::Wave { palette, light: 3.0, angle: 0.7, phong_range: 40.0, phong_size: 60.0 },
+            Look::Wet { source },
+        ]
+    }
+
+    /// Drops of most kinds, over the field (x, y in its cells).
+    fn drops(gw: usize, gh: usize) -> Vec<[u8; 8]> {
+        (0u8..20)
+            .map(|kind| {
+                let (x, y) = ((kind as usize * 7) % gw, (kind as usize * 5 + 3) % gh);
+                [kind, 40 + kind * 9, x as u8, y as u8, 12, 30, 3, 9]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn picture_matches_the_lookups_bit_for_bit() {
+        // Square and not, small and large; 2 wide falls back to the lookups (the field can't tile at half).
+        for (w, h) in [(4, 4), (8, 32), (64, 64), (256, 128), (2, 8)] {
+            for look in looks(w, h) {
+                let (gw, gh) = ((w / 2).max(2), (h / 2).max(2));
+                let mut s = WaterSim::new(w, h, &drops(gw, gh), 40, look);
+                for step in 0..30 {
+                    s.step();
+                    let mut fast = Vec::new();
+                    s.rgba(&mut fast);
+                    assert!(fast == reference_rgba(&s), "{w}x{h} picture differs after step {step}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn waves_match_the_modulo_form_bit_for_bit() {
+        for (w, h) in [(4, 4), (16, 8), (128, 128)] {
+            let mut s = WaterSim::new(w, h, &[], 40, looks(w, h).into_iter().next().unwrap());
+            // A rough field, so every neighbour matters.
+            let mut seed = 0x9e37_79b9u32;
+            for v in s.cur.iter_mut().chain(s.old.iter_mut()) {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                *v = (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+            }
+            let mut reference = s.clone();
+            for _ in 0..10 {
+                s.waves();
+                reference_waves(&mut reference);
+            }
+            let bits = |v: &[f32]| v.iter().map(|f| f.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&s.cur), bits(&reference.cur), "{w}x{h} heights");
+            assert_eq!(bits(&s.old), bits(&reference.old), "{w}x{h} previous heights");
         }
     }
 }
