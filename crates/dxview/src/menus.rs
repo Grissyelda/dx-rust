@@ -1075,6 +1075,7 @@ impl Enhance {
             ("HDRRendering", "HDR Rendering", "Draws the scene in 16-bit colour before it reaches the screen. Off draws it in 8-bit, half the memory traffic; the picture is the same except for faint differences where bright things show through glass. Glow And Bloom turns it back on."),
             ("LeanRendering", "Lean Rendering", "Leaves out GPU work that adds nothing to the picture. For slow GPUs; the picture stays the same."),
             ("LeanUpdates", "Lean Updates", "Leaves out CPU work that changes nothing on screen, such as redrawing windows that haven't changed. For slow CPUs."),
+            ("FPSCounter", "FPS Counter", "Shows frames per second and the average frame time in the top-right corner, over each half second."),
         ] {
             let mut c = debug_mode_choice();
             c.key = key.into();
