@@ -123,6 +123,9 @@ enum Win {
     Active,
     /// HUDInfoLinkDisplay.
     InfoLink,
+    /// The InfoLink's portrait with its StaticWindow interference on a window of its own (Lean Updates): the one
+    /// part of the InfoLink that changes every frame.
+    InfoLinkFace,
     /// HUDConWindowFirst.
     ConFirst,
     /// ConWindowActive's letterbox: upper and lower bars.
@@ -162,7 +165,7 @@ pub fn quote_text(lines: &[String], secs: f32) {
 }
 
 impl Win {
-    const ALL: [Win; 15] = [
+    const ALL: [Win; 16] = [
         Win::Hit,
         Win::Compass,
         Win::Ammo,
@@ -172,6 +175,7 @@ impl Win {
         Win::Received,
         Win::Active,
         Win::InfoLink,
+        Win::InfoLinkFace,
         Win::ConFirst,
         Win::ConUpper,
         Win::ConLower,
@@ -195,7 +199,7 @@ impl Win {
             | Win::ConLower
             | Win::Bark
             | Win::Start => (0, 0),
-            Win::ConCursor => (64, 64),
+            Win::ConCursor | Win::InfoLinkFace => (64, 64),
             Win::InfoLink => crate::conui::INFOLINK_SIZE,
             // DamageHUDDisplay: arrowiconWidth + iconMargin, (iconHeight + iconMargin) x 7 + arrowiconHeight.
             Win::Damage => (
@@ -339,6 +343,9 @@ pub struct ClassicHud {
     last: HashMap<Win, Vec<u8>>,
     /// What a window was last drawn from, for windows that only change with their inputs.
     keys: HashMap<Win, u64>,
+    /// The InfoLink's frame (conui::draw_infolink_frame) at a size, scale and settings generation, drawn once: with
+    /// its portrait on a window of its own the InfoLink is redrawn from a copy of it as its text types.
+    infolink_frame: Option<(u64, Canvas)>,
     true_north: Option<i32>,
     defaults: HashMap<String, Vec<unreal_pkg::props::Property>>,
     /// Message log lines (text, age) and seconds since the last one.
@@ -518,6 +525,8 @@ pub fn spawn_classic_hud(
             Visibility::Hidden,
             Pickable::IGNORE,
             GlobalZIndex(-2),
+            // The windows share a GlobalZIndex, so ZIndex decides: the InfoLink's portrait lies over the InfoLink.
+            ZIndex(if w == Win::InfoLinkFace { 1 } else { 0 }),
             HudWindow(w),
         ));
     }
@@ -849,6 +858,15 @@ pub fn classic_hud_system(
         (LOG_TOP + line_h * log_lines.len().max(LOG_LINES) as i32 + LOG_MARGIN).max(LOG_MIN_HEIGHT);
     let log_visible = !hud.log.is_empty() && hud.since_log <= log_timeout() && !snap.dead;
     let damage_visible = hud.damage.iter().any(|d| d.active) && !snap.dead;
+    // Lean Updates: the InfoLink's portrait and its interference on a window of their own (Win::InfoLinkFace), laid
+    // over the InfoLink, so the rest of it is redrawn when its text changes instead of every frame. Only with a
+    // portrait to draw: it's opaque, so the face window covers that spot of the InfoLink exactly (conui.rs's tests
+    // check the two add up).
+    let face_split = crate::perf::lean_updates()
+        && con
+            .link
+            .as_ref()
+            .is_some_and(|l| l.show_portrait && l.portrait.as_ref().is_some_and(|p| hud.tex(assets, p).is_some()));
     let layout = |w: Win| -> (i32, i32, i32, i32, bool) {
         let (ww, wh) = w.size();
         match w {
@@ -884,6 +902,14 @@ pub fn classic_hud_system(
                 ww,
                 wh,
                 con.link.is_some() && !snap.dead && !menu,
+            ),
+            // Over the InfoLink's portrait (draw_infolink puts it at 20, 25).
+            Win::InfoLinkFace => (
+                Win::Hit.size().0 + 20 + 20,
+                (if log_visible { log_h + 20 } else { 0 }) + 25,
+                ww,
+                wh,
+                face_split && !snap.dead && !menu,
             ),
             Win::ConFirst => (
                 sw / 2 - first_w / 2,
@@ -973,6 +999,7 @@ pub fn classic_hud_system(
             Win::Received => "hud::Received",
             Win::Active => "hud::Active",
             Win::InfoLink => "hud::InfoLink",
+            Win::InfoLinkFace => "hud::InfoLinkFace",
             Win::ConFirst => "hud::ConFirst",
             Win::ConUpper => "hud::ConUpper",
             Win::ConLower => "hud::ConLower",
@@ -982,6 +1009,19 @@ pub fn classic_hud_system(
         });
         // Windows that only change with what they show are redrawn only when that changes.
         let key: Option<u64> = match w {
+            // With the portrait on a window of its own, the InfoLink changes only with its text.
+            Win::InfoLink if face_split => con.link.as_ref().map(|l| {
+                hkey(&(
+                    &l.name,
+                    l.name_visible,
+                    &l.queued,
+                    l.show_icon,
+                    &l.text,
+                    l.typed,
+                    crate::conui::infolink_cursor_shown(l),
+                    (ww, wh, s),
+                ))
+            }),
             Win::Belt => {
                 // Hashed field by field (no formatted copies of the items).
                 use std::hash::{Hash, Hasher};
@@ -1058,7 +1098,17 @@ pub fn classic_hud_system(
         } else {
             hud.keys.remove(&w);
         }
-        let mut canvas = Canvas::new(ww, wh, s);
+        let mut canvas = if w == Win::InfoLink && face_split {
+            let fk = hkey(&(ww, wh, s, crate::settings::generation()));
+            if hud.infolink_frame.as_ref().map(|f| f.0) != Some(fk) {
+                let mut frame = Canvas::new(ww, wh, s);
+                crate::conui::draw_infolink_frame(hud, assets, &mut frame);
+                hud.infolink_frame = Some((fk, frame));
+            }
+            hud.infolink_frame.as_ref().map_or_else(|| Canvas::new(ww, wh, s), |f| f.1.clone())
+        } else {
+            Canvas::new(ww, wh, s)
+        };
         {
             match w {
                 Win::Hit => draw_hit(hud, assets, &mut canvas, tiny.as_deref(), snap, dt),
@@ -1082,7 +1132,16 @@ pub fn classic_hud_system(
                 ),
                 Win::InfoLink => {
                     if let Some(l) = &con.link {
-                        crate::conui::draw_infolink(hud, assets, &mut canvas, l);
+                        if face_split {
+                            crate::conui::draw_infolink_contents(hud, assets, &mut canvas, l, false);
+                        } else {
+                            crate::conui::draw_infolink(hud, assets, &mut canvas, l, true);
+                        }
+                    }
+                }
+                Win::InfoLinkFace => {
+                    if let Some(l) = &con.link {
+                        crate::conui::draw_infolink_face(hud, assets, &mut canvas, l, 0, 0);
                     }
                 }
                 Win::ConFirst => {

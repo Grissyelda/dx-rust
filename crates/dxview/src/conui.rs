@@ -115,13 +115,22 @@ fn nine(
     names.map(|n| hud.ui(assets, &format!("HUDWindow{kind}_{n}")))
 }
 
-/// HUDInfoLinkDisplay.
+/// HUDInfoLinkDisplay. `face`: the portrait and its interference too; without them (Lean Updates) they are a window
+/// of their own over this one (`draw_infolink_face`, classic_hud.rs's Win::InfoLinkFace), redrawn every frame.
 pub fn draw_infolink(
     hud: &mut ClassicHud,
     assets: &mut RuntimeAssets,
     c: &mut Canvas,
     l: &LinkView,
+    face: bool,
 ) {
+    draw_infolink_frame(hud, assets, c);
+    draw_infolink_contents(hud, assets, c, l, face);
+}
+
+/// The InfoLink's background and border, the part that doesn't change with the transmission: with Lean Updates the
+/// HUD keeps it drawn and starts each redraw from a copy of it (classic_hud.rs).
+pub fn draw_infolink_frame(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas) {
     let h = c.h;
     for (i, (x, w)) in [(0, 256), (256, 175)].into_iter().enumerate() {
         if let Some(t) = hud.ui(assets, &format!("HUDInfolinkBackground_{}", i + 1)) {
@@ -131,28 +140,26 @@ pub fn draw_infolink(
             c.texture(x, 0, w, h, 0, 0, &t, crate::menuui::border_style(), crate::menuui::border_col());
         }
     }
+}
+
+/// Whether the typing cursor shows at `l.time`: it blinks every half second.
+pub fn infolink_cursor_shown(l: &LinkView) -> bool {
+    l.cursor && ((l.time / 0.5) as i32) % 2 == 0
+}
+
+/// What the InfoLink shows over its frame: the portrait (with `face`) or the datalink icon, the speaker, the queue
+/// note and the typed text.
+pub fn draw_infolink_contents(
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    c: &mut Canvas,
+    l: &LinkView,
+    face: bool,
+) {
     // Portrait, or the datalink icon while the transmission comes in.
     if l.show_portrait {
-        if let Some(t) = l.portrait.as_ref().and_then(|p| hud.tex(assets, p)) {
-            c.texture(20, 25, 64, 64, 0, 0, &t, Style::Normal, [255, 255, 255]);
-        }
-        // StaticWindow: interference over the face.
-        let stat = hud
-            .tex(assets, "DeusExUI.UserInterface.Static")
-            .or_else(|| hud.tex(assets, "DeusExUI.Static"));
-        if let Some(t) = stat {
-            let r = (l.time * 977.0) as i32;
-            c.texture(
-                20,
-                25,
-                64,
-                64,
-                r % 128,
-                (r / 7) % 128,
-                &t,
-                Style::Translucent,
-                [255, 255, 255],
-            );
+        if face {
+            draw_infolink_face(hud, assets, c, l, 20, 25);
         }
     } else if l.show_icon {
         if let Some(t) = hud.ui(assets, "DataLinkIcon") {
@@ -214,7 +221,7 @@ pub fn draw_infolink(
         }
         last = (line.chars().count() as i32, row as i32);
     }
-    if l.cursor && ((l.time / 0.5) as i32) % 2 == 0 {
+    if infolink_cursor_shown(l) {
         let (cx, cy) = if lines.is_empty() { (0, 0) } else { last };
         c.fill(
             94 + cx * 7,
@@ -224,6 +231,20 @@ pub fn draw_infolink(
             Style::Normal,
             crate::menuui::h_col(7),
         );
+    }
+}
+
+/// The InfoLink's portrait at (x, y), with the StaticWindow's interference scrolling over it every frame.
+pub fn draw_infolink_face(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas, l: &LinkView, x: i32, y: i32) {
+    if let Some(t) = l.portrait.as_ref().and_then(|p| hud.tex(assets, p)) {
+        c.texture(x, y, 64, 64, 0, 0, &t, Style::Normal, [255, 255, 255]);
+    }
+    let stat = hud
+        .tex(assets, "DeusExUI.UserInterface.Static")
+        .or_else(|| hud.tex(assets, "DeusExUI.Static"));
+    if let Some(t) = stat {
+        let r = (l.time * 977.0) as i32;
+        c.texture(x, y, 64, 64, r % 128, (r / 7) % 128, &t, Style::Translucent, [255, 255, 255]);
     }
 }
 
@@ -586,7 +607,7 @@ mod tests {
             time: 0.2,
         };
         let mut c = Canvas::new(INFOLINK_SIZE.0, INFOLINK_SIZE.1, s);
-        draw_infolink(&mut hud, &mut assets, &mut c, &link);
+        draw_infolink(&mut hud, &mut assets, &mut c, &link, true);
         blit(&c, 104, 0);
         let fp = PlayView {
             first_person: true,
@@ -631,6 +652,63 @@ mod tests {
             })
             .collect();
         std::fs::write(out, bytes).unwrap();
+    }
+
+    /// HUD_GAME=<game root>: with Lean Updates the InfoLink's portrait is a window of its own (classic_hud.rs,
+    /// Win::InfoLinkFace at (20, 25)); laid over the InfoLink drawn without it, it must give the whole InfoLink.
+    #[test]
+    fn infolink_split_draws_the_whole_infolink() {
+        let Ok(root) = std::env::var("HUD_GAME") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let mut assets = RuntimeAssets {
+            classes: unreal_pkg::classes::ClassDb::open(&root.join("System")),
+            lib: dx_level::TexLib::new(&root),
+            images: Default::default(),
+            materials: Default::default(),
+            fire: Vec::new(),
+            sprites: Default::default(),
+            shared_parts: Default::default(),
+        };
+        let mut hud = ClassicHud::default();
+        assert!(hud.tex(&mut assets, "InfoPortraits.AlexJacobson").is_some(), "no portrait in HUD_GAME");
+        let s = 2;
+        // As the HUD draws it: the frame once, then each InfoLink from a copy of it, without the portrait.
+        let mut frame = Canvas::new(INFOLINK_SIZE.0, INFOLINK_SIZE.1, s);
+        draw_infolink_frame(&mut hud, &mut assets, &mut frame);
+        // The interference at four moments: the typing cursor shown (0.2, 0.37) and between blinks (0.6, 1.9).
+        for time in [0.2f32, 0.37, 0.6, 1.9] {
+            let link = LinkView {
+                name: "Alex Jacobson".into(),
+                name_visible: true,
+                queued: Some("message waiting...".into()),
+                portrait: Some("InfoPortraits.AlexJacobson".into()),
+                show_icon: false,
+                show_portrait: true,
+                text: "Heads up, JC.  Your brother Paul is on his way to meet you at the dock.".into(),
+                typed: 40,
+                cursor: true,
+                time,
+            };
+            let mut whole = Canvas::new(INFOLINK_SIZE.0, INFOLINK_SIZE.1, s);
+            draw_infolink(&mut hud, &mut assets, &mut whole, &link, true);
+            let mut split = frame.clone();
+            draw_infolink_contents(&mut hud, &mut assets, &mut split, &link, false);
+            let mut face = Canvas::new(64, 64, s);
+            draw_infolink_face(&mut hud, &mut assets, &mut face, &link, 0, 0);
+            // The face window over the InfoLink window, as the UI lays them (premultiplied: over).
+            for py in 0..64 * s {
+                for px in 0..64 * s {
+                    let f = face.px[(py * 64 * s + px) as usize];
+                    let b = &mut split.px[((25 * s + py) * split.w * s + 20 * s + px) as usize];
+                    for k in 0..4 {
+                        b[k] = f[k] + b[k] * (1.0 - f[3]);
+                    }
+                }
+            }
+            assert!(split.to_rgba8() == whole.to_rgba8(), "time {time}: the split InfoLink differs from the whole one");
+        }
     }
 }
 
