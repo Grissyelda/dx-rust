@@ -206,6 +206,10 @@ pub fn alarm_system(
     mut alarms: ResMut<Alarms>,
     mut events: ResMut<crate::devices::GameEvents>,
 ) {
+    // Multiplayer: the host's to run (a joiner sees the results through him).
+    if crate::netplay::story_off() {
+        return;
+    }
     let _prof = crate::prof::scope("alarms::alarm_system");
     let lvl = &level.0;
     if !alarms.started {

@@ -390,6 +390,11 @@ pub fn wipe_system(
                 let _ = switch(!is_modern());
                 return;
             }
+            // Multiplayer: the room sets the look for everyone.
+            if keys.just_pressed(KeyCode::Tab) && free && crate::netplay::look_locked() {
+                crate::classic_hud::client_message("The room's host chose the look for everyone.");
+            }
+            let free = free && !crate::netplay::look_locked();
             if (keys.just_pressed(KeyCode::Tab) && free) || auto {
                 eprintln!("REMASTER capture");
                 if let Ok(mut c) = CAPTURED.lock() {

@@ -1,0 +1,24 @@
+[package]
+name = "dxlobby"
+license = "GPL-3.0-or-later"
+edition = "2021"
+version = "0.1.0"
+description = "DX RUST online services: the lobby server (room codes, the public room list) and its controller window."
+
+[build-dependencies]
+winresource = "0.1"
+
+[dependencies]
+eframe = { version = "0.31.1", default-features = false, features = ["glow", "default_fonts", "x11"] }
+imsim-net = { path = "../imsim-net" }
+
+[[bin]]
+name = "dxlobby"
+path = "src/main.rs"
+
+# Its own workspace, like the launcher: egui must not change the game's Bevy feature set.
+[workspace]
+
+[profile.release]
+opt-level = 3
+strip = true

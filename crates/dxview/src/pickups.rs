@@ -325,7 +325,13 @@ pub fn frob_system(
     futz_owned(&cx, &best, &items);
     match best {
         Some((Target::Talk(b), _)) => {
-            crate::consys::request_frob(b);
+            // Multiplayer: conversations are the host's.
+            if crate::netplay::conversations_blocked() {
+                cx.hud.text = "Only the host can talk to people.".into();
+                cx.hud.time_left = 2.0;
+            } else {
+                crate::consys::request_frob(b);
+            }
         }
         Some((Target::Mover(idx), _)) => frob_mover(&mut cx, idx, &mut picking),
         Some((Target::Item(e), _)) => frob_item(&mut cx, e, &items, &mut commands),
@@ -593,6 +599,7 @@ fn frob_mover(cx: &mut FrobCx, idx: usize, picking: &mut ResMut<movers::Picking>
                     mv.rt[j].locked = lock;
                 }
             }
+            crate::netplay::set_lock(idx, lock);
             if lock {
                 "Your NanoKey Ring locked it".into()
             } else {
@@ -639,6 +646,8 @@ fn frob_mover(cx: &mut FrobCx, idx: usize, picking: &mut ResMut<movers::Picking>
     if unreal_pkg::props::find(&level.actors[level.movers[idx].actor].props, "OpeningSound").is_some() {
         crate::optfixes::object_noise(mv.rt[idx].location, 128.0);
     }
+    // Multiplayer: the host's door is the one that counts (a joiner's opens here at once and his follows).
+    crate::netplay::frob_mover(idx);
     if let Some(msg) =
         movers::frob(level, mv, idx, cx.player.body.location, cx.player.unlock_all)
     {
@@ -992,6 +1001,7 @@ fn frob_device(
     }
     if crate::fixtures::is_fixture(&a.class) {
         crate::fixtures::frob(b);
+        crate::netplay::frob_fixture(blockers.list[b].actor);
     }
     if let Some(msg) =
         crate::devices::frob_device(b, &a.props, &a.class, tool, hacking, events)

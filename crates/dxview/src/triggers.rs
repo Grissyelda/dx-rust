@@ -927,6 +927,13 @@ pub fn trigger_system(
         tr.list = build(&level.0);
         println!("triggers: {}", tr.list.len());
     }
+    // Multiplayer: a joiner's triggers are the host's (his touches count there, through his body).
+    if crate::netplay::story_off() {
+        if let Ok(mut q) = INBOX.lock() {
+            q.clear();
+        }
+        return;
+    }
     // Wait for the conversation system (infolinks) to be ready, and for a saved game to finish loading.
     if crate::consys::lock().is_none() || crate::save::restoring() {
         return;
@@ -1006,6 +1013,10 @@ pub fn trigger_system(
     let pawns = &mut *pawn_buf;
     pawns.clear();
     pawns.extend(npcs.iter().filter_map(|(n, d, vis)| {
+        // Players' bodies count as the player (below), not as pawns.
+        if n.net_player.is_some() {
+            return None;
+        }
         if n.state == crate::ai::NpcState::Dead {
             if matches!(vis, Some(Visibility::Hidden)) {
                 return None;
@@ -1031,6 +1042,7 @@ pub fn trigger_system(
             }
         }
     }
+    let remote = crate::netplay::remote_bodies();
     for t in tr.list.iter_mut() {
         fade_tick(t, dt);
         if t.destroyed || !t.collide {
@@ -1041,8 +1053,10 @@ pub fn trigger_system(
         }
         // Only touchers the trigger cares about count (a class-proximity trigger for bodies ignores the player
         // standing in it, so the body still touches it when he's there too).
-        let player_in = alive
-            && overlaps(t, pc, pr, phh)
+        // (Multiplayer: any player's body does, on the host.)
+        let in_me = alive && overlaps(t, pc, pr, phh);
+        let in_other = !in_me && !remote.is_empty() && remote.iter().any(|(_, c)| overlaps(t, *c, pr, phh));
+        let player_in = (in_me || in_other)
             && (t.trigger_type != 2 || crate::util::contains_ci(&t.class_prox, "player"));
         let pawn_hit = match t.trigger_type {
             1 | 3 => pawns.iter().find(|(c, r, h, _, dead)| !dead && overlaps(t, *c, *r, *h)),

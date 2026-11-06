@@ -592,6 +592,10 @@ pub fn security_system(
         ResMut<crate::effects::BloodFx>,
     ),
 ) {
+    // Multiplayer: the host's to run (a joiner sees the results through him).
+    if crate::netplay::story_off() {
+        return;
+    }
     let _prof = crate::prof::scope("security::security_system");
     let dt = time.delta_secs().min(0.1);
     let dtd = dt as f64;

@@ -29,6 +29,8 @@ pub struct SpawnReq {
     pub props: Vec<Property>,
     /// Index of the ground generator this pawn belongs to.
     pub generator: Option<usize>,
+    /// Multiplayer: this pawn is a player's body (netplay), that player's id.
+    pub net_player: Option<u8>,
 }
 
 static QUEUE: Mutex<Vec<SpawnReq>> = Mutex::new(Vec::new());
@@ -42,6 +44,7 @@ pub fn pawn_with(class: &str, pos: DVec3, yaw: i32, props: Vec<Property>) {
         transient: false,
         props,
         generator: None,
+        net_player: None,
     });
 }
 
@@ -71,6 +74,10 @@ pub fn request(r: SpawnReq) {
 pub struct Spawned {
     pub count: usize,
 }
+
+/// Marks a player's body (multiplayer).
+#[derive(Component)]
+pub struct NetBody(pub u8);
 
 /// Marks pawns created at run time.
 #[derive(Component)]
@@ -268,11 +275,22 @@ pub fn spawn_system(
                 push_snd: 0.0,
                 falls: true,
             },
-            crate::ai::Npc::new(ai, b, &lvl.actors[ai].props, r.yaw, r.pos),
+            {
+                let mut n = crate::ai::Npc::new(ai, b, &lvl.actors[ai].props, r.yaw, r.pos);
+                n.net_player = r.net_player;
+                if r.net_player.is_some() {
+                    n.net = Some(Box::new(crate::netplay::NetPose { pos: r.pos, ..Default::default() }));
+                }
+                n
+            },
             SpawnedPawn,
         ));
         if let Some(g) = r.generator {
             commands.entity(root).insert(FromGenerator(g));
+        }
+        if let Some(id) = r.net_player {
+            // A player's body: no mind of its own (netplay drives it from the first frame).
+            commands.entity(root).insert(NetBody(id));
         }
         println!(
             "SPAWN {} as {} at {:.0} {:.0} {:.0}",
@@ -482,6 +500,7 @@ pub fn generator_system(
             transient: true,
             props: Vec::new(),
             generator: Some(gi),
+            net_player: None,
         });
     }
 }

@@ -127,7 +127,7 @@ pub fn fogball_system(
     for (mut t, mut vis, b) in &mut balls {
         let lit = b.initially != crate::dynlight::is_toggled(b.actor);
         vis.set_if_neq(if lit { Visibility::Inherited } else { Visibility::Hidden });
-        if lit {
+        if lit && t.rotation != cam.rotation {
             t.rotation = cam.rotation;
         }
     }

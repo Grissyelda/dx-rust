@@ -1110,12 +1110,13 @@ pub fn census_system(world: &mut bevy::prelude::World, mut frame: bevy::prelude:
         return;
     }
     *frame += 1;
-    if *frame % 300 != 140 {
+    if *frame != 60 && *frame % 300 != 140 {
         return;
     }
     let mut q = world.query::<(Entity, &Mesh3d, &ViewVisibility)>();
     let ents: Vec<Entity> = q.iter(world).filter(|(_, _, v)| v.get()).map(|(e, _, _)| e).collect();
     let mut groups: HashMap<String, usize> = HashMap::new();
+    let mut sorted: HashMap<String, usize> = HashMap::new();
     let std_mats = world.resource::<Assets<StandardMaterial>>();
     let alpha = |e: Entity, w: &World| -> String {
         if let Some(m) = w.get::<MeshMaterial3d<StandardMaterial>>(e) {
@@ -1152,6 +1153,41 @@ pub fn census_system(world: &mut bevy::prelude::World, mut frame: bevy::prelude:
             }).collect())
             .unwrap_or_default();
         *groups.entry(format!("{a} {} [{}]", mats.join(","), names.join(","))).or_insert(0) += 1;
+        // Sorted (see-through) draws by the actor class they belong to: each is a draw of its own.
+        if a.contains("Add") || a.contains("Blend") || a.contains("Multiply") || a.contains("Premultiplied") {
+            let owner = world.get::<ChildOf>(e).map(|c| c.parent());
+            let class = owner
+                .and_then(|o| world.get::<crate::actors::MeshActorRef>(o))
+                .and_then(|r| {
+                    let lvl = &world.resource::<crate::LevelRes>().0;
+                    lvl.mesh_actors.get(r.0).and_then(|m| lvl.actors.get(m.actor)).map(|x| x.class.clone())
+                })
+                .unwrap_or_else(|| {
+                    if !names.is_empty() {
+                        return names.join(",");
+                    }
+                    // Nothing of ours on it: the first ancestor with one of our components.
+                    let mut up = owner;
+                    for _ in 0..6 {
+                        let Some(p) = up else { break };
+                        let ours: Vec<String> = world
+                            .inspect_entity(p)
+                            .map(|it| it.filter_map(|c| c.name().to_string().strip_prefix("dxview::").map(str::to_string)).collect())
+                            .unwrap_or_default();
+                        if !ours.is_empty() {
+                            return format!("under {}", ours.join(","));
+                        }
+                        up = world.get::<ChildOf>(p).map(|c| c.parent());
+                    }
+                    "-".to_string()
+                });
+            *sorted.entry(format!("{a} {class}")).or_insert(0) += 1;
+        }
+    }
+    let mut sv: Vec<_> = sorted.into_iter().collect();
+    sv.sort_by(|a, b| b.1.cmp(&a.1));
+    for (k, n) in sv.iter().take(25) {
+        println!("PROF sorted {n:5}  {k}");
     }
     let mut v: Vec<_> = groups.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1));

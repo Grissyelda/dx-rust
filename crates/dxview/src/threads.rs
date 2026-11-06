@@ -4,9 +4,10 @@
 //! the main and render threads (the frame's critical path) compete with them for cores. A game frame has a few
 //! milliseconds of parallel work: a handful of threads finish it as fast as fifty.
 //!
-//! Auto (setting WorkerThreads 0, the default): the compute pool gets the hardware threads less four (the main
-//! thread, the render thread, audio and the OS), at least 2 and at most 10; IO and async compute get 1 each (the
-//! game loads levels and decodes sounds on its own threads). Settings > Enhancements > Display: CPU Worker Threads
+//! Auto (setting WorkerThreads 0, the default): the compute pool gets half the hardware threads (about one per
+//! physical core), at least 2 and at most 8; IO and async compute get 1 each (the game loads levels and decodes
+//! sounds on its own threads). Measured on a Ryzen 5 3600 (12 threads), Modern: 8 workers 17.5 ms a frame, 6 workers
+//! 15.2 ms - a worker on the main or render thread's SMT sibling slows the frame's critical path more than it helps. Settings > Enhancements > Display: CPU Worker Threads
 //! (WorkerThreads, an index into STEPS) or env DXVIEW_THREADS=n sets the compute pool to n.
 
 use bevy::app::{TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy};
@@ -29,7 +30,7 @@ pub fn compute_threads(hw: usize, requested: usize) -> usize {
     if requested > 0 {
         return requested.clamp(1, hw.max(1) * 2);
     }
-    hw.saturating_sub(4).clamp(2, 10)
+    (hw / 2).clamp(2, 8)
 }
 
 fn policy(n: usize) -> TaskPoolThreadAssignmentPolicy {
@@ -69,9 +70,9 @@ mod tests {
     fn sizes() {
         assert_eq!(compute_threads(4, 0), 2);
         assert_eq!(compute_threads(8, 0), 4); // Steam Deck
-        assert_eq!(compute_threads(12, 0), 8); // Ryzen 5 3600
-        assert_eq!(compute_threads(28, 0), 10); // Xeon E5-2680 v4
-        assert_eq!(compute_threads(56, 0), 10); // two of them
+        assert_eq!(compute_threads(12, 0), 6); // Ryzen 5 3600
+        assert_eq!(compute_threads(28, 0), 8); // Xeon E5-2680 v4
+        assert_eq!(compute_threads(56, 0), 8); // two of them
         assert_eq!(compute_threads(28, 6), 6);
     }
 }
@@ -95,13 +96,14 @@ impl bevy::app::Plugin for RenderSchedulesPlugin {
         render.edit_schedule(bevy::core_pipeline::Core2d, |s| {
             s.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
-        // Experiment (PROFILE_RENDER_AB.bat): the render world's own Render schedule (extract follow-up, prepare,
-        // queue, sort) in order on the render thread too, instead of handing each system to the busy worker pool.
-        if env_on!("DXVIEW_ST_RENDER") {
+        // The render world's own Render schedule (prepare, queue, sort) runs in order on the render thread too,
+        // instead of handing each system to the worker pool the main world is busy with (their own parallel loops
+        // still use it). Measured on a Ryzen 5 3600, Modern: 17.5 -> 16.0 ms a frame. DXVIEW_MT_RENDER=1 = Bevy's
+        // multi-threaded executor.
+        if !env_on!("DXVIEW_MT_RENDER") {
             render.edit_schedule(bevy::render::Render, |s| {
                 s.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
             });
-            println!("dxview: Render schedule runs single-threaded");
         }
     }
 }

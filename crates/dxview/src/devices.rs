@@ -285,7 +285,25 @@ pub fn device_system(
     }
     // Dispatch.
     events.0.extend(crate::movers::EVENTS_OUT.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default());
+    // Multiplayer: a joiner's events are the host's to run (he echoes each to everyone, below); the host tells the
+    // joiners about each one he runs.
+    for (name, on) in crate::netplay::take_events() {
+        // The joiner's side of an event the host ran: what shows and sounds here (lights, particles, sounds, the
+        // pain zones this player walks in, electricity). Doors come with the host's mover states.
+        crate::particles::event(&name, on);
+        crate::dynlight::trigger_event(lvl, &name, on);
+        crate::zones::event(lvl, &name, on);
+        crate::sound::tag_state(&name, on);
+        for mut e in &mut emitters {
+            if e.tag.eq_ignore_ascii_case(&name) {
+                e.set_on(on);
+            }
+        }
+    }
     for (name, on) in events.0.drain(..) {
+        if crate::netplay::dispatched(&name, on) {
+            continue;
+        }
         println!("EVENT {name} {}", if on { "trigger" } else { "untrigger" });
         if on {
             crate::achievements::event(&lvl.name, &name);

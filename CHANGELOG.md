@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Multiplayer, first playable co-op (November 5-6, night)
+- **Multiplayer** on the main menu (Achievements moved below it). Nothing goes online until you press it, then a
+  "Connecting to online services..." box (Cancel stops it). Its screens are drawn like the rest of the menus:
+  - **Host Room** gives your room a four-character code (letters and digits without look-alikes, like DX23) and
+    lets you choose co-op or deathmatch, public or private, 2 to 16 players, Classic or Modern for everyone,
+    tougher enemies with more players, and friendly fire (off unless you turn it on).
+  - **Join Room** takes a code. **Lobby Browser** lists the public rooms (code, host, mode, look, players, ping)
+    with a filter over each column and Refresh.
+- **Co-op** with the host as the story: his save, his conversations and his mission scripts. Everyone else loads
+  the same map and sees his world as it happens - every NPC where it is and doing what it does, doors, flags,
+  lights and sounds set off by switches, conversation lines and infolinks (heard where they're said, written in
+  the log), and map changes (everyone travels with the host and arrives next to him).
+  - Each player is his own JC (or Lay D Denton, when her files are installed) with his own face, animated from how
+    he moves, holding his own weapon, and heard when he fires.
+  - Enemies fight every player: a guard who sees you shoots you, wherever the host is. Your shots count on the
+    host's side, so the guard you hit turns on you, and a kill is everyone's.
+  - Loot is your own: every item and every body's pockets are there for each player.
+  - Anyone can use doors, switches, keypads and computers (the host's game does it, so it's the same for all);
+    only the host can start conversations.
+  - A player who dies gets up again near the host after four seconds - with his inventory on Easy and Medium,
+    with nothing on Hard and Realistic.
+  - Joining players keep their own characters in multiplayer saves (inventory, skills, augmentations), written
+    every 30 seconds and before each map change.
+  - Classic / Modern is the room's choice for everyone (Tab doesn't switch it while playing together), and the
+    game doesn't pause behind the menus.
+- **Deathmatch, first step**: the same rooms with players able to hurt each other, respawning away from the
+  others, and "X killed Y (n kills)" in the log. The original's deathmatch rules and maps are still to come.
+- **Safety and speed**: players connect straight to the host when their routers allow it (the lobby helps both
+  sides open the way at once), else through the lobby's relay. Every game packet is encrypted and signed end to
+  end with keys made fresh for each room (Noise protocol), replays are thrown away, and only the real host can
+  answer a joiner, so nobody in between - the lobby included - can read or change the game.
+- **Online services**: `dxlobby.exe` (built by `BUILD_LOBBY.bat` into the `online` folder) is the lobby server's
+  controller: it starts the server in the background, shows the rooms, and can stop, restart or reset it, open
+  its log, or start it with Windows. Players reach it at `LobbyServer=<address>:27962` in `launcher.txt` (forward
+  port 27962, TCP and UDP, to the PC running it).
+
+### Frame-rate pass from the render profile (November 5, night)
+- The renderer's own bookkeeping runs on one thread instead of being split into many tiny jobs, and the game uses
+  half the CPU's threads for its workers (2 to 8; Settings > Enhancements > Display: CPU Worker Threads still
+  overrides it). In the side-by-side runs on the RTX 3050 PC each was worth 1.5-2 ms a frame in Modern (17.5 ms
+  as it was) and about half a millisecond in Classic.
+- Character parts that draw nothing (the blank grey / black / pink mask textures some outfits leave in unused
+  slots) are no longer drawn: with NPCs on screen, from about 110 see-through draws a frame to about 25.
+
 ### Architecture sweep (November 5, night)
 - Sound no longer holds the game up: the game used to wait for the audio thread to finish mixing (music, reverb,
   every voice) each time it started, moved or checked a sound, dozens of times a frame. It now queues its changes

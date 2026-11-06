@@ -7,7 +7,7 @@ has two goals, in order:
 - **v2.0**: optional modern improvements on top. Each one is a switch in Settings > Enhancements, so the original
   experience is always one switch away.
 
-## Where we are (October 2026)
+## Where we are (November 2026)
 
 The whole game is implemented and the code builds:
 
@@ -90,6 +90,13 @@ the weapon view's own pass, the Update schedule's scheduling overhead (about 160
 NPC component and its update into smaller components and systems (poison and bleeding are their own component and
 system; the update's damage, sight, hearing and state code are separate functions now; next: perception, reactions,
 combat, orders and movement as components and systems of their own).
+
+Since then (November 2026): procedural textures worked out on a background thread, skeletal people posed less
+often by distance, the sound mixer no longer holding the game up (the game queues its changes), the render world's
+schedule run in order on the render thread and the worker pool sized to the processor's cores, and invisible
+mask sections (the NSF's masks, glasses slots) no longer drawn - see-through draws on the Island's dock from about
+110 to 25. On a Ryzen 5 3600 with an RTX 3050: Classic about 8 ms a frame (125 fps), Modern with every option and
+mod about 15 ms (planar water reflections on; screen-space is cheaper).
 
 ### 5. Release polish
 - Steam Deck tuning at 800p / 60 fps.
@@ -208,7 +215,35 @@ Shadows with contact hardening.
 46. **Mod support** (done in code; being tested): the Lay D Denton Project, HDTP, New Vision, Visible
     Attachments, Augmentique (outfits and weapon skins) and GMDX: Augmented Edition (perks, bugfixes and
     quality-of-life options), any number at once from the launcher's Mods page.
-48. Co-op and deathmatch multiplayer.
+48. **Multiplayer** (co-op playable, in testing): a new mode of our own rather than the original's, from Multiplayer on the main menu
+    (the online services connect only then, with a "Connecting to online services" prompt):
+    - **Host Room** makes a four-character room code (letters and digits without look-alikes) and a room screen
+      to pick: co-op (first) or deathmatch (second), public (in the lobby browser) or private (code only), up to 16
+      players (fewer recommended for co-op), Classic or Modern for everyone (the Classic / Modern switch is off in
+      multiplayer, so every player sees the same world), and enemies tougher with more players (a toggle).
+    - **Join Room** asks for a code; **Lobby Browser** lists the public rooms (mode, look, players out of 16,
+      ping), with a filter toggle over each column and Refresh.
+    - **Online services**: our own lobby server (room codes, the public list, finding the host), run from the
+      server controller on the host machine (start, stop, restart, reset, start with Windows; it keeps running in
+      the background). Game traffic goes player to player with the host's game in charge (it decides hits, so a
+      client can't cheat them), encrypted, tuned for latency; a relay through the lobby for players whose routers
+      block direct connections.
+    - **Co-op**: the host drives the story - their save, their conversations (the others see them talk in real
+      time while they keep playing) - and everyone shares one world: the same enemies, doors and alarms, a kill
+      counts for all. Loot is per player (everyone can take their own copy of what a crate drops). Each player is
+      their own character: made with the new-game screen (skin, male or female - the host's choices don't change
+      theirs), shown with their own animation, skin and aug glows, and kept in multiplayer saves of their own
+      (inventory, skills, augs) to load or start fresh when joining.
+    - **Deathmatch**: the original's rules (DeathMatchGame / TeamDMGame, the UNATCO / NSF / MJ12 multiplayer
+      classes, its HUD and messages) ported like the rest, on the five maps the game ships (DXMP_Area51Bunker,
+      DXMP_Cathedral, DXMP_CMD, DXMP_Silo, DXMP_Smuggler); how its augs and skill awards sit with Modern is open.
+    Done: the lobby server and its protocol (imsim-net: room codes, the public list, UDP hole punching and an
+    end-to-end encrypted relay), the server controller (dxlobby), the menus, and first playable co-op (netplay:
+    encrypted UDP links, the host's pawns / doors / flags / events / conversation lines / travel sent to the
+    players, players' bodies as targets for the host's NPCs, hits and damage both ways, respawn near the host,
+    multiplayer characters, tested with two copies of the game). Next: playtests over the internet, the host's
+    goals and notes for everyone, alarms / cameras / turrets seeing every player, decorations and dropped items
+    shared, players' aug glows and flashlights, then deathmatch proper.
 
 (Items 45, more NPCs and livelier locations, and 47, no loading screens, were cut.)
 49. **Remastered lighting** (done in code; an Enhancement, in the Modern preset): every BSP surface relit per pixel

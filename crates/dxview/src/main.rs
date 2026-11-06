@@ -17,6 +17,9 @@ use bevy::{
 };
 #[macro_use]
 mod env;
+mod nullmask;
+mod online;
+mod netplay;
 mod queue;
 mod util;
 mod uinode;
@@ -909,6 +912,11 @@ fn add_combat_systems(app: &mut App) {
                 ai::attach_npcs,
                 ai::afflictions_system.after(ai::attach_npcs).before(ai::npc_system),
                 ai::npc_system.after(fly).after(ai::attach_npcs),
+                netplay::net_in_system.after(fly).before(ai::npc_system).before(triggers::trigger_system).before(devices::device_system),
+                netplay::net_out_system.after(ai::npc_system),
+                netplay::dev_system,
+                netplay::char_save_system,
+                netplay::exit_system,
                 ai::player_health_ui,
                 ai::npc_weapon_models
                     .after(ai::npc_system)
@@ -1057,6 +1065,7 @@ fn add_render_systems(app: &mut App) {
         .insert_resource(bevy::light::DirectionalLightShadowMap { size: 1024 })
         .add_systems(Update, water::ocean_system)
         .add_systems(Update, glow::glow_system)
+        .add_systems(Update, nullmask::nullmask_system)
         .add_systems(Update, (shafts::shafts_system.after(dynlight::aug_light_system), postfx::postfx_system))
         .add_systems(Update, vision::vision_system.after(augdisplay::vision_system))
         .add_systems(Update, (augdisplay::augdisplay_system, augdisplay::vision_system, augdisplay::aug_text_system))
@@ -2151,6 +2160,7 @@ fn register_anim_textures(level: &Level, handles: &[Handle<Image>], runtime_asse
     anim_tex::reset();
     for (i, t) in level.textures.iter().enumerate() {
         glow::register(&handles[i], &t.name);
+        nullmask::register(&handles[i], &t.name);
         let masked = t.has_alpha_holes();
         anim_tex::register(&mut runtime_assets.lib, &t.name, &handles[i], masked, true);
     }

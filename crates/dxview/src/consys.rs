@@ -1979,6 +1979,7 @@ impl ConState {
                 self.set_camera_actors();
                 let display = self.display_name(&speaker, false);
                 let familiar = self.display_name(&speaker, true);
+                let net_name = display.clone();
                 let len = self.speech_len(con, sound_id);
                 let path = if len.is_some() {
                     self.speech_path(con, sound_id)
@@ -2038,6 +2039,9 @@ impl ConState {
                             radius,
                             1.0,
                         );
+                        // Multiplayer: the other players hear it from where it's said (the host's JC: from his
+                        // body), with the line in their logs.
+                        crate::netplay::speech(pos.or(Some(player_pos)), &path, &net_name, &text, radius.min(4096.0));
                         p.sound_owner = Some(owner);
                         if let (Some(w), Some(track)) = (
                             sw,
@@ -2272,12 +2276,14 @@ impl ConState {
                         }
                     }
                     if let Some(h) = l.history.as_mut() {
-                        h.lines.push((display, text.clone()));
+                        h.lines.push((display.clone(), text.clone()));
                     }
                     l.ev = next;
                     if l.silent {
                         continue;
                     }
+                    // Multiplayer: every player hears the infolink, with the line in the log.
+                    crate::netplay::speech(None, path.as_deref().unwrap_or(""), &display, &text, 0.0);
                     crate::sound::stop(crate::sound::PLAYER, crate::sound::slot::TALK);
                     crate::haptics::stop_speech();
                     match (len, path) {
@@ -2850,7 +2856,11 @@ pub fn consys_system(
         );
     }
     // ScriptedPawn / DeusExDecoration Tick: StartConversation(IM_Radius), at low priority.
+    // (Multiplayer: never on a joiner's side - conversations are the host's.)
     st.radius_timer -= dt;
+    if crate::netplay::conversations_blocked() {
+        st.radius_timer = 0.2;
+    }
     if st.radius_timer <= 0.0 {
         st.radius_timer = 0.2;
         let me = st.pos(Who::Player);

@@ -12,7 +12,8 @@
 //!
 //! Settings are kept in settings.rs. Ours: HUD Scale (Small / Medium / Large) on the Display screen.
 //! Not available yet (a message says so): Save / Load (point 3), Training, Play Intro, Credits (cutscenes),
-//! Multiplayer (not planned), render device and colour depth (fixed by the renderer).
+//! render device and colour depth (fixed by the renderer). Ours: the multiplayer screens (Multiplayer, Host Room,
+//! Join Room, Lobby Browser) over online services (online.rs).
 
 use crate::classic_hud::{ClassicHud, HudLayer};
 use crate::inventory_screen::{inside, label};
@@ -23,6 +24,7 @@ use crate::uicanvas::{wrap, Canvas, HAlign, Rgb, Style, VAlign};
 use crate::weapons::RuntimeAssets;
 use crate::{FlyCam, LevelRes, SkyCam};
 use bevy::input::mouse::MouseWheel;
+use imsim_net::{Look, Mode, RoomInfo, RoomSettings};
 use bevy::prelude::*;
 use bevy::window::{CursorOptions, MonitorSelection, WindowMode};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -178,6 +180,9 @@ struct Frame {
     /// Ours: a band of the client background left out (y, height) - the empty choice wells under the last row of a
     /// screen that offers fewer settings than the original's art has room for. The window is that much shorter.
     cuts: Vec<(i32, i32)>,
+    /// Ours: a band of the client background drawn twice (y, height), the copy right under it - a row added to the
+    /// art (the main menu's Achievements button). The window is that much taller.
+    dups: Vec<(i32, i32)>,
 }
 
 fn frame(assets: &mut RuntimeAssets, class: &str) -> Frame {
@@ -564,6 +569,8 @@ struct NewGame {
     sel: Option<usize>,
     difficulty: f32,
     desc_scroll: i32,
+    /// Ours: a multiplayer character (Choose Character > New Character): START hands it to the game session.
+    multiplayer: bool,
 }
 
 struct Keys {
@@ -608,6 +615,12 @@ enum MsgPurpose {
     /// Ours: the controller layout picture (Settings > Enhancements > Controller Layout; once at the first map for
     /// a player on a pad).
     PadMap,
+    /// Ours: "Connecting to online services..." (Cancel disconnects), "Looking for room...", and what a join found.
+    Connecting,
+    Joining,
+    MpResult,
+    /// "Leave the multiplayer game?" (the main menu's Leave Multiplayer).
+    MpLeave,
 }
 
 /// Open the controller layout picture (paddiagram).
@@ -783,7 +796,8 @@ struct Msg {
 }
 
 enum Body {
-    Menu { buttons: Vec<MenuBtn>, x: i32, w: i32 },
+    /// `note`: ours, a line of text in a well at (y): the multiplayer screen's connection.
+    Menu { buttons: Vec<MenuBtn>, x: i32, w: i32, note: Option<(i32, String)> },
     Choices { choices: Vec<Choice> },
     NewGame(NewGame),
     Keys(Keys),
@@ -795,6 +809,12 @@ enum Body {
     Achieve(AchieveView),
     /// Ours: the welcome window (welcome.rs), its text scroll.
     Welcome(i32),
+    /// Ours: the multiplayer screens - hosting a room, joining one by code, the public room list.
+    Host(MpHost),
+    Join(MpJoin),
+    Browse(MpBrowse),
+    /// Ours: Choose Character before joining a room (multiplayer characters, New Character).
+    Chars(MpChars),
 }
 
 struct AchieveView {
@@ -1078,7 +1098,7 @@ impl Enhance {
             let mut c = debug_mode_choice();
             c.key = "WorkerThreads".into();
             c.label = "CPU Worker Threads".into();
-            c.help = "How many threads the game spreads its parallel work over. Auto leaves room for the main and render threads and stops at 10: on processors with many cores (workstation Xeons, Threadrippers) more threads only add overhead. Takes effect on the next start.".into();
+            c.help = "How many threads the game spreads its parallel work over. Auto uses one per processor core (half the hardware threads) and stops at 8, leaving the main and render threads their own cores: more threads only add overhead. Takes effect on the next start.".into();
             c.kind = ChoiceKind::Enum(crate::threads::STEPS.iter().map(|&n| if n == 0 { "Auto".to_string() } else { n.to_string() }).collect());
             c.value = crate::threads::step_index(setting!("WorkerThreads"));
             c.saved = c.value;
@@ -1500,22 +1520,26 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             if class == "MenuMain" {
                 // Our title.
                 f.title = "Welcome to DX RUST!".into();
-                // UpdateButtonStatus: no saving or "back to game" on the logo map (or dead); no multiplayer here.
+                // UpdateButtonStatus: no saving or "back to game" on the logo map (or dead).
                 let dead = DEAD.load(Ordering::Relaxed);
                 for (i, b) in buttons.iter_mut().enumerate() {
                     if (i == 1 || i == 7) && (intro_map() || dead) {
                         b.enabled = false;
                     }
                     if i == 8 {
-                        // Ours: the multiplayer slot opens the Achievements screen (no multiplayer yet).
-                        b.label = "Achievements".into();
-                        b.invoke = "MenuScreenAchievements".into();
-                        b.action = 1;
-                        b.enabled = true;
+                        // Ours: the multiplayer slot connects to our online services (online.rs) and opens their
+                        // screens; in a game session it leaves it.
+                        mp_main_slot(b);
                     }
                 }
+                main_menu_achievements(&mut f, &mut buttons);
             }
-            Body::Menu { buttons, x, w }
+            Body::Menu { buttons, x, w, note: None }
+        }
+        "MenuScreenMultiplayer" | "MenuScreenHostRoom" | "MenuScreenJoinRoom" | "MenuScreenLobbyBrowser" | "MenuScreenChooseCharacter" => {
+            let (mf, body) = mp_window(assets, class);
+            f = mf;
+            body
         }
         "MenuScreenNewGame" => {
             let skills = fresh_skills();
@@ -1535,6 +1559,7 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 sel: Some(0),
                 difficulty: 1.0,
                 desc_scroll: 0,
+                multiplayer: false,
             })
         }
         "MenuScreenCustomizeKeys" => {
@@ -1680,6 +1705,24 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
     };
     let hides_below = class != "MenuUIMessageBoxWindow";
     Some(Win { f, body, pos: None, focus: None, hides_below, drop: None })
+}
+
+/// Ours: Achievements under Multiplayer. The art has no well for it (only a thin gap before Exit), so the
+/// Multiplayer well (with the gap above it) is drawn twice and Exit moves down a row.
+fn main_menu_achievements(f: &mut Frame, buttons: &mut Vec<MenuBtn>) {
+    let Some(mp) = buttons.get(8).map(|b| b.y) else { return };
+    const ROW: i32 = 36;
+    // From the bottom of the button above (27 high, 36 apart) to the bottom of the Multiplayer button.
+    f.dups.push((mp - (ROW - 27), ROW));
+    f.ch += ROW;
+    for b in buttons.iter_mut().skip(9) {
+        b.y += ROW;
+    }
+    let at = 9.min(buttons.len());
+    buttons.insert(
+        at,
+        MenuBtn { label: "Achievements".into(), y: mp + ROW, action: 1, invoke: "MenuScreenAchievements".into(), key: String::new(), enabled: true },
+    );
 }
 
 /// Leave the art's unused choice wells out: rows are 36 apart from y 27, so the band from just above row `used`
@@ -1995,16 +2038,16 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
     let Win { f, body, pos, focus, hides_below, drop } = win;
     let Frame {
         class, title, cw, ch, voff, textures, cols, left_edge, right_edge, bar, help, help_always, help_y, actions,
-        shadow, escape_saves, min_title, cuts,
+        shadow, escape_saves, min_title, cuts, dups,
     } = f;
     (class, title, cw, ch, voff, textures, cols, left_edge, right_edge, bar, help, help_always).hash(h);
-    (help_y, actions, shadow, escape_saves, min_title, cuts).hash(h);
+    (help_y, actions, shadow, escape_saves, min_title, cuts, dups).hash(h);
     (pos, hides_below, drop).hash(h);
     hash_debug(h, focus);
     std::mem::discriminant(body).hash(h);
     match body {
-        Body::Menu { buttons, x, w } => {
-            (x, w, buttons.len()).hash(h);
+        Body::Menu { buttons, x, w, note } => {
+            (x, w, buttons.len(), note).hash(h);
             for MenuBtn { label, y, action, invoke, key, enabled } in buttons {
                 (label, y, action, invoke, key, enabled).hash(h);
             }
@@ -2015,9 +2058,9 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
                 choice_key(c, h);
             }
         }
-        Body::NewGame(NewGame { name, portrait, retro_morpheus, male_interactions, skills, order, sel, difficulty, desc_scroll }) => {
+        Body::NewGame(NewGame { name, portrait, retro_morpheus, male_interactions, skills, order, sel, difficulty, desc_scroll, multiplayer }) => {
             edit_key(name, h);
-            (portrait, retro_morpheus, male_interactions, order, sel, difficulty.to_bits(), desc_scroll).hash(h);
+            (portrait, retro_morpheus, male_interactions, order, sel, difficulty.to_bits(), desc_scroll, multiplayer).hash(h);
             hash_debug(h, skills);
             crate::travel::lddp().hash(h);
         }
@@ -2059,6 +2102,20 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             (blocker, valid, input, wait.map(|w| w.1), instant, noted).hash(h);
             (crate::diegetic::keypad_active(), crate::gamepad::pad_in_use()).hash(h);
             hash_debug(h, &crate::gamepad::glyph_kind());
+        }
+        Body::Host(MpHost { choices, name, code, players, joiners }) => {
+            choices.len().hash(h);
+            for c in choices {
+                choice_key(c, h);
+            }
+            (name, code, players, joiners).hash(h);
+        }
+        Body::Join(MpJoin { code }) => code.hash(h),
+        Body::Chars(MpChars { list, rows, room, sel, scroll }) => (list, rows, room, sel, scroll).hash(h),
+        Body::Browse(MpBrowse { rooms, state, list_ms, filters, shown, rows, sel, scroll }) => {
+            hash_debug(h, rooms);
+            hash_debug(h, state);
+            (list_ms, filters, shown, rows, sel, scroll).hash(h);
         }
         Body::Enhance(Enhance { items, search, sel, scroll, open, modern, mode_changed, memory }) => {
             items.len().hash(h);
@@ -2167,21 +2224,7 @@ fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waitin
     let (cx, cy) = (ox + TITLE_LEFT_BOTTOM.0, oy + TITLE_H);
     u.c.set_clip(Some((cx, cy, f.cw, f.ch)));
     let style = if translucent { Style::Translucent } else { Style::Masked };
-    // With a cut, the art above it is drawn in place and the art below it moved up by its height.
-    // Cut bands are in the art's own coordinates; each later piece moves up by everything cut above it.
-    let mut bands: Vec<(i32, i32, i32)> = Vec::new();
-    {
-        let (mut src, mut shift) = (0, 0);
-        for &(y, h) in &f.cuts {
-            if y > src {
-                bands.push((src - shift, y - src, shift));
-            }
-            src = y + h;
-            shift += h;
-        }
-        bands.push((src - shift, f.ch - (src - shift), shift));
-    }
-    for (by, bh, shift) in bands {
+    for (by, bh, shift) in art_bands(&f) {
         u.c.set_clip(Some((cx, cy + by, f.cw, bh)));
         for (i, t) in f.textures.iter().enumerate() {
             let (col, row) = (i as i32 % f.cols, i as i32 / f.cols);
@@ -2231,11 +2274,50 @@ fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waitin
     }
 }
 
+/// The client art's pieces as (y in the client, height, shift = art y - client y). With a cut, the art above it is
+/// drawn in place and the art below it moved up by its height; a dup band is drawn again right under itself and
+/// the art below it moves down. Cut and dup bands are in the art's own coordinates.
+fn art_bands(f: &Frame) -> Vec<(i32, i32, i32)> {
+    // (art y where it takes effect, height, dup?) in art order: a cut skips [y, y + h), a dup repeats [y - h, y).
+    let mut ev: Vec<(i32, i32, bool)> = f.cuts.iter().map(|&(y, h)| (y, h, false)).collect();
+    ev.extend(f.dups.iter().map(|&(y, h)| (y + h, h, true)));
+    ev.sort_unstable();
+    let cut: i32 = f.cuts.iter().map(|c| c.1).sum();
+    let dup: i32 = f.dups.iter().map(|d| d.1).sum();
+    let end = f.ch + cut - dup;
+    let mut spans: Vec<(i32, i32)> = Vec::new();
+    let mut src = 0;
+    for (p, h, is_dup) in ev {
+        if is_dup {
+            spans.push((src, p));
+            spans.push((p - h, p));
+            src = p;
+        } else {
+            spans.push((src, p));
+            src = p + h;
+        }
+    }
+    spans.push((src, end));
+    let mut bands = Vec::new();
+    let mut dst = 0;
+    for (a, b) in spans {
+        if b > a {
+            bands.push((dst, b - a, a - dst));
+            dst += b - a;
+        }
+    }
+    bands
+}
+
 fn action_enabled(win: &Win, action: u8, key: &str) -> bool {
     match &win.body {
         Body::NewGame(ng) if action == 5 && key == "START" => !ng.name.text.is_empty(),
         Body::SaveLoad(sl) if action == 5 && (key == "LOAD" || key == "DELETE") => sl.sel.and_then(|r| sl.game(r)).is_some(),
         Body::SaveLoad(sl) if action == 5 && key == "SAVE" => sl.sel.is_some() && !sl.edit.get().trim().is_empty() && crate::save::can_save(false),
+        Body::Host(h) if action == ACT_START => h.code.is_some(),
+        Body::Chars(c) if action == ACT_CHAR_GO => c.sel.is_some(),
+        Body::Join(j) if action == ACT_JOIN_CODE => imsim_net::valid_code(&j.code),
+        Body::Browse(b) if action == ACT_JOIN_ROW => b.sel.is_some(),
         _ => true,
     }
 }
@@ -2244,7 +2326,16 @@ fn action_enabled(win: &Win, action: u8, key: &str) -> bool {
 fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, waiting_keys: bool) {
     let focus = win.focus;
     match &mut win.body {
-        Body::Menu { buttons, x, w } => draw_menu_buttons(u, buttons, *x, *w, fonts, cx, cy),
+        Body::Menu { buttons, x, w, note } => {
+            draw_menu_buttons(u, buttons, *x, *w, fonts, cx, cy);
+            if let Some((y, text)) = note {
+                draw_menu_note(u, *x, *w, *y, text, cx, cy);
+            }
+        }
+        Body::Host(h) => draw_mp_host(u, h, &win.f, &mut win.drop, cx, cy),
+        Body::Join(j) => draw_mp_join(u, j, cx, cy),
+        Body::Browse(b) => draw_mp_browse(u, b, cx, cy),
+        Body::Chars(c) => draw_mp_chars(u, c, cx, cy),
         Body::Choices { choices } => draw_choices(u, choices, &win.f, &mut win.drop, cx, cy),
         Body::NewGame(ng) => draw_new_game(u, ng, focus, fonts, cx, cy),
         Body::Keys(k) if k.pad => draw_pad_keys(u, k, cx, cy, waiting_keys),
@@ -2682,6 +2773,8 @@ pub struct Menus {
     /// Lean Updates (perf.rs): each window layer's last drawing, and the (scale, colour) the cursor was drawn at.
     drawn: Vec<Drawn>,
     cursor_drawn: Option<(i32, Rgb)>,
+    /// Ours: the online services the multiplayer screens use.
+    mp: MpLink,
 }
 
 impl Menus {
@@ -2717,6 +2810,15 @@ enum Act {
     Intro,
     /// StartTrainingMission: 00_Training with a fresh character.
     Training,
+    /// Ours: Multiplayer - connect to online services (or go straight in when connected).
+    Connect,
+    /// Ours: look a room up by its code.
+    Join(String),
+    /// Ours: join the found room as a saved multiplayer character (its id) / a new one.
+    MpLoadChar(String),
+    MpNewChar(crate::travel::NewGame),
+    /// Ours: the main menu's Leave Multiplayer.
+    MpLeave,
 }
 
 /// A new save's description: where the player is (DeusExLevelInfo.MissionLocation), as the original's default.
@@ -2730,19 +2832,15 @@ fn default_save_name() -> String {
 }
 static LOCATION: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
-fn not_available(hud: &mut ClassicHud, assets: &mut RuntimeAssets, what: &str) -> Act {
-    let _ = (hud, assets);
-    Act::Msg(what.to_string(), format!("{what} isn't available yet in this version."), false, MsgPurpose::Info)
-}
-
 /// ProcessMenuAction for a main-menu style button.
-fn menu_action(b: &MenuBtn, hud: &mut ClassicHud, assets: &mut RuntimeAssets, out: &mut Vec<Act>) {
+fn menu_action(b: &MenuBtn, _hud: &mut ClassicHud, assets: &mut RuntimeAssets, out: &mut Vec<Act>) {
     match b.action {
         0 | 1 => match b.invoke.as_str() {
             "MenuScreenSaveGame" | "MenuScreenLoadGame" => out.push(Act::Push(b.invoke.clone())),
             // ShowCredits(False): back to this menu afterwards.
             "CreditsWindow" => crate::credits::show_from_menu(),
-            "menumpmain" | "MenuMPMain" => out.push(not_available(hud, assets, "Multiplayer")),
+            "MenuScreenMultiplayer" => out.push(Act::Connect),
+            "LeaveMultiplayer" => out.push(Act::Msg("Leave Multiplayer".into(), "Leave the multiplayer game?".into(), true, MsgPurpose::MpLeave)),
             "" => {}
             c => out.push(Act::Push(c.to_string())),
         },
@@ -2966,6 +3064,7 @@ pub fn menu_system(
     open_from_game(st, &binds, &ph, dt, others || others_before, &mut hud, &mut assets);
     keypad_tick(st, dt);
     quick_save_load(st, &binds, &ph, others || others_before, &mut hud, &mut assets);
+    mp_tick(st, dt, &mut hud, &mut assets);
     let was_open = OPEN.load(Ordering::Relaxed);
     let is_open = !st.stack.is_empty();
     // The key that opened the menu this frame (Escape) mustn't also close it.
@@ -3308,13 +3407,19 @@ fn pause_and_backdrop(
     was_open: bool,
 ) {
     if is_open && !was_open {
-        if !intro_map() && !vtime.is_paused() {
+        // (Never in multiplayer: the others play on.)
+        if !intro_map() && !vtime.is_paused() && !crate::netplay::active() {
             vtime.pause();
             st.paused_game = true;
         }
         st.grabbed_before = cursor_opts.grab_mode != bevy::window::CursorGrabMode::None;
         cursor_opts.grab_mode = bevy::window::CursorGrabMode::None;
         cursor_opts.visible = false;
+    }
+    // A game session started while the menus were up (a room hosted from the game): the game runs again.
+    if is_open && st.paused_game && crate::netplay::active() {
+        vtime.unpause();
+        st.paused_game = false;
     }
     if !is_open && (was_open || CLOSED_BY_MAP.swap(false, Ordering::Relaxed)) {
         if st.paused_game {
@@ -3548,6 +3653,18 @@ fn left_press(cx: &mut InCx) -> Option<&'static str> {
                                 en.sel = Some(i);
                             }
                         }
+                        Body::Browse(b) if l == 0 => {
+                            b.sel = Some(r);
+                            if double {
+                                acts.extend(mp_browse_join(b));
+                            }
+                        }
+                        Body::Chars(c) if l == 0 => {
+                            c.sel = Some(r);
+                            if double {
+                                acts.extend(mp_chars_go(c));
+                            }
+                        }
                         Body::SaveLoad(sl) if l == 0 => {
                             if sl.sel != Some(r) {
                                 sl.sel = Some(r);
@@ -3718,6 +3835,10 @@ fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
             return true;
         }
     }
+    // The join screen's room code.
+    if let Body::Join(j) = &mut win.body {
+        return mp_join_typing(j, k, text);
+    }
     // The save screen's description takes typing (Up / Down / Enter / Escape still work the list).
     if let Body::SaveLoad(sl) = &mut win.body {
         if sl.saving
@@ -3782,6 +3903,7 @@ fn menu_key(cx: &mut InCx, k: &KeyCode) {
                     st.waiting_key = Some(0.0);
                 }
                 Body::NewGame(_) | Body::Keypad(_) => {}
+                Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_) => mp_enter(win, acts),
                 Body::SaveLoad(sl) => {
                     let saving = sl.saving;
                     let heading = !saving
@@ -3815,6 +3937,9 @@ fn menu_key(cx: &mut InCx, k: &KeyCode) {
         KeyCode::ArrowUp | KeyCode::ArrowDown => arrow_key(win, *k == KeyCode::ArrowUp),
         KeyCode::ArrowLeft | KeyCode::ArrowRight => {
             // MenuUIScreenWindow: left / right cycle the focused choice.
+            if let (Some(W::ChoiceBtn(i)), Body::Host(h)) = (win.focus, &mut win.body) {
+                mp_host_cycle(h, i, if *k == KeyCode::ArrowLeft { -1 } else { 1 });
+            }
             if let (Some(W::ChoiceBtn(i)), Body::Choices { choices }) = (win.focus, &mut win.body) {
                 if let Some(c) = choices.get_mut(i as usize) {
                     c.cycle(if *k == KeyCode::ArrowLeft { -1 } else { 1 });
@@ -3860,7 +3985,7 @@ fn arrow_key(win: &mut Win, up: bool) {
             win.focus = Some(W::MenuBtn(i as u8));
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Focus", 0.25, 0.0);
         }
-        Body::Choices { choices } => {
+        Body::Host(MpHost { choices, .. }) | Body::Choices { choices } => {
             let n = choices.len() as i32;
             let cur = match win.focus {
                 Some(W::ChoiceBtn(i)) => i as i32,
@@ -3897,6 +4022,8 @@ fn arrow_key(win: &mut Win, up: bool) {
                 }
             }
         }
+        Body::Browse(b) => mp_browse_move(b, if up { -1 } else { 1 }),
+        Body::Chars(c) => mp_chars_move(c, if up { -1 } else { 1 }),
         Body::Keys(kk) => {
             let n = kk.rows();
             let cur = kk.sel.unwrap_or(0);
@@ -3932,7 +4059,9 @@ fn apply_acts(
                 let (class, arg) = c.split_once(':').map(|(a, b)| (a.to_string(), Some(b.to_string()))).unwrap_or((c.clone(), None));
                 let mut w = open_window(hud, assets, &class);
                 if let (Some(w), Some(arg)) = (w.as_mut(), arg) {
-                    if let Body::NewGame(ng) = &mut w.body {
+                    if arg == "mp" {
+                        mp_variant(w);
+                    } else if let Body::NewGame(ng) = &mut w.body {
                         ng.difficulty = arg.parse().unwrap_or(1.5);
                         w.focus = Some(W::Edit(0));
                     }
@@ -3958,6 +4087,7 @@ fn apply_acts(
                     if class == "MenuSelectDifficulty" {
                         w.focus = Some(W::MenuBtn(1));
                     }
+                    mp_opened(&mut st.mp, w);
                 }
                 let tip = class == "MenuScreenNewGame" && crate::travel::lddp() && setting!("LDDPGaveNewGameTips") == 0.0;
                 st.push(w);
@@ -4033,6 +4163,21 @@ fn apply_acts(
             Act::Resolution(w, h) => {
                 set_window_size(window, w, h);
             }
+            Act::Connect => mp_connect(st, hud, assets),
+            Act::Join(code) => mp_join(st, hud, assets, code),
+            Act::MpLoadChar(id) => {
+                if crate::netplay::load_character(&id).is_some() {
+                    mp_join_room(st, hud, assets);
+                } else {
+                    let w = msg_box(hud, assets, "Choose Character", "That character couldn't be loaded.", false, MsgPurpose::MpResult);
+                    st.push(w);
+                }
+            }
+            Act::MpNewChar(ng) => {
+                crate::netplay::choose_character(ng, None);
+                mp_join_room(st, hud, assets);
+            }
+            Act::MpLeave => mp_leave(st),
         }
     }
 }
@@ -4063,6 +4208,8 @@ fn help_text(top_w: &Win, assets: &mut RuntimeAssets) -> String {
             Some(Row::Group(g)) => format!("Show or hide the {} settings (Enter / click; Left closes). Type to search every setting.", en.groups().get(g).cloned().unwrap_or_default()),
             None => "Type to search the options.".into(),
         },
+        (Body::Host(h), focus) => mp_host_help(h, focus, &top_w.f),
+        (Body::Join(_), _) => "Type the four-character code the host gave you (letters and digits; codes never use look-alikes such as zero and O), then Join Room or [Enter].".into(),
         (Body::Choices { .. }, _) if top_w.f.class == "MenuScreenBrightness" => {
             pstr(&assets.classes.defaults("MenuScreenBrightness"), "HelpMessage")
         }
@@ -4249,6 +4396,8 @@ fn scroll_by(win: &mut Win, id: u8, d: i32) {
         Body::Enhance(en) if id == 0 => en.scroll = (en.scroll + d).max(0),
         Body::SaveLoad(sl) if id == 0 => sl.scroll = (sl.scroll + d).max(0),
         Body::Achieve(av) if id == 0 => av.scroll = (av.scroll + d).max(0),
+        Body::Browse(b) if id == 0 => b.scroll = (b.scroll + d).max(0),
+        Body::Chars(c) if id == 0 => c.scroll = (c.scroll + d).max(0),
         Body::Welcome(sc) if id == 0 => *sc = (*sc + d).max(0),
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = (ng.desc_scroll + d).max(0),
         _ => {}
@@ -4267,6 +4416,8 @@ fn set_scroll(win: &mut Win, id: u8, v: i32) {
         Body::Enhance(en) if id == 0 => en.scroll = v,
         Body::SaveLoad(sl) if id == 0 => sl.scroll = v,
         Body::Achieve(av) if id == 0 => av.scroll = v,
+        Body::Browse(b) if id == 0 => b.scroll = v,
+        Body::Chars(c) if id == 0 => c.scroll = v,
         Body::Welcome(sc) if id == 0 => *sc = v,
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = v,
         _ => {}
@@ -4327,7 +4478,16 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
                 acts.push(Act::Intro);
             }
         }
-        MsgPurpose::Info | MsgPurpose::NameBlank | MsgPurpose::Restart | MsgPurpose::PadMap => {}
+        MsgPurpose::MpLeave => {
+            if yes {
+                acts.push(Act::MpLeave);
+            }
+        }
+        MsgPurpose::Connecting => {
+            crate::online::disconnect();
+            st.mp.online = false;
+        }
+        MsgPurpose::Info | MsgPurpose::NameBlank | MsgPurpose::Restart | MsgPurpose::PadMap | MsgPurpose::Joining | MsgPurpose::MpResult => {}
     }
 }
 
@@ -4441,11 +4601,20 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                                 char_id: crate::save::new_char_id(&name_for_id),
                             };
                             // (Every character has its own five autosave slots: a new game overwrites none.)
-                            acts.push(Act::NewGame(new_game));
+                            if ng.multiplayer {
+                                acts.push(Act::MpNewChar(new_game));
+                            } else {
+                                acts.push(Act::NewGame(new_game));
+                            }
                         }
                     }
                 }
                 10..=12 => box_answer(st, top, action != 10, hud, assets, acts),
+                ACT_START..=ACT_LAST => {
+                    if mp_action(win, action, acts) {
+                        st.mp.hosting = false;
+                    }
+                }
                 // The welcome window: OK, or Don't Show Again (welcome.rs).
                 20 | 21 => {
                     if action == 21 {
@@ -4489,6 +4658,14 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                     acts.extend(choice_side_effect(c));
                 }
             }
+        }
+        (W::ChoiceBtn(i) | W::ChoiceVal(i), Body::Host(h)) => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            mp_host_cycle(h, i, if right { -1 } else { 1 });
+        }
+        (W::Header(k), Body::Browse(b)) => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            mp_browse_filter(b, k as usize);
         }
         (W::MenuBtn(i), Body::Keypad(k)) => keypad_press(k, i as usize),
         (W::Header(2), Body::SaveLoad(sl)) => {
@@ -4570,6 +4747,874 @@ fn reset_defaults(win: &mut Win) {
         }
         _ => {}
     }
+}
+
+// ------------------------------------------------------------------------------------------------ multiplayer
+
+// Ours: the multiplayer screens over online services (online.rs, imsim-net). Nothing connects before Multiplayer is
+// pressed; the room closes with its screen and the connection with the last multiplayer window (mp_tick).
+
+/// Action-bar actions of the multiplayer screens (past the original's AB_ values and ours above).
+const ACT_START: u8 = 30;
+const ACT_CLOSE_ROOM: u8 = 31;
+const ACT_REFRESH: u8 = 40;
+const ACT_JOIN_ROW: u8 = 41;
+const ACT_JOIN_CODE: u8 = 42;
+/// Choose Character: join with the selected character; Load Game from Start Game: New Game.
+const ACT_CHAR_GO: u8 = 43;
+const ACT_MP_NEWGAME: u8 = 44;
+const ACT_LAST: u8 = ACT_MP_NEWGAME;
+
+/// How often the open multiplayer screen reads online services again.
+const MP_POLL: f32 = 0.25;
+
+/// What the menus keep of online services.
+#[derive(Default)]
+struct MpLink {
+    /// Multiplayer connected (or is connecting): leaving its windows disconnects.
+    online: bool,
+    /// A room was asked for and its screen is up: leaving the screen closes the room.
+    hosting: bool,
+    poll: f32,
+    /// The code being looked up (the answer box names it).
+    join_code: String,
+    /// The room found, kept while a character is chosen for it.
+    joined: Option<imsim_net::client::Joined>,
+}
+
+/// Choose Character: the player's multiplayer characters (id, name, saved), newest first, after a "New Character"
+/// row; the room being joined, in words.
+struct MpChars {
+    list: Vec<(String, String, u64)>,
+    /// The list's rows (New Character, then name / date), made once.
+    rows: Vec<Vec<String>>,
+    room: String,
+    /// Selected row: 0 New Character, then `list` from 1.
+    sel: Option<usize>,
+    scroll: i32,
+}
+
+/// MenuScreenHostRoom: the room's choices and what the lobby says of it (read by `mp_poll_host`).
+struct MpHost {
+    choices: Vec<Choice>,
+    /// The host's name in the browser.
+    name: String,
+    /// The room's code once the lobby has handed one out.
+    code: Option<String>,
+    players: u8,
+    /// IPs of players who looked the room up, newest last.
+    joiners: Vec<String>,
+}
+
+/// MenuScreenJoinRoom: the code typed so far (upper case, CODE_ALPHABET only, at most 4).
+struct MpJoin {
+    code: String,
+}
+
+/// MenuScreenLobbyBrowser: the public rooms as the lobby last listed them, the header filters, the rows shown.
+struct MpBrowse {
+    rooms: Vec<RoomInfo>,
+    state: crate::online::ListState,
+    /// Our own round trip to the lobby when the list came.
+    list_ms: u32,
+    /// By header: Mode (All / Co-op / Deathmatch), Look (All / Classic / Modern), Players (All / Not Full),
+    /// Ping (All / under 100 / under 200).
+    filters: [u8; 4],
+    /// The rooms that pass the filters (into `rooms`) and their list rows.
+    shown: Vec<usize>,
+    rows: Vec<Vec<String>>,
+    /// Selected row (into `shown`).
+    sel: Option<usize>,
+    scroll: i32,
+}
+
+/// How many values each browser filter cycles through.
+const FILTER_STEPS: [u8; 4] = [3, 3, 2, 3];
+/// Browser columns: code, host, mode, look | players, tougher enemies, ping (the art's split sits at 240).
+const BROWSE_COLS: [i32; 7] = [36, 82, 70, 52, 40, 18, 58];
+/// The list's place in the Load Game frame (as the saves list).
+const BROWSE_LIST: Rect = (11, 22, 371, 270);
+
+/// A multiplayer screen's frame and body. Frames are the original's: big buttons on the Settings menu's, the room's
+/// choices and the code on the Options screen's, the room list on the Load Game screen's.
+fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
+    match class {
+        "MenuScreenMultiplayer" => {
+            let mut f = frame(assets, "MenuSettings");
+            f.class = class.to_string();
+            f.title = "Multiplayer".into();
+            let (_, x, w) = menu_buttons(assets, "MenuSettings");
+            let b = |label: &str, y: i32, action: u8, invoke: &str| MenuBtn {
+                label: label.into(),
+                y,
+                action,
+                invoke: invoke.into(),
+                key: String::new(),
+                enabled: true,
+            };
+            // Wells 13, 49, 85 for the buttons, 121 for the connection line; 157..229 left out (Previous Menu
+            // moves up from 266).
+            const CUT: (i32, i32) = (152, 108);
+            f.cuts.push(CUT);
+            f.ch -= CUT.1;
+            let buttons = vec![
+                b("Host Room", 13, 1, "MenuScreenHostRoom"),
+                b("Join Room", 49, 1, "MenuScreenJoinRoom"),
+                b("Lobby Browser", 85, 1, "MenuScreenLobbyBrowser"),
+                b("Previous Menu", 266 - CUT.1, 2, ""),
+            ];
+            (f, Body::Menu { buttons, x, w, note: Some((121, mp_status_text())) })
+        }
+        "MenuScreenHostRoom" => {
+            let mut f = frame(assets, "MenuScreenOptions");
+            f.class = class.to_string();
+            f.title = "Host Room".into();
+            let choices = mp_host_choices();
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, choices.len(), slots);
+            f.actions = vec![(0, ACT_START, "Start Game".into(), String::new()), (2, ACT_CLOSE_ROOM, "Close Room".into(), String::new())];
+            let name = crate::travel::with_session(|s| s.name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Player".into());
+            (f, Body::Host(MpHost { choices, name, code: None, players: 1, joiners: Vec::new() }))
+        }
+        "MenuScreenJoinRoom" => {
+            let mut f = frame(assets, "MenuScreenOptions");
+            f.class = class.to_string();
+            f.title = "Join Room".into();
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, 1, slots);
+            let cancel = f.actions.iter().find(|a| a.1 == 2).map(|a| a.2.clone()).unwrap_or_else(|| "Cancel".into());
+            f.actions = vec![(2, 2, cancel, String::new()), (2, ACT_JOIN_CODE, "Join Room".into(), String::new())];
+            (f, Body::Join(MpJoin { code: String::new() }))
+        }
+        "MenuScreenChooseCharacter" => {
+            let mut f = frame(assets, "MenuScreenLoadGame");
+            f.class = class.to_string();
+            f.title = "Choose Character".into();
+            f.actions = vec![(2, 2, "Cancel".into(), String::new()), (2, ACT_CHAR_GO, "Join Game".into(), String::new())];
+            let mut list = crate::save::mp_characters();
+            list.sort_by(|a, b| b.2.cmp(&a.2));
+            // The newest character first (else New Character).
+            let sel = Some(if list.is_empty() { 0 } else { 1 });
+            let mut rows: Vec<Vec<String>> = Vec::with_capacity(list.len() + 1);
+            rows.push(vec!["New Character".into(), String::new()]);
+            rows.extend(list.iter().map(|(_, name, t)| vec![format!("    {name}"), crate::save::format_date(*t)]));
+            (f, Body::Chars(MpChars { list, rows, room: String::new(), sel, scroll: 0 }))
+        }
+        _ => {
+            let mut f = frame(assets, "MenuScreenLoadGame");
+            f.class = class.to_string();
+            f.title = "Lobby Browser".into();
+            f.actions = vec![
+                (2, 4, "Previous Menu".into(), String::new()),
+                (2, ACT_JOIN_ROW, "Join Room".into(), String::new()),
+                (0, ACT_REFRESH, "Refresh".into(), String::new()),
+            ];
+            let b = MpBrowse {
+                rooms: Vec::new(),
+                state: crate::online::ListState::Loading,
+                list_ms: 0,
+                filters: [0; 4],
+                shown: Vec::new(),
+                rows: Vec::new(),
+                sel: None,
+                scroll: 0,
+            };
+            (f, Body::Browse(b))
+        }
+    }
+}
+
+/// An Enum choice of the host's room.
+fn mp_choice(key: &str, label: &str, help: &str, values: Vec<String>, value: usize) -> Choice {
+    Choice {
+        key: key.into(),
+        label: label.into(),
+        help: help.into(),
+        kind: ChoiceKind::Enum(values),
+        value: value as f32,
+        saved: value as f32,
+        info_w: 110,
+        info_x: 270,
+        control_x: 270,
+        voff: 0,
+        dropdown: false,
+    }
+}
+
+/// Game Mode, Room, Players, Look, Tougher Enemies (RoomSettings' defaults; the look is the one being played),
+/// Friendly Fire (off).
+fn mp_host_choices() -> Vec<Choice> {
+    let d = RoomSettings::default();
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+    let modern = crate::remaster::is_modern();
+    vec![
+        mp_choice("MpMode", "|&Game Mode", "Co-op: play the story together. Deathmatch: fight each other.", s(&["Co-op", "Deathmatch"]), 0),
+        mp_choice(
+            "MpRoom",
+            "|&Room",
+            "Public rooms are listed in the Lobby Browser. Private rooms are found by their code alone.",
+            s(&["Public", "Private"]),
+            if d.public { 0 } else { 1 },
+        ),
+        mp_choice(
+            "MpPlayers",
+            "|&Players",
+            "Most players in the room. Fewer players are recommended for co-op.",
+            (2..=imsim_net::MAX_PLAYERS).map(|n| n.to_string()).collect(),
+            (d.max_players.clamp(2, imsim_net::MAX_PLAYERS) - 2) as usize,
+        ),
+        mp_choice(
+            "MpLook",
+            "|&Look",
+            "Everyone plays in this look. The Classic / Modern switch is off in multiplayer.",
+            s(&["Classic", "Modern"]),
+            if modern { 1 } else { 0 },
+        ),
+        mp_choice("MpTough", "|&Tougher Enemies", "Co-op: enemies get tougher with more players.", s(&["Off", "On"]), if d.tough { 1 } else { 0 }),
+        mp_choice("MpFriendly", "|&Friendly Fire", "Players' shots and blasts hurt each other.", s(&["Off", "On"]), 0),
+    ]
+}
+
+/// The room as the host's choices set it.
+fn mp_host_settings(h: &MpHost) -> RoomSettings {
+    let v = |k: &str| h.choices.iter().find(|c| c.key == k).map_or(0, |c| c.value.max(0.0) as u8);
+    RoomSettings {
+        mode: if v("MpMode") == 1 { Mode::Deathmatch } else { Mode::Coop },
+        public: v("MpRoom") == 0,
+        max_players: (2 + v("MpPlayers")).min(imsim_net::MAX_PLAYERS),
+        look: if v("MpLook") == 0 { Look::Classic } else { Look::Modern },
+        tough: v("MpTough") == 1,
+        name: h.name.clone(),
+    }
+}
+
+/// A host choice stepped (click, Left / Right): the lobby (or, for Friendly Fire, the game session) hears of it at once.
+fn mp_host_cycle(h: &mut MpHost, i: u8, dir: i32) {
+    let Some(c) = h.choices.get_mut(i as usize) else { return };
+    c.cycle(dir);
+    if c.key == "MpFriendly" {
+        crate::netplay::set_friendly_fire(c.value > 0.5);
+    } else {
+        crate::online::update(mp_host_settings(h));
+    }
+}
+
+fn mp_host_help(h: &MpHost, focus: Option<W>, f: &Frame) -> String {
+    let action = match focus {
+        Some(W::Act(i)) => f.actions.get(i as usize).map(|a| a.1),
+        _ => None,
+    };
+    match (focus, action) {
+        (Some(W::ChoiceBtn(i)), _) => h.choices.get(i as usize).map(|c| c.help.clone()).unwrap_or_default(),
+        (_, Some(ACT_CLOSE_ROOM)) => "Close the room: everyone in it leaves.".into(),
+        _ if h.code.is_none() => "Creating room...".into(),
+        _ if intro_map() => "Start Game: load your game or start a new one; players who join are let in once you're on a playable map.".into(),
+        _ => "Start Game: back to your game with the room open; players who join come into your map.".into(),
+    }
+}
+
+/// The multiplayer screen's connection line.
+fn mp_status_text() -> String {
+    match crate::online::status() {
+        crate::online::Status::Online { server, ms } => format!("Online: {server} ({ms} ms)"),
+        crate::online::Status::Connecting => "Connecting...".into(),
+        crate::online::Status::Failed(m) => m,
+        crate::online::Status::Offline => "Offline".into(),
+    }
+}
+
+/// The join screen takes the code: letters typed in upper case, only CODE_ALPHABET, at most four; Backspace /
+/// Delete take the last one off. True when the key was the code's (Escape / Enter / Tab / arrows go on).
+fn mp_join_typing(j: &mut MpJoin, k: &KeyCode, text: &Option<String>) -> bool {
+    match k {
+        KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab => false,
+        KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => false,
+        KeyCode::Backspace | KeyCode::Delete => {
+            j.code.pop();
+            true
+        }
+        _ => {
+            for c in text.as_deref().unwrap_or("").chars() {
+                let u = c.to_ascii_uppercase();
+                if j.code.len() < 4 && u.is_ascii() && imsim_net::CODE_ALPHABET.contains(&(u as u8)) {
+                    j.code.push(u);
+                }
+            }
+            true
+        }
+    }
+}
+
+/// Enter on a multiplayer screen: step the focused host choice, join the typed code or the selected room.
+fn mp_enter(win: &mut Win, acts: &mut Vec<Act>) {
+    match (&mut win.body, win.focus) {
+        (Body::Host(h), Some(W::ChoiceBtn(i))) => mp_host_cycle(h, i, 1),
+        (Body::Join(j), _) if imsim_net::valid_code(&j.code) => acts.push(Act::Join(j.code.clone())),
+        (Body::Browse(b), _) => acts.extend(mp_browse_join(b)),
+        (Body::Chars(c), _) => acts.extend(mp_chars_go(c)),
+        _ => {}
+    }
+}
+
+/// A window opened with ":mp": the new-game screen makes a multiplayer character; the Load Game screen (Start Game
+/// on the logo map) gains New Game.
+fn mp_variant(w: &mut Win) {
+    match &mut w.body {
+        Body::NewGame(ng) => {
+            ng.multiplayer = true;
+            w.f.title = "New Multiplayer Character".into();
+            w.focus = Some(W::Edit(0));
+        }
+        Body::SaveLoad(_) => w.f.actions.push((0, ACT_MP_NEWGAME, "New Game".into(), String::new())),
+        _ => {}
+    }
+}
+
+/// The main menu's slot 8: Multiplayer, or Leave Multiplayer while in a game session.
+fn mp_main_slot(b: &mut MenuBtn) {
+    let leave = crate::netplay::active();
+    b.label = if leave { "Leave Multiplayer" } else { "Multiplayer" }.into();
+    b.invoke = if leave { "LeaveMultiplayer" } else { "MenuScreenMultiplayer" }.into();
+    b.action = 1;
+    b.enabled = true;
+}
+
+/// Leave Multiplayer: the session, the room and the lobby; the main menu's slot says Multiplayer again.
+fn mp_leave(st: &mut Menus) {
+    crate::netplay::leave("");
+    crate::online::close_room();
+    crate::online::disconnect();
+    st.mp = MpLink::default();
+    for w in st.stack.iter_mut().filter(|w| w.f.class == "MenuMain") {
+        if let Body::Menu { buttons, .. } = &mut w.body {
+            if let Some(b) = buttons.get_mut(8) {
+                mp_main_slot(b);
+            }
+        }
+    }
+}
+
+/// Choose Character: the selected row's way in.
+fn mp_chars_go(c: &MpChars) -> Option<Act> {
+    match c.sel? {
+        0 => Some(Act::Push("MenuScreenNewGame:mp".into())),
+        i => c.list.get(i - 1).map(|ch| Act::MpLoadChar(ch.0.clone())),
+    }
+}
+
+fn mp_chars_move(c: &mut MpChars, d: i32) {
+    let n = c.list.len() as i32 + 1;
+    let next = (c.sel.map_or(-1, |s| s as i32) + d).clamp(0, n - 1);
+    c.sel = Some(next as usize);
+    let (y, h) = (next * ROW_H, BROWSE_LIST.3);
+    if y < c.scroll {
+        c.scroll = y;
+    }
+    if y + ROW_H > c.scroll + h {
+        c.scroll = y + ROW_H - h;
+    }
+}
+
+/// Into the found room with the chosen character (netplay.rs): the character screens close, a box says how it went.
+fn mp_join_room(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    let text = match st.mp.joined.as_ref().map(crate::netplay::join_room) {
+        Some(Ok(())) => {
+            st.stack.retain(|w| !matches!(&w.body, Body::Chars(_)) && !matches!(&w.body, Body::NewGame(ng) if ng.multiplayer));
+            "Joining the host's game...".to_string()
+        }
+        Some(Err(e)) => e,
+        None => "The room was lost. Look it up again.".into(),
+    };
+    let w = msg_box(hud, assets, "Join Room", &text, false, MsgPurpose::MpResult);
+    st.push(w);
+}
+
+/// The action bar of a multiplayer screen. True when the room was closed.
+fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
+    match (action, &mut win.body) {
+        (ACT_START, Body::Host(h)) if h.code.is_some() => {
+            // On a playable map: back to the game, the room open. On the logo map: the host's story first (a save,
+            // or New Game on the same screen).
+            if intro_map() {
+                acts.push(Act::Push("MenuScreenLoadGame:mp".into()));
+            } else {
+                acts.push(Act::PopAll);
+            }
+        }
+        (ACT_MP_NEWGAME, _) => acts.push(Act::Push("MenuSelectDifficulty".into())),
+        (ACT_CHAR_GO, Body::Chars(c)) => acts.extend(mp_chars_go(c)),
+        (ACT_CLOSE_ROOM, Body::Host(_)) => {
+            crate::online::close_room();
+            acts.push(Act::Pop);
+            return true;
+        }
+        (ACT_REFRESH, Body::Browse(b)) => {
+            crate::online::refresh_list();
+            b.rooms.clear();
+            b.state = crate::online::ListState::Loading;
+            b.scroll = 0;
+            mp_browse_rebuild(b);
+        }
+        (ACT_JOIN_ROW, Body::Browse(b)) => acts.extend(mp_browse_join(b)),
+        (ACT_JOIN_CODE, Body::Join(j)) if imsim_net::valid_code(&j.code) => acts.push(Act::Join(j.code.clone())),
+        _ => {}
+    }
+    false
+}
+
+/// Multiplayer pressed: in at once when connected, else connect behind "Connecting to online services...".
+fn mp_connect(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    st.mp.online = true;
+    if matches!(crate::online::status(), crate::online::Status::Online { .. }) {
+        let w = open_window(hud, assets, "MenuScreenMultiplayer");
+        st.push(w);
+        return;
+    }
+    crate::online::connect();
+    let w = mp_wait_box(hud, assets, "Multiplayer", "Connecting to online services...", MsgPurpose::Connecting);
+    st.push(w);
+}
+
+/// Look a room up by code behind "Looking for room...".
+fn mp_join(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, code: String) {
+    crate::online::join(&code);
+    st.mp.join_code = code;
+    let w = mp_wait_box(hud, assets, "Join Room", "Looking for room...", MsgPurpose::Joining);
+    st.push(w);
+}
+
+/// A message box with one Cancel button (Escape too), answered by `mp_tick`.
+fn mp_wait_box(hud: &mut ClassicHud, assets: &mut RuntimeAssets, title: &str, text: &str, purpose: MsgPurpose) -> Option<Win> {
+    let mut w = msg_box(hud, assets, title, text, false, purpose)?;
+    let cancel = pstr(&assets.classes.defaults("MenuMain"), "btnLabelCancel");
+    if let Some(a) = w.f.actions.first_mut() {
+        a.2 = if cancel.is_empty() { "Cancel".into() } else { cancel };
+    }
+    Some(w)
+}
+
+/// A window just opened (Act::Push): the host's screen asks for its room, the browser for the list.
+fn mp_opened(link: &mut MpLink, w: &mut Win) {
+    match &mut w.body {
+        Body::Host(h) => {
+            crate::online::host(mp_host_settings(h));
+            crate::netplay::set_friendly_fire(h.choices.iter().any(|c| c.key == "MpFriendly" && c.value > 0.5));
+            link.hosting = true;
+            w.focus = Some(W::ChoiceBtn(0));
+        }
+        Body::Browse(_) => crate::online::refresh_list(),
+        Body::Join(_) => w.focus = Some(W::ChoiceBtn(0)),
+        _ => {}
+    }
+    link.poll = 0.0;
+}
+
+/// A window of the multiplayer screens (or one of their boxes).
+fn mp_win(w: &Win) -> bool {
+    matches!(w.body, Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_))
+        || matches!(&w.body, Body::NewGame(ng) if ng.multiplayer)
+        || w.f.class == "MenuScreenMultiplayer"
+        || matches!(&w.body, Body::Msg(m) if matches!(m.purpose, MsgPurpose::Connecting | MsgPurpose::Joining | MsgPurpose::MpResult))
+}
+
+/// The top window is a message box for this purpose.
+fn top_box(st: &Menus, purpose: MsgPurpose) -> bool {
+    matches!(st.stack.last().map(|w| &w.body), Some(Body::Msg(m)) if m.purpose == purpose)
+}
+
+/// Each frame: leaving (disconnect / close the room), the waiting boxes' answers, a lost connection, and a few
+/// times a second what the top multiplayer screen shows.
+fn mp_tick(st: &mut Menus, dt: f32, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    if !st.mp.online {
+        return;
+    }
+    // A game session (netplay.rs) going on owns the room and the connection once the menus are closed: back in
+    // the game from the host's screen the room stays open, and the lobby stays connected.
+    let session = crate::netplay::active();
+    if st.mp.hosting && !st.stack.iter().any(|w| matches!(w.body, Body::Host(_))) {
+        if !(st.stack.is_empty() && session) {
+            crate::online::close_room();
+        }
+        st.mp.hosting = false;
+    }
+    if !st.stack.iter().any(mp_win) {
+        if !session {
+            crate::online::disconnect();
+        }
+        st.mp = MpLink::default();
+        return;
+    }
+    if top_box(st, MsgPurpose::Connecting) {
+        mp_connecting(st, hud, assets);
+        return;
+    }
+    if top_box(st, MsgPurpose::Joining) && !crate::online::joining() {
+        mp_join_answer(st, hud, assets);
+    }
+    st.mp.poll -= dt;
+    if st.mp.poll > 0.0 {
+        return;
+    }
+    st.mp.poll = MP_POLL;
+    if matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(_))) {
+        if let Some(e) = crate::online::take_host_error() {
+            // Hosting failed: back off the room's screen, with the reason.
+            st.pop();
+            st.mp.hosting = false;
+            let w = msg_box(hud, assets, "Host Room", &e, false, MsgPurpose::Info);
+            st.push(w);
+            return;
+        }
+    }
+    if let crate::online::Status::Failed(m) = crate::online::status() {
+        // Lost: back to the menu under the multiplayer windows, with what went wrong.
+        st.stack.retain(|w| !mp_win(w));
+        st.mp.hosting = false;
+        let w = msg_box(hud, assets, "Multiplayer", &m, false, MsgPurpose::Info);
+        st.push(w);
+        return;
+    }
+    let Some(top) = st.stack.last_mut() else { return };
+    let multiplayer = top.f.class == "MenuScreenMultiplayer";
+    match &mut top.body {
+        Body::Menu { note: Some((_, n)), .. } if multiplayer => {
+            let t = mp_status_text();
+            if *n != t {
+                *n = t;
+            }
+        }
+        Body::Host(h) => mp_poll_host(h),
+        Body::Browse(b) => mp_poll_browse(b),
+        _ => {}
+    }
+}
+
+/// "Connecting to online services...": in on Online, the reason on Failed.
+fn mp_connecting(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    match crate::online::status() {
+        crate::online::Status::Online { .. } => {
+            st.pop();
+            let w = open_window(hud, assets, "MenuScreenMultiplayer");
+            st.push(w);
+        }
+        crate::online::Status::Failed(m) => {
+            st.pop();
+            let w = msg_box(hud, assets, "Multiplayer", &m, false, MsgPurpose::Info);
+            st.push(w);
+        }
+        _ => {}
+    }
+}
+
+/// "Looking for room..." answered: what the room is, or why not.
+fn mp_join_answer(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    let Some(r) = crate::online::take_join() else { return };
+    st.pop();
+    match r {
+        Ok(j) => {
+            // Found: choose who to play (a multiplayer character, or a new one) before joining.
+            let room = format!(
+                "Room {}: {}, {} look, {}/{} players{}.",
+                st.mp.join_code,
+                mp_mode_name(j.mode),
+                mp_look_name(j.look),
+                j.players,
+                j.max_players,
+                if j.tough { ", tougher enemies" } else { "" },
+            );
+            st.mp.joined = Some(j);
+            let mut w = open_window(hud, assets, "MenuScreenChooseCharacter");
+            if let Some(Body::Chars(c)) = w.as_mut().map(|w| &mut w.body) {
+                c.room = room;
+            }
+            st.push(w);
+        }
+        Err(m) => {
+            let w = msg_box(hud, assets, "Join Room", &m, false, MsgPurpose::MpResult);
+            st.push(w);
+        }
+    }
+}
+
+fn mp_mode_name(m: Mode) -> &'static str {
+    match m {
+        Mode::Coop => "Co-op",
+        Mode::Deathmatch => "Deathmatch",
+    }
+}
+
+fn mp_look_name(l: Look) -> &'static str {
+    match l {
+        Look::Classic => "Classic",
+        Look::Modern => "Modern",
+    }
+}
+
+/// The host's screen: the room's code and players, who found it.
+fn mp_poll_host(h: &mut MpHost) {
+    if let Some(hd) = crate::online::hosted() {
+        if h.code.as_deref() != Some(hd.code.as_str()) {
+            h.code = Some(hd.code);
+        }
+        h.players = hd.players;
+    }
+    let j = crate::online::joiners();
+    if j != h.joiners {
+        h.joiners = j;
+    }
+}
+
+/// The browser: the list as online services have it (rows rebuilt only when it changed).
+fn mp_poll_browse(b: &mut MpBrowse) {
+    let (rooms, state, ms) = crate::online::rooms();
+    if rooms != b.rooms || state != b.state || ms != b.list_ms {
+        b.rooms = rooms;
+        b.state = state;
+        b.list_ms = ms;
+        mp_browse_rebuild(b);
+    }
+}
+
+/// The browser's ping for a room: our trip to the lobby and the host's.
+fn mp_ping(b: &MpBrowse, r: &RoomInfo) -> u32 {
+    b.list_ms + r.host_ms
+}
+
+fn mp_passes(b: &MpBrowse, r: &RoomInfo) -> bool {
+    let [mode, look, players, ping] = b.filters;
+    let p = mp_ping(b, r);
+    (mode == 0 || (mode == 1) == (r.mode == Mode::Coop))
+        && (look == 0 || (look == 1) == (r.look == Look::Classic))
+        && (players == 0 || r.players < r.max_players)
+        && match ping {
+            1 => p < 100,
+            2 => p < 200,
+            _ => true,
+        }
+}
+
+/// The rooms that pass the filters and their rows; the selected room stays selected (by code).
+fn mp_browse_rebuild(b: &mut MpBrowse) {
+    let keep = b.sel.and_then(|s| b.shown.get(s)).and_then(|&i| b.rooms.get(i)).map(|r| r.code.clone());
+    b.shown = (0..b.rooms.len()).filter(|&i| mp_passes(b, &b.rooms[i])).collect();
+    b.rows = b
+        .shown
+        .iter()
+        .map(|&i| {
+            let r = &b.rooms[i];
+            vec![
+                r.code.clone(),
+                r.name.clone(),
+                mp_mode_name(r.mode).into(),
+                mp_look_name(r.look).into(),
+                format!("{}/{}", r.players, r.max_players),
+                if r.tough { "+".into() } else { String::new() },
+                format!("{} ms", mp_ping(b, r)),
+            ]
+        })
+        .collect();
+    b.sel = keep.and_then(|c| b.shown.iter().position(|&i| b.rooms[i].code == c)).or(if b.shown.is_empty() { None } else { Some(0) });
+}
+
+/// A header clicked: its filter steps on.
+fn mp_browse_filter(b: &mut MpBrowse, k: usize) {
+    if let Some(f) = b.filters.get_mut(k) {
+        *f = (*f + 1) % FILTER_STEPS[k];
+        mp_browse_rebuild(b);
+    }
+}
+
+/// Up / Down in the room list (kept in view).
+fn mp_browse_move(b: &mut MpBrowse, d: i32) {
+    let n = b.shown.len() as i32;
+    if n == 0 {
+        return;
+    }
+    let next = (b.sel.map_or(-1, |s| s as i32) + d).clamp(0, n - 1);
+    b.sel = Some(next as usize);
+    let (y, h) = (next * ROW_H, BROWSE_LIST.3);
+    if y < b.scroll {
+        b.scroll = y;
+    }
+    if y + ROW_H > b.scroll + h {
+        b.scroll = y + ROW_H - h;
+    }
+}
+
+/// Join the selected room.
+fn mp_browse_join(b: &MpBrowse) -> Option<Act> {
+    let r = b.sel.and_then(|s| b.shown.get(s)).and_then(|&i| b.rooms.get(i))?;
+    Some(Act::Join(r.code.clone()))
+}
+
+/// A header's text: the column, or the filter it holds.
+fn mp_header_label(k: usize, v: u8) -> &'static str {
+    match (k, v) {
+        (0, 1) => "Co-op",
+        (0, 2) => "Deathmatch",
+        (0, _) => "Mode",
+        (1, 1) => "Classic",
+        (1, 2) => "Modern",
+        (1, _) => "Look",
+        (2, 1) => "Not Full",
+        (2, _) => "Players",
+        (3, 1) => "< 100 ms",
+        (3, 2) => "< 200 ms",
+        _ => "Ping",
+    }
+}
+
+/// The multiplayer screen's connection line, in an info box in the well under the buttons.
+fn draw_menu_note(u: &mut Ui<W>, x: i32, w: i32, y: i32, text: &str, cx: i32, cy: i32) {
+    let (bx, by, bw) = (cx + x + 12, cy + y + 4, w - 24);
+    info_button(u, bx, by, bw, "", m_btn(0));
+    let f = u.f.small.clone();
+    u.c.set_clip(Some((bx + 4, by, bw - 14, 19)));
+    u.c.text(&f, bx + 2, by + 1, bw - 12, 18, HAlign::Center, VAlign::Center, m_col(8), text);
+    u.c.set_clip(None);
+}
+
+/// MenuScreenHostRoom: the choices, then the room's box on the right (code, players, who found it).
+fn draw_mp_host(u: &mut Ui<W>, h: &MpHost, f: &Frame, drop: &mut Option<(u8, i32)>, cx: i32, cy: i32) {
+    draw_choices(u, &h.choices, f, drop, cx, cy);
+    let (bx, by, bw, bh) = (cx + 394, cy + 22, 136, 198);
+    u.c.fill(bx, by, bw, bh, Style::Normal, BLACK);
+    for (x, y, w, hh) in [(0, 0, bw, 1), (0, bh - 1, bw, 1), (0, 0, 1, bh), (bw - 1, 0, 1, bh)] {
+        u.c.fill(bx + x, by + y, w, hh, Style::Normal, m_col(3));
+    }
+    let (fh, fs) = (u.f.headers.clone(), u.f.small.clone());
+    let big = u.hud.font(u.assets, "FontMenuExtraLarge").unwrap_or_else(|| u.f.title.clone());
+    u.c.text(&fh, bx, by + 8, bw, fh.height, HAlign::Center, VAlign::Top, m_col(8), "Room Code:");
+    match &h.code {
+        Some(code) => u.c.text(&big, bx, by + 24, bw, big.height, HAlign::Center, VAlign::Top, WHITE, code),
+        None => u.c.text(&fs, bx, by + 30, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), "Creating room..."),
+    }
+    let max = mp_host_settings(h).max_players;
+    let public = h.choices.iter().any(|c| c.key == "MpRoom" && c.value < 0.5);
+    let y0 = by + 28 + big.height;
+    u.c.text(&fs, bx, y0, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), &format!("Players: {} / {max}", h.players));
+    let reach = if public { "Listed in the browser" } else { "Private: share the code" };
+    u.c.text(&fs, bx, y0 + fs.height + 2, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), reach);
+    // Who looked the room up, newest first, as many as fit.
+    let (lx, lw) = (bx + 5, bw - 10);
+    let mut ly = y0 + 2 * fs.height + 10;
+    u.c.set_clip(Some((bx + 1, by + 1, bw - 2, bh - 2)));
+    for j in h.joiners.iter().rev() {
+        // (The lobby's line may carry more after the IP.)
+        let ip = j.split_whitespace().next().unwrap_or(j);
+        let lines = wrap(&fs, &format!("Someone at {ip} found your room"), lw);
+        if ly + lines.len() as i32 * fs.height > by + bh - 4 {
+            break;
+        }
+        for l in &lines {
+            u.c.text(&fs, lx, ly, lw, fs.height, HAlign::Left, VAlign::Top, m_col(3), l);
+            ly += fs.height;
+        }
+        ly += 2;
+    }
+    u.c.set_clip(None);
+}
+
+/// MenuScreenJoinRoom: "Room Code" and the code box (the letters still to type shown as _).
+fn draw_mp_join(u: &mut Ui<W>, j: &MpJoin, cx: i32, cy: i32) {
+    let y = cy + 27;
+    action_button(u, W::ChoiceBtn(0), cx + 7, y, 243, "|&Room Code", true);
+    let mut shown = String::with_capacity(4);
+    shown.push_str(&j.code);
+    while shown.len() < 4 {
+        shown.push('_');
+    }
+    info_button(u, cx + 7 + 270, y, 77, &shown, m_btn(1));
+    u.hit(W::Edit(3), (cx + 7 + 270, y, 77, 19), true);
+}
+
+/// MenuScreenLobbyBrowser: filter headers, the room list, the selected room's card, the list's state.
+fn draw_mp_browse(u: &mut Ui<W>, b: &mut MpBrowse, cx: i32, cy: i32) {
+    // Headers over the art's two wells: Room (code and host) | Mode | Look, and Players | Ping.
+    let c = BROWSE_COLS;
+    header_button(u, W::Header(10), cx + 10, cy + 3, c[0] + c[1], "Room");
+    let mut hx = cx + 10 + c[0] + c[1];
+    for (k, w) in [(0usize, c[2]), (1, c[3] - 2)] {
+        header_button(u, W::Header(k as u8), hx, cy + 3, w, mp_header_label(k, b.filters[k]));
+        hx += w;
+    }
+    header_button(u, W::Header(2), cx + 251, cy + 3, c[4] + c[5] + 6, mp_header_label(2, b.filters[2]));
+    header_button(u, W::Header(3), cx + 251 + c[4] + c[5] + 6, cy + 3, 131 - (c[4] + c[5] + 6), mp_header_label(3, b.filters[3]));
+    let (lx, ly, lw, lh) = BROWSE_LIST;
+    list(u, 0, (cx + lx, cy + ly, lw, lh), &c, &b.rows, b.sel, &mut b.scroll, false);
+    let fs = u.f.small.clone();
+    if b.rows.is_empty() {
+        let msg = match &b.state {
+            crate::online::ListState::Loading => "Loading...".to_string(),
+            crate::online::ListState::Failed(m) => m.clone(),
+            _ if !b.rooms.is_empty() => "No public rooms match the filters.".into(),
+            _ => "No public rooms".into(),
+        };
+        u.wrapped(&fs, cx + lx + 10, cy + ly + 10, lw - 20, 40, HAlign::Center, VAlign::Top, m_col(8), &msg);
+    }
+    // The selected room's card in the snapshot box.
+    let (bx, by, bw, bh) = (cx + 387, cy + 24, 160, 120);
+    u.c.fill(bx, by, bw, bh, Style::Normal, BLACK);
+    for (x, y, w, h) in [(0, 0, bw, 1), (0, bh - 1, bw, 1), (0, 0, 1, bh), (bw - 1, 0, 1, bh)] {
+        u.c.fill(bx + x, by + y, w, h, Style::Normal, m_col(3));
+    }
+    let room = b.sel.and_then(|s| b.shown.get(s)).and_then(|&i| b.rooms.get(i));
+    if let Some(r) = room {
+        let big = u.hud.font(u.assets, "FontMenuExtraLarge").unwrap_or_else(|| u.f.title.clone());
+        let fh = u.f.headers.clone();
+        u.c.text(&big, bx, by + 6, bw, big.height, HAlign::Center, VAlign::Top, WHITE, &r.code);
+        let mut y = by + 10 + big.height;
+        u.c.set_clip(Some((bx + 2, by + 1, bw - 4, bh - 2)));
+        u.c.text(&fh, bx, y, bw, fh.height, HAlign::Center, VAlign::Top, m_col(8), &r.name);
+        y += fh.height + 3;
+        let lines = [
+            format!("{}, {} look", mp_mode_name(r.mode), mp_look_name(r.look)),
+            format!("{} / {} players", r.players, r.max_players),
+            if r.tough { "Tougher enemies".to_string() } else { "Normal enemies".to_string() },
+            format!("Ping about {} ms", mp_ping(b, r)),
+        ];
+        for l in &lines {
+            u.c.text(&fs, bx, y, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), l);
+            y += fs.height;
+        }
+        u.c.set_clip(None);
+    }
+    // The info well: how many rooms; the check box's well: how the headers work.
+    let count = match &b.state {
+        crate::online::ListState::Ready => format!("{} public room{}, {} shown.", b.rooms.len(), if b.rooms.len() == 1 { "" } else { "s" }, b.shown.len()),
+        crate::online::ListState::Failed(_) => "The list couldn't be fetched.".into(),
+        _ => "Asking the lobby for its rooms...".into(),
+    };
+    u.wrapped(&fs, cx + 390, cy + 166, 155, 60, HAlign::Left, VAlign::Center, m_col(8), &count);
+    u.wrapped(&fs, cx + 390, cy + 250, 155, 26, HAlign::Left, VAlign::Center, m_col(8), "Click a header to filter the list.");
+}
+
+/// Choose Character: the characters list (New Character first), the selected one's card, the room being joined.
+fn draw_mp_chars(u: &mut Ui<W>, c: &mut MpChars, cx: i32, cy: i32) {
+    header_button(u, W::Header(10), cx + 10, cy + 3, 238, "Character");
+    header_button(u, W::Header(11), cx + 251, cy + 3, 131, "Last Played");
+    let (lx, ly, lw, lh) = BROWSE_LIST;
+    list(u, 0, (cx + lx, cy + ly, lw, lh), &[240, 131], &c.rows, c.sel, &mut c.scroll, false);
+    let (bx, by, bw, bh) = (cx + 387, cy + 24, 160, 120);
+    u.c.fill(bx, by, bw, bh, Style::Normal, BLACK);
+    for (x, y, w, h) in [(0, 0, bw, 1), (0, bh - 1, bw, 1), (0, 0, 1, bh), (bw - 1, 0, 1, bh)] {
+        u.c.fill(bx + x, by + y, w, h, Style::Normal, m_col(3));
+    }
+    let (fh, fs) = (u.f.headers.clone(), u.f.small.clone());
+    let (title, about) = match c.sel {
+        Some(0) => ("New Character".to_string(), "Make a new agent with the character creator. Multiplayer characters keep their own saves."),
+        Some(i) => (
+            c.list.get(i - 1).map(|ch| ch.1.clone()).unwrap_or_default(),
+            "Plays on with this character's skills, augmentations and inventory.",
+        ),
+        None => (String::new(), ""),
+    };
+    u.c.set_clip(Some((bx + 2, by + 1, bw - 4, bh - 2)));
+    u.c.text(&fh, bx, by + 10, bw, fh.height, HAlign::Center, VAlign::Top, WHITE, &title);
+    u.wrapped(&fs, bx + 8, by + 18 + fh.height, bw - 16, bh - 26 - fh.height, HAlign::Center, VAlign::Top, m_col(8), about);
+    u.c.set_clip(None);
+    u.wrapped(&fs, cx + 390, cy + 166, 155, 60, HAlign::Left, VAlign::Center, m_col(8), &c.room);
+    u.wrapped(&fs, cx + 390, cy + 250, 155, 26, HAlign::Left, VAlign::Center, m_col(8), "Double-click or Join Game to go in.");
 }
 
 #[cfg(test)]
@@ -4656,34 +5701,222 @@ mod tests {
             if let Body::Menu { .. } = win.body {
                 win.focus = Some(W::MenuBtn(1));
             }
-            let (ww, wh) = win_size(&win.f, &fonts);
-            let mut full = Canvas::new(640, 480, 1);
-            full.fill(0, 0, 640, 480, Style::Normal, [20, 30, 40]);
-            let mut hits = vec![];
-            let pos = (320 - ww / 2, 240 - wh / 2);
-            let help = match &win.body {
-                Body::Choices { choices } => choices[0].help.clone(),
-                _ => String::new(),
-            };
-            let mut ui = Ui { c: Canvas::new(ww, wh, 1), hud: &mut hud, assets: &mut assets, f: &fonts, o: pos, hits: &mut hits, pressed: None, hover: None, focus: win.focus };
-            draw_win(&mut ui, &mut win, &fonts, &help, false);
-            let Ui { c, .. } = ui;
-            for y in 0..c.h {
-                for x in 0..c.w {
-                    let (dx, dy) = (x + pos.0, y + pos.1);
-                    if dx < 0 || dy < 0 || dx >= 640 || dy >= 480 {
-                        continue;
-                    }
-                    let sp = c.px[(y * c.w + x) as usize];
-                    let d = &mut full.px[(dy * 640 + dx) as usize];
-                    for k in 0..3 {
-                        d[k] = (sp[k] + d[k] * (1.0 - sp[3])).min(1.0);
-                    }
+            render(&mut hud, &mut assets, &fonts, &mut win, &format!("{out}/menu_{class}.rgba"));
+        }
+        preview_multiplayer(&out, &mut hud, &mut assets, &fonts);
+    }
+
+    /// One window centred on a 640 x 480 frame, written as raw RGBA.
+    fn render(hud: &mut ClassicHud, assets: &mut RuntimeAssets, fonts: &Fonts, win: &mut Win, path: &str) {
+        let (ww, wh) = win_size(&win.f, fonts);
+        let mut full = Canvas::new(640, 480, 1);
+        full.fill(0, 0, 640, 480, Style::Normal, [20, 30, 40]);
+        let mut hits = vec![];
+        let pos = (320 - ww / 2, 240 - wh / 2);
+        let help = match (&win.body, win.focus) {
+            (Body::Choices { choices }, _) => choices[0].help.clone(),
+            _ => help_text(win, assets),
+        };
+        let mut ui = Ui { c: Canvas::new(ww, wh, 1), hud, assets, f: fonts, o: pos, hits: &mut hits, pressed: None, hover: None, focus: win.focus };
+        draw_win(&mut ui, win, fonts, &help, false);
+        let Ui { c, .. } = ui;
+        for y in 0..c.h {
+            for x in 0..c.w {
+                let (dx, dy) = (x + pos.0, y + pos.1);
+                if dx < 0 || dy < 0 || dx >= 640 || dy >= 480 {
+                    continue;
+                }
+                let sp = c.px[(y * c.w + x) as usize];
+                let d = &mut full.px[(dy * 640 + dx) as usize];
+                for k in 0..3 {
+                    d[k] = (sp[k] + d[k] * (1.0 - sp[3])).min(1.0);
                 }
             }
-            std::fs::write(format!("{out}/menu_{class}.rgba"), full.to_rgba8()).unwrap();
-            println!("wrote {class} {ww}x{wh}");
         }
+        std::fs::write(path, full.to_rgba8()).unwrap();
+        println!("wrote {path} {ww}x{wh}");
+    }
+
+    /// The multiplayer screens against a real lobby on this PC (imsim-net's server): connect, host a room (a guest
+    /// finds it), the browser with other hosts' rooms, the join screen, a join's answer, leaving.
+    fn preview_multiplayer(out: &str, hud: &mut ClassicHud, assets: &mut RuntimeAssets, fonts: &Fonts) {
+        use imsim_net::client::Client;
+        use std::time::{Duration, Instant};
+        let port = 41000 + (std::process::id() % 2000) as u16;
+        std::thread::spawn(move || {
+            let cfg = imsim_net::server::Config { port, admin_port: port + 1, name: "Local Test Lobby".into(), log: None, admin_key: "preview-key-0123456789".into() };
+            let _ = imsim_net::server::run(cfg);
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let addr = format!("127.0.0.1:{port}");
+        std::env::set_var("DXVIEW_LOBBY", &addr);
+        let mut st = Menus::default();
+        let shot = |st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, name: &str| {
+            let w = st.stack.last_mut().unwrap();
+            render(hud, assets, fonts, w, &format!("{out}/menu_{name}.rgba"));
+        };
+        // Tick until `done` (or 8 s).
+        let wait = |st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, what: &str, done: &dyn Fn(&Menus) -> bool| {
+            let t = Instant::now();
+            while !done(st) {
+                assert!(t.elapsed() < Duration::from_secs(8), "multiplayer preview: timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(20));
+                mp_tick(st, 0.02, hud, assets);
+            }
+        };
+        let top_class = |st: &Menus| st.stack.last().map(|w| w.f.class.clone()).unwrap_or_default();
+        // Main menu (Multiplayer + Achievements), then Multiplayer: the connecting box, the screen.
+        st.stack.push(open_window(hud, assets, "MenuMain").unwrap());
+        mp_connect(&mut st, hud, assets);
+        shot(&mut st, hud, assets, "MP_Connecting");
+        wait(&mut st, hud, assets, "online", &|st| top_class(st) == "MenuScreenMultiplayer");
+        shot(&mut st, hud, assets, "MenuScreenMultiplayer");
+        // Other players' rooms for the browser.
+        let mut others = Vec::new();
+        for (name, mode, look, max, tough, public, players) in [
+            ("Paul Denton", Mode::Coop, Look::Classic, 4, true, true, 2),
+            ("Gunther", Mode::Deathmatch, Look::Modern, 16, false, true, 16),
+            ("Anna Navarre", Mode::Deathmatch, Look::Classic, 8, false, true, 3),
+            ("Secret Agent", Mode::Coop, Look::Modern, 2, false, false, 1),
+        ] {
+            let mut c = Client::connect(&addr, Duration::from_secs(2)).unwrap();
+            let s = RoomSettings { mode, public, max_players: max, look, tough, name: name.into() };
+            let (code, token) = c.host(&s, 7790, &"ab".repeat(32), None).unwrap();
+            c.update(&token, players, &s).unwrap();
+            others.push((c, code));
+        }
+        // Host a room; a guest looks it up.
+        let mut w = open_window(hud, assets, "MenuScreenHostRoom").unwrap();
+        mp_opened(&mut st.mp, &mut w);
+        st.push(Some(w));
+        wait(&mut st, hud, assets, "room code", &|st| matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(h)) if h.code.is_some()));
+        let code = match &st.stack.last().unwrap().body {
+            Body::Host(h) => h.code.clone().unwrap(),
+            _ => unreachable!(),
+        };
+        assert!(imsim_net::valid_code(&code));
+        let mut guest = Client::connect(&addr, Duration::from_secs(2)).unwrap();
+        let j = guest.join(&code).unwrap();
+        assert_eq!(j.max_players, RoomSettings::default().max_players);
+        // Game Mode -> Deathmatch, Players 4 -> 6: the lobby hears of each.
+        if let Some(Body::Host(h)) = st.stack.last_mut().map(|w| &mut w.body) {
+            mp_host_cycle(h, 0, 1);
+            mp_host_cycle(h, 2, 1);
+            mp_host_cycle(h, 2, 1);
+        }
+        wait(&mut st, hud, assets, "the guest's lookup", &|st| matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(h)) if !h.joiners.is_empty()));
+        shot(&mut st, hud, assets, "MenuScreenHostRoom");
+        // Start Game: back to the game on a playable map; on the logo map the Load Game screen, with New Game.
+        {
+            let mut acts = Vec::new();
+            let w = st.stack.last_mut().unwrap();
+            mp_action(w, ACT_START, &mut acts);
+            assert!(matches!(acts.as_slice(), [Act::PopAll]));
+            let m = MISSION.swap(-2, Ordering::Relaxed);
+            let mut acts = Vec::new();
+            mp_action(st.stack.last_mut().unwrap(), ACT_START, &mut acts);
+            MISSION.store(m, Ordering::Relaxed);
+            assert!(matches!(acts.as_slice(), [Act::Push(c)] if c == "MenuScreenLoadGame:mp"));
+            let mut w = open_window(hud, assets, "MenuScreenLoadGame").unwrap();
+            mp_variant(&mut w);
+            assert!(w.f.actions.iter().any(|a| a.1 == ACT_MP_NEWGAME));
+            st.stack.push(w);
+            shot(&mut st, hud, assets, "MP_StartLoadGame");
+            st.stack.pop();
+        }
+        let rooms = Client::connect(&addr, Duration::from_secs(2)).unwrap().list().unwrap();
+        let mine = rooms.iter().find(|r| r.code == code).expect("our room is listed");
+        assert_eq!((mine.mode, mine.max_players), (Mode::Deathmatch, 6));
+        // The browser (on top of the host's screen: the room stays open).
+        let mut w = open_window(hud, assets, "MenuScreenLobbyBrowser").unwrap();
+        mp_opened(&mut st.mp, &mut w);
+        st.push(Some(w));
+        wait(&mut st, hud, assets, "the room list", &|st| matches!(st.stack.last().map(|w| &w.body), Some(Body::Browse(b)) if b.state == crate::online::ListState::Ready));
+        if let Some(Body::Browse(b)) = st.stack.last().map(|w| &w.body) {
+            // Four public rooms (ours included), the private one left out.
+            assert_eq!(b.rooms.len(), 4, "{:?}", b.rooms);
+        }
+        shot(&mut st, hud, assets, "MenuScreenLobbyBrowser");
+        if let Some(Body::Browse(b)) = st.stack.last_mut().map(|w| &mut w.body) {
+            mp_browse_filter(b, 0);
+            mp_browse_filter(b, 2);
+            assert!(b.shown.iter().all(|&i| b.rooms[i].mode == Mode::Coop && b.rooms[i].players < b.rooms[i].max_players));
+            mp_browse_move(b, 1);
+        }
+        shot(&mut st, hud, assets, "MP_BrowserFiltered");
+        // The join screen with a code half typed (lower case and look-alikes typed: kept upper case / dropped).
+        st.stack.pop();
+        let mut w = open_window(hud, assets, "MenuScreenJoinRoom").unwrap();
+        mp_opened(&mut st.mp, &mut w);
+        if let Body::Join(j) = &mut w.body {
+            for t in ["d", "x", "0", "2"] {
+                mp_join_typing(j, &KeyCode::KeyA, &Some(t.into()));
+            }
+            assert_eq!(j.code, "DX2");
+        }
+        st.push(Some(w));
+        shot(&mut st, hud, assets, "MenuScreenJoinRoom");
+        // Joining the private room by its code: Choose Character (one multiplayer character saved), New Character,
+        // in; then a code that isn't a room.
+        let _ = std::fs::create_dir_all(crate::save::mp_dir());
+        let _ = std::fs::copy(crate::save::char_dir("JC_Denton-1").join("Save0002.ron"), crate::save::mp_path("JC_Denton-1"));
+        let private = others[3].1.clone();
+        mp_join(&mut st, hud, assets, private.clone());
+        shot(&mut st, hud, assets, "MP_Joining");
+        wait(&mut st, hud, assets, "the join answer", &|st| matches!(st.stack.last().map(|w| &w.body), Some(Body::Chars(_))));
+        assert!(st.mp.joined.is_some());
+        if let Some(Body::Chars(c)) = st.stack.last().map(|w| &w.body) {
+            assert_eq!(c.list.len(), 1, "{:?}", c.list);
+            assert!(matches!(mp_chars_go(c), Some(Act::MpLoadChar(id)) if id == "JC_Denton-1"));
+        }
+        shot(&mut st, hud, assets, "MenuScreenChooseCharacter");
+        let mut w = open_window(hud, assets, "MenuScreenNewGame").unwrap();
+        mp_variant(&mut w);
+        st.stack.push(w);
+        shot(&mut st, hud, assets, "MP_NewCharacter");
+        mp_join_room(&mut st, hud, assets);
+        assert!(!st.stack.iter().any(|w| matches!(&w.body, Body::Chars(_)) || matches!(&w.body, Body::NewGame(ng) if ng.multiplayer)));
+        shot(&mut st, hud, assets, "MP_JoinFound");
+        st.stack.pop();
+        // In a session the main menu offers Leave Multiplayer.
+        if crate::netplay::active() {
+            let mut w = open_window(hud, assets, "MenuMain").unwrap();
+            if let Body::Menu { buttons, .. } = &w.body {
+                assert_eq!(buttons[8].label, "Leave Multiplayer");
+            }
+            w.focus = Some(W::MenuBtn(8));
+            st.stack.push(w);
+            shot(&mut st, hud, assets, "MP_MainLeave");
+            st.stack.pop();
+        }
+        let bad = if private == "ZZZZ" { "YYYY" } else { "ZZZZ" };
+        mp_join(&mut st, hud, assets, bad.into());
+        wait(&mut st, hud, assets, "the failed join", &|st| top_box(st, MsgPurpose::MpResult));
+        shot(&mut st, hud, assets, "MP_JoinFailed");
+        // (The join started a game session toward the fake host: end it, it would keep the lobby connected.)
+        crate::netplay::leave("");
+        // Leaving: the room closes with its screen, the connection with the last multiplayer window.
+        st.stack.retain(|w| !matches!(w.body, Body::Host(_) | Body::Join(_) | Body::Msg(_)));
+        mp_tick(&mut st, 0.02, hud, assets);
+        assert!(!st.mp.hosting);
+        let t = Instant::now();
+        while Client::connect(&addr, Duration::from_secs(2)).unwrap().join(&code).is_ok() {
+            assert!(t.elapsed() < Duration::from_secs(4), "the room closes with its screen");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        st.stack.retain(|w| w.f.class == "MenuMain");
+        mp_tick(&mut st, 0.02, hud, assets);
+        assert_eq!(crate::online::status(), crate::online::Status::Offline);
+        assert!(!st.mp.online);
+        // Connecting to nothing: the reason, then offline.
+        std::env::set_var("DXVIEW_LOBBY", "127.0.0.1:1");
+        mp_connect(&mut st, hud, assets);
+        wait(&mut st, hud, assets, "the failure", &|st| top_box(st, MsgPurpose::Info));
+        shot(&mut st, hud, assets, "MP_ConnectFailed");
+        st.stack.pop();
+        mp_tick(&mut st, 0.02, hud, assets);
+        assert!(!st.mp.online);
+        drop(others);
     }
 }
 

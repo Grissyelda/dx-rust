@@ -496,6 +496,7 @@ pub fn deco_damage_system(
                     transient: true,
                     props: Vec::new(),
                     generator: None,
+                    net_player: None,
                 });
             }
         }

@@ -62,6 +62,10 @@ pub fn mission_system(
     mut map_gen: Local<u64>,
     mut st: Local<MissionState>,
 ) {
+    // Multiplayer: the host's to run (a joiner sees the results through him).
+    if crate::netplay::story_off() {
+        return;
+    }
     // A new map (loader.rs): start this system's per-map state over.
     if crate::loader::new_map(&mut map_gen) {
         *st = Default::default();

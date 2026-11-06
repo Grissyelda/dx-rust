@@ -185,6 +185,10 @@ pub fn logic_system(
     mut ph: ResMut<crate::ai::PlayerHealth>,
     player: Res<crate::Player>,
 ) {
+    // Multiplayer: the host's to run (a joiner sees the results through him).
+    if crate::netplay::story_off() {
+        return;
+    }
     let lvl = &level.0;
     if !st.built {
         st.list = build(lvl);

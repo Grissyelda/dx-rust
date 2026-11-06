@@ -36,6 +36,11 @@ pub const VERSION: u32 = 1;
 static RESTORING: AtomicBool = AtomicBool::new(false);
 /// Placed actors in the map as it loaded (runtime spawns are appended after them).
 static PLACED: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// How many actors the map placed (actors past it were made at run time).
+pub fn placed_count() -> usize {
+    PLACED.load(Ordering::Relaxed)
+}
 static FRAME: AtomicU32 = AtomicU32::new(0);
 /// The save this copy of the game was started from (taken by the restore).
 static PENDING: Mutex<Option<SaveGame>> = Mutex::new(None);
@@ -1498,6 +1503,64 @@ fn write(path: &Path, s: &SaveGame) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)?;
     GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------ multiplayer
+
+/// Multiplayer characters (ours): a joiner's own character lives apart from single-player saves, one file each
+/// (Save/Multiplayer/<id>.ron): what travels with him (inventory, skills, augmentations, credits). The host's
+/// world never goes in it.
+pub fn mp_dir() -> PathBuf {
+    dir().join("Multiplayer")
+}
+
+pub fn mp_path(char_id: &str) -> PathBuf {
+    mp_dir().join(format!("{char_id}.ron"))
+}
+
+/// Every multiplayer character: (id, name, saved unix time), newest first.
+pub fn mp_characters() -> Vec<(String, String, u64)> {
+    let mut v: Vec<(String, String, u64)> = std::fs::read_dir(mp_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "ron"))
+        .filter_map(|e| {
+            let s = read(&e.path())?;
+            let id = e.path().file_stem()?.to_string_lossy().to_string();
+            Some((id, s.global.name.clone(), s.saved_unix))
+        })
+        .collect();
+    v.sort_by(|a, b| b.2.cmp(&a.2));
+    v
+}
+
+pub fn read_mp(char_id: &str) -> Option<SaveGame> {
+    read(&mp_path(char_id))
+}
+
+/// Write the multiplayer character being played (what travels with him).
+pub fn write_mp(world: &mut World, char_id: &str) {
+    if char_id.is_empty() {
+        return;
+    }
+    let mut s = capture_inner(world, "Multiplayer character", false);
+    s.level = LevelSave::default();
+    s.visited.clear();
+    s.global.flags = imsim_core::flags::FlagBase::default();
+    s.global.takedowns.clear();
+    match write(&mp_path(char_id), &s) {
+        Ok(()) => println!("save: multiplayer character {char_id}"),
+        Err(e) => eprintln!("save: multiplayer character {char_id}: {e}"),
+    }
+}
+
+/// A multiplayer character's travelling part, put on the host's map (as a map change would carry it).
+pub fn mp_arrival(s: SaveGame) -> Arrive {
+    if let Ok(mut v) = VISITED.lock() {
+        v.clear();
+    }
+    Arrive::Travel(Box::new(s))
 }
 
 /// Tests: write a save with just a description and a character into that character's folder.

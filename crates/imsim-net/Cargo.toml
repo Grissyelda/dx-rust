@@ -1,0 +1,13 @@
+[package]
+name = "imsim-net"
+license = "GPL-3.0-or-later"
+edition.workspace = true
+version.workspace = true
+description = "Engine-neutral online services: the lobby server (room codes, the public room list, finding a host) and its client."
+
+[dependencies]
+snow = { version = "0.9.6", optional = true }
+
+[features]
+# Game traffic between players (encrypted UDP links). The lobby server doesn't need it.
+game = ["dep:snow"]

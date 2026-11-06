@@ -171,6 +171,14 @@ fn prefetch_tick(world: &mut World) {
 
 /// Go to `map` (file name; ".dx" added if missing).
 pub fn request(map: &str, goal: Goal) {
+    // Multiplayer: a joiner goes where the host goes, and only then; the host takes everyone along.
+    if matches!(goal, Goal::Travel(_)) && !crate::netplay::may_travel() {
+        return;
+    }
+    if matches!(goal, Goal::Travel(_) | Goal::Load(_) | Goal::Restart) && crate::netplay::is_host() {
+        let m = map.split(['#', '?']).next().unwrap_or(map).trim().trim_end_matches(".dx");
+        crate::netplay::host_travel(m);
+    }
     // A URL as maps write it: "Map#Portal", "Map.dx #Portal" (14_Oceanlab_Silo's MapExit), "Map?options".
     let (name, portal) = match map.split_once('#') {
         Some((m, t)) => (m, Some(t.split('?').next().unwrap_or("").trim().to_string()).filter(|t| !t.is_empty())),
@@ -407,7 +415,11 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
             crate::save::new_game();
             crate::travel::set_session(ng);
             crate::achievements::character_changed();
-            crate::save::Arrive::Fresh
+            // Multiplayer: a joiner's own character comes into the host's game with what he carried last time.
+            match crate::netplay::take_character_carry() {
+                Some(s) => crate::save::mp_arrival(s),
+                None => crate::save::Arrive::Fresh,
+            }
         }
         Goal::Load(s) => {
             crate::save::prepare_load(&s);
@@ -441,6 +453,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::netplay::reset_level();
     crate::info::reset_level();
     crate::zones::reset_level();
     crate::hanging::reset_level();

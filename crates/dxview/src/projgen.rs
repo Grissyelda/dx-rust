@@ -209,6 +209,10 @@ pub fn projgen_system(
     mut map_gen: Local<u64>,
     mut st: Local<State>,
 ) {
+    // Multiplayer: the host's to run (a joiner sees the results through him).
+    if crate::netplay::story_off() {
+        return;
+    }
     if crate::loader::new_map(&mut map_gen) {
         *st = State::default();
     }

@@ -702,6 +702,13 @@ pub fn afflictions_system(
 pub struct Npc {
     pub actor: usize,
     pub blocker: usize,
+    /// Multiplayer: driven from the network (a pawn the host runs, seen by a joiner, or a player's body) - no
+    /// mind of its own here; `netplay` fills it in each frame and `puppet_step` places and poses it.
+    pub net: Option<Box<crate::netplay::NetPose>>,
+    /// Multiplayer: this pawn is a player's body (JCDouble), that player's id.
+    pub net_player: Option<u8>,
+    /// Multiplayer (host): shots fired (wrapping), sent so the joiners hear them.
+    pub net_shots: u8,
     pub alliance: String,
     /// (alliance, level -1..1): below -0.5 is an enemy, as ScriptedPawn.GetAllianceType reads it.
     /// AlliancesEx (imsim_core::alliance): feelings toward other alliances, agitation from provocations.
@@ -1105,6 +1112,9 @@ impl Npc {
         };
         let yaw = yaw_units as f64 / 65536.0 * std::f64::consts::TAU;
         Npc {
+            net: None,
+            net_player: None,
+            net_shots: 0,
             actor,
             blocker,
             alliance: name_of(p, "Alliance"),
@@ -3270,6 +3280,16 @@ pub fn npc_system(
         let _a1 = crate::prof::scope("ai/1 setup+damage");
         npc.just_fired = false;
         npc.weapon_timer += dt;
+        // Multiplayer: a puppet (a pawn the host runs, or a player's body) only goes where the network says; hits
+        // on it are sent to whoever they count for.
+        if npc.net.is_some() {
+            if let Some(list) = hits_by.remove(&npc.blocker) {
+                crate::netplay::puppet_hits(npc.actor, npc.net_player, &list);
+            }
+            lazy_init(npc, &mut deco, lvl, &mut assets, &mut blockers);
+            puppet_step(npc, &mut deco, &mut an, &mut tf, &mut blockers, &level, &mut assets, dt);
+            continue;
+        }
         let state_before = std::mem::discriminant(&npc.state);
         if npc.state == NpcState::Dead {
             continue;
@@ -3404,6 +3424,141 @@ pub fn npc_system(
     pawn_hits.0.extend(new_hits);
     noises.0.extend(new_noises);
     *heard_buf = heard;
+}
+
+/// Multiplayer: a puppet pawn this frame (see `netplay`). A pawn the host runs takes the host's place, facing and
+/// sequence; a player's body eases toward where that player is (his state is a few tens of milliseconds old) and
+/// is animated from his motion as Human.uc picks its sequences.
+fn puppet_step(
+    npc: &mut Npc,
+    deco: &mut Deco,
+    an: &mut Animated,
+    tf: &mut Transform,
+    blockers: &mut Blockers,
+    level: &LevelRes,
+    assets: &mut RuntimeAssets,
+    dt: f32,
+) {
+    let Some(p) = npc.net.as_deref().cloned() else { return };
+    let before = deco.body.location;
+    let far = (p.pos - before).length() > 300.0;
+    // Snap when far (a respawn, a teleport, a first sight), else ease (12 per second takes out the jitter).
+    let k = if far { 1.0 } else { (dt as f64 * 12.0).min(1.0) };
+    let moved = before + (p.pos - before) * k;
+    let mut d = p.yaw - npc.yaw;
+    while d > std::f64::consts::PI {
+        d -= std::f64::consts::TAU;
+    }
+    while d < -std::f64::consts::PI {
+        d += std::f64::consts::TAU;
+    }
+    npc.yaw += d * if far { 1.0 } else { (dt as f64 * 14.0).min(1.0) };
+    deco.body.velocity = DVec3::ZERO;
+    place_pawn(npc, deco, tf, blockers, moved);
+    // Its weapon: the one the network says is in hand.
+    let want = p.weapon.as_str();
+    let have = npc.weapon.as_ref().map(|w| w.class.as_str()).unwrap_or("");
+    if want != have {
+        if want.is_empty() {
+            npc.weapon = None;
+        } else if let Some(w) = npc.arsenal.iter().find(|w| w.class == want).cloned() {
+            npc.weapon = Some(w);
+        } else if want.starts_with("Weapon") {
+            // A player's weapon (bodies carry nothing of their own).
+            let d = assets.classes.defaults(want);
+            if let Some(w) = weapon_stats(want, &d) {
+                let w = std::sync::Arc::new(w);
+                npc.arsenal.push(w.clone());
+                npc.weapon = Some(w);
+            }
+        }
+    }
+    // A shot on the far side: its sound (and muzzle flash, from just_fired) here.
+    if p.shots != p.shots_seen {
+        if let Some(np) = npc.net.as_mut() {
+            np.shots_seen = p.shots;
+        }
+        npc.just_fired = true;
+        if let Some(w) = npc.weapon.clone() {
+            let snd = if w.silenced && !w.hand_to_hand { Some("DeusExSounds.Weapons.StealthPistolFire") } else { w.snd.fire.as_deref() };
+            if let Some(snd) = snd {
+                crate::sound::play(snd, moved, w.snd.volume, 2048.0, 1.0);
+            }
+        }
+    }
+    let dead = p.dead != 0;
+    if dead && npc.state != NpcState::Dead {
+        npc.state = NpcState::Dead;
+        npc.knocked_out = p.dead == 2;
+    } else if !dead && npc.state == NpcState::Dead && npc.net_player.is_some() {
+        npc.state = NpcState::Idle;
+    }
+    match &p.anim {
+        // The host's sequence, where the host is in it.
+        Some((name, t, rate, looping)) => {
+            if !name.is_empty() && npc.anim != name.as_str() {
+                let ma = &level.0.mesh_actors[an.mesh_actor];
+                if let Some(m) = ma.anim.as_ref() {
+                    if let Some(mut c) = Clip::named(&m.mesh, name, *looping) {
+                        c.rate = *rate;
+                        c.t = *t;
+                        an.clip = Some(c);
+                        npc.anim = crate::util::intern(name);
+                    }
+                }
+            } else if let Some(c) = an.clip.as_mut() {
+                // Same sequence: stay close to the host's clock (a frame or two of drift is fine).
+                if (c.t - *t).abs() > 0.25 && *looping == c.looping {
+                    c.t = *t;
+                }
+                c.rate = *rate;
+            }
+        }
+        // A pawn the host runs that he hasn't sent yet: as it was.
+        None if npc.net_player.is_none() => {}
+        // A player's body: Human.uc's choice from what he's doing.
+        None => {
+            let two = npc.two_handed();
+            let (name, fallback, mult): (&'static str, &'static str, f32) = if dead {
+                ("DeathBack", "Still", 1.0)
+            } else if p.swim {
+                if p.speed > 20.0 { ("Tread", "Walk", 1.0) } else { ("Tread", "BreatheLight", 0.6) }
+            } else if p.crouch {
+                if p.speed > 10.0 { ("CrouchWalk", "Crouch", 1.0) } else { ("Crouch", "BreatheLight", 1.0) }
+            } else if p.speed > 230.0 {
+                (if two { "RunShoot2H" } else { "Run" }, "Walk", (p.speed / 320.0) as f32)
+            } else if p.speed > 20.0 {
+                (if two { "Walk2H" } else { "Walk" }, "", (p.speed / 160.0).clamp(0.4, 1.6) as f32)
+            } else if npc.weapon.as_ref().is_some_and(|w| !w.hand_to_hand) {
+                (if two { "BreatheLight2H" } else { "BreatheLight" }, "BreatheLight", 1.0)
+            } else {
+                ("BreatheLight", "Still", 1.0)
+            };
+            if dead {
+                if npc.anim != name {
+                    if let Some(m) = level.0.mesh_actors[an.mesh_actor].anim.as_ref() {
+                        if let Some(c) = Clip::named(&m.mesh, name, false) {
+                            an.clip = Some(c);
+                            npc.anim = name;
+                        }
+                    }
+                }
+            } else {
+                set_anim(an, level, npc, name, fallback, mult);
+                if let Some(c) = an.clip.as_mut() {
+                    if c.looping {
+                        let base = level.0.mesh_actors[an.mesh_actor]
+                            .anim
+                            .as_ref()
+                            .and_then(|m| m.mesh.seqs.iter().find(|s| s.name.eq_ignore_ascii_case(npc.anim)).map(|s| s.rate))
+                            .unwrap_or(c.rate);
+                        c.rate = base * mult;
+                    }
+                }
+            }
+        }
+    }
+    let _ = blockers;
 }
 
 /// Everything heard since last frame, gathered into the kept buffer: the queued noises and Smarter AI's.
@@ -3681,7 +3836,9 @@ fn render_check(
             npc.last_rendered = now;
         }
     }
-    let check_other = !(npc.tick_visible && dist_player > 600.0 && now - npc.last_rendered >= 5.0);
+    // Multiplayer: a player's body nearby keeps the pawn awake as the host's own eyes would.
+    let near_body = npc.tick_visible && crate::netplay::active() && crate::netplay::remote_near(me.center, 2500.0);
+    let check_other = near_body || !(npc.tick_visible && dist_player > 600.0 && now - npc.last_rendered >= 5.0);
     let check_player = !(npc.tick_visible && dist_player > 2500.0);
     (check_other, check_player)
 }
@@ -5949,6 +6106,7 @@ fn begin_shot(npc: &mut Npc, an: &Animated, w: &crate::weapons::WeaponStats, cx:
     let lvl = cx.lvl;
     npc.shot_timer = w.shot_time.max(0.1);
     npc.just_fired = true;
+    npc.net_shots = npc.net_shots.wrapping_add(1);
     if env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n)) {
         println!("PAWNSHOT t={:.2} {} phase={:?} moving={moving}", cx.now, lvl.actors[npc.actor].name, npc.atk_phase);
     }
@@ -6226,7 +6384,12 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
         }
     };
         let center = cx.blockers.list[npc.blocker].center;
-        for h in list {
+        // Multiplayer, tougher enemies (room rule): every hit counts for less the more players there are.
+        let toughness = crate::netplay::health_scale();
+        for mut h in list {
+            if toughness != 1.0 {
+                h.damage /= toughness;
+            }
             // FilterDamageType overrides: Karkians, Greasels and Grays shrug off gas; Grays also radiation and
             // fire. Animal.ModifyDamage zeroes 'Stunned' (prods don't work on animals).
             let cls = lvl.actors[npc.actor].class.as_str();
@@ -6830,6 +6993,22 @@ pub fn player_health_ui(
         if ph.poison_counter == 0 {
             ph.poison_damage = 0.0;
         }
+    }
+    // Multiplayer: no loading or restarting - the dead get up again near the host (netplay).
+    if ph.dead && crate::netplay::active() {
+        let t = match crate::netplay::respawn_in() {
+            Some(s) if s > 0.0 => format!("You are down. Back on your feet in {}.", s.ceil() as i32),
+            _ => "You are down.".to_string(),
+        };
+        if hud.text != t || hud.time_left < 1.0e8 {
+            hud.text = t;
+            hud.time_left = 1.0e9;
+        }
+        return;
+    }
+    if !ph.dead && hud.time_left > 1.0e8 && hud.text.starts_with("You are down") {
+        hud.text.clear();
+        hud.time_left = 0.0;
     }
     if ph.dead {
         // Ours: Enter (pad: the Jump button) loads the most recent save; worded for the device in use. Whether there

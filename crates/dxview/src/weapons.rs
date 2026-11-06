@@ -988,6 +988,7 @@ pub fn image_for(
         });
         let h = images.add(img);
         crate::glow::register(&h, path);
+        crate::nullmask::register(&h, path);
         assets.fire.push((f, h.clone()));
         assets.images.insert(path.to_string(), Some(h.clone()));
         return Some(h);
@@ -1024,6 +1025,7 @@ pub fn image_for(
     if let Some(h) = &h {
         crate::anim_tex::register(&mut assets.lib, path, h, false, false);
         crate::glow::register(h, path);
+        crate::nullmask::register(h, path);
     }
     assets.images.insert(path.to_string(), h.clone());
     h
@@ -1079,6 +1081,9 @@ pub fn modulated_image_for(
         });
         images.add(img)
     });
+    if let Some(h) = &h {
+        crate::nullmask::register(h, path);
+    }
     assets.images.insert(key, h.clone());
     h
 }
@@ -1117,6 +1122,9 @@ pub fn masked_image_for(
         });
         images.add(img)
     });
+    if let Some(h) = &h {
+        crate::nullmask::register(h, path);
+    }
     assets.images.insert(key, h.clone());
     h
 }
@@ -3406,12 +3414,15 @@ fn fire_effects(h: &mut Held, cx: &mut WeaponCx, flashes: &mut Query<&mut Muzzle
             cx.shells.0.push((class, pos, vel));
         }
     }
+    // Multiplayer: the others hear the shot (and the host's pawns its noise).
+    crate::netplay::shot();
     // GetAIVolume: unsilenced guns are heard (WeaponFire + LoudNoise) out to 800 x NoiseLevel.
     if let Some(n) = crate::stealth::weapon_noise(
         &h.stats,
         player.body.location,
         crate::ai::Target::Player,
     ) {
+        crate::netplay::noise(player.body.location, n.radius);
         // AISendEvent WeaponFire (needs the listener to see the shooter) and LoudNoise (heard anywhere in range).
         let mut loud = n.clone();
         loud.kind = crate::stealth::NoiseKind::Loud;
