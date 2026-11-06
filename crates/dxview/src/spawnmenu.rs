@@ -68,6 +68,57 @@ pub struct SpawnMenu {
 
 #[derive(Component)]
 pub struct SpawnMenuRoot;
+/// The menu's scrolling grid of buttons.
+#[derive(Component)]
+pub struct SpawnGrid;
+
+/// The menu is up (the mouse wheel scrolls it instead of cycling the belt).
+static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn open() -> bool {
+    OPEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The scroll bar's thumb.
+#[derive(Component)]
+pub struct SpawnThumb;
+
+/// The mouse wheel (and the pad's right stick, which keybinds.rs feeds into it) scrolls the grid while the menu is
+/// open; the bar on the right shows where you are. (Page keys are taken: debug unlock, readout, key editor.)
+pub fn spawn_menu_scroll_system(
+    menu: Res<SpawnMenu>,
+    scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>,
+    mut grid: Query<(&mut ScrollPosition, &ComputedNode), With<SpawnGrid>>,
+    mut thumb: Query<&mut Node, With<SpawnThumb>>,
+) {
+    OPEN.store(menu.open, std::sync::atomic::Ordering::Relaxed);
+    if !menu.open {
+        return;
+    }
+    let Ok((mut pos, node)) = grid.single_mut() else { return };
+    let k = node.inverse_scale_factor();
+    let page = node.size().y * k;
+    let max = ((node.content_size().y - node.size().y) * k).max(0.0);
+    let lines = match scroll.unit {
+        bevy::input::mouse::MouseScrollUnit::Line => scroll.delta.y * 48.0,
+        bevy::input::mouse::MouseScrollUnit::Pixel => scroll.delta.y,
+    };
+    let y = pos.y - lines;
+    let y = y.clamp(0.0, max);
+    if (y - pos.y).abs() > 0.01 {
+        pos.y = y;
+    }
+    // The thumb: the shown share of the list, at the scrolled place.
+    if let Ok(mut t) = thumb.single_mut() {
+        let total = page + max;
+        let (h, top) = if total > 0.0 && max > 0.0 { (page / total * 100.0, y / total * 100.0) } else { (100.0, 0.0) };
+        let (h, top) = (Val::Percent(h), Val::Percent(top));
+        if t.height != h || t.top != top {
+            t.height = h;
+            t.top = top;
+        }
+    }
+}
 #[derive(Component)]
 pub struct SpawnButton(String);
 
@@ -136,12 +187,40 @@ fn build(commands: &mut Commands, assets: &mut RuntimeAssets, images: &mut Asset
         ))
         .with_children(|root| {
             root.spawn((
-                Text::new(format!("SPAWN ITEM  -  click to drop it in front of you  ({} items, Insert / Esc to close)", items.len())),
+                Text::new(format!("SPAWN ITEM  -  click to drop it in front of you  ({} items; mouse wheel to scroll, Insert / Esc to close)", items.len())),
                 TextFont { font_size: bevy::text::FontSize::Px(16.0), ..default() },
                 TextColor(Color::srgb(0.9, 0.92, 0.95)),
                 Node { margin: UiRect::bottom(Val::Px(10.0)), ..default() },
             ));
-            root.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, row_gap: Val::Px(6.0), column_gap: Val::Px(6.0), overflow: Overflow::scroll_y(), flex_grow: 1.0, ..default() }).with_children(|grid| {
+            // The scroll bar on the right edge.
+            root.spawn((
+                Node { position_type: PositionType::Absolute, right: Val::Px(3.0), top: Val::Px(40.0), bottom: Val::Px(12.0), width: Val::Px(6.0), ..default() },
+                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.08)),
+            ))
+            .with_children(|track| {
+                track.spawn((
+                    Node { position_type: PositionType::Absolute, left: Val::Px(0.0), width: Val::Percent(100.0), top: Val::Percent(0.0), height: Val::Percent(100.0), ..default() },
+                    BackgroundColor(Color::srgba(0.7, 0.75, 0.8, 0.7)),
+                    SpawnThumb,
+                ));
+            });
+            // (min_height 0: a flex child otherwise grows to its content and never scrolls.)
+            root.spawn((
+                Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    align_content: AlignContent::FlexStart,
+                    row_gap: Val::Px(6.0),
+                    column_gap: Val::Px(6.0),
+                    overflow: Overflow::scroll_y(),
+                    flex_grow: 1.0,
+                    flex_basis: Val::Px(0.0),
+                    min_height: Val::Px(0.0),
+                    ..default()
+                },
+                ScrollPosition::default(),
+                SpawnGrid,
+            )).with_children(|grid| {
                 // Debug toggles and augmentations.
                 let cans: Vec<(String, String, (f32, f32, f32))> = crate::augcan::VARIANTS
                     .iter()

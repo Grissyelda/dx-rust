@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### CPU pass and the debug menu (November 5, night)
+- Procedural textures (the animated water, fire and electricity pictures) are worked out on a background thread
+  instead of in the frame: the Classic water picture alone took up to a millisecond each step.
+- Skeletal characters: bones are written only when they move, people further away are posed less often (every 2nd
+  frame past 10 m, 3rd past 30 m, 4th past 60 m), and coat cloth no longer works out its bone order every frame.
+- NPCs only trace whether you can see them when they need to know (for those that wait to be seen before acting),
+  and the guns they hold are relit less often as they walk.
+- The Insert debug menu scrolls with the mouse wheel and shows a scroll bar; the wheel no longer changes your fly
+  speed or belt item while it is open.
+- The PgDn debug readout is drawn in the game's own font as part of the HUD, wrapped to the screen.
+
 ### Hazards and the quest rig (November 5, evening)
 - Pain zones work on every map, not only the training's pool, and switch off the way the original's do: the NSF
   HQ's halon gas stops when the switches are thrown, the airfield's steam vent when its valve is turned and the

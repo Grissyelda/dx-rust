@@ -143,6 +143,44 @@ enum Win {
     Msg,
     /// The FPS counter (fps.rs), top right.
     Fps,
+    /// Debug Mode's corner readout (main.rs overlay_update), top left.
+    Debug,
+}
+
+/// The Debug Mode readout's text (None = hidden).
+static DEBUG_TEXT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_debug_text(t: Option<String>) {
+    if let Ok(mut g) = DEBUG_TEXT.lock() {
+        if *g != t {
+            *g = t;
+        }
+    }
+}
+
+/// The readout's lines, each long one broken at its " | " separators to fit `width` units.
+fn debug_lines(f: &crate::uicanvas::UiFont, text: &str, width: i32) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if f.width(line) <= width {
+            out.push(line.to_string());
+            continue;
+        }
+        let mut cur = String::new();
+        for part in line.split(" | ") {
+            let next = if cur.is_empty() { part.to_string() } else { format!("{cur} | {part}") };
+            if !cur.is_empty() && f.width(&next) > width {
+                out.push(std::mem::take(&mut cur));
+                cur = part.to_string();
+            } else {
+                cur = next;
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
 }
 
 /// HUDMissionStartTextDisplay state: the message, characters shown so far, seconds left once it's all out.
@@ -171,7 +209,7 @@ pub fn quote_text(lines: &[String], secs: f32) {
 }
 
 impl Win {
-    const ALL: [Win; 19] = [
+    const ALL: [Win; 20] = [
         Win::Hit,
         Win::Compass,
         Win::Ammo,
@@ -191,6 +229,7 @@ impl Win {
         Win::Info,
         Win::Msg,
         Win::Fps,
+        Win::Debug,
     ];
     /// Fixed window sizes in UI units (InitWindow SetSize / ParentRequestedPreferredSize); the log is sized
     /// by the layout.
@@ -210,7 +249,8 @@ impl Win {
             | Win::Start
             | Win::Info
             | Win::Msg
-            | Win::Fps => (0, 0),
+            | Win::Fps
+            | Win::Debug => (0, 0),
             Win::ConCursor | Win::InfoLinkFace => (64, 64),
             Win::InfoLink => crate::conui::INFOLINK_SIZE,
             // DamageHUDDisplay: arrowiconWidth + iconMargin, (iconHeight + iconMargin) x 7 + arrowiconHeight.
@@ -538,7 +578,7 @@ pub fn spawn_classic_hud(
             Pickable::IGNORE,
             GlobalZIndex(-2),
             // The windows share a GlobalZIndex, so ZIndex decides: the InfoLink's portrait lies over the InfoLink.
-            ZIndex(if w == Win::InfoLinkFace || w == Win::Fps { 1 } else { 0 }),
+            ZIndex(if matches!(w, Win::InfoLinkFace | Win::Fps | Win::Debug) { 1 } else { 0 }),
             HudWindow(w),
         ));
     }
@@ -895,6 +935,18 @@ pub fn classic_hud_system(
         (Some(t), Some(f)) => (f.width(t) + 2, f.height + 2),
         _ => (1, 1),
     };
+    let debug_text = DEBUG_TEXT.lock().ok().and_then(|g| g.clone());
+    let debug_lines: Vec<String> = match (&debug_text, &msg_font) {
+        (Some(t), Some(f)) => debug_lines(f, t, sw - 16),
+        _ => Vec::new(),
+    };
+    let (debug_w, debug_h) = match &msg_font {
+        Some(f) if !debug_lines.is_empty() => (
+            debug_lines.iter().map(|l| f.width(l)).max().unwrap_or(1) + 2,
+            debug_lines.len() as i32 * f.height + 2,
+        ),
+        _ => (1, 1),
+    };
     let (msg_w, msg_h) = match (&stay_msg, &msg_font) {
         (Some(t), Some(f)) => (f.width(t) + 2, f.height + 2),
         _ => (1, 1),
@@ -1004,6 +1056,7 @@ pub fn classic_hud_system(
                 )
             }
             Win::Fps => (sw - fps_w - 4, 2, fps_w.max(1), fps_h.max(1), fps_text.is_some()),
+            Win::Debug => (4, 4, debug_w.max(1), debug_h.max(1), !debug_lines.is_empty()),
             Win::Msg => (
                 sw / 2 - msg_w / 2,
                 sh - Win::Belt.size().1 - msg_h - 20,
@@ -1090,6 +1143,7 @@ pub fn classic_hud_system(
             Win::Info => "hud::Info",
             Win::Msg => "hud::Msg",
             Win::Fps => "hud::Fps",
+            Win::Debug => "hud::Debug",
         });
         // Windows that only change with what they show are redrawn only when that changes.
         let key: Option<u64> = match w {
@@ -1127,6 +1181,7 @@ pub fn classic_hud_system(
             Win::Info => Some(hkey(&(info.as_ref().map(|i| i.0), ww, wh, s))),
             Win::Msg => Some(hkey(&(&stay_msg, ww, wh, s))),
             Win::Fps => Some(hkey(&(&fps_text, ww, wh, s))),
+            Win::Debug => Some(hkey(&(&debug_lines, ww, wh, s))),
             Win::ConCursor => Some(hkey(&(ww, wh, s))),
             // The ammo display changes with the gun, its rounds, the pool and the lock line.
             Win::Ammo => {
@@ -1266,6 +1321,15 @@ pub fn classic_hud_system(
                     if let (Some(f), Some(t)) = (&msg_font, &fps_text) {
                         canvas.text(f, 1, 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], t);
                         canvas.text(f, 0, 0, ww, f.height, HAlign::Left, VAlign::Top, [255, 242, 140], t);
+                    }
+                }
+                Win::Debug => {
+                    if let Some(f) = &msg_font {
+                        for (i, l) in debug_lines.iter().enumerate() {
+                            let y = i as i32 * f.height;
+                            canvas.text(f, 1, y + 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
+                            canvas.text(f, 0, y, ww, f.height, HAlign::Left, VAlign::Top, [220, 255, 220], l);
+                        }
                     }
                 }
                 Win::Msg => {

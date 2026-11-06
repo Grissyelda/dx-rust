@@ -940,9 +940,9 @@ fn write_bones(s: &SkelBody, tfs: &mut Query<&mut Transform, Without<SkelBody>>)
     for (i, n) in s.nodes.iter().enumerate() {
         if let Ok(mut t) = tfs.get_mut(*n) {
             let p = s.pose[i];
-            t.translation = p.t;
-            t.rotation = p.r;
-            t.scale = p.s;
+            // Only a bone that moved is written (a write re-propagates its subtree and re-extracts its joint).
+            let want = Transform { translation: p.t, rotation: p.r, scale: p.s };
+            t.set_if_neq(want);
         }
     }
 }
@@ -1021,10 +1021,12 @@ pub fn pose_system(
         if !s.pose_now {
             return;
         }
-        // Far off (over ~30 m), a new pose every third frame.
+        // Farther off, fewer new poses (the original's keyframes are 10-15 a second): every frame within 10 m,
+        // every 2nd to 30 m, every 3rd to 60 m, every 4th beyond.
         s.skip_dt += dt;
-        let far = eye.is_some_and(|c| c.distance_squared(gt.translation()) > 30.0 * 30.0);
-        if far && s.shown_seq.is_some() && (tick.wrapping_add(e.index_u32())) % 3 != 0 {
+        let d2 = eye.map_or(0.0, |c| c.distance_squared(gt.translation()));
+        let every = if d2 < 10.0 * 10.0 { 1 } else if d2 < 30.0 * 30.0 { 2 } else if d2 < 60.0 * 60.0 { 3 } else { 4 };
+        if every > 1 && s.shown_seq.is_some() && (tick.wrapping_add(e.index_u32())) % every != 0 {
             return;
         }
         let dt = std::mem::take(&mut s.skip_dt);
@@ -1674,9 +1676,8 @@ pub fn write_bones_pub<F: bevy::ecs::query::QueryFilter>(s: &SkelBody, tfs: &mut
     for (i, n) in s.nodes.iter().enumerate() {
         if let Ok(mut t) = tfs.get_mut(*n) {
             let p = s.pose[i];
-            t.translation = p.t;
-            t.rotation = p.r;
-            t.scale = if hide.iter().any(|h| s.rig.names[i].starts_with(h)) { Vec3::splat(1e-4) } else { p.s };
+            let scale = if hide.iter().any(|h| s.rig.names[i].starts_with(h)) { Vec3::splat(1e-4) } else { p.s };
+            t.set_if_neq(Transform { translation: p.t, rotation: p.r, scale });
         }
     }
 }
@@ -2127,6 +2128,39 @@ fn coat_bones(rig: &Rig) -> &'static [(usize, f32)] {
     &both[std::ptr::eq(rig, &rigs()[1]) as usize]
 }
 
+/// Each coat bone's depth down the coat (0 at the collar: the hem is looser and trails more than the yoke, so the
+/// coat bends along its length instead of swinging as stiff panels) and the order to settle them in - collar first,
+/// hem last: a bone's parent is settled before the bone hangs from it (a child moved from a parent not yet swung
+/// this frame snapped back the next: the coat jerked). Per rig, worked out once.
+fn coat_order(rig: &Rig) -> &'static (Vec<f32>, Vec<usize>) {
+    static C: OnceLock<[(Vec<f32>, Vec<usize>); 2]> = OnceLock::new();
+    let both = C.get_or_init(|| {
+        [false, true].map(|fem| {
+            let rig = &rigs()[fem as usize];
+            let bones = coat_bones(rig);
+            let depth: Vec<f32> = bones
+                .iter()
+                .map(|&(i, _)| {
+                    let mut d = 0.0;
+                    let mut p = rig.parent[i];
+                    while let Some(q) = p {
+                        if !bones.iter().any(|b| b.0 == q) {
+                            break;
+                        }
+                        d += 1.0;
+                        p = rig.parent[q];
+                    }
+                    d
+                })
+                .collect();
+            let mut order: Vec<usize> = (0..bones.len()).collect();
+            order.sort_by(|a, b| depth[*a].total_cmp(&depth[*b]));
+            (depth, order)
+        })
+    });
+    &both[std::ptr::eq(rig, &rigs()[1]) as usize]
+}
+
 /// Cloth (enhancement "Coat Cloth"): each coat bone's tail is a point in world space on a damped spring toward
 /// where the animation puts it, so the coat trails the body's motion and settles back; held to the bone's length,
 /// pushed out of the legs, softly limited in how far it swings, with a light gust of wind; the bone turns to point at
@@ -2174,28 +2208,10 @@ fn cloth(s: &mut SkelBody, pawn: Mat4, dt: f32) {
     s.cloth_clock += dt;
     let clock = s.cloth_clock;
     let decay = (1.0 - DAMP * h).max(0.0);
-    // How far down the coat each bone hangs (0 at the collar): the hem is looser and trails more than the yoke, so
-    // the coat bends along its length instead of swinging as stiff panels.
-    let depth: Vec<f32> = bones
-        .iter()
-        .map(|&(i, _)| {
-            let mut d = 0.0;
-            let mut p = rig.parent[i];
-            while let Some(q) = p {
-                if !bones.iter().any(|b| b.0 == q) {
-                    break;
-                }
-                d += 1.0;
-                p = rig.parent[q];
-            }
-            d
-        })
-        .collect();
-    // Collar first, hem last: a bone's parent is settled before the bone hangs from it (a child moved from a parent
-    // not yet swung this frame and snapped back the next: the coat jerked).
-    let mut order: Vec<usize> = (0..bones.len()).collect();
-    order.sort_by(|a, b| depth[*a].total_cmp(&depth[*b]));
-    for k in order {
+    // How far down the coat each bone hangs (0 at the collar) and the order to settle them in (worked out once per
+    // rig: coat_order).
+    let (depth, order) = coat_order(rig);
+    for &k in order {
         let (i, len) = bones[k];
         let spring = K / (1.0 + depth[k] * 0.7) * h * h;
         let parent = rig.parent[i].map_or(Mat4::IDENTITY, |p| g[p]);

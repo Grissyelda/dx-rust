@@ -189,8 +189,6 @@ pub struct FlyCam {
     speed: f32,
 }
 
-#[derive(Component)]
-struct Overlay;
 
 /// The player body: Unreal-style walking/falling against the level BSP.
 #[derive(Resource)]
@@ -927,6 +925,7 @@ fn main() {
                 spawnmenu::spawn_menu_system
                     .before(cursor_grab)
                     .before(destruct::weapon_drop_system),
+                spawnmenu::spawn_menu_scroll_system.after(spawnmenu::spawn_menu_system),
             ),
         )
         .add_systems(Startup, sound::setup_sound)
@@ -957,7 +956,7 @@ fn main() {
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
         .add_plugins(PlatformPlugin)
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system))
+        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system, prof::transform_census_system))
         .init_resource::<consys::ConSetup>()
         .init_resource::<triggers::Triggers>()
         .init_resource::<logic::LogicActors>()
@@ -1989,21 +1988,7 @@ fn setup(
         RenderLayers::from_layers(&[0, mirror::LAYER, skyfollow::LAYER]),
     ));
 
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font_size: bevy::text::FontSize::Px(16.0),
-            ..default()
-        },
-        TextColor(Color::srgb(0.9, 1.0, 0.9)),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(8.0),
-            top: Val::Px(8.0),
-            ..default()
-        },
-        Overlay,
-    ));
+
     prof::load_mark("cameras");
     prof::load_report();
 }
@@ -2245,7 +2230,7 @@ fn fly(
             || gamepad::move_axes().is_some_and(|a| a.length() > 0.1),
         time.delta_secs(),
     );
-    if scroll.delta.y != 0.0 && player.noclip {
+    if scroll.delta.y != 0.0 && player.noclip && !crate::spawnmenu::open() {
         cam.speed = (cam.speed * (1.0 + 0.15 * scroll.delta.y.signum())).clamp(0.5, 200.0);
     }
     // Leaning rolls the view: ViewRotation.Roll = curLeanDist * 20 (Unreal units).
@@ -3061,7 +3046,6 @@ fn overlay_update(
     level: Res<LevelRes>,
     cam: Single<(&Transform, &FlyCam), Without<SkyCam>>,
     player: Res<Player>,
-    mut text: Single<(&mut Text, &mut Visibility), With<Overlay>>,
     mut show: Local<Option<bool>>,
     mut refresh: Local<f32>,
 ) {
@@ -3073,9 +3057,10 @@ fn overlay_update(
     // The corner readout is a Debug Mode feature (Settings > Enhancements).
     let debug = crate::settings::debug_mode() || env_on!("DXVIEW_SHOT");
     let shown = *on && debug && !inventory_screen::screen_open() && !consys::third_person() && !cinematic::active();
-    text.1.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
-    // Hidden: nothing to lay out. Shown: the readout refreshes 5 times a second (text shaping isn't free).
+    // Drawn by classic_hud.rs in the game's own bitmap font (Win::Debug), refreshed 5 times a second.
     if !shown {
+        crate::classic_hud::set_debug_text(None);
+        *refresh = 0.0;
         return;
     }
     *refresh -= time.delta_secs();
@@ -3101,7 +3086,7 @@ fn overlay_update(
             b.velocity.truncate().length()
         )
     };
-    text.0 .0 = format!(
+    crate::classic_hud::set_debug_text(Some(format!(
         "{}\n{:.0} fps\npos {:.1} {:.1} {:.1} m\n{} tris, {} textures ({} missing)\n{}\nClick = capture mouse | Esc release | Right-click use | Q/E lean | C crouch | PgUp debug unlock{} | Ins spawn | Home keys | PgDn hide",
         level.0.name,
         1.0 / time.delta_secs().max(1e-4),
@@ -3109,7 +3094,7 @@ fn overlay_update(
         s.triangles, s.textures, s.missing_textures,
         mode,
         if player.unlock_all { " ON" } else { "" }
-    );
+    )));
 }
 
 /// Scroll auto-panning surfaces and ripple the water (the original animates water procedurally).

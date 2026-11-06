@@ -1238,3 +1238,73 @@ pub fn census_system(world: &mut bevy::prelude::World, mut frame: bevy::prelude:
 #[allow(clippy::type_complexity)]
 static MODIFIED: Mutex<(Vec<bevy::asset::AssetId<bevy::prelude::Mesh>>, Vec<bevy::asset::AssetId<bevy::prelude::StandardMaterial>>)> =
     Mutex::new((Vec::new(), Vec::new()));
+
+/// With DXVIEW_PROF: which kinds of entity have their GlobalTransform changed each frame (what Bevy's transform
+/// propagation, visibility and render extraction redo), grouped by archetype and named by its dxview components.
+#[allow(clippy::too_many_arguments)]
+pub fn transform_census_system(
+    moved: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::GlobalTransform>>,
+    vis: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::ViewVisibility>>,
+    mats: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::MeshMaterial3d<bevy::prelude::StandardMaterial>>>,
+    entities: &bevy::ecs::entity::Entities,
+    archetypes: &bevy::ecs::archetype::Archetypes,
+    components: &bevy::ecs::component::Components,
+    mut acc: bevy::prelude::Local<HashMap<(u8, bevy::ecs::archetype::ArchetypeId), u64>>,
+    mut frames: bevy::prelude::Local<u32>,
+) {
+    if !ON.load(Ordering::Relaxed) {
+        return;
+    }
+    for (kind, it) in [(0u8, moved.iter().collect::<Vec<_>>()), (1, vis.iter().collect()), (2, mats.iter().collect())] {
+        for e in it {
+            if let Ok(Some(loc)) = entities.get(e) {
+                *acc.entry((kind, loc.archetype_id)).or_insert(0) += 1;
+            }
+        }
+    }
+    *frames += 1;
+    // After the first 60 frames, then every 300.
+    if *frames != 60 && *frames % 300 != 0 {
+        return;
+    }
+    let n = if *frames == 60 { 60.0 } else if *frames == 300 { 240.0 } else { 300.0 };
+    let mut v: Vec<_> = acc.drain().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut tot = [0u64; 3];
+    for ((k, _), c) in &v {
+        tot[*k as usize] += c;
+    }
+    println!(
+        "PROF changed per frame: {:.0} GlobalTransforms, {:.0} ViewVisibility, {:.0} StandardMaterial handles",
+        tot[0] as f64 / n,
+        tot[1] as f64 / n,
+        tot[2] as f64 / n
+    );
+    for ((k, a), c) in v.iter().take(30) {
+        let Some(arch) = archetypes.get(*a) else { continue };
+        let mut names: Vec<String> = arch
+            .components()
+            .iter()
+            .filter_map(|id| components.get_info(*id))
+            .map(|i| i.name().to_string())
+            .map(|s| {
+                // Short names: the last path segment (inside a generic: its argument's).
+                let base = s.split('<').next().unwrap_or(&s).rsplit("::").next().unwrap_or("").to_string();
+                match s.split_once('<') {
+                    Some((_, arg)) => format!("{base}<{}>", arg.trim_end_matches('>').rsplit("::").next().unwrap_or("")),
+                    None => base,
+                }
+            })
+            .filter(|s| {
+                !matches!(
+                    s.as_str(),
+                    "Transform" | "GlobalTransform" | "TransformTreeChanged" | "InheritedVisibility" | "ViewVisibility" | "Visibility" | "ChildOf" | "Children"
+                )
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        let kind = ["xform", "vis", "mat"][*k as usize];
+        println!("PROF changed {kind} {:7.1}/frame  [{}] ({} comps)", *c as f64 / n, names.join(","), arch.component_count());
+    }
+}

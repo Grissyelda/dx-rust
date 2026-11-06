@@ -3458,7 +3458,11 @@ pub fn npc_system(
         // LastRenderTime: on screen = inside the view (a cone a little wider than the 90 degree view, so the
         // corners count) and some part of the cylinder not hidden by the world from the camera.
         npc.render_check -= dt;
-        if npc.render_check <= 0.0 {
+        // Only when something asks (bTickVisibleOnly beyond 600 units - kept up from 450 so it is fresh there - and
+        // the IAMWARREN field): no traces for pawns nothing would ask about.
+        let dist_player = (me.center - player_center).length();
+        let wanted = (npc.tick_visible && dist_player > 450.0) || crate::eggs::warren_on();
+        if npc.render_check <= 0.0 && wanted {
             // About every 0.2 s, each pawn on a slightly different period so they don't all trace on one frame.
             npc.render_check = 0.18 + 0.04 * ((npc.blocker as f32 * 0.618_034).fract());
             let eye = _player_eye;
@@ -3477,7 +3481,6 @@ pub fn npc_system(
                 npc.last_rendered = now;
             }
         }
-        let dist_player = (me.center - player_center).length();
         let check_other = !(npc.tick_visible && dist_player > 600.0 && now - npc.last_rendered >= 5.0);
         let check_player = !(npc.tick_visible && dist_player > 2500.0);
         let world = World {
@@ -6819,7 +6822,8 @@ pub fn npc_weapon_models(
             }
             hm.lit_at = Some((at, dyn_near));
             crate::dynlight::with_lights_at(&level.0, at, 24.0, |lit_by| {
-                let sig = crate::dynlight::light_sig(lit_by, at, 0);
+                // (The place by 16 units: a held gun relit for every 8 units walked looks no different.)
+                let sig = crate::dynlight::light_sig(lit_by, at.map(|v| (v / 16.0).round() * 16.0), 0);
                 if hm.lit_sig == Some(sig) {
                     return;
                 }

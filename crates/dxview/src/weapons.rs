@@ -1748,6 +1748,7 @@ pub fn select_system(
     let mut injected = injected;
     if injected.is_none()
         && wheel.delta.y != 0.0
+        && !crate::spawnmenu::open()
         && !crate::inventory_screen::screen_open()
         && !crate::consys::third_person()
     {
@@ -3594,10 +3595,14 @@ pub struct FireUse {
     unseen: Vec<f32>,
     /// This frame: on screen / being simulated (buffers kept between frames).
     seen: Vec<bool>,
-    active: Vec<bool>,
+    /// Textures whose new picture arrived this frame.
+    touched: Vec<bool>,
     /// The fire textures' images, to match materials against (rebuilt when the list changes).
     index: std::collections::HashMap<AssetId<Image>, usize>,
 }
+
+/// A batch of fire textures stepped off the main thread: (slot, its image, the texture, its new picture).
+type FireBatch = Vec<(usize, AssetId<Image>, dx_level::firetex::FireTex, Vec<u8>)>;
 
 fn fire_of(index: &std::collections::HashMap<AssetId<Image>, usize>, m: &StandardMaterial) -> Option<usize> {
     [&m.base_color_texture, &m.emissive_texture].into_iter().flatten().find_map(|h| index.get(&h.id()).copied())
@@ -3611,6 +3616,7 @@ pub fn fire_texture_system(
     mut images: ResMut<Assets<Image>>,
     mut bufs: Local<Vec<Vec<u8>>>,
     mut used: Local<FireUse>,
+    mut pending: Local<Option<bevy::tasks::Task<FireBatch>>>,
     (std_mats, bsp_mats, anim_mats): (
         Res<Assets<StandardMaterial>>,
         Res<Assets<crate::shadowlight::BspMaterial>>,
@@ -3689,54 +3695,69 @@ pub fn fire_texture_system(
     if (time.elapsed_secs() * 0.5).fract() < dt * 0.5 {
         u.std.retain(|_, v| v.is_some());
     }
+    // The simulations run on the async pool, off the main thread (the harbour's 256 x 256 water sim takes about a
+    // millisecond a step): a batch started now is picked up on a later frame. While a texture is out with its
+    // batch, its slot holds a 1 x 1 stand-in; results for a texture that has gone (a new map) are dropped.
+    if let Some(task) = pending.as_mut() {
+        if let Some(done) = bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(task)) {
+            *pending = None;
+            bufs.resize_with(n, Vec::new);
+            for (i, id, tex, mut out) in done {
+                let Some(slot) = assets.fire.get_mut(i).filter(|(_, h)| h.id() == id) else { continue };
+                slot.0 = tex;
+                if let Some(mut img) = images.get_mut(id) {
+                    match img.data.as_mut() {
+                        Some(d) if d.len() == out.len() => std::mem::swap(d, &mut out),
+                        _ => img.data = Some(std::mem::take(&mut out)),
+                    }
+                }
+                bufs[i] = out;
+                if let Some(t) = u.touched.get_mut(i) {
+                    *t = true;
+                }
+            }
+            // The water material isn't bindless: its bind group holds the texture view it was made with, and every
+            // upload of a simulated picture comes back as a new texture - so a water material showing one is
+            // prepared again with each step (the Classic water stood still on its first frame).
+            let touched = &u.touched;
+            let ids: Vec<AssetId<crate::water::WaterMaterial>> =
+                u.water.iter().filter(|(_, k)| k.is_some_and(|k| touched.get(k).copied().unwrap_or(false))).map(|(id, _)| *id).collect();
+            for id in ids {
+                let _ = water_mats.get_mut(id);
+            }
+            u.touched.iter_mut().for_each(|t| *t = false);
+        }
+    }
     *acc += dt;
-    if *acc < RATE {
+    if *acc < RATE || pending.is_some() {
+        // (A batch still out: the time keeps adding up for the next, up to four steps.)
+        *acc = acc.min(RATE * 4.0);
         return;
     }
     let steps = ((*acc / RATE) as u32).min(4);
     *acc -= steps as f32 * RATE;
-    u.active.clear();
-    u.active.extend(u.unseen.iter().map(|t| *t < 0.5));
-    let active = &u.active;
-    // The textures simulate independently, so they step on all cores; each frame's pixels go into a buffer that
-    // is then swapped with the image's own (no allocation or copy per texture per step).
     bufs.resize_with(n, Vec::new);
-    let pool = bevy::tasks::ComputeTaskPool::get();
-    let chunk = n.div_ceil(pool.thread_num().max(1)).max(1);
-    pool.scope(|sc| {
-        for ((fires, outs), act) in assets.fire.chunks_mut(chunk).zip(bufs.chunks_mut(chunk)).zip(active.chunks(chunk)) {
-            sc.spawn(async move {
-                for (((f, _), out), &on) in fires.iter_mut().zip(outs.iter_mut()).zip(act) {
-                    if !on {
-                        continue;
-                    }
-                    for _ in 0..steps {
-                        f.step();
-                    }
-                    f.rgba(out);
-                }
-            });
-        }
-    });
-    for (((_, h), out), &on) in assets.fire.iter().zip(bufs.iter_mut()).zip(active.iter()) {
-        if !on {
+    u.touched.resize(n, false);
+    let mut batch = Vec::new();
+    for (i, ((slot, h), out)) in assets.fire.iter_mut().zip(bufs.iter_mut()).enumerate() {
+        if u.unseen.get(i).is_none_or(|t| *t >= 0.5) || slot.width <= 1 && slot.height <= 1 {
             continue;
         }
-        if let Some(mut img) = images.get_mut(h) {
-            match img.data.as_mut() {
-                Some(d) if d.len() == out.len() => std::mem::swap(d, out),
-                _ => img.data = Some(out.clone()),
+        let tex = std::mem::replace(slot, dx_level::firetex::FireTex::new(1, 1, &[], [[0; 4]; 256], 255, false, 1));
+        batch.push((i, h.id(), tex, std::mem::take(out)));
+    }
+    if batch.is_empty() {
+        return;
+    }
+    *pending = Some(bevy::tasks::AsyncComputeTaskPool::get().spawn(async move {
+        for (_, _, tex, out) in batch.iter_mut() {
+            for _ in 0..steps {
+                tex.step();
             }
+            tex.rgba(out);
         }
-    }
-    // The water material isn't bindless: its bind group holds the texture view it was made with, and every upload
-    // of a simulated picture comes back as a new texture - so a water material showing one is prepared again with
-    // each step (the Classic water stood still on its first frame). One small bind group 40 times a second.
-    let touch: Vec<AssetId<crate::water::WaterMaterial>> =
-        u.water.iter().filter(|(_, k)| k.is_some_and(|k| u.active.get(k).copied().unwrap_or(false))).map(|(id, _)| *id).collect();
-    for id in touch {
-        let _ = water_mats.get_mut(id);
-    }
+        batch
+    }));
 }
 
 /// Marks the extra copy of a weapon's flash slot drawn with the muzzle-flash texture.
