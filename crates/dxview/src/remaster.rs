@@ -61,7 +61,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("RoomReverb", 1.0),
     ("SoundOcclusion", 1.0),
     ("Soundscape", 1.0),
-    ("RestrictedCombatMusic", 1.0),
+    ("RestrictedCombatMusic", 0.0),
     // Gameplay and AI.
     ("BodyAlarms", 1.0),
     ("SmarterAI", 1.0),
@@ -106,7 +106,7 @@ pub const PRESET: &[(&str, f32)] = &[
     // Visual mods (only with the mod installed; applied at map load).
     ("HDTextures", 1.0),
     ("HDModels", 1.0),
-    ("HDCharacters", 1.0),
+    ("HDCharacters", 0.0),
     ("DdsCharacters", 1.0),
     ("DdsItems", 1.0),
     ("DdsWorld", 0.0),

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Modern defaults and the Steam Deck HUD (November 5, night)
+- The Modern look's default mix (the one you get before you've picked your own) no longer turns on HDTP's people
+  or the two-attacker rule for combat music.
+- On a Steam Deck the HUD, menus, inventory and computers start at Large HUD Scale (Settings > Display), so they
+  read at arm's length. A setting you've already chosen is kept.
+
 ### CPU pass and the debug menu (November 5, night)
 - Procedural textures (the animated water, fire and electricity pictures) are worked out on a background thread
   instead of in the frame: the Classic water picture alone took up to a millisecond each step.

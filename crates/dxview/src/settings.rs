@@ -251,7 +251,7 @@ fn ensure() {
     if VALUES.read().map(|v| v.is_some()).unwrap_or(false) {
         return;
     }
-    let mut m: BTreeMap<String, f32> = DEFAULTS.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+    let mut m: BTreeMap<String, f32> = DEFAULTS.iter().map(|(k, _)| (k.to_string(), default_of(k))).collect();
     if let Ok(t) = std::fs::read_to_string(path()) {
         for line in t.lines() {
             if let Some((k, v)) = line.split_once('=') {
@@ -279,6 +279,7 @@ pub fn get(key: &str) -> f32 {
             }
             s.1.as_ref().and_then(|m| m.get(key).copied())
         })
+        .or_else(|| platform_default(key))
         .or_else(|| DEFAULTS.iter().find(|d| d.0 == key).map(|d| d.1))
         .unwrap_or(0.0)
 }
@@ -290,7 +291,32 @@ pub fn has(key: &str) -> bool {
 }
 
 pub fn default_of(key: &str) -> f32 {
-    DEFAULTS.iter().find(|d| d.0 == key).map(|d| d.1).unwrap_or(0.0)
+    platform_default(key).or_else(|| DEFAULTS.iter().find(|d| d.0 == key).map(|d| d.1)).unwrap_or(0.0)
+}
+
+/// Defaults that depend on the machine: on a Steam Deck the HUD starts Large (its 800p screen is small at arm's
+/// length).
+fn platform_default(key: &str) -> Option<f32> {
+    (key == "HUDScale" && steam_deck()).then_some(2.0)
+}
+
+/// Running on a Steam Deck: SteamOS sets SteamDeck=1 for games; otherwise the board is Valve's Jupiter (LCD) or
+/// Galileo (OLED). DXVIEW_STEAMDECK=1 / 0 forces it.
+pub fn steam_deck() -> bool {
+    static DECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DECK.get_or_init(|| {
+        if let Ok(v) = std::env::var("DXVIEW_STEAMDECK") {
+            return v == "1";
+        }
+        if std::env::var("SteamDeck").is_ok_and(|v| v == "1") {
+            return true;
+        }
+        if !cfg!(target_os = "linux") {
+            return false;
+        }
+        let read = |f: &str| std::fs::read_to_string(format!("/sys/devices/virtual/dmi/id/{f}")).unwrap_or_default();
+        read("board_vendor").trim() == "Valve" && matches!(read("product_name").trim(), "Jupiter" | "Galileo")
+    })
 }
 
 pub fn set(key: &str, v: f32) {
