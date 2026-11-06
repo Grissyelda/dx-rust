@@ -434,7 +434,7 @@ pub fn shadow_light_system(
                 .lights
                 .iter()
                 .enumerate()
-                .filter(|(_, l)| l.radius > 160.0)
+                .filter(|(_, l)| l.radius > 160.0 && !l.emitter)
                 .filter_map(|(i, l)| {
                     let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);
                     if lp.distance(me).min(lp.distance(eye)) > 3500.0 + l.radius as f64 || inside(lp) {

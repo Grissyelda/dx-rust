@@ -211,6 +211,75 @@ pub fn water_at(level: &Level, p: DVec3) -> Option<f64> {
         .map(|f| f as f64)
 }
 
+/// Enhancement Smooth Animation (setting SmoothAnimation, ours): longer, eased blends between sequences for the
+/// vertex-animated meshes (SMOOTH_TWEEN instead of PlayAnim's 0.1 s TweenTime) and the rebuilt bodies (skeletal
+/// fade_len), going back to the idle loop blended too, the view model easing into a new sequence a little longer,
+/// and pawns and JC's third-person body turning eased (`smooth_turn_system`, mirror.rs). Gameplay timing stays the
+/// original's: a sequence's own clock still waits only the original 0.1 s, so shots and blows land on the same
+/// frames, and a sequence restarted (the next shot) keeps the short tween.
+pub fn smooth_on() -> bool {
+    setting!("SmoothAnimation") > 0.5
+}
+
+/// Smooth Animation: seconds a vertex mesh blends into a new sequence (the original's TweenTime is 0.1).
+pub const SMOOTH_TWEEN: f32 = 0.25;
+/// The original's tween: a new sequence's own clock waits this long (gameplay timing is kept).
+const TWEEN_TIME: f32 = 0.1;
+
+/// The plugin for Smooth Animation's turning (added by main.rs).
+pub struct SmoothTurnPlugin;
+
+impl Plugin for SmoothTurnPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(PostUpdate, smooth_turn_system.before(bevy::transform::TransformSystems::Propagate));
+    }
+}
+
+/// Smooth Animation: a pawn's drawn facing eases toward the one the AI gives it (critically damped, ~85 ms) instead
+/// of following each step of its turn - and snapping when it's set at once (a new enemy, a conversation). The AI's
+/// own yaw (sight cone, aim) is untouched; only the drawn transform lags. ai.rs place_pawn writes the true facing
+/// each frame it ticks a pawn; a frame it doesn't, the last one it wrote is still the target.
+#[allow(clippy::type_complexity)]
+pub fn smooth_turn_system(
+    time: Res<Time>,
+    mut q: Query<(Entity, &mut Transform, Option<&crate::skeletal::SkelBody>), With<crate::ai::Npc>>,
+    mut state: Local<HashMap<Entity, (Quat, Quat)>>,
+    mut map_gen: Local<u64>,
+) {
+    if crate::loader::new_map(&mut map_gen) {
+        state.clear();
+    }
+    if !smooth_on() {
+        state.clear();
+        return;
+    }
+    let dt = time.delta_secs().min(0.1);
+    let k = 1.0 - (-dt / 0.085).exp();
+    for (e, mut tf, skel) in &mut q {
+        // (A ragdoll's bones are placed in the world from the body's transform: leave it alone.)
+        if skel.is_some_and(|s| s.ragdoll) {
+            state.remove(&e);
+            continue;
+        }
+        let now = tf.rotation;
+        let (shown, target) = match state.get(&e) {
+            // Unchanged since we drew it: the AI didn't write it this frame, the target stands.
+            Some(&(shown, target)) if now == shown => (shown, target),
+            Some(&(shown, _)) => (shown, now),
+            None => (now, now),
+        };
+        // (A half turn or more at once is a teleport / respawn: no swing.)
+        let next = if shown.angle_between(target) > 2.6 { target } else { shown.slerp(target, k) };
+        if next != now {
+            tf.rotation = next;
+        }
+        state.insert(e, (next, target));
+    }
+    if state.len() > q.iter().len() + 64 {
+        state.retain(|e, _| q.contains(*e));
+    }
+}
+
 /// Vertex-animated actor (looping its current sequence).
 #[derive(Component)]
 pub struct Animated {
@@ -1077,27 +1146,38 @@ pub fn animate(
         let Some(anim) = &ma.anim else { continue };
         // A new sequence (or the same one restarted) blends in from the pose on screen over 0.1 s, as PlayAnim's
         // TweenTime does, instead of snapping; its own clock waits for the blend.
+        let smooth = smooth_on();
         let clip_key = a.clip.as_ref().map(|c| (c.start, c.t));
         if let (Some((start, t)), Some(prev)) = (clip_key, a.shown) {
             let changed = start != prev.0 || t + 1e-4 < a.shown_t;
             if changed && t <= dt + 1e-4 {
-                a.tween = Some((prev, 0.0, 0.1));
+                // Smooth Animation: a different sequence blends in longer; the same one restarted (the next shot)
+                // keeps the short tween.
+                let len = if smooth && start != prev.0 { SMOOTH_TWEEN } else { TWEEN_TIME };
+                a.tween = Some((prev, 0.0, len));
+            }
+        } else if let (None, Some(prev), true, None) = (clip_key, a.shown, smooth, a.tween) {
+            // Smooth Animation: back to the idle loop (the clip ended or was dropped) blends too.
+            if prev.0 != anim.seq_start {
+                a.tween = Some((prev, 0.0, SMOOTH_TWEEN));
             }
         }
-        let tweening = if let Some(tw) = a.tween.as_mut() {
+        // Seconds into the tween (None: not tweening).
+        let tween_t = if let Some(tw) = a.tween.as_mut() {
             tw.1 += dt;
             if tw.1 >= tw.2 {
                 a.tween = None;
-                false
+                None
             } else {
-                true
+                Some(tw.1)
             }
         } else {
-            false
+            None
         };
-        // Either an override clip (played from its own clock) or the idle loop.
+        // Either an override clip (played from its own clock) or the idle loop. The clock waits the original
+        // TweenTime only, however long the blend (Smooth Animation): shots and blows keep their frames' timing.
         if let Some(c) = a.clip.as_mut() {
-            if tweening {
+            if tween_t.is_some_and(|t| t < TWEEN_TIME) {
                 c.t = 0.0;
             } else {
                 c.t += dt;
@@ -1117,9 +1197,11 @@ pub fn animate(
         a.face_shown = face;
         n_up += 1;
         let still = seq_start(&anim.mesh, "Still").map_or(0, |s| s.0);
-        let blend = a
-            .tween
-            .map(|(from, e, len)| (from, (e / len).clamp(0.0, 1.0)));
+        let blend = a.tween.map(|(from, e, len)| {
+            let x = (e / len).clamp(0.0, 1.0);
+            // (Smooth Animation eases in and out of the blend.)
+            (from, if smooth { x * x * (3.0 - 2.0 * x) } else { x })
+        });
         a.shown = Some(match blend {
             // Mid-blend the "shown" pose is the target; a further change re-blends from there (close enough).
             Some(_) => (start, frames, f),

@@ -272,7 +272,7 @@ pub fn loader_system(world: &mut World) {
         // map and the cached mesh images / materials, built with the old ones.
         {
             static LAST: Mutex<String> = Mutex::new(String::new());
-            let key = ["HDTextures", "HDModels", "HDCharacters", "DdsCharacters", "DdsItems", "DdsWorld"].map(|k| crate::settings::get(k).to_string()).join(",");
+            let key = ["HDTextures", "HDModels", "HDCharacters", "DdsCharacters", "DdsItems", "DdsWorld", "EmissiveSurfaces"].map(|k| crate::settings::get(k).to_string()).join(",");
             let mut last = LAST.lock().unwrap();
             if !last.is_empty() && *last != key {
                 if let Ok(mut p) = PREFETCH.lock() {

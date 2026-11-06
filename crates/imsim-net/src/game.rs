@@ -35,6 +35,15 @@ use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 pub const NOISE: &str = "Noise_NK_25519_ChaChaPoly_BLAKE2s";
+/// Direct codes (no lobby): the host sends its key in the handshake and the joiner checks it against the
+/// fingerprint the code carries.
+pub const NOISE_NX: &str = "Noise_NX_25519_ChaChaPoly_BLAKE2s";
+/// The host's default game port (direct codes store the port as an offset from it).
+pub const GAME_PORT: u16 = crate::DEFAULT_PORT + 10;
+/// Direct codes' first handshake message (NX), and LAN discovery.
+pub const K_HS_INIT_NX: u8 = 0x06;
+pub const K_FIND: u8 = 0x07;
+pub const K_HERE: u8 = 0x08;
 /// Largest UDP payload sent (fits every path's MTU, relay header included).
 pub const MTU: usize = 1200;
 const RELAY_HDR: usize = 9;
@@ -73,6 +82,60 @@ pub fn keypair() -> ([u8; 32], [u8; 32]) {
     (a, b)
 }
 
+/// A key's fingerprint for direct codes: the first 4 bytes of its BLAKE2s hash.
+pub fn fingerprint(public: &[u8]) -> [u8; 4] {
+    use blake2::{Blake2s256, Digest};
+    let h = Blake2s256::digest(public);
+    [h[0], h[1], h[2], h[3]]
+}
+
+/// A direct code: the host's IPv4 address, its port (as an offset from GAME_PORT) and its key's fingerprint,
+/// 9 bytes in 15 code characters, written in three groups ("XXXXX-XXXXX-XXXXX").
+pub fn direct_code(ip: std::net::Ipv4Addr, port: u16, public: &[u8]) -> String {
+    let mut b = Vec::with_capacity(9);
+    b.extend_from_slice(&ip.octets());
+    b.push(port.saturating_sub(GAME_PORT).min(255) as u8);
+    b.extend_from_slice(&fingerprint(public));
+    let mut bits: u128 = 0;
+    for x in &b {
+        bits = (bits << 8) | *x as u128;
+    }
+    let mut out = String::new();
+    for i in (0..15).rev() {
+        out.push(crate::CODE_ALPHABET[((bits >> (i * 5)) & 31) as usize] as char);
+        if i % 5 == 0 && i > 0 {
+            out.push('-');
+        }
+    }
+    out
+}
+
+/// A direct code read back: (host address, key fingerprint). Spaces, dashes and case don't matter.
+pub fn parse_direct(code: &str) -> Option<(std::net::SocketAddrV4, [u8; 4])> {
+    let chars: Vec<u8> = code.bytes().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect();
+    if chars.len() != 15 {
+        return None;
+    }
+    let mut bits: u128 = 0;
+    for c in chars {
+        let v = crate::CODE_ALPHABET.iter().position(|a| *a == c)? as u128;
+        bits = (bits << 5) | v;
+    }
+    // 75 bits carry 72: the top 3 are zero.
+    if bits >> 72 != 0 {
+        return None;
+    }
+    let b: Vec<u8> = (0..9).rev().map(|i| ((bits >> (i * 8)) & 0xff) as u8).collect();
+    let ip = std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+    let port = GAME_PORT + b[4] as u16;
+    Some((std::net::SocketAddrV4::new(ip, port), [b[5], b[6], b[7], b[8]]))
+}
+
+/// Whether text looks like a direct code (rather than a 4-character lobby code).
+pub fn is_direct_code(code: &str) -> bool {
+    parse_direct(code).is_some()
+}
+
 pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -94,6 +157,24 @@ pub fn lan_ip() -> Option<IpAddr> {
     s.connect("192.0.2.1:9").ok()?;
     let ip = s.local_addr().ok()?.ip();
     (!ip.is_unspecified() && !ip.is_loopback()).then_some(ip)
+}
+
+/// The public half of a private key (X25519 base point multiplication via a throwaway Noise handshake).
+fn public_of(private: &[u8; 32]) -> Option<[u8; 32]> {
+    // snow keeps the public key of a local static: an NX responder sends it in its second message, and the
+    // initiator reads it back - done in memory once at hosting.
+    let mut r = Builder::new(NOISE_NX.parse().ok()?).local_private_key(private).build_responder().ok()?;
+    let mut i = Builder::new(NOISE_NX.parse().ok()?).build_initiator().ok()?;
+    let mut a = vec![0u8; 256];
+    let mut b = vec![0u8; 256];
+    let n = i.write_message(&[], &mut a).ok()?;
+    r.read_message(&a[..n], &mut b).ok()?;
+    let n = r.write_message(&[], &mut a).ok()?;
+    i.read_message(&a[..n], &mut b).ok()?;
+    let k = i.get_remote_static()?;
+    let mut o = [0u8; 32];
+    o.copy_from_slice(k);
+    Some(o)
 }
 
 fn rand_u64() -> u64 {
@@ -519,6 +600,9 @@ struct Peer {
 
 struct Pending {
     hs: HandshakeState,
+    auth: HostAuth,
+    /// Direct codes: also look for the host on the LAN (broadcast FIND).
+    last_find: Option<Instant>,
     local_sid: u32,
     init: Vec<u8>,
     targets: Vec<SocketAddr>,
@@ -539,10 +623,20 @@ pub enum Event {
     PublicAddr(SocketAddr),
 }
 
-/// Where to find a host (from the lobby's PEER answer).
+/// How a joiner knows the real host.
+#[derive(Clone, Copy, Debug)]
+pub enum HostAuth {
+    /// The lobby gave us its whole public key (Noise NK).
+    Key([u8; 32]),
+    /// A direct code's 4-byte fingerprint of it (Noise NX: the host sends its key, we check it).
+    Fingerprint([u8; 4]),
+}
+
+/// Where to find a host (from the lobby's PEER answer, or a direct code).
 #[derive(Clone, Debug)]
 pub struct JoinInfo {
-    pub host_key: [u8; 32],
+    /// The host's key (from the lobby) or, for a direct code, its fingerprint.
+    pub host: HostAuth,
     /// Addresses to try directly (LAN, the one the lobby saw).
     pub targets: Vec<SocketAddr>,
     /// The lobby's UDP address (punching and the relay), if any.
@@ -556,6 +650,7 @@ pub struct Endpoint {
     sock: UdpSocket,
     is_host: bool,
     private: Option<[u8; 32]>,
+    public: Option<[u8; 32]>,
     peers: Vec<Peer>,
     pending: Option<Pending>,
     lobby: Option<SocketAddr>,
@@ -572,6 +667,22 @@ pub struct Endpoint {
     buf: Vec<u8>,
 }
 
+/// A joiner's first handshake message: (state, our session id, the packet).
+fn first_message(auth: HostAuth) -> Result<(HandshakeState, u32, Vec<u8>), String> {
+    let (hs, kind) = match auth {
+        HostAuth::Key(k) => (Builder::new(NOISE.parse().expect("noise params")).remote_public_key(&k).build_initiator(), K_HS_INIT),
+        HostAuth::Fingerprint(_) => (Builder::new(NOISE_NX.parse().expect("noise params")).build_initiator(), K_HS_INIT_NX),
+    };
+    let mut hs = hs.map_err(|e| e.to_string())?;
+    let mut msg = vec![0u8; 256];
+    let n = hs.write_message(&[], &mut msg).map_err(|e| e.to_string())?;
+    let local_sid = rand_u64() as u32 | 1;
+    let mut init = vec![kind];
+    init.extend_from_slice(&local_sid.to_le_bytes());
+    init.extend_from_slice(&msg[..n]);
+    Ok((hs, local_sid, init))
+}
+
 impl Endpoint {
     /// A host on `port` (0 = any; tries the next 20 when taken). `lobby`/`token`: register with the lobby's UDP.
     pub fn host(port: u16, private: [u8; 32], lobby: Option<SocketAddr>, token: Option<String>) -> std::io::Result<Endpoint> {
@@ -579,7 +690,11 @@ impl Endpoint {
         for p in 0..=20u16 {
             let try_port = if port == 0 { 0 } else { port + p };
             match UdpSocket::bind(("0.0.0.0", try_port)) {
-                Ok(s) => return Endpoint::new(s, true, Some(private), lobby, token),
+                Ok(s) => {
+                    let mut e = Endpoint::new(s, true, Some(private), lobby, token)?;
+                    e.public = public_of(&private);
+                    return Ok(e);
+                }
                 Err(e) => last = Some(e),
             }
             if port == 0 {
@@ -592,20 +707,13 @@ impl Endpoint {
     /// A joiner (any local port): starts the handshake at once.
     pub fn join(info: JoinInfo) -> std::io::Result<Endpoint> {
         let s = UdpSocket::bind(("0.0.0.0", 0))?;
+        let _ = s.set_broadcast(true);
         let mut e = Endpoint::new(s, false, None, info.lobby, None)?;
-        let params = NOISE.parse().expect("noise params");
-        let mut hs = Builder::new(params)
-            .remote_public_key(&info.host_key)
-            .build_initiator()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let mut msg = vec![0u8; 256];
-        let n = hs.write_message(&[], &mut msg).map_err(|e| std::io::Error::other(e.to_string()))?;
-        let local_sid = rand_u64() as u32 | 1;
-        let mut init = vec![K_HS_INIT];
-        init.extend_from_slice(&local_sid.to_le_bytes());
-        init.extend_from_slice(&msg[..n]);
+        let (hs, local_sid, init) = first_message(info.host).map_err(std::io::Error::other)?;
         e.pending = Some(Pending {
             hs,
+            auth: info.host,
+            last_find: None,
             local_sid,
             init,
             targets: info.targets,
@@ -625,6 +733,7 @@ impl Endpoint {
             sock,
             is_host,
             private,
+            public: None,
             peers: Vec::new(),
             pending: None,
             lobby,
@@ -645,6 +754,11 @@ impl Endpoint {
         self.lobby = Some(lobby);
         self.token = Some(token);
         self.last_reg = None;
+    }
+
+    /// Host: our key's fingerprint (direct codes).
+    pub fn public_fp(&self) -> Option<[u8; 4]> {
+        self.public.map(|p| fingerprint(&p))
     }
 
     pub fn local_port(&self) -> u16 {
@@ -790,7 +904,25 @@ impl Endpoint {
 
     fn incoming_on(&mut self, now: Instant, route: Route, pkt: &[u8]) {
         match pkt[0] {
-            K_HS_INIT if self.is_host && pkt.len() > 5 => self.handshake_init(now, route, pkt),
+            K_HS_INIT | K_HS_INIT_NX if self.is_host && pkt.len() > 5 => self.handshake_init(now, route, pkt),
+            K_FIND if self.is_host && pkt.len() == 5 => {
+                // A joiner with our direct code looking for us on the LAN.
+                if let Route::Direct(a) = route {
+                    if self.public_fp() == Some([pkt[1], pkt[2], pkt[3], pkt[4]]) {
+                        let mut v = vec![K_HERE];
+                        v.extend_from_slice(&pkt[1..5]);
+                        self.raw(a, &v);
+                    }
+                }
+            }
+            K_HERE if !self.is_host && pkt.len() == 5 => {
+                if let (Some(p), Route::Direct(a)) = (self.pending.as_mut(), route) {
+                    if matches!(p.auth, HostAuth::Fingerprint(f) if f == [pkt[1], pkt[2], pkt[3], pkt[4]]) && !p.targets.contains(&a) {
+                        p.targets.push(a);
+                        p.last_sent = None;
+                    }
+                }
+            }
             K_HS_RESP if !self.is_host && pkt.len() > 9 => self.handshake_resp(now, route, pkt),
             K_DATA if pkt.len() > DATA_HDR + TAG => {
                 let sid = u32::from_le_bytes(pkt[1..5].try_into().unwrap());
@@ -853,7 +985,7 @@ impl Endpoint {
             return;
         }
         let Some(private) = self.private else { return };
-        let params = NOISE.parse().expect("noise params");
+        let params = if pkt[0] == K_HS_INIT_NX { NOISE_NX } else { NOISE }.parse().expect("noise params");
         let Ok(mut hs) = Builder::new(params).local_private_key(&private).build_responder() else { return };
         let mut scratch = vec![0u8; 256];
         if hs.read_message(&pkt[5..], &mut scratch).is_err() {
@@ -902,6 +1034,20 @@ impl Endpoint {
         if p.hs.read_message(&pkt[9..], &mut scratch).is_err() {
             self.pending = Some(p);
             return;
+        }
+        // A direct code: the key the host sent must be the one the code names; else someone else answered.
+        if let HostAuth::Fingerprint(f) = p.auth {
+            let ok = p.hs.get_remote_static().is_some_and(|k| fingerprint(k) == f);
+            if !ok {
+                if let Ok((hs, sid, init)) = first_message(p.auth) {
+                    p.hs = hs;
+                    p.local_sid = sid;
+                    p.init = init;
+                    p.last_sent = None;
+                }
+                self.pending = Some(p);
+                return;
+            }
         }
         let Ok(crypt) = p.hs.into_stateless_transport_mode() else { return };
         self.peers.push(Peer {
@@ -958,6 +1104,16 @@ impl Endpoint {
                 }
                 if !p.relay && now.duration_since(p.started) >= RELAY_AFTER {
                     p.relay = true;
+                }
+            }
+            if let HostAuth::Fingerprint(f) = p.auth {
+                if p.last_find.is_none_or(|t| now.duration_since(t) >= Duration::from_millis(600)) {
+                    p.last_find = Some(now);
+                    let mut v = vec![K_FIND];
+                    v.extend_from_slice(&f);
+                    for port in GAME_PORT..GAME_PORT + 4 {
+                        self.raw(SocketAddr::from(([255, 255, 255, 255], port)), &v);
+                    }
                 }
             }
             if p.last_sent.is_none_or(|t| now.duration_since(t) >= Duration::from_millis(250)) {
@@ -1104,7 +1260,7 @@ mod tests {
         let mut host = Endpoint::host(0, private, None, None).unwrap();
         let port = host.local_port();
         let mut guest = Endpoint::join(JoinInfo {
-            host_key: public,
+            host: HostAuth::Key(public),
             targets: vec![SocketAddr::from(([127, 0, 0, 1], port))],
             lobby: None,
             ticket: 0,
@@ -1131,7 +1287,7 @@ mod tests {
         // A wrong key never connects.
         let (_, wrong) = keypair();
         let mut bad = Endpoint::join(JoinInfo {
-            host_key: wrong,
+            host: HostAuth::Key(wrong),
             targets: vec![SocketAddr::from(([127, 0, 0, 1], port))],
             lobby: None,
             ticket: 0,
@@ -1181,7 +1337,7 @@ mod tests {
             let j = g.join(&code).unwrap();
             assert_eq!(unhex32(&j.key), Some(public));
             let mut guest = Endpoint::join(JoinInfo {
-                host_key: unhex32(&j.key).unwrap(),
+                host: HostAuth::Key(unhex32(&j.key).unwrap()),
                 targets: j.udp.into_iter().collect(),
                 lobby: Some(lobby_udp),
                 ticket: j.ticket,
@@ -1208,5 +1364,28 @@ mod tests {
             guest.kick(None, "done");
             pump(&mut host_ep, &mut guest, 100);
         }
+    }
+
+    #[test]
+    fn direct_codes() {
+        let (private, public) = keypair();
+        let code = direct_code(std::net::Ipv4Addr::new(203, 0, 113, 77), GAME_PORT + 3, &public);
+        assert_eq!(code.len(), 17, "{code}");
+        let (a, f) = parse_direct(&code.to_lowercase().replace('-', " ")).unwrap();
+        assert_eq!(a, std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(203, 0, 113, 77), GAME_PORT + 3));
+        assert_eq!(f, fingerprint(&public));
+        assert!(parse_direct("DX23").is_none());
+        assert_eq!(public_of(&private), Some(public));
+        // Joining by fingerprint (NX) works; a wrong fingerprint never connects.
+        let mut host = Endpoint::host(0, private, None, None).unwrap();
+        let port = host.local_port();
+        let to = vec![SocketAddr::from(([127, 0, 0, 1], port))];
+        let mut good = Endpoint::join(JoinInfo { host: HostAuth::Fingerprint(f), targets: to.clone(), lobby: None, ticket: 0, force_relay: false }).unwrap();
+        let (eh, eg) = pump(&mut host, &mut good, 300);
+        assert!(eg.iter().any(|e| matches!(e, Event::Joined(0, _))), "{eg:?}");
+        assert!(eh.iter().any(|e| matches!(e, Event::Joined(..))));
+        let mut bad = Endpoint::join(JoinInfo { host: HostAuth::Fingerprint([1, 2, 3, 4]), targets: to, lobby: None, ticket: 0, force_relay: false }).unwrap();
+        let (_, eb) = pump(&mut host, &mut bad, 400);
+        assert!(!eb.iter().any(|e| matches!(e, Event::Joined(..))), "{eb:?}");
     }
 }

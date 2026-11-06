@@ -479,10 +479,118 @@ pub struct Held {
     /// the current sequence (positions, seconds so far).
     pub shown: Vec<Vec<[f32; 3]>>,
     pub tween: Option<(Vec<Vec<[f32; 3]>>, f32)>,
+    /// That tween's length (VIEW_TWEEN; Smooth Animation: longer into a different sequence).
+    pub tween_len: f32,
+    /// Melee Bash: seconds into a butt-stroke / pistol-whip with this gun, and whether its blow has landed.
+    pub bash: Option<f32>,
+    pub bash_hit: bool,
 }
 
 /// Seconds a view model takes to ease into a new sequence.
 const VIEW_TWEEN: f32 = 0.1;
+/// Smooth Animation: into a different sequence (not a shot restarting its own) it eases this long.
+const SMOOTH_VIEW_TWEEN: f32 = 0.18;
+
+/// Enhancement Melee Bash (setting MeleeBash, ours; GMDX has no bash - its "quick melee" draws a melee weapon from
+/// the belt): the Melee Bash key (F) with a firearm in hand strikes with it - a rifle's butt, a pistol's grip - a
+/// short blunt blow handled like a hand-to-hand weapon's (melee_blow: pawns, decorations, breakable movers, birds),
+/// the view model swung through a quick arc (no new art). Blunt like the baton: 'KnockedOut' damage, so a bash
+/// can knock a guard out (the body's own multipliers apply: head, from behind). No weapon skill, the Combat
+/// Strength aug counts as for melee weapons.
+pub fn bash_on() -> bool {
+    setting!("MeleeBash") > 0.5
+}
+/// The whole swing (seconds) and where in it the blow lands (fraction).
+const BASH_TIME: f32 = 0.5;
+const BASH_HIT: f32 = 0.36;
+/// Reach (units; the baton's MaxRange is 80) and damage (one-handed / two-handed guns, Mass >= 30).
+const BASH_RANGE: f32 = 64.0;
+const BASH_DAMAGE: f32 = 5.0;
+const BASH_DAMAGE_2H: f32 = 8.0;
+static BASHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// JC is bashing with his gun (the third-person body swings: mirror.rs).
+pub fn bashing() -> bool {
+    BASHING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The bash's arc at `t` seconds: (forward, toward the middle 0..1, up) in units, and the turn (yaw, pitch, roll in
+/// radians, camera axes): pulled back and turned out a little, then the stock driven forward across the middle of the
+/// view, then back to rest.
+fn bash_arc(t: f32) -> ([f32; 3], [f32; 3]) {
+    let p = t / BASH_TIME;
+    let wind = smoothstep(0.0, 0.26, p) * (1.0 - smoothstep(0.26, 0.38, p));
+    let strike = smoothstep(0.24, 0.38, p) * (1.0 - smoothstep(0.5, 1.0, p));
+    (
+        [-4.0 * wind + 8.0 * strike, 0.55 * strike, 1.0 * strike - 0.5 * wind],
+        [(10.0 * wind - 38.0 * strike).to_radians(), (-6.0 * wind + 14.0 * strike).to_radians(), (22.0 * strike).to_radians()],
+    )
+}
+
+/// The Melee Bash key: a firearm (not a melee weapon, a grenade, a tool or an item) at rest, not scoped.
+fn bash_start(h: &mut Held, cx: &WeaponCx, keys: &ButtonInput<KeyCode>) {
+    if !bash_on() || !keys.just_pressed(KeyCode::KeyF) || h.bash.is_some() {
+        return;
+    }
+    if h.stats.item || h.stats.hand_to_hand || h.stats.class == "POVCorpse" || h.state != WState::Idle || cx.zoom.0.is_some() || h.using {
+        return;
+    }
+    h.bash = Some(0.0);
+    h.bash_hit = false;
+    crate::sound::play_player("DeusExSounds.Weapons.BatonFire", 1.0, 1024.0);
+}
+
+/// The bash going on: its blow at BASH_HIT along the view (from the peek point leaning from cover in third person).
+fn bash_step(h: &mut Held, cx: &mut WeaponCx) {
+    let Some(t) = h.bash.as_mut() else { return };
+    *t += cx.dt;
+    let t = *t;
+    if !h.bash_hit && t >= BASH_TIME * BASH_HIT {
+        h.bash_hit = true;
+        let mut st = h.stats.clone();
+        st.hand_to_hand = true;
+        st.skill = 0.0;
+        st.max_range = BASH_RANGE;
+        st.hit_damage = if h.stats.mass >= 30.0 { BASH_DAMAGE_2H } else { BASH_DAMAGE };
+        st.penetrating = false;
+        st.snd.misc = [
+            Some("DeusExSounds.Weapons.BatonHitFlesh".into()),
+            Some("DeusExSounds.Weapons.BatonHitHard".into()),
+            Some("DeusExSounds.Weapons.BatonHitSoft".into()),
+        ];
+        let eye = bevy_to_ue(cx.cam.translation.to_array());
+        let eye = crate::thirdperson::shot_origin(DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64));
+        let f = cx.cam.forward().as_vec3();
+        let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
+        let fw = crate::thirdperson::aim_dir(cx.level, eye, fw);
+        let mut shot = ShotCx {
+            level: cx.level,
+            blockers: &cx.blockers.list,
+            movers: &cx.mv.rt,
+            player_at: cx.player.body.location,
+            pawn_hits: &mut cx.pawn_hits.0,
+            deco_hits: &mut cx.deco_hits.0,
+            blood: &mut cx.blood.0,
+        };
+        let (np, nd) = (shot.pawn_hits.len(), shot.deco_hits.len());
+        melee_blow(&st, &mut shot, eye, fw, Some("KnockedOut"));
+        // DXVIEW_BASHLOG: what the blow met.
+        if env_on!("DXVIEW_BASHLOG") {
+            let name = |b: usize| cx.level.actors[cx.blockers.list[b].actor].name.clone();
+            let pawns: Vec<String> = shot.pawn_hits[np..].iter().map(|h| name(h.blocker)).collect();
+            let decos: Vec<String> = shot.deco_hits[nd..].iter().map(|h| name(h.blocker)).collect();
+            println!("BASH {} {} damage, pawns {pawns:?}, decorations {decos:?}", h.stats.class, st.hit_damage);
+        }
+    }
+    if t >= BASH_TIME {
+        h.bash = None;
+    }
+}
 
 /// How far under the line of sight (units) an original view model's barrel sits down the sights.
 const SIGHT_DROP: f32 = 1.7;
@@ -1510,6 +1618,9 @@ fn build_held(
         scope_eye,
         shown: Vec::new(),
         tween: None,
+        tween_len: VIEW_TWEEN,
+        bash: None,
+        bash_hit: false,
         last_pose: None,
         stats,
         mesh: am,
@@ -1978,12 +2089,14 @@ fn pose_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, dt: f32) {
         if ((last.0, last.1) != (pose.0, pose.1) || restarted)
             && h.shown.len() == h.parts.len() {
                 h.tween = Some((std::mem::take(&mut h.shown), 0.0));
+                // Smooth Animation: a different sequence eases in a little longer (a shot restarting keeps it short).
+                h.tween_len = if crate::actors::smooth_on() && !restarted { SMOOTH_VIEW_TWEEN } else { VIEW_TWEEN };
             }
     }
     let mut tween_k = None;
     if let Some((_, t)) = h.tween.as_mut() {
         *t += dt;
-        let x = (*t / VIEW_TWEEN).min(1.0);
+        let x = (*t / h.tween_len.max(0.01)).min(1.0);
         tween_k = Some(x * x * (3.0 - 2.0 * x));
         if x >= 1.0 {
             h.tween = None;
@@ -2144,9 +2257,9 @@ fn light_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, level: &dx_level::L
 /// A hand-to-hand blow at the HandToHandAttack notify (TraceFire along the view out to MaxRange): birds, the level
 /// (breakable movers only get marked), decorations and pawns (GMDX Piercing against bots and security), the hit
 /// sounds by what it met; and the Melee Sweeps An Arc enhancement.
-fn melee_blow(stats: &WeaponStats, cx: &mut ShotCx, eye: DVec3, fw: DVec3) {
+fn melee_blow(stats: &WeaponStats, cx: &mut ShotCx, eye: DVec3, fw: DVec3, dmg_type: Option<&'static str>) {
     let range = stats.max_range as f64;
-    let dmg_type = stats.damage_type(stats.ammo_class.as_deref());
+    let dmg_type = dmg_type.unwrap_or_else(|| stats.damage_type(stats.ammo_class.as_deref()));
     let base_dmg = stats.hit_damage * stats.damage_mult();
     let world = World { level: cx.level, blockers: cx.blockers, ignore: None, pushable: None, movers: Some(cx.movers) };
     let hit = world.trace(eye, eye + fw * range, DVec3::splat(0.5));
@@ -2543,6 +2656,7 @@ pub fn weapon_system(
     }
     use_requests(&mut cx, &mut weapons);
     let Some(h) = weapons.held.as_mut() else {
+        BASHING.store(false, std::sync::atomic::Ordering::Relaxed);
         if !lock_text.0 .0.is_empty() {
             lock_text.0 .0.clear();
         }
@@ -2572,6 +2686,7 @@ pub fn weapon_system(
     }
     tool_anims(h, &picking, &hacking);
     anim_notifies(h, &mut cx);
+    bash_step(h, &mut cx);
     let loaded = *cx.clips.0.get(&h.stats.class).unwrap_or(&0);
     let pool = h.stats.ammo_class.as_ref().map(|a| {
         cx.inv
@@ -2607,7 +2722,14 @@ pub fn weapon_system(
         h.flame_shots = 0;
     }
     weapon_keys(h, &mut cx, &keys, loaded, &mut pending_ammo);
-    reload_or_fire(h, &mut cx, &mut flashes, &keys, &aim, TriggerPull { loaded, pool, locked, pulled });
+    if locked {
+        bash_start(h, &cx, &keys);
+    }
+    // (No shot or reload in the middle of a bash.)
+    if h.bash.is_none() {
+        reload_or_fire(h, &mut cx, &mut flashes, &keys, &aim, TriggerPull { loaded, pool, locked, pulled });
+    }
+    BASHING.store(h.bash.is_some(), std::sync::atomic::Ordering::Relaxed);
 
     pose_view_model(h, &mut meshes, dt);
     blade_lights(h, cam, &time);
@@ -2795,8 +2917,17 @@ fn place_view_model(h: &mut Held, cx: &WeaponCx, root: &mut Transform) -> Option
     }
     // Diegetic Scope on a model with its scope found: the eye on the scope's axis, the eyepiece in front of it.
     let scoped_eye = h.scope_eye.clone().filter(|_| zoom.0.is_some() && crate::scope::setting_on() && !crate::thirdperson::active());
+    // Melee Bash: the swing's arc. (DXVIEW_BASH_POSE=<secs>: held at that point of the swing, for screenshots.)
+    let posed = env_val!("DXVIEW_BASH_POSE").and_then(|v| v.parse::<f32>().ok()).filter(|_| h.state == WState::Idle);
+    let bash_turn = h.bash.or(posed).map(|t| {
+        let (o, r) = bash_arc(t);
+        off[0] += o[0];
+        off[1] *= 1.0 - o[1];
+        off[2] += o[2];
+        Quat::from_rotation_y(r[0]) * Quat::from_rotation_x(r[1]) * Quat::from_rotation_z(r[2])
+    });
     root.translation = Vec3::from(view_to_cam(off));
-    root.rotation = Quat::IDENTITY;
+    root.rotation = bash_turn.unwrap_or(Quat::IDENTITY);
     // Down the scope: the rifle turned so its tube points straight ahead, the eyepiece centred in front of the eye.
     if let Some(se) = scoped_eye.as_ref() {
         let q = scope_turn(se);
@@ -2976,7 +3107,7 @@ fn anim_notifies(h: &mut Held, cx: &mut WeaponCx) {
             deco_hits: &mut cx.deco_hits.0,
             blood: &mut cx.blood.0,
         };
-        melee_blow(&h.stats, &mut shot, eye, fw);
+        melee_blow(&h.stats, &mut shot, eye, fw, None);
     }
     // The grenade leaves the hand halfway through the throw (or place) animation.
     if h.state == WState::Firing && h.clip.t * h.clip.rate >= h.clip.frames as f32 * 0.5 {
@@ -3460,7 +3591,8 @@ fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
         conv(cam.right().as_vec3()),
         conv(cam.up().as_vec3()),
     );
-    // Third person: from the eyes toward what the over-the-shoulder crosshair is on.
+    // Third person: from the eyes (leaning from cover, the peek point) toward what the over-the-shoulder crosshair is on.
+    let eye = crate::thirdperson::shot_origin(eye);
     let fw = crate::thirdperson::aim_dir(level, eye, fw);
     if *cx.seed == 0 {
         *cx.seed = 0x9E37_79B9_7F4A_7C15;
@@ -4474,4 +4606,21 @@ pub fn prewarm_view_models_system(
         println!("prewarm: {class} in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
     }
     *cur = Some((warm, 0));
+}
+
+#[cfg(test)]
+mod bash_tests {
+    use super::*;
+
+    /// The bash's arc starts and ends at rest and is driven forward (toward the middle) when the blow lands.
+    #[test]
+    fn bash_arc_rests_and_strikes() {
+        let (o0, r0) = bash_arc(0.0);
+        let (o1, r1) = bash_arc(BASH_TIME);
+        for v in o0.iter().chain(&r0).chain(&o1).chain(&r1) {
+            assert!(v.abs() < 1e-4, "{o0:?} {r0:?} {o1:?} {r1:?}");
+        }
+        let (o, r) = bash_arc(BASH_TIME * BASH_HIT);
+        assert!(o[0] > 4.0 && o[1] > 0.3 && r[0] < -0.3, "{o:?} {r:?}");
+    }
 }

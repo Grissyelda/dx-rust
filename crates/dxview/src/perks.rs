@@ -337,7 +337,7 @@ pub fn in_hand_melee() -> bool {
     in_hand().is_some_and(|(_, m)| m)
 }
 
-fn in_hand() -> Option<(String, bool)> {
+pub(crate) fn in_hand() -> Option<(String, bool)> {
     IN_HAND.lock().ok().and_then(|h| h.clone())
 }
 

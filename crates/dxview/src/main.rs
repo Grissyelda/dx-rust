@@ -20,6 +20,7 @@ mod env;
 mod nullmask;
 mod online;
 mod netplay;
+mod nettags;
 mod queue;
 mod util;
 mod uinode;
@@ -765,6 +766,8 @@ fn main() {
     setup_mods(&root);
     remaster::fill_new_modern_keys();
     setup_relief_dirs(&root);
+    // Emissive Surfaces: glowing faces light their surroundings in every map built (dx_level::emissive).
+    dx_level::emissive::set_switch(relight::emissive_on);
     unreal_pkg::paths::set_hd_textures_on(setting!("HDTextures") > 0.5);
     init_game_data(&root);
     let map = startup_map(&args);
@@ -917,6 +920,14 @@ fn add_combat_systems(app: &mut App) {
                 netplay::dev_system,
                 netplay::char_save_system,
                 netplay::exit_system,
+                (
+                    netplay::chat_system,
+                    netplay::player_list_key_system,
+                    netplay::world_sync_system.after(actors::deco_physics),
+                    netplay::item_sync_system.after(destruct::weapon_drop_system),
+                    pickups::net_give_system.after(pickups::frob_system),
+                    nettags::nametag_system,
+                ),
                 ai::player_health_ui,
                 ai::npc_weapon_models
                     .after(ai::npc_system)
@@ -1163,6 +1174,7 @@ fn add_material_plugins(app: &mut App) {
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<classic_hud::HudLayer>::default())
         .add_plugins(remaster::RemasterPlugin)
         .add_plugins(ragdoll::RagdollPlugin)
+        .add_plugins(actors::SmoothTurnPlugin)
         .add_systems(
             Update,
             (

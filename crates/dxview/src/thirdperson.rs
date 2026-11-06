@@ -12,6 +12,13 @@
 //! Shots and frobbing go from his eyes toward what the camera's centre line is on (`aim_dir`).
 //! Shoulder: the view turns with him (the first version).
 //!
+//! Cover leaning (setting ThirdPersonCover, ours, after cover shooters): Q / E in third person swaps the camera to
+//! that shoulder, turns JC to face where the camera looks, bends his body round the corner (skeletal::apply_lean,
+//! or a tilt of the vertex body) and takes the camera - and the shots, which leave from the peek point - out past
+//! the edge: up to PEEK_REACH units to the side in all (less what the body itself slid, DeusExPlayer's 40-unit
+//! lean), or, against a wall on that side, first forward along it to where the way out is clear (a corner ahead).
+//! Crouched, the camera drops with him and stays just over his head.
+//!
 //! The game logic keeps reading the camera's transform as JC's eyes: the camera is moved back only for drawing
 //! (`place_system`, in PostUpdate before transforms propagate) and put back at the eyes at the start of the
 //! next frame (`restore_system`, in First).
@@ -21,6 +28,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use dx_level::{bevy_to_ue, ue_to_bevy};
 use glam::DVec3;
+use imsim_core::movement::CollisionWorld;
 use std::sync::Mutex;
 
 pub fn enabled() -> bool {
@@ -53,6 +61,15 @@ struct State {
     aim_hold: f32,
     /// loader::generation() the orbit was set up for (a new map starts it behind JC again).
     gen: u64,
+    /// Cover leaning: the lean input (-1 left .. 1 right), eased; Q / E held now.
+    lean_dir: f32,
+    leaning: bool,
+    /// The peek past the edge (units, eased): forward along the wall, then out to the side (signed: + right).
+    peek_fwd: f64,
+    peek_side: f64,
+    /// Where the shots leave from while peeking (Unreal), and the extra body bend toward it (units).
+    shot_from: Option<DVec3>,
+    bend: f32,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -70,7 +87,55 @@ static STATE: Mutex<State> = Mutex::new(State {
     idle: 0.0,
     aim_hold: 0.0,
     gen: 0,
+    lean_dir: 0.0,
+    leaning: false,
+    peek_fwd: 0.0,
+    peek_side: 0.0,
+    shot_from: None,
+    bend: 0.0,
 });
+
+/// Cover leaning in third person (see the module notes).
+pub fn cover_on() -> bool {
+    setting!("ThirdPersonCover") > 0.5
+}
+
+/// How far out to the side (units) a cover lean takes the camera and the shots in all, counting the body's own slide.
+const PEEK_REACH: f64 = 44.0;
+/// How far forward along a wall at that side the peek looks for the corner (units).
+const PEEK_AHEAD: [f64; 4] = [12.0, 24.0, 36.0, 48.0];
+
+/// The lean the rebuilt / vertex body shows: the body's slide (`lean`, Player::lean) plus, leaning from cover in third
+/// person, the peek's bend toward the edge.
+pub fn body_lean(lean: f32) -> f32 {
+    if !active() {
+        return lean;
+    }
+    lean + STATE.lock().map(|s| s.bend).unwrap_or(0.0)
+}
+
+/// Where a shot leaves from: the eyes, or leaning from cover in third person the peek point past the edge.
+pub fn shot_origin(eye: DVec3) -> DVec3 {
+    if !active() {
+        return eye;
+    }
+    STATE.lock().ok().and_then(|s| s.shot_from).unwrap_or(eye)
+}
+
+/// The two legs of a peek from `from`: forward along `fwh`, then out along `rth` (signed), each traced (a sphere of
+/// `r`, the level and movers - a closed door is a wall) and stopped short of what it meets.
+fn peek_point(world: &crate::actors::World, from: DVec3, fwh: DVec3, rth: DVec3, fwd: f64, side: f64, r: f64) -> DVec3 {
+    let leg = |a: DVec3, d: DVec3| {
+        let len = d.length();
+        if len < 0.01 {
+            return a;
+        }
+        let h = world.trace(a, a + d, DVec3::splat(r));
+        a + d * ((h.fraction.max(0.0) * len - 1.0).max(0.0) / len)
+    };
+    let q = leg(from, fwh * fwd);
+    leg(q, rth * side)
+}
 
 /// The free orbit camera is in use (third person active with Third Person Camera = Free).
 pub fn free() -> bool {
@@ -147,7 +212,8 @@ pub fn facing_camera(aiming: bool, fired: bool, dt: f32) -> bool {
     } else {
         s.aim_hold = (s.aim_hold - dt).max(0.0);
     }
-    aiming || s.aim_hold > 0.0
+    // Leaning from cover he faces the camera too (the lean goes the camera's way).
+    aiming || s.aim_hold > 0.0 || s.leaning
 }
 
 /// Third person right now (the setting on and switched to it, nothing else holding the camera).
@@ -166,11 +232,13 @@ pub fn aim_dir(level: &dx_level::Level, eye: DVec3, fw: DVec3) -> DVec3 {
     let Some((cam, cfw)) = STATE.lock().ok().and_then(|s| Some((s.cam?, s.cam_fw.unwrap_or(fw)))) else { return fw };
     let h = level.collision.trace(cam, cam + cfw * 8000.0, DVec3::ZERO);
     let target = cam + cfw * 8000.0 * h.fraction.max(0.0);
+    // (Shots pass shot_origin(eye) as `eye`: leaning from cover they leave from the peek point.)
+    let from = eye;
     // Something between the camera and JC (he's in the way of the crosshair): just shoot straight.
-    if (target - eye).dot(fw) < 32.0 {
+    if (target - from).dot(fw) < 32.0 {
         return fw;
     }
-    (target - eye).normalize_or(fw)
+    (target - from).normalize_or(fw)
 }
 
 /// The view's render layers: the world, mirror faces, shadow lights when on, and JC's body in third person.
@@ -242,6 +310,7 @@ pub fn place_system(
     level: Res<LevelRes>,
     keys: Res<ButtonInput<KeyCode>>,
     player: Res<crate::Player>,
+    movers: Option<Res<crate::movers::Movers>>,
     mut cam: Single<&mut Transform, (With<FlyCam>, Without<SkyCam>)>,
 ) {
     let free_cam = free();
@@ -252,15 +321,40 @@ pub fn place_system(
     let dt = time.delta_secs().min(0.1);
     if !on {
         st.dist = 0.0;
+        st.lean_dir = 0.0;
+        st.leaning = false;
+        st.peek_fwd = 0.0;
+        st.peek_side = 0.0;
+        st.shot_from = None;
+        st.bend = 0.0;
         return;
     }
-    st.side += (st.side_want - st.side).clamp(-dt * 4.0, dt * 4.0);
+    // Cover leaning: Q / E (the pad's bumpers press them too), standing or crouched and nearly still, on the ground.
+    let cover = cover_on();
+    let speed = player.body.velocity.truncate().length();
+    let lean_in = if cover && !player.swimming && player.body.physics == imsim_core::movement::Physics::Walking && speed < 60.0 {
+        (keys.pressed(KeyCode::KeyE) as i32 - keys.pressed(KeyCode::KeyQ) as i32) as f32
+    } else {
+        0.0
+    };
+    st.leaning = lean_in != 0.0;
+    st.lean_dir += (lean_in - st.lean_dir) * (1.0 - (-8.0 * dt).exp());
+    if st.lean_dir.abs() < 0.01 && lean_in == 0.0 {
+        st.lean_dir = 0.0;
+    }
+    // Leaning swaps the camera to that shoulder for as long as the lean lasts.
+    let side_to = if lean_in != 0.0 { lean_in } else { st.side_want };
+    st.side += (side_to - st.side).clamp(-dt * 4.0, dt * 4.0);
     let aiming = keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft);
     let eye_t = **cam;
     let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64);
     // The free camera looks along its own orbit; the shoulder camera along JC's view.
     let rot = if free_cam {
         Quat::from_rotation_y(st.orbit_yaw) * Quat::from_rotation_x(st.orbit_pitch)
+    } else if cover {
+        // (Cover leaning: the view's lean roll is for first person; behind him the camera stays level.)
+        let f = eye_t.rotation * Vec3::NEG_Z;
+        Transform::IDENTITY.looking_to(f, Vec3::Y).rotation
     } else {
         eye_t.rotation
     };
@@ -278,13 +372,73 @@ pub fn place_system(
     let e = bevy_to_ue(eye_t.translation.to_array());
     let eye = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
     // Over the shoulder: back, to the side and a little up; walls pull it in (a sphere of 8 units).
+    // (Crouched the eye drops to the hips: the camera stays a little over his head - lower than standing.)
     let lift_want = if player.crouched { 24.0 } else { 0.0 };
     st.lift += (lift_want - st.lift) * (dt * 6.0).min(1.0);
     // The free camera sits nearer the middle (a little to the side, so JC doesn't hide the crosshair) and higher.
     let (side_off, up_off) = if free_cam { (if aiming { 22.0 } else { 14.0 }, 10.0) } else { (22.0, 6.0) };
     let pivot = eye + rt * (st.side as f64 * side_off) + DVec3::new(0.0, 0.0, up_off + st.lift as f64);
     let side = level.0.collision.trace(eye, pivot, DVec3::splat(8.0));
-    let pivot = eye + (pivot - eye) * side.fraction.max(0.0);
+    let mut pivot = eye + (pivot - eye) * side.fraction.max(0.0);
+    // Cover leaning: out past the edge (see the module notes).
+    let fwh = DVec3::new(fw.x, fw.y, 0.0).normalize_or_zero();
+    let rth = DVec3::new(rt.x, rt.y, 0.0).normalize_or_zero();
+    let (mut want_fwd, mut want_side) = (0.0f64, 0.0f64);
+    let amt = st.lean_dir.abs() as f64;
+    if amt > 0.01 && rth != DVec3::ZERO {
+        let s = st.lean_dir.signum() as f64;
+        // What the body's own slide (Player::lean, along the view's right) hasn't covered yet.
+        let reach = (PEEK_REACH - player.lean.abs()).max(4.0);
+        let world = crate::actors::World { level: &level.0, blockers: &[], ignore: None, pushable: None, movers: movers.as_ref().map(|m| m.rt.as_slice()) };
+        let out = world.trace(pivot, pivot + rth * s * reach, DVec3::splat(8.0)).fraction.max(0.0);
+        want_side = s * reach * out;
+        if out < 0.6 {
+            // A wall on that side: the corner is ahead. Along the wall to where the way out to the side is clear.
+            for a in PEEK_AHEAD {
+                let q = pivot + fwh * a;
+                if world.trace(pivot, q, DVec3::splat(8.0)).fraction < 1.0 {
+                    break;
+                }
+                let t = world.trace(q, q + rth * s * reach, DVec3::splat(8.0)).fraction;
+                if t > 0.9 {
+                    want_fwd = a;
+                    want_side = s * reach * t;
+                    break;
+                }
+            }
+        }
+        want_fwd *= amt;
+        want_side *= amt;
+    }
+    let k = 1.0 - (-10.0 * dt as f64).exp();
+    st.peek_fwd += (want_fwd - st.peek_fwd) * k;
+    st.peek_side += (want_side - st.peek_side) * k;
+    if st.peek_fwd.abs() + st.peek_side.abs() > 0.5 {
+        let world = crate::actors::World { level: &level.0, blockers: &[], ignore: None, pushable: None, movers: movers.as_ref().map(|m| m.rt.as_slice()) };
+        pivot = peek_point(&world, pivot, fwh, rth, st.peek_fwd, st.peek_side, 8.0);
+        // The shots lean out with him: the same legs from his eyes (a thinner trace).
+        st.shot_from = Some(peek_point(&world, eye, fwh, rth, st.peek_fwd, st.peek_side, 4.0));
+        st.bend = st.peek_side as f32;
+    } else {
+        st.peek_fwd = 0.0;
+        st.peek_side = 0.0;
+        st.shot_from = None;
+        st.bend = 0.0;
+    }
+    // DXVIEW_COVERLOG: the lean and the peek twice a second.
+    if env_on!("DXVIEW_COVERLOG") {
+        static T: Mutex<f32> = Mutex::new(0.0);
+        if let Ok(mut t) = T.lock() {
+            *t += dt;
+            if *t > 0.5 {
+                *t = 0.0;
+                println!(
+                    "COVER input {lean_in} lean_dir {:.2} body lean {:.1} peek fwd {:.1} side {:.1} shots from {:?}",
+                    st.lean_dir, player.lean, st.peek_fwd, st.peek_side, st.shot_from.map(|p| (p - eye).length().round())
+                );
+            }
+        }
+    }
     let back = pivot - fw * st.dist as f64;
     let h = level.0.collision.trace(pivot, back, DVec3::splat(8.0));
     let at = pivot + (back - pivot) * (h.fraction.max(0.0) * 0.98);
@@ -292,7 +446,7 @@ pub fn place_system(
     st.cam = Some(at);
     st.cam_fw = Some(fw);
     cam.translation = Vec3::from(ue_to_bevy(at.as_vec3().to_array()));
-    if free_cam {
+    if free_cam || cover {
         cam.rotation = rot;
     }
 }

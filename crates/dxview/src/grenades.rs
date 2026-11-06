@@ -56,6 +56,26 @@ pub struct Grenade {
 #[derive(Resource, Default)]
 pub struct GrenadeThrows(pub Vec<(String, DVec3, DVec3, Option<usize>, Option<DVec3>)>);
 
+/// A pawn's throw (Smarter AI, GMDX's nadeThrow): the grenade is spawned with its own velocity and blastRadius.
+struct NpcThrow {
+    class: &'static str,
+    pos: DVec3,
+    vel: DVec3,
+    from: usize,
+    blast: f64,
+}
+
+static NPC_THROWS: std::sync::Mutex<Vec<NpcThrow>> = std::sync::Mutex::new(Vec::new());
+
+/// Queue a pawn's grenade (thrower = its blocker), spawned by grenade_system on its next run.
+pub fn npc_throw(class: &'static str, pos: DVec3, vel: DVec3, from: usize, blast: f64) {
+    if let Ok(mut q) = NPC_THROWS.lock() {
+        if q.len() < 16 {
+            q.push(NpcThrow { class, pos, vel, from, blast });
+        }
+    }
+}
+
 fn damage_type_of(n: &str) -> &'static str {
     match n.to_ascii_lowercase().as_str() {
         "teargas" => "TearGas",
@@ -214,8 +234,15 @@ pub fn grenade_system(
     // Optional (setting RadarCloak): placed mines miss a radar-cloaked player (Radar Transparency or camo).
     let radar_cloaked = crate::optfixes::radar_cloak() && (ph.camo || crate::abilities::aug("AugRadarTrans").is_some());
     let lvl = &level.0;
-    // New grenades.
-    for (class, pos, dir, from, wall) in throws.0.drain(..) {
+    // New grenades (the player's, then pawns': those carry their own velocity and blast radius).
+    let npc_throws = NPC_THROWS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    let all = throws
+        .0
+        .drain(..)
+        .map(|(c, p, d, f, w)| (c, p, d, f, w, None))
+        .chain(npc_throws.into_iter().map(|t| (t.class.to_string(), t.pos, DVec3::ZERO, Some(t.from), None, Some((t.vel, t.blast)))))
+        .collect::<Vec<_>>();
+    for (class, pos, dir, from, wall, given) in all {
         let mut d = assets.classes.defaults(&class);
         // Augmentique: the player's grenade skin (ApplyProjectileSkinFrom).
         if from.is_none() {
@@ -226,7 +253,10 @@ pub fn grenade_system(
             _ => 1000.0,
         };
         let placed_on_wall = wall.is_some();
-        let mut g = make(&class, &d, pos, dir * speed, from, false, placed_on_wall);
+        let mut g = make(&class, &d, pos, given.map_or(dir * speed, |(v, _)| v), from, false, placed_on_wall);
+        if let Some((_, blast)) = given {
+            g.blast = blast;
+        }
         let rot = match wall {
             Some(n) => {
                 let yaw = n.y.atan2(n.x);
@@ -573,6 +603,9 @@ pub fn danger_system(q: Query<&Grenade>) {
 /// A new map is going in (loader.rs): this module's state of the map being left.
 pub fn reset_level() {
     if let Ok(mut v) = DANGER.lock() {
+        v.clear();
+    }
+    if let Ok(mut v) = NPC_THROWS.lock() {
         v.clear();
     }
 }

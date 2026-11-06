@@ -60,7 +60,7 @@ fn main() {
     let _ = eframe::run_native(
         "DX RUST Online Services",
         opts,
-        Box::new(move |_cc| Ok(Box::new(Controller { shared, key, port, admin_port, note: String::new(), confirm_reset: false, auto_started: false }))),
+        Box::new(move |_cc| Ok(Box::new(Controller { shared, key, port, admin_port, note: String::new(), confirm_reset: false, auto_started: false, upnp: Default::default(), upnp_busy: false }))),
     );
 }
 
@@ -166,6 +166,36 @@ struct Controller {
     confirm_reset: bool,
     /// The server was started once by opening the controller (it starts it if it isn't running).
     auto_started: bool,
+    /// What the router said when asked to open the port (UPnP), filled in by its thread.
+    upnp: Arc<Mutex<Option<String>>>,
+    upnp_busy: bool,
+}
+
+/// Ask the router (UPnP) to forward `port` TCP and UDP to this PC for good, and find the public address.
+fn open_router_port(port: u16) -> String {
+    use imsim_net::upnp::{find_gateway, public_ip, Proto};
+    let g = match find_gateway(Duration::from_millis(3000)) {
+        Ok(g) => g,
+        Err(e) => {
+            return format!(
+                "No router answered ({e}). Turn on UPnP in the router's settings, or forward port {port} TCP and UDP to {} by hand.",
+                lan_ip()
+            )
+        }
+    };
+    let mut fails = Vec::new();
+    for (p, name) in [(Proto::Tcp, "TCP"), (Proto::Udp, "UDP")] {
+        if let Err(e) = g.add_port(p, port, 0, "DX RUST online services") {
+            fails.push(format!("{name}: {e}"));
+        }
+    }
+    let ip = g.external_ip().ok().filter(|a| !a.is_private()).map(|a| a.to_string()).or_else(|| public_ip().ok().map(|a| a.to_string()));
+    let addr = ip.map(|ip| format!(" Players outside your network connect to {ip}:{port}.")).unwrap_or_default();
+    if fails.is_empty() {
+        format!("Port {port} (TCP and UDP) now forwarded to this PC ({}).{addr}", g.local_ip)
+    } else {
+        format!("The router refused: {}. Forward port {port} TCP and UDP to {} by hand.{addr}", fails.join(", "), lan_ip())
+    }
 }
 
 impl eframe::App for Controller {
@@ -270,6 +300,23 @@ impl eframe::App for Controller {
                     };
                 }
             }
+            if let Some(r) = self.upnp.lock().ok().and_then(|mut u| u.take()) {
+                self.note = r;
+                self.upnp_busy = false;
+            }
+            ui.horizontal(|ui| {
+                let label = if self.upnp_busy { "Asking the router..." } else { "Open port on router (UPnP)" };
+                if ui.add_enabled(!self.upnp_busy, egui::Button::new(label)).clicked() {
+                    self.upnp_busy = true;
+                    let (port, out) = (self.port, self.upnp.clone());
+                    std::thread::spawn(move || {
+                        let r = open_router_port(port);
+                        if let Ok(mut u) = out.lock() {
+                            *u = Some(r);
+                        }
+                    });
+                }
+            });
             if !self.note.is_empty() {
                 ui.label(&self.note);
             }

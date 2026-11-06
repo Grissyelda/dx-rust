@@ -333,7 +333,8 @@ pub fn deco_damage_system(
     // Developer aid: DXVIEW_DEBUG_DECOHIT="ActorName" hits that decoration for 100 after about two seconds.
     if let Some(name) = env_val!("DXVIEW_DEBUG_DECOHIT") {
         *debug_frames += 1;
-        if *debug_frames == 120 {
+        let at = env_val!("DXVIEW_DEBUG_DECOHIT_AT").and_then(|v| v.parse::<u32>().ok()).unwrap_or(120);
+        if *debug_frames == at {
             if let Some((b, _)) = blockers
                 .list
                 .iter()
@@ -363,8 +364,19 @@ pub fn deco_damage_system(
             }
         }
     }
-    for hit in std::mem::take(&mut hits.0) {
+    // Multiplayer: joiners' hits on decorations (host), the decorations the host broke (joiner).
+    let mut net_hits = Vec::new();
+    for (actor, damage, kind) in crate::netplay::take_deco_hits() {
+        if let Some(b) = blockers.list.iter().position(|c| c.actor == actor && c.radius > 0.0) {
+            net_hits.push(DecoHit { blocker: b, damage, damage_type: crate::util::intern(&kind) });
+        }
+    }
+    let client = crate::netplay::is_client();
+    let placed = crate::save::placed_count().min(lvl.actors.len());
+    for hit in std::mem::take(&mut hits.0).into_iter().chain(net_hits) {
         let b = hit.blocker;
+        // The host's break (joiner): the pieces fly here, nothing else happens (the host does the rest).
+        let net_break = hit.damage_type == "NetBreak";
         // HangingDecoration.TakeDamage: shots and blasts swing it (from the player's side; bullets carry 1000).
         if matches!(hit.damage_type, "Shot" | "Exploded") {
             crate::hanging::hit(b, player.body.location, if hit.damage_type == "Shot" { 1000.0 } else { 2000.0 });
@@ -380,6 +392,10 @@ pub fn deco_damage_system(
         let Some(&e) = blockers.deco.get(&b) else {
             continue;
         };
+        // A joiner's hit on a placed decoration is the host's to apply.
+        if client && !net_break && blockers.list[b].actor < placed && crate::netplay::deco_hit(blockers.list[b].actor, hit.damage, hit.damage_type) {
+            continue;
+        }
         let Ok(mut deco) = decos.get_mut(e) else {
             continue;
         };
@@ -407,7 +423,7 @@ pub fn deco_damage_system(
         let hp = health.entry(b).or_insert(max);
         let threshold = fv(p, "minDamageThreshold", 0.0);
         let explosive = flag(p, "bExplosive");
-        if explosive && matches!(hit.damage_type, "Burned" | "Flamed") {
+        if net_break || explosive && matches!(hit.damage_type, "Burned" | "Flamed") {
             // Blow up if hit by fire.
             *hp = 0.0;
         } else if hit.damage >= threshold {
@@ -455,6 +471,9 @@ pub fn deco_damage_system(
         blockers.list[b].height = 0.0;
         blockers.pushable_mass.remove(&b);
         commands.entity(e).despawn();
+        if blockers.list[b].actor < placed {
+            crate::netplay::deco_broken(blockers.list[b].actor);
+        }
         let (radius, height) = (
             fv(p, "CollisionRadius", 20.0) as f64,
             fv(p, "CollisionHeight", 20.0) as f64,
@@ -463,6 +482,7 @@ pub fn deco_damage_system(
         // Containers.Destroyed: a trash container sitting on the ground spills paper (four tries at 75%) and,
         // half the time, a rat.
         if flag(p, "bGenerateTrash")
+            && !net_break
             && lvl
                 .collision
                 .trace(
@@ -545,7 +565,8 @@ pub fn deco_damage_system(
             crate::sound::play(snd, center, 1.0, (radius * 16.0) as f32, 1.0);
             booms.0.push(crate::explosion::Boom {
                 pos: center,
-                damage,
+                // The host's break: the blast's look only (the host's blast hurts).
+                damage: if net_break { 0.0 } else { damage },
                 radius,
                 damage_type: "Exploded",
                 from: None,
@@ -609,8 +630,9 @@ pub fn deco_damage_system(
                 }
             }
         }
-        // Containers.Destroyed: numThings of Contents (Content2/3 each with a 30% chance instead).
-        if let Some(c1) = path(p, "Contents") {
+        // Containers.Destroyed: numThings of Contents (Content2/3 each with a 30% chance instead). (Multiplayer:
+        // the host's contents are everyone's; a joiner gets them from him.)
+        if let Some(c1) = path(p, "Contents").filter(|_| !net_break) {
             let mut class = c1;
             if let Some(c2) = path(p, "Content2") {
                 if rng.f() < 0.3 {
@@ -630,9 +652,11 @@ pub fn deco_damage_system(
                 for _ in 0..count {
                     let mut off = rng.vrand() * radius;
                     off.z = 0.0;
+                    let vel = rng.vrand() * 50.0;
+                    let net = crate::netplay::item_spawned(&short, center + off, vel, None, &[]);
                     let loose = Loose {
                         pos: center + off,
-                        vel: rng.vrand() * 50.0,
+                        vel,
                         rot: [0.0, rng.f() * 65535.0, 0.0],
                         spin: [0.0; 3],
                         elasticity: 0.0,
@@ -664,6 +688,9 @@ pub fn deco_damage_system(
                             class: short.clone(),
                             props: props.clone(),
                         });
+                        if let Some(id) = net {
+                            commands.entity(ent).insert(crate::netplay::NetItem(id));
+                        }
                     }
                 }
             }
@@ -946,12 +973,31 @@ pub fn weapon_drop_system(
 ) {
     let _prof = crate::prof::scope("destruct::weapon_drop_system");
     let player_drops: Vec<(String, DVec3, DVec3, Option<i32>, Vec<Property>)> = throws.0.drain(..).collect();
+    // Multiplayer: items dropped in the world are everyone's. The host gives each one an id and tells the joiners;
+    // a joiner's own drops go to the host, and the host's (and other joiners') come in from him.
+    let net_in: Vec<(u32, String, DVec3, DVec3, Option<i32>, Vec<Property>)> = crate::netplay::take_item_spawns()
+        .into_iter()
+        .map(|(id, it)| {
+            let p = |v: [f32; 3]| DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+            (id, it.class.clone(), p(it.pos), p(it.vel), it.ammo, crate::netplay::game_props(&it.extra))
+        })
+        .collect();
     let all = drops
         .0
         .drain(..)
-        .map(|(c, p)| (c, p, DVec3::new(0.0, 0.0, 50.0), None, Vec::new(), false))
-        .chain(player_drops.into_iter().map(|(c, p, v, a, x)| (c, p, v, a, x, true)));
-    for (class, pos, vel, ammo, extra, by_player) in all {
+        .map(|(c, p)| (c, p, DVec3::new(0.0, 0.0, 50.0), None, Vec::new(), false, None))
+        .chain(player_drops.into_iter().map(|(c, p, v, a, x)| (c, p, v, a, x, true, None)))
+        .chain(net_in.into_iter().map(|(id, c, p, v, a, x)| (c, p, v, a, x, false, Some(id))));
+    for (class, pos, vel, ammo, extra, by_player, net_id) in all {
+        // A joiner's drop: the host puts it in the world for everyone.
+        if net_id.is_none() && crate::netplay::throw_item(&class, pos, vel, ammo, &extra) {
+            continue;
+        }
+        // The host: an id for everything dropped here (a joiner's drop arrives with id 0).
+        let net_id = match net_id {
+            Some(id) if id > 0 => Some(id),
+            _ => crate::netplay::item_spawned(&class, pos, vel, ammo, &extra),
+        };
         let mut d = assets.classes.defaults(&class);
         for x in extra {
             d.retain(|p| !(p.name.eq_ignore_ascii_case(&x.name) && p.index == x.index));
@@ -1007,6 +1053,9 @@ pub fn weapon_drop_system(
                 class: class.clone(),
                 props,
             });
+            if let Some(id) = net_id {
+                commands.entity(ent).insert(crate::netplay::NetItem(id));
+            }
             if by_player {
                 commands.entity(ent).insert(ThrownByPlayer);
             }

@@ -282,7 +282,8 @@ pub fn take_join() -> Option<Result<Joined, String>> {
     with(|s| s.join.take())
 }
 
-/// Players who looked our room up (IPs), for the host's room screen.
+/// Players who looked our room up (IPs). Unused since the host room shows netplay's player list.
+#[allow(dead_code)]
 pub fn joiners() -> Vec<String> {
     with(|s| s.joiners.clone())
 }

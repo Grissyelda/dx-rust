@@ -191,7 +191,8 @@ pub fn halo_system(
             let d = lp.distance(eye);
             let b = l.color[0].max(l.color[1]).max(l.color[2]);
             let size = l.radius as f64 * 0.35;
-            (d < 4000.0 && b > 0.08 && (lp - eye).dot(fw) > -size).then_some((d, i))
+            // Glowing faces' lights (Emissive Surfaces) have no lamp to haze round.
+            (!l.emitter && d < 4000.0 && b > 0.08 && (lp - eye).dot(fw) > -size).then_some((d, i))
         })
         .collect();
     cand.sort_by(|a, b| a.0.total_cmp(&b.0));

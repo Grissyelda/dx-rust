@@ -54,8 +54,8 @@ It runs as a native Windows program, on Steam Deck / Linux and on Apple Silicon 
 - **A modern look (all optional):**
   - **remastered lighting**: walls and floors relit per pixel by the lamps that reach them, with relief maps
     (the Parallax Occlusion Mapping addon's normal and height maps from the Mods page, and generated ones for the
-    rest), highlights on metal, glass and tiles, and glowing lamps, screens and signs - while every shadow the
-    original baked stays;
+    rest), highlights on metal, glass and tiles, and glowing lamps, screens and signs that cast their colour on the
+    walls and people around them - while every shadow the original baked stays;
   - real-time shadows from the map's own lights, ambient occlusion, soft shadows and bloom;
   - rain with splashes, ripples and lightning storms (with the Precipitation mod's sounds), volumetric night
     clouds and rolling fog, light shafts and haze;
@@ -70,16 +70,18 @@ It runs as a native Windows program, on Steam Deck / Linux and on Apple Silicon 
     the rebuilt bodies, and HDTP's people step aside while they are on;
   - **ragdolls** (Avian physics) for the killed and knocked out, and for JC himself, fluid blood (droplets, trickles that run down walls
     and drip off their edges, bleeding wounds, pools under the dead, blood on your weapon at close range, bloodier
-    gibs), wound marks, hurt poses and limps, and coat tails that ripple as people move.
+    gibs), wound marks, hurt poses and limps, coat tails that ripple as people move, smooth blending between
+    moves, and bodies you can pose by dragging an arm, leg or head.
 - **Modern play (all optional):**
   - Modern Aiming: the aim sways within the accuracy cone (wide when untrained, steady when you master the
     weapon or hold still) and the crosshair and gun follow it, with aim-down-sights on guns (lined up on the
     original weapon models as well as HDTP's);
   - a diegetic rifle scope: the zoomed view is a live lens with a reticle in front of the eye, the world still
     around it, wandering under the reticle until you master the rifle;
-  - a third-person camera (free orbit or over the shoulder), mantling, carried objects as cover, ladder grabbing;
-  - Smarter AI (GMDX's tougher guards, sharper senses, suppressive fire, guards who call out and check on
-    disturbances) with optional alert markers over their heads;
+  - a third-person camera (free orbit or over the shoulder) with cover peeking round walls and corners, mantling,
+    carried objects as cover, ladder grabbing, and a melee bash with the gun in your hands;
+  - Smarter AI (GMDX's tougher guards, sharper senses, suppressive fire, strafing and new firing positions
+    between shots, thrown grenades, alarms heard across the map, guards who call out and check on disturbances) with optional alert markers over their heads;
   - elements (shocks in water, spreading fire), bullet penetration, melee arcs, thrown-object noise and body
     alarms;
   - terminals and keypads used in the world: the camera moves in to the screen and you click on it;
@@ -182,6 +184,29 @@ for Modern if the frame rate is low. macOS uses some function keys itself: turn 
 the augmentations to other keys. gilrs has no rumble on macOS, so only a DualSense rumbles there (it uses HID). Upscaling has no
 temporal antialiasing on macOS, so *Native AA* only sharpens there.
 
+### Multiplayer (co-op)
+Choose **Multiplayer** on the main menu.
+- **Host Room**: pick Co-op or Deathmatch, Classic or Modern, public or private, and up to 16 players. You get a short
+  code (like `DX12`) and a long code (like `ABCDE-FGHIJ-KLMNO`); *Copy Code* puts the long one on the clipboard.
+  Everyone marks *Ready*, then the host presses *Start Game*.
+- **Join Room**: type either code, pick or make a multiplayer character, then press *Ready*.
+- **Lobby Browser**: the public rooms, with their mode, players and ping.
+
+In co-op the host plays the story: conversations, mission scripts and travel follow the host, everything else
+(enemies, doors, switches, computers, kills) is shared, and each player keeps their own inventory, skills and
+augmentations. A fallen player gets up near the host after a few seconds (on Hard and Realistic without their
+inventory). Press **Y** to chat. Classic rooms are played without mods; in a Modern room every player needs the
+host's mods. Deathmatch works but needs more work.
+
+**Without the online services.** The short codes and the browser need the DX RUST lobby server; the long code
+doesn't. It holds the host's address, so players can join with it even when the server is down:
+1. The host opens a room and copies the long code (the room screen says whether the router opened the game's port
+   by itself).
+2. If it didn't, forward **UDP port 27972** to the host's PC in the router's settings (often under *Port
+   Forwarding* or *Virtual Server*), or turn on UPnP there and host again.
+3. Send the long code to the other players; they type it in *Join Room*. Players on the same network find the host
+   without any of this.
+
 ### Mods (optional)
 1. Download the mods you want and unzip each one into its own folder:
    [Lay D Denton Project](https://www.moddb.com/mods/the-lay-d-denton-project),
@@ -240,7 +265,7 @@ The whole game is implemented. Before 1.0:
 
 Much of the v2.0 list is already in (the Classic / Modern switch, real-time shadows, weather, modern water,
 third person, Smarter AI, achievements, skeletal characters, ragdolls, fluid blood and remastered lighting with
-relief maps). Still to come: aim and head-turning layered on the skeletal bodies, and multiplayer, among others.
+relief maps). Co-op multiplayer is in too (deathmatch needs more work).
 Every item stays optional. Four performance passes so far: a GPU pass took Modern from about 32 to 47 fps on an
 RTX 3050; a CPU pass (for slower and many-core processors, where the game's own threads were the limit) took the
 default settings on a Ryzen 5 3600 from 72 to 98 fps; a GPU-driven drawing pass (bindless materials and

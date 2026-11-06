@@ -275,7 +275,7 @@ pub fn frob_system(
         Res<GameRoot>,
         ResMut<crate::ai::PlayerHealth>,
     ),
-    mut grenades: FrobGrenades,
+    (mut grenades, net_items): (FrobGrenades, Query<&crate::netplay::NetItem>),
 ) {
     let _prof = crate::prof::scope("pickups::frob_system");
     debug_unlock(&keys, &mut player, &mut hud);
@@ -334,7 +334,7 @@ pub fn frob_system(
             }
         }
         Some((Target::Mover(idx), _)) => frob_mover(&mut cx, idx, &mut picking),
-        Some((Target::Item(e), _)) => frob_item(&mut cx, e, &items, &mut commands),
+        Some((Target::Item(e), _)) => frob_item(&mut cx, e, &items, &net_items, &mut commands),
         Some((Target::Body(e), _)) => frob_body(&mut cx, e, &mut bodies, &mut vis),
         Some((Target::Bot(e), _)) => frob_bot(&mut cx, e, &mut bodies),
         Some((Target::Grenade(e), _)) => frob_grenade(&mut cx, e, &mut grenades, &mut commands),
@@ -659,15 +659,43 @@ fn frob_mover(cx: &mut FrobCx, idx: usize, picking: &mut ResMut<movers::Picking>
 
 /// Picking an item up: augmentation canisters keep what they hold, NanoKeys go onto the ring, weapons bring their
 /// ammo (give_weapon), anything else into the inventory (or, with no room, used on the spot: FloorConsumables).
-fn frob_item(cx: &mut FrobCx, e: Entity, items: &FrobItems, commands: &mut Commands) {
+fn frob_item(cx: &mut FrobCx, e: Entity, items: &FrobItems, net_items: &Query<&crate::netplay::NetItem>, commands: &mut Commands) {
     let Ok((_, it, _, _)) = items.get(e) else {
         return;
     };
-    let (inv, hud) = (&mut cx.inv, &mut cx.hud);
+    let net = net_items.get(e).ok().map(|n| n.0);
+    // Multiplayer: an item dropped in the world is everyone's - a joiner asks the host for it (first come, first
+    // served) and gets it when the host says so (net_give_system).
+    if let Some(id) = net {
+        if crate::netplay::is_client() {
+            crate::netplay::ask_item(id);
+            commands.entity(e).remove::<PickupItem>().insert((crate::netplay::NetItemAsked, Visibility::Hidden));
+            return;
+        }
+    }
+    let (class, props) = (it.class.clone(), it.props.clone());
+    if take_pickup(&mut cx.inv, &mut cx.hud, &mut cx.assets, &mut cx.weapons.floor_use, &class, &props) {
+        commands.entity(e).despawn();
+        if let Some(id) = net {
+            crate::netplay::item_taken(id);
+        }
+    }
+}
+
+/// Pick up an item (class with its properties): into the inventory, onto the key ring, or used where it lies.
+/// False when it stays where it is (no room).
+fn take_pickup(
+    inv: &mut PlayerInventory,
+    hud: &mut HudMessage,
+    assets: &mut crate::weapons::RuntimeAssets,
+    floor_use: &mut Option<String>,
+    class: &str,
+    props: &[Property],
+) -> bool {
     // AugmentationCannister: what it holds (AddAugs) is kept with it for the medical bot.
-    if it.class == "AugmentationCannister" {
+    if class == "AugmentationCannister" {
         let aug = |k: u32| {
-            it.props
+            props
                 .iter()
                 .find(|p| p.name == "AddAugs" && p.index == k)
                 .and_then(|p| match &p.value {
@@ -676,76 +704,73 @@ fn frob_item(cx: &mut FrobCx, e: Entity, items: &FrobItems, commands: &mut Comma
                 })
                 .unwrap_or_default()
         };
-        let def = item_def(&it.class, &it.props);
-        match crate::augcan::add(inv, &def, [aug(0), aug(1)]) {
+        let def = item_def(class, props);
+        return match crate::augcan::add(inv, &def, [aug(0), aug(1)]) {
             Ok(m) => {
                 hud.text = m;
                 hud.time_left = 3.0;
-                crate::classic_hud::received(&it.class);
-                commands.entity(e).despawn();
+                crate::classic_hud::received(class);
+                true
             }
             Err(m) => {
                 // No room: it stays where it is.
                 hud.text = m;
                 hud.time_left = 3.0;
+                false
             }
-        }
-        return;
+        };
     }
     // NanoKey.GiveTo: straight onto the ring.
-    if it.class == "NanoKey" {
-        let id = match find(&it.props, "KeyID") {
+    if class == "NanoKey" {
+        let id = match find(props, "KeyID") {
             Some(Value::Name(k)) => k.clone(),
             _ => String::new(),
         };
-        let desc = match find(&it.props, "Description") {
+        let desc = match find(props, "Description") {
             Some(Value::Str(d)) => d.clone(),
             _ => "NanoKey".into(),
         };
         hud.text = crate::keys::give(&id, &desc);
         hud.time_left = 3.0;
-        commands.entity(e).despawn();
-        return;
+        return true;
     }
-    let def = item_def(&it.class, &it.props);
-    let copies = i(&it.props, "NumCopies").unwrap_or(1).max(1) as u32;
+    let def = item_def(class, props);
+    let copies = i(props, "NumCopies").unwrap_or(1).max(1) as u32;
     let before = inv.0.items.len()
         + inv.0.credits as usize
         + inv.0.ammo.iter().map(|x| x.1 as usize).sum::<usize>()
         + inv.0.items.iter().map(|x| x.count as usize).sum::<usize>();
-    let rounds = i(&it.props, "PickupAmmoCount").unwrap_or(0).max(0) as u32;
+    let rounds = i(props, "PickupAmmoCount").unwrap_or(0).max(0) as u32;
     let got = if def.kind == ItemKind::Weapon {
-        give_weapon(&mut inv.0, &it.class, &it.props, rounds, &mut cx.assets)
+        give_weapon(&mut inv.0, class, props, rounds, assets)
     } else {
         inv.0.pick_up(&def, copies)
     };
-    if let Some(msg) = got {
-        let after = inv.0.items.len()
-            + inv.0.credits as usize
-            + inv.0.ammo.iter().map(|x| x.1 as usize).sum::<usize>()
-            + inv.0.items.iter().map(|x| x.count as usize).sum::<usize>();
-        println!("PICKUP {} -> {msg}", it.class);
-        // GMDX HUD: Pickup Message Shows Size (setting PickupSize): "... [2x3]" when it didn't fit.
-        let msg = if setting!("PickupSize") > 0.5 && msg == imsim_core::inventory::no_room(&def) {
-            format!("{msg} [{}x{}]", def.inv_size.0, def.inv_size.1)
-        } else {
-            msg
-        };
-        hud.text = msg;
-        hud.time_left = 3.0;
-        if after != before {
-            commands.entity(e).despawn();
-        } else if copies == 1
-            && setting!("FloorConsumables") > 0.5
-            && matches!(
-                it.class.as_str(),
-                "MedKit" | "BioelectricCell" | "Candybar" | "Sodacan" | "SoyFood" | "Liquor40oz" | "WineBottle" | "Cigarettes"
-            )
-        {
-            // Ours: no room for it, so use it where it lies.
-            cx.weapons.floor_use = Some(it.class.clone());
-            commands.entity(e).despawn();
-        }
+    let Some(msg) = got else { return false };
+    let after = inv.0.items.len()
+        + inv.0.credits as usize
+        + inv.0.ammo.iter().map(|x| x.1 as usize).sum::<usize>()
+        + inv.0.items.iter().map(|x| x.count as usize).sum::<usize>();
+    println!("PICKUP {} -> {msg}", class);
+    // GMDX HUD: Pickup Message Shows Size (setting PickupSize): "... [2x3]" when it didn't fit.
+    let msg = if setting!("PickupSize") > 0.5 && msg == imsim_core::inventory::no_room(&def) {
+        format!("{msg} [{}x{}]", def.inv_size.0, def.inv_size.1)
+    } else {
+        msg
+    };
+    hud.text = msg;
+    hud.time_left = 3.0;
+    if after != before {
+        true
+    } else if copies == 1
+        && setting!("FloorConsumables") > 0.5
+        && matches!(class, "MedKit" | "BioelectricCell" | "Candybar" | "Sodacan" | "SoyFood" | "Liquor40oz" | "WineBottle" | "Cigarettes")
+    {
+        // Ours: no room for it, so use it where it lies.
+        *floor_use = Some(class.to_string());
+        true
+    } else {
+        false
     }
 }
 
@@ -772,6 +797,12 @@ fn frob_body(
         ((*seed >> 33) as u32) % 4
     };
     let mut msgs: Vec<String> = Vec::new();
+    // Multiplayer: bodies are everyone's - a joiner's search is the host's to resolve (net_give_system shows what
+    // he found); nobody else finds it again.
+    if npc.net.is_some() && crate::netplay::is_client() {
+        crate::netplay::search(npc.actor);
+        return;
+    }
     // A nanokey the pawn carried (PickupDistributor) goes onto the ring.
     let a = &level.actors[npc.actor];
     let key_msg = crate::keys::take_from(crate::ai::actor_tag(a)).or_else(|| {
@@ -805,70 +836,9 @@ fn frob_body(
     }
     if !npc.searched {
         npc.searched = true;
-        let a = &level.actors[npc.actor];
-        for x in a.props.iter().filter(|x| x.name == "InitialInventory") {
-            let Value::Item(path, count) = &x.value else {
-                continue;
-            };
-            let class = path.rsplit('.').next().unwrap_or("").to_string();
-            if class.is_empty() || class == "None" || class.starts_with("Ammo") {
-                continue; // DeusExCarcass.Frob destroys loose ammo
-            }
-            if npc.dropped.contains(&class) {
-                continue; // dropped when an arm was shot off
-            }
-            let d = assets.classes.defaults(&class);
-            if d.is_empty() {
-                continue;
-            }
-            let def = item_def(&class, &d);
-            let before =
-                inv.0.items.iter().map(|x| x.count).sum::<u32>() + inv.0.items.len() as u32;
-            let ammo_before: u32 = inv.0.ammo.iter().map(|x| x.1).sum();
-            if def.kind == ItemKind::Weapon {
-                // Weapons carry 1-4 random rounds (grenades 1); if we own the gun already we only take
-                // the ammo.
-                let grenade = matches!(
-                    class.as_str(),
-                    "WeaponLAM"
-                        | "WeaponGasGrenade"
-                        | "WeaponEMPGrenade"
-                        | "WeaponNanoVirusGrenade"
-                );
-                let rounds = if grenade { 1 } else { rnd() + 1 };
-                // Augmentique: the owner's weapon skin is found (GetSkinFromCarcass / UnlockSkin).
-                let item_name = match find(&d, "ItemName") {
-                    Some(Value::Str(n)) => n.clone(),
-                    _ => String::new(),
-                };
-                if let Some(m) = crate::augmentique::take_weapon_from(&a.class, &class, &item_name) {
-                    crate::classic_hud::client_message(&m);
-                }
-                let owned = inv.0.items.iter().any(|x| x.def.class == class);
-                if let Some(m) = give_weapon(&mut inv.0, &class, &d, rounds, assets) {
-                    msgs.push(m);
-                }
-                // AddReceivedItem: the weapon, or its ammo if we had the weapon already.
-                let got_weapon = !owned && inv.0.items.iter().any(|x| x.def.class == class);
-                if got_weapon {
-                    crate::classic_hud::received(&class);
-                } else if inv.0.ammo.iter().map(|x| x.1).sum::<u32>() > ammo_before {
-                    if let Some(Value::Path(a)) = find(&d, "AmmoName") {
-                        crate::classic_hud::received(a.rsplit('.').next().unwrap_or(""));
-                    }
-                }
-            } else if let Some(m) = inv.0.pick_up(&def, (*count).max(1) as u32) {
-                msgs.push(m);
-                if inv.0.items.iter().map(|x| x.count).sum::<u32>()
-                    + inv.0.items.len() as u32
-                    > before
-                    || def.kind != ItemKind::Weapon
-                        && matches!(def.kind, ItemKind::Credits { .. })
-                {
-                    crate::classic_hud::received(&class);
-                }
-            }
-        }
+        let loot = body_loot(level, &npc);
+        let owner = level.actors[npc.actor].class.clone();
+        msgs.extend(give_loot(inv, assets, &mut rnd, &owner, &loot));
     }
     // DeusExCarcass.AddReceivedItem prints "You found:" once, then each item's pickup message follows.
     hud.text = if msgs.is_empty() {
@@ -882,6 +852,159 @@ fn frob_body(
         level.actors[npc.actor].name,
         hud.text.replace('\n', " | ")
     );
+}
+
+/// What a body has on it to find: InitialInventory (class, count), less loose ammo and what it already dropped.
+fn body_loot(level: &dx_level::Level, npc: &crate::ai::Npc) -> Vec<(String, i32)> {
+    let a = &level.actors[npc.actor];
+    let mut out = Vec::new();
+    for x in a.props.iter().filter(|x| x.name == "InitialInventory") {
+        let Value::Item(path, count) = &x.value else {
+            continue;
+        };
+        let class = path.rsplit('.').next().unwrap_or("").to_string();
+        if class.is_empty() || class == "None" || class.starts_with("Ammo") {
+            continue; // DeusExCarcass.Frob destroys loose ammo
+        }
+        if npc.dropped.contains(&class) {
+            continue; // dropped when an arm was shot off
+        }
+        out.push((class, *count));
+    }
+    out
+}
+
+/// DeusExCarcass.Frob's search: each item found goes into the inventory; the pickup messages.
+fn give_loot(
+    inv: &mut PlayerInventory,
+    assets: &mut crate::weapons::RuntimeAssets,
+    rnd: &mut dyn FnMut() -> u32,
+    owner_class: &str,
+    loot: &[(String, i32)],
+) -> Vec<String> {
+    let mut msgs = Vec::new();
+    for (class, count) in loot {
+        let class = class.clone();
+        let count = *count;
+        let d = assets.classes.defaults(&class);
+        if d.is_empty() {
+            continue;
+        }
+        let def = item_def(&class, &d);
+        let before = inv.0.items.iter().map(|x| x.count).sum::<u32>() + inv.0.items.len() as u32;
+        let ammo_before: u32 = inv.0.ammo.iter().map(|x| x.1).sum();
+        if def.kind == ItemKind::Weapon {
+            // Weapons carry 1-4 random rounds (grenades 1); if we own the gun already we only take the ammo.
+            let grenade = matches!(class.as_str(), "WeaponLAM" | "WeaponGasGrenade" | "WeaponEMPGrenade" | "WeaponNanoVirusGrenade");
+            let rounds = if grenade { 1 } else { rnd() + 1 };
+            // Augmentique: the owner's weapon skin is found (GetSkinFromCarcass / UnlockSkin).
+            let item_name = match find(&d, "ItemName") {
+                Some(Value::Str(n)) => n.clone(),
+                _ => String::new(),
+            };
+            if let Some(m) = crate::augmentique::take_weapon_from(owner_class, &class, &item_name) {
+                crate::classic_hud::client_message(&m);
+            }
+            let owned = inv.0.items.iter().any(|x| x.def.class == class);
+            if let Some(m) = give_weapon(&mut inv.0, &class, &d, rounds, assets) {
+                msgs.push(m);
+            }
+            // AddReceivedItem: the weapon, or its ammo if we had the weapon already.
+            let got_weapon = !owned && inv.0.items.iter().any(|x| x.def.class == class);
+            if got_weapon {
+                crate::classic_hud::received(&class);
+            } else if inv.0.ammo.iter().map(|x| x.1).sum::<u32>() > ammo_before {
+                if let Some(Value::Path(a)) = find(&d, "AmmoName") {
+                    crate::classic_hud::received(a.rsplit('.').next().unwrap_or(""));
+                }
+            }
+        } else if let Some(m) = inv.0.pick_up(&def, count.max(1) as u32) {
+            msgs.push(m);
+            if inv.0.items.iter().map(|x| x.count).sum::<u32>() + inv.0.items.len() as u32 > before
+                || def.kind != ItemKind::Weapon && matches!(def.kind, ItemKind::Credits { .. })
+            {
+                crate::classic_hud::received(&class);
+            }
+        }
+    }
+    msgs
+}
+
+/// Multiplayer: items the host handed us, what we found on bodies there; the host answers joiners' searches.
+#[allow(clippy::too_many_arguments)]
+pub fn net_give_system(
+    mut inv: ResMut<PlayerInventory>,
+    mut hud: ResMut<HudMessage>,
+    mut assets: ResMut<crate::weapons::RuntimeAssets>,
+    mut weapons: ResMut<crate::weapons::Weapons>,
+    mut npcs: Query<&mut crate::ai::Npc>,
+    level: Res<LevelRes>,
+    player: Res<Player>,
+    mut seed: Local<u64>,
+) {
+    if crate::netplay::role() == crate::netplay::Role::Off {
+        return;
+    }
+    let level = &level.0;
+    if *seed == 0 {
+        *seed = 0x2468_ACE0_1357_9BDF;
+    }
+    let mut rnd = || {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((*seed >> 33) as u32) % 4
+    };
+    if crate::netplay::is_host() {
+        for (peer, actor) in crate::netplay::take_searches() {
+            let mut items = Vec::new();
+            let mut key = None;
+            if let Some(mut npc) = npcs.iter_mut().find(|n| n.actor == actor && n.net.is_none()) {
+                if !npc.searched {
+                    npc.searched = true;
+                    items = body_loot(level, &npc);
+                    let a = &level.actors[npc.actor];
+                    key = crate::keys::take_carried(crate::ai::actor_tag(a)).or_else(|| match find(&a.props, "BindName") {
+                        Some(Value::Str(b)) => crate::keys::take_carried(b),
+                        _ => None,
+                    });
+                }
+            }
+            crate::netplay::send_loot(peer, actor, items, key);
+        }
+        return;
+    }
+    for it in crate::netplay::take_granted() {
+        if env_on!("DXVIEW_NETLOG") {
+            println!("NETITEM granted {}", it.class);
+        }
+        let mut props = assets.classes.defaults(&it.class);
+        for x in crate::netplay::game_props(&it.extra) {
+            props.retain(|p| !(p.name.eq_ignore_ascii_case(&x.name) && p.index == x.index));
+            props.push(x);
+        }
+        if let Some(n) = it.ammo {
+            props.retain(|p| !(p.name.eq_ignore_ascii_case("PickupAmmoCount") && p.index == 0));
+            props.push(Property { name: "PickupAmmoCount".into(), index: 0, value: Value::Int(n) });
+        }
+        if !take_pickup(&mut inv, &mut hud, &mut assets, &mut weapons.floor_use, &it.class, &props) {
+            // No room: it goes back down at our feet, for anyone.
+            let extra = crate::netplay::game_props(&it.extra);
+            crate::netplay::throw_item(&it.class, player.body.location, DVec3::new(0.0, 0.0, 50.0), it.ammo, &extra);
+        }
+    }
+    for (actor, loot, key) in crate::netplay::take_loot() {
+        let mut msgs = Vec::new();
+        if let Some((id, desc)) = key {
+            crate::classic_hud::received("NanoKey");
+            msgs.push(crate::keys::give(&id, &desc));
+        }
+        let owner = level.actors.get(actor).map(|a| a.class.clone()).unwrap_or_default();
+        msgs.extend(give_loot(&mut inv, &mut assets, &mut rnd, &owner, &loot));
+        if let Some(mut npc) = npcs.iter_mut().find(|n| n.actor == actor) {
+            npc.searched = true;
+        }
+        hud.text = if msgs.is_empty() { "You don't find anything".into() } else { format!("You found:\n{}", msgs.join("\n")) };
+        hud.time_left = 3.0;
+    }
 }
 
 /// MedicalBot / RepairBot.Frob: the bot stops and raises its arm, and its screen opens.

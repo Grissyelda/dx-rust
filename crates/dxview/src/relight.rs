@@ -64,7 +64,7 @@ pub fn surface(name: &str) -> Surface {
     let n = name.to_ascii_lowercase();
     let has = |w: &[&str]| w.iter().any(|x| n.contains(x));
     // Glowing first: light fittings and panels, screens, monitors, neon and lit signs.
-    let emissive = if has(&["lightpanel", "lite_", "lights_", "lamp", "neon", "glow", "screen", "monitor", "lcd", "lightbox", "litesign", "exit_sign", "exitsign", "lightfix", "flourescent", "fluorescent"]) {
+    let emissive = if has(dx_level::emissive::GLOW_NAMES) {
         1.4
     } else {
         0.0

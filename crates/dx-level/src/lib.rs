@@ -16,6 +16,7 @@ pub mod collision;
 pub mod conversations;
 pub mod actors;
 pub mod lighting;
+pub mod emissive;
 pub mod movers;
 pub mod nav;
 pub mod firetex;
@@ -1148,7 +1149,7 @@ pub fn build_level(
             Some(e)
         })
         .collect();
-    let baked = lighting::bake(pkg, &model, classes, &zone_ambient);
+    let mut baked = lighting::bake(pkg, &model, classes, &zone_ambient);
     // Actors lit while this level is built start from their zone's ambient light too.
     let bsp_collision = collision::BspCollision::new(&model);
     actors::set_building_ambient(Some((bsp_collision.zone_tree(), zone_ambient.clone())));
@@ -1175,6 +1176,10 @@ pub fn build_level(
     let mut floor_mat: HashMap<i32, u16> = HashMap::new();
     // The surfaces drawn lit outside the sky room: the atlas patches that dynamic lights can reach (lmlights.rs).
     let mut lit_surfs: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // Emissive Surfaces: the faces that glow (emissive.rs), and each glowing texture's average colour.
+    let emit_on = emissive::on();
+    let mut glow_faces: Vec<emissive::GlowFace> = Vec::new();
+    let mut glow_color: HashMap<usize, Option<[f32; 3]>> = HashMap::new();
     for node in &model.nodes {
         if node.num_vertices < 3 {
             continue;
@@ -1407,6 +1412,30 @@ pub fn build_level(
             SurfaceClass::Opaque
         };
 
+        // A glowing face (drawn full bright, or a texture named as glowing), solid or masked, not in the sky room.
+        if emit_on && !is_sky && matches!(class, SurfaceClass::Opaque | SurfaceClass::Masked) {
+            if let Some(ti) = tex_idx {
+                let unlit = surf.poly_flags & pf::UNLIT != 0;
+                if emissive::glows(&textures[ti].name, unlit) {
+                    let col = *glow_color.entry(ti).or_insert_with(|| emissive::average_color(&textures[ti]));
+                    let points: Vec<[f32; 3]> = (0..node.num_vertices as usize)
+                        .filter_map(|k| model.vertices.get(node.vert_pool as usize + k).and_then(|v| model.points.get(v.vertex as usize)).copied())
+                        .collect();
+                    // The surface's own normal (a node's plane can face the other way for a poly sharing it).
+                    let nv = model.vectors.get(surf.v_normal as usize).copied().unwrap_or([node.plane[0], node.plane[1], node.plane[2]]);
+                    let l = (nv[0].powi(2) + nv[1].powi(2) + nv[2].powi(2)).sqrt().max(1e-9);
+                    if let (Some(color), true) = (col, points.len() >= 3) {
+                        glow_faces.push(emissive::GlowFace {
+                            surf: node.surf as usize,
+                            points,
+                            normal: [nv[0] / l, nv[1] / l, nv[2] / l],
+                            color,
+                            two_sided: surf.poly_flags & pf::TWO_SIDED != 0,
+                        });
+                    }
+                }
+            }
+        }
         // Auto-panning (e.g. drifting clouds): Unreal pans 64 texels per second times the zone's speed.
         let zone_speed = zone_pan.get(node.zone[1].max(0) as usize).copied().unwrap_or([1.0, 1.0]);
         let uv_scroll = [
@@ -1528,7 +1557,31 @@ pub fn build_level(
     if std::env::var_os("DXL_DETAILLOG").is_some() {
         eprintln!("DETAIL {} surface textures with a detail texture", texture_detail.iter().flatten().count());
     }
-    let lights = lighting::collect_lights(pkg, &model, classes);
+    let mut lights = lighting::collect_lights(pkg, &model, classes);
+    // Emissive Surfaces: the glowing faces' light into the lightmap, and their lights for meshes.
+    if !glow_faces.is_empty() {
+        let t0 = std::time::Instant::now();
+        let (em, mesh_lights) = emissive::emitters(&glow_faces, &lights);
+        let texels = emissive::add_to_bake(&mut baked, &em, &bsp_collision);
+        println!(
+            "level: {} glowing surfaces ({} faces, {} emitters) lit {} lightmap texels in {} ms",
+            mesh_lights.len(),
+            glow_faces.len(),
+            em.len(),
+            texels,
+            t0.elapsed().as_millis()
+        );
+        if std::env::var_os("DXL_EMITLOG").is_some() {
+            let mut seen = std::collections::HashSet::new();
+            for f in &glow_faces {
+                if seen.insert(f.surf) {
+                    let s = &model.surfaces[f.surf];
+                    eprintln!("EMIT surf {} {} flags {:#x} colour {:.2?} at {:.0?} normal {:.2?}", f.surf, pkg.object_path(s.material), s.poly_flags, f.color, f.points[0], f.normal);
+                }
+            }
+        }
+        lights.extend(mesh_lights);
+    }
     let (mesh_actors, actor_list) = actors::build(pkg, classes, &mut lib, &mut textures);
     let nav = nav::NavGraph::build(pkg, classes);
     let movers = {

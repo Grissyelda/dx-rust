@@ -592,10 +592,9 @@ pub fn security_system(
         ResMut<crate::effects::BloodFx>,
     ),
 ) {
-    // Multiplayer: the host's to run (a joiner sees the results through him).
-    if crate::netplay::story_off() {
-        return;
-    }
+    // Multiplayer: the host's to run (a joiner sees the results through him: here only the laser beams are drawn,
+    // on or off as the host says, and nothing they touch counts).
+    let client = crate::netplay::story_off();
     let _prof = crate::prof::scope("security::security_system");
     let dt = time.delta_secs().min(0.1);
     let dtd = dt as f64;
@@ -610,6 +609,29 @@ pub fn security_system(
         return;
     }
     let lvl = &level.0;
+    if client {
+        if let Some(on) = crate::netplay::take_lasers() {
+            for l in st.lasers.iter_mut() {
+                l.on = on.contains(&(l.actor as u32));
+            }
+        }
+        let f = frame(dt, dtd, *cam, &player, &ph);
+        let world = World { level: lvl, blockers: &blockers.list, ignore: None, pushable: None, movers: Some(&movers.rt) };
+        let sk = SkinCx { commands: &mut commands, assets: &mut assets, images: &mut images, materials: &mut materials };
+        let mut cx = DevCx { f, lvl, world, blockers: &blockers, movers: &movers.rt, alarms: &mut alarms, sk };
+        let gfx = LaserGfx {
+            beam_mesh: st.beam_mesh.clone().unwrap(),
+            red_beam: st.beam_mat.clone().unwrap(),
+            spot_mesh: st.spot_mesh.clone().unwrap(),
+            red_spot: st.spot_mat.clone().unwrap(),
+            blue_beam: st.beam2_mat.clone().unwrap(),
+            blue_spot: st.spot2_mat.clone().unwrap(),
+        };
+        for l in st.lasers.iter_mut() {
+            laser_tick(l, &mut cx, &gfx, &ph, &refs, &children, &part_mats, &mut fx, true);
+        }
+        return;
+    }
 
     // ---------------------------------------------------------------- incoming
     let hacked: Vec<usize> = HACKED.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
@@ -670,7 +692,11 @@ pub fn security_system(
         blue_spot: st.spot2_mat.clone().unwrap(),
     };
     for l in st.lasers.iter_mut() {
-        laser_tick(l, &mut cx, &gfx, &shot.ph, &refs, &children, &part_mats, &mut fx);
+        laser_tick(l, &mut cx, &gfx, &shot.ph, &refs, &children, &part_mats, &mut fx, false);
+    }
+    // Multiplayer: the joiners draw the beams that are on.
+    if crate::netplay::is_host() {
+        crate::netplay::lasers_on(st.lasers.iter().filter(|l| l.on && !l.gone).map(|l| l.actor as u32).collect());
     }
     for i in dead_turrets {
         remove_turret(&mut st.turrets[i], &mut commands, &mut blockers);
@@ -1344,6 +1370,7 @@ fn laser_tick(
     children: &Query<&Children>,
     part_mats: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
     fx: &mut Query<(&mut Transform, &mut Visibility), (With<LaserFx>, Without<Deco>, Without<FlyCam>)>,
+    view_only: bool,
 ) {
     if l.gone {
         return;
@@ -1395,7 +1422,9 @@ fn laser_tick(
     let mut spot_at: Vec<(DVec3, DVec3)> = Vec::new();
     if beam_on && near {
         let hit_now = laser_trace(l, cx, &mut segs, &mut spot_at);
-        laser_broken(l, cx, ph, hit_now);
+        if !view_only {
+            laser_broken(l, cx, ph, hit_now);
+        }
         l.last_hit = hit_now;
     } else if !beam_on {
         l.last_hit = None;
@@ -1403,6 +1432,12 @@ fn laser_tick(
     laser_visuals(l, cx, gfx, fx, beam_on && near, &segs, &spot_at);
     if let Some(s) = l.lens.as_mut() {
         cx.sk.set(s, Some(if l.on { "Effects.Laser.LaserSpot1" } else { BLACK }));
+    }
+    if view_only {
+        if beam_on && l.pos.distance(eye) < 425.0 {
+            crate::sound::hold(0xC_4000_0000 | l.actor as u64, "Ambient.Ambient.Laser", Some(l.pos), 0.5, 425.0, 1.0);
+        }
+        return;
     }
     // The emitter's hum (Ambient.Laser, radius 25 x 17) while the beam is on; the klaxon while alarmed.
     if beam_on && l.pos.distance(eye) < 425.0 {
@@ -1467,6 +1502,7 @@ fn laser_broken(l: &mut Laser, cx: &DevCx, ph: &PlayerHealth, hit_now: Option<Br
         if Some(who) != l.last_hit {
             let relevant = match who {
                 Broke::Player => !(ph.camo || (crate::optfixes::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
+                Broke::Blocker(b) if crate::netplay::player_blocker(b).is_some() => crate::netplay::player_blocker(b) == Some(false),
                 Broke::Blocker(b) => {
                     let a = &lvl.actors[blockers.list[b].actor];
                     let pawn = find(&a.props, "GroundSpeed").is_some();
@@ -1493,6 +1529,7 @@ fn laser_broken(l: &mut Laser, cx: &DevCx, ph: &PlayerHealth, hit_now: Option<Br
     } else if !l.no_alarm && hit_now.is_some() && hit_now != l.last_hit {
         let relevant = match hit_now.unwrap() {
             Broke::Player => !(ph.camo || (crate::optfixes::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
+            Broke::Blocker(b) if crate::netplay::player_blocker(b).is_some() => crate::netplay::player_blocker(b) == Some(false),
             Broke::Blocker(b) => {
                 let a = &lvl.actors[blockers.list[b].actor];
                 let pawn = find(&a.props, "GroundSpeed").is_some();

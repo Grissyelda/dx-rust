@@ -676,7 +676,16 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
                     (to[0] * n[0] + to[1] * n[1] + to[2] * n[2]) / len.max(1e-3)
                 };
                 let ndl = if l.flat { 1.0 } else if part.two_sided { d_n.abs() } else { d_n.max(0.0) };
-                let att = (1.0 - d / l.radius) * ndl * spot;
+                // A glowing face's light (emissive.rs) shines out of the face only.
+                let out = if l.emitter && l.dir != [0.0; 3] {
+                    -(to[0] * l.dir[0] + to[1] * l.dir[1] + to[2] * l.dir[2]) / len.max(1e-3)
+                } else {
+                    1.0
+                };
+                if out <= 0.0 {
+                    continue;
+                }
+                let att = (1.0 - d / l.radius) * ndl * spot * out;
                 for ch in 0..3 {
                     c[ch] += l.color[ch] * att;
                 }

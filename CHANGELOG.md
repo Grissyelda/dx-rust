@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Multiplayer, round two (November 6)
+- **Play without the online services**: every room also gets a long code (like `ABCDE-FGHIJ-KLMNO`) holding the
+  host's address and his key's fingerprint, so players can join with it even when the lobby server is down. *Copy
+  Code* puts it on the clipboard. The game asks the host's router to open its port (UPnP) and says when you need
+  to forward it by hand; players on the same network find the host by themselves.
+- **Ready-up**: everyone in the room marks Ready, then the host's *Start Game* lights up. The host can remove a
+  player.
+- **Chat** (Y) and a **news feed** at the top of the screen: who joined or left, who died and who did it, chat lines.
+- **Mod parity**: Classic rooms are played without mods; in a Modern room every player needs the host's mods (the
+  room says which to turn on or off).
+- **Play Offline**: when the online services can't be reached, host and join by long code from the Multiplayer
+  screen. After joining, a waiting room shows who's ready.
+- **Shared world, round two**: decorations (broken, pushed, carried, thrown) and items dropped in the world are the
+  same for everyone; bodies are searched through the host, so each is looted once; joiners see laser tripwires and
+  NPC rockets and darts; guards see joiners by their own light, speed, crouch and camo; name tags over players;
+  the player list on P; "An alarm was raised!" and how each player died in the feed; a lost host returns you to
+  the title.
+- `dxlobby` gained *Open port on router (UPnP)*, which forwards 27962 TCP and UDP to the PC running it.
+
+### Combat and animation (November 6)
+- **Smarter AI** gains GMDX's combat: firing positions picked between shots, strafing across your aim, sprinting
+  sideways and backing off from blades, some guards running round corners gun up, others holding their ground;
+  soldiers throw grenades (gas, and for MJ12 also EMP, scramble and LAM) at a player who stays put; alarms are
+  heard 3096 units away, soldiers and robots answer any alarm and search where it points.
+- **Third-Person Cover**: in third person, Q / E swap shoulders and peek round the wall or corner beside you.
+- **Melee Bash** (F): club with the gun in your hands; it can knock a guard out.
+- **Smooth Animation**: longer, eased blends between moves for people, JC's body and the weapon in hand, and smooth
+  turning; shots and blows stay on the original's frames.
+- **Posable Bodies**: take hold of a ragdoll's arm, leg or head with Use and drag it into a new pose.
+- **Glowing Surfaces** now light their surroundings: screens, signs and lamps cast their own colour on nearby
+  walls, floors and people (baked when the map loads; nothing extra per frame).
+- Fix: an alarm box that went off always searches at itself (it kept an old search point).
+- The README and the welcome screen explain multiplayer in a few lines.
+- ROADMAP.md is now a short list.
+
 ### Multiplayer, first playable co-op (November 5-6, night)
 - **Multiplayer** on the main menu (Achievements moved below it). Nothing goes online until you press it, then a
   "Connecting to online services..." box (Cancel stops it). Its screens are drawn like the rest of the menus:

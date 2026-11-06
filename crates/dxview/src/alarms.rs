@@ -1,7 +1,8 @@
 //! Alarm units (AlarmUnit): a pawn in the Alerting state runs to one and pushes it; while active (alarmTimeout
 //! seconds) it sounds the klaxon, blinks its light, raises its Event and sends the 'Alarm' AI event (heard out
 //! to 25 x (SoundRadius + 1) = 1625 units), which sends pawns that hate the alarm's instigator to search where
-//! the alarm went off.
+//! the alarm went off. Smarter AI (GMDX's AlarmUnit.UpdateAIEvents): SoundRadius 128 while it sounds, so the event
+//! carries 24 x 129 = 3096 units, and pawns look 3200 for a box to push (FindTarget, was 2400).
 
 use bevy::prelude::*;
 use glam::DVec3;
@@ -44,6 +45,18 @@ pub struct AlarmRt {
 impl AlarmRt {
     /// AI 'Alarm' event radius: 25 x (SoundRadius 64 + 1).
     pub const HEAR_RADIUS: f64 = 25.0 * 65.0;
+    /// Smarter AI (GMDX): 24 x (SoundRadius 128 + 1).
+    pub const HEAR_RADIUS_SMART: f64 = 24.0 * 129.0;
+
+    /// How far this alarm's 'Alarm' event carries (GMDX widens the alarm boxes' only; cameras, lasers and computers
+    /// keep theirs).
+    pub fn hear_radius(&self) -> f64 {
+        if !self.external && crate::smartai::on() {
+            Self::HEAR_RADIUS_SMART
+        } else {
+            Self::HEAR_RADIUS
+        }
+    }
 
     /// FindAlarmPosition: in front of the unit by both radii.
     pub fn push_spot(&self, pawn_radius: f64) -> DVec3 {
@@ -104,8 +117,10 @@ impl Alarms {
         }
     }
 
-    /// AlarmUnit.Trigger: switch on (and every unit sharing its Tag), raise Event.
-    pub fn trigger(&mut self, i: usize, instigator: Option<Target>) {
+    /// AlarmUnit.Trigger: switch on (and every unit sharing its Tag), raise Event. alarmLocation is the unit
+    /// itself; GMDX puts back the commented-out line that makes it where the instigator stands (`at`, Smarter AI):
+    /// pawns that hear it search there.
+    pub fn trigger(&mut self, i: usize, instigator: Option<Target>, at: Option<DVec3>) {
         let Some(u) = self.units.get(i) else { return };
         if u.disabled || u.active || u.confused > 0.0 {
             return;
@@ -121,18 +136,24 @@ impl Alarms {
                     .map(|(j, _)| j),
             );
         }
+        let mut raised = false;
         for j in fire {
             let u = &mut self.units[j];
             if u.disabled || u.active || u.confused > 0.0 {
                 continue;
             }
+            raised = true;
             u.active = true;
             u.t = 0.0;
             u.instigator = instigator;
+            u.seek = at.unwrap_or(u.pos);
             if !u.event.is_empty() {
                 self.events.push((u.event.clone(), true));
             }
             println!("ALARM {} triggered", j);
+        }
+        if raised {
+            crate::netplay::host_news("An alarm was raised!");
         }
     }
 
@@ -176,19 +197,20 @@ impl Alarms {
     pub fn heard_at(&self, at: DVec3) -> bool {
         self.units
             .iter()
-            .any(|u| u.active && u.pos.distance(at) < AlarmRt::HEAR_RADIUS)
+            .any(|u| u.active && u.pos.distance(at) < u.hear_radius())
     }
 
-    /// The nearest alarm a pawn could run to (Alerting.FindTarget): within 2400 (a squashed sphere), not
-    /// belonging to an alliance it hates, not already going off or claimed by someone else.
+    /// The nearest alarm a pawn could run to (Alerting.FindTarget): within 2400 (3200 with Smarter AI; a squashed
+    /// sphere), not belonging to an alliance it hates, not already going off or claimed by someone else.
     pub fn find_target(&self, me: usize, at: DVec3, hates: impl Fn(&str) -> bool) -> Option<usize> {
+        let reach = if crate::smartai::on() { 3200.0 } else { 2400.0 };
         let mut best: Option<(usize, f64)> = None;
         for (i, u) in self.units.iter().enumerate() {
             if u.external || hates(&u.alliance) {
                 continue;
             }
             let d = (u.pos - at) * DVec3::new(1.0, 1.0, 2.0);
-            if d.length() > 2400.0 {
+            if d.length() > reach {
                 continue;
             }
             if best.is_none_or(|(_, bd)| d.length() < bd) {
@@ -315,12 +337,13 @@ pub fn alarm_system(
             u.associated = None;
             continue;
         }
+        let r = u.hear_radius() as f32;
         crate::sound::hold(
             crate::sound::key_of(&format!("alarm-klaxon-{i}")),
             "Ambient.Ambient.Klaxon2",
             Some(u.pos),
             128.0 / 255.0,
-            AlarmRt::HEAR_RADIUS as f32,
+            r,
             1.0,
         );
         // The light blinks twice a second.

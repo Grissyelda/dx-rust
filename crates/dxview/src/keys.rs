@@ -58,12 +58,19 @@ pub fn set_carried(list: &[(String, String, String)]) {
 
 /// A pawn hands over (or drops) its nanokey: by its Tag or BindName. Returns the message, if it had one.
 pub fn take_from(pawn: &str) -> Option<String> {
+    let (id, desc) = take_carried(pawn)?;
+    Some(give(&id, &desc))
+}
+
+/// A pawn's nanokey taken off it (key id, description) without putting it on our ring (multiplayer: the host
+/// hands it to the joiner who searched the body).
+pub fn take_carried(pawn: &str) -> Option<(String, String)> {
     let k = {
         let mut c = CARRIED.lock().ok()?;
         let i = c.iter().position(|(t, _, _)| t.eq_ignore_ascii_case(pawn))?;
         c.remove(i)
     };
-    Some(give(&k.1, &k.2))
+    Some((k.1, k.2))
 }
 
 /// A new map is going in (loader.rs): this module's state of the map being left.

@@ -121,6 +121,8 @@ pub const PAD_ACTIONS: &[(&str, PadAction, Option<PadBtn>)] = &[
     ("Quick Save", PadAction::Game("Quick Save"), None),
     ("Quick Load", PadAction::Game("Quick Load"), None),
     ("Classic / Modern", PadAction::Game("Classic / Modern"), None),
+    ("Melee bash", PadAction::Game("Melee bash"), None),
+    ("Player list (multiplayer)", PadAction::Game("Player list (multiplayer)"), None),
 ];
 
 /// Analog state and what the pad wants this frame.

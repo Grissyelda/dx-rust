@@ -2793,6 +2793,7 @@ dependencies = [
 name = "dxview"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "avian3d",
  "bevy",
  "bincode",
@@ -3666,6 +3667,7 @@ dependencies = [
 name = "imsim-net"
 version = "0.1.0"
 dependencies = [
+ "blake2",
  "snow",
 ]
 

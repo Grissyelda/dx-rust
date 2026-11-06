@@ -7,7 +7,8 @@ description = "Engine-neutral online services: the lobby server (room codes, the
 
 [dependencies]
 snow = { version = "0.9.6", optional = true }
+blake2 = { version = "0.10.6", optional = true }
 
 [features]
 # Game traffic between players (encrypted UDP links). The lobby server doesn't need it.
-game = ["dep:snow"]
+game = ["dep:snow", "dep:blake2"]

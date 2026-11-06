@@ -47,6 +47,8 @@ pub struct Launches(pub Vec<Launch>);
 
 #[derive(Component)]
 pub struct Projectile {
+    /// Multiplayer: another player's (or the host's pawns') projectile, here only to be seen - it hurts nothing.
+    pub ghost: bool,
     /// The projectile class (AugDefense ignores Tracer / GreaselSpit / GraySpit).
     pub class: String,
     /// A Tracer: flies until it touches anything, then just goes (DeusExProjectile: "Don't even attempt damage with
@@ -209,8 +211,31 @@ pub fn launch_system(
             ownerless: false,
         })
         .collect();
-    for l in launches.0.drain(..).chain(gas) {
+    // Multiplayer: what the others launched flies here too, harmlessly (`ghost`); what is launched here, they see.
+    let ghosts: Vec<Launch> = crate::netplay::take_ghosts()
+        .into_iter()
+        .map(|(class, pos, dir, speed)| Launch {
+            class,
+            pos,
+            dir,
+            from: None,
+            mult: 0.0,
+            life: None,
+            scale: None,
+            still: false,
+            track: None,
+            track_at: None,
+            speed,
+            ownerless: true,
+        })
+        .collect();
+    let n_own = launches.0.len() + gas.len();
+    for (k, l) in launches.0.drain(..).chain(gas).chain(ghosts).enumerate() {
+        let ghost = k >= n_own;
         let mut d = assets.classes.defaults(&l.class);
+        if !ghost && !l.still && !l.class.ends_with("Tracer") && (crate::netplay::is_host() || l.from.is_none()) {
+            crate::netplay::ghost_out(&l.class, l.pos, l.dir, l.speed);
+        }
         // Augmentique: rockets from the player's skinned GEP gun.
         if l.from.is_none() && l.class.starts_with("Rocket") {
             crate::augmentique::apply_projectile_skin(&mut d, "WeaponGEPGun");
@@ -404,6 +429,7 @@ pub fn launch_system(
             && crate::perks::holding("WeaponPlasmaRifle")
             && crate::perks::has("PerkBlastEnergy");
         commands.entity(root).insert(Projectile {
+            ghost,
             tracer,
             class: short,
             light,
@@ -412,7 +438,7 @@ pub fn launch_system(
             cloud,
             pos: l.pos,
             vel: l.dir.normalize_or_zero() * speed,
-            damage: if tracer { 0.0 } else { damage },
+            damage: if tracer || ghost { 0.0 } else { damage },
             damage_type,
             from: l.from,
             ownerless: l.still || l.ownerless,
@@ -502,6 +528,7 @@ pub fn projectile_system(
         (f.z as f64).atan2(f.x as f64)
     };
     for (e, mut p, mut tf) in &mut q {
+        let ghost = p.ghost;
         p.life -= dt;
         let p = &mut *p;
         let (life, pos, from, damage, damage_type) =
@@ -563,14 +590,16 @@ pub fn projectile_system(
                         continue;
                     }
                     c.touched.push(b);
-                    pawn_hits.0.push(crate::damage::PawnHit {
-                        blocker: b,
-                        damage,
-                        damage_type,
-                        hit_loc: cyl.center,
-                        attacker: from,
-                        attacker_pos: pos,
-                    });
+                    if !ghost {
+                        pawn_hits.0.push(crate::damage::PawnHit {
+                            blocker: b,
+                            damage,
+                            damage_type,
+                            hit_loc: cyl.center,
+                            attacker: from,
+                            attacker_pos: pos,
+                        });
+                    }
                 }
             }
             c.next_damage -= dt;
@@ -591,14 +620,16 @@ pub fn projectile_system(
                     }
                     let a = &lvl.actors[cyl.actor];
                     if find(&a.props, "GroundSpeed").is_some() {
-                        pawn_hits.0.push(crate::damage::PawnHit {
-                            blocker: b,
-                            damage,
-                            damage_type,
-                            hit_loc: cyl.center,
-                            attacker: from,
-                            attacker_pos: center,
-                        });
+                        if !ghost {
+                            pawn_hits.0.push(crate::damage::PawnHit {
+                                blocker: b,
+                                damage,
+                                damage_type,
+                                hit_loc: cyl.center,
+                                attacker: from,
+                                attacker_pos: center,
+                            });
+                        }
                     }
                 }
                 // Cloud.Timer: everything in reach but the cloud's Owner (pepper spray's sprayer; grenade gas has none).
@@ -734,7 +765,9 @@ pub fn projectile_system(
             // Hit the player.
             let at = start + (end - start) * ph_hit.map(|x| x.fraction).unwrap_or(0.0);
             let off = crate::ai::player_offset(player.body.location, player_yaw, at);
-            ph.damage(p.damage, p.damage_type, off);
+            if !ghost {
+                ph.damage(p.damage, p.damage_type, off);
+            }
             p.impact(at);
             commands.entity(e).despawn();
             continue;
@@ -744,14 +777,16 @@ pub fn projectile_system(
             if let Some(b) = h.actor {
                 let a = &lvl.actors[blockers.list[b].actor];
                 if find(&a.props, "GroundSpeed").is_some() {
-                    pawn_hits.0.push(crate::damage::PawnHit {
-                        blocker: b,
-                        damage: p.damage,
-                        damage_type: p.damage_type,
-                        hit_loc: at,
-                        attacker: p.from,
-                        attacker_pos: at - p.vel.normalize_or_zero() * 64.0,
-                    });
+                    if !ghost {
+                        pawn_hits.0.push(crate::damage::PawnHit {
+                            blocker: b,
+                            damage: p.damage,
+                            damage_type: p.damage_type,
+                            hit_loc: at,
+                            attacker: p.from,
+                            attacker_pos: at - p.vel.normalize_or_zero() * 64.0,
+                        });
+                    }
                     if p.bleed {
                         crate::perks::mark_bleed(b, p.damage);
                     }
@@ -763,11 +798,13 @@ pub fn projectile_system(
                         continue;
                     }
                 } else {
-                    deco_hits.0.push(crate::destruct::DecoHit {
-                        blocker: b,
-                        damage: p.damage,
-                        damage_type: p.damage_type,
-                    });
+                    if !ghost {
+                        deco_hits.0.push(crate::destruct::DecoHit {
+                            blocker: b,
+                            damage: p.damage,
+                            damage_type: p.damage_type,
+                        });
+                    }
                 }
                 p.impact(at);
                 commands.entity(e).despawn();

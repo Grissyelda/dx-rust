@@ -58,6 +58,12 @@ const UE_PER_BLENDER: f32 = 53.0;
 const CLIP_FPS: f32 = 10.0;
 /// Cross-fade between sequences, seconds.
 const FADE: f32 = 0.25;
+/// Smooth Animation's (actors::smooth_on) longer cross-fade.
+const SMOOTH_FADE: f32 = 0.4;
+
+fn fade_len() -> f32 {
+    if crate::actors::smooth_on() { SMOOTH_FADE } else { FADE }
+}
 
 struct Reader<'a> {
     b: &'a [u8],
@@ -932,7 +938,7 @@ fn advance(s: &mut SkelBody, seq: &str, start: usize, frames: usize, f: f32, loo
     if s.shown_seq != Some(key) || s.clip_right != right {
         if s.shown_seq.is_some() {
             s.from.clone_from(&s.pose);
-            s.fade = FADE;
+            s.fade = fade_len();
         }
         s.shown_seq = Some(key);
         s.clip_right = right;
@@ -955,8 +961,9 @@ fn advance(s: &mut SkelBody, seq: &str, start: usize, frames: usize, f: f32, loo
         pose.copy_from_slice(&s.rig.rest);
     }
     if s.fade > 0.0 {
-        s.fade = (s.fade - dt).max(0.0);
-        let k = 1.0 - s.fade / FADE;
+        let len = fade_len();
+        s.fade = (s.fade - dt).max(0.0).min(len);
+        let k = 1.0 - s.fade / len;
         let k = k * k * (3.0 - 2.0 * k);
         for (p, f0) in pose.iter_mut().zip(&s.from) {
             *p = f0.lerp(p, k);
@@ -1484,7 +1491,8 @@ pub fn mirror_skel_system(
             advance(&mut s, &seq, start, frames, f, looped, dt);
             // DXVIEW_LEAN=<units>: a fixed lean for screenshots (the player isn't moved).
             let lean = env_val!("DXVIEW_LEAN").and_then(|v| v.parse::<f32>().ok()).unwrap_or(player.lean as f32);
-            apply_lean(&mut s, lean);
+            // (Third-person cover leaning bends him further toward the peek: thirdperson::body_lean.)
+            apply_lean(&mut s, lean, crate::thirdperson::body_lean(lean));
             weapon_fix(&mut s, &b.mesh, start, frames, f);
             if crate::bodyfx::hurt_on() {
                 apply_hurt(&mut s, &crate::bodyfx::hurt_fracs(&ph.parts, &[100.0; 6]));
@@ -1736,14 +1744,16 @@ fn relaxed(rig: &Rig, female: bool) -> &'static [Trs] {
 /// Leaning (Q / E): the original slides the whole player sideways (`Player::lean` units, along his right). A body
 /// sliding about looked silly, so the rebuilt body keeps its feet where they were and bends at the hips instead: the
 /// skeleton is moved back by the lean and everything above the hips turned about them (more the higher it sits: the
-/// waist a little, the chest and head fully) so the head ends up where the eyes went. `lean` = units to the right.
-pub fn apply_lean(s: &mut SkelBody, lean: f32) {
-    if lean.abs() < 0.05 {
+/// waist a little, the chest and head fully) so the head ends up where the eyes went. `lean` = units the body slid
+/// to the right; `bend` = how far toward the right the head goes (the slide, or more when leaning from cover).
+pub fn apply_lean(s: &mut SkelBody, lean: f32, bend: f32) {
+    if lean.abs() < 0.05 && bend.abs() < 0.05 {
         return;
     }
     let from_ue = s.to_ue.inverse();
     // The slide in the rig's own space, and the rig's up and forward.
     let lat = from_ue.transform_vector3(Vec3::new(0.0, lean, 0.0));
+    let lat_bend = from_ue.transform_vector3(Vec3::new(0.0, bend, 0.0));
     let up = from_ue.transform_vector3(Vec3::Z).normalize_or(Vec3::Y);
     let fwd = from_ue.transform_vector3(Vec3::X).normalize_or(Vec3::Z);
     let mut g = std::mem::take(&mut s.gmat);
@@ -1759,8 +1769,8 @@ pub fn apply_lean(s: &mut SkelBody, lean: f32) {
     let span = (h1 - h0).max(1e-3);
     // The angle that carries the head the slide's length sideways, toward the slide - at most 22 degrees (a
     // person leans round a corner from the waist; past that the body slid with the camera looked like a fold).
-    let ang = (lat.length() / span).clamp(-0.95, 0.95).asin().min(22f32.to_radians());
-    let sign = if fwd.cross(up).dot(lat) >= 0.0 { 1.0 } else { -1.0 };
+    let ang = (lat_bend.length() / span).clamp(-0.95, 0.95).asin().min(22f32.to_radians());
+    let sign = if fwd.cross(up).dot(lat_bend) >= 0.0 { 1.0 } else { -1.0 };
     let mut ng: Vec<Mat4> = Vec::with_capacity(g.len());
     for m in &g {
         let moved = Mat4::from_translation(-lat) * *m;

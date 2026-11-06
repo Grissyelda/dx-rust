@@ -339,6 +339,11 @@ pub fn activate(list: &[(&'static ModDef, PathBuf)]) {
     }
 }
 
+/// The ids of every enabled mod (multiplayer checks that a room's players run the same ones).
+pub fn active_ids() -> Vec<&'static str> {
+    ACTIVE.read().map(|a| a.iter().map(|(i, _)| *i).collect()).unwrap_or_default()
+}
+
 /// The folder of an enabled mod.
 pub fn active(id: &str) -> Option<PathBuf> {
     ACTIVE.read().ok()?.iter().find(|(i, _)| *i == id).map(|(_, p)| p.clone())

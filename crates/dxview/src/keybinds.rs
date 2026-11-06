@@ -40,6 +40,7 @@ pub const ACTIONS: &[(&str, Input)] = &[
     ("Laser sight", K(KeyCode::BracketRight)),
     ("Change ammo", K(KeyCode::KeyT)),
     ("Change ammo (alt)", K(KeyCode::Quote)),
+    ("Melee bash", K(KeyCode::KeyF)),
     ("Belt 1", K(KeyCode::Digit1)),
     ("Belt 2", K(KeyCode::Digit2)),
     ("Belt 3", K(KeyCode::Digit3)),
@@ -73,6 +74,8 @@ pub const ACTIONS: &[(&str, Input)] = &[
     ("Third person view", K(KeyCode::KeyH)),
     ("Swap shoulder (third person)", K(KeyCode::KeyJ)),
     ("Classic / Modern", K(KeyCode::Tab)),
+    ("Chat (multiplayer)", K(KeyCode::KeyY)),
+    ("Player list (multiplayer)", K(KeyCode::KeyP)),
 ];
 
 /// Opens and closes the editor; not rebindable so it can't be lost (F10 is an augmentation key, as in the original).
@@ -364,6 +367,11 @@ pub fn remap_system(
         }
     }
     if focus.read().count() > 0 {
+        b.kb_keys.release_all();
+    }
+    // Typing a chat line: the keys are the chat's, the game sees none of them.
+    if crate::netplay::chat_open() {
+        crate::netplay::chat_keys(&b.typed);
         b.kb_keys.release_all();
     }
     for e in mouse_ev.read() {

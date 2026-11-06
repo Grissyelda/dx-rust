@@ -83,7 +83,12 @@ pub fn carry_system(
     carrying.consumed = false;
     CARRYING.store(carrying.held.is_some() || weapons.corpse.is_some(), std::sync::atomic::Ordering::Relaxed);
     let locked = cursor.grab_mode == CursorGrabMode::Locked;
-    let use_pressed = mouse.just_pressed(MouseButton::Right) || frob_req.0;
+    // Posable Bodies (ragdoll.rs) took this Use to grab or let go of a limb: nothing else frobs with it.
+    let limb = crate::ragdoll::use_consumed();
+    if limb {
+        carrying.consumed = true;
+    }
+    let use_pressed = (mouse.just_pressed(MouseButton::Right) || frob_req.0) && !limb;
     let fire_pressed = locked && mouse.just_pressed(MouseButton::Left);
 
     let eye = bevy_to_ue(cam.translation.to_array());

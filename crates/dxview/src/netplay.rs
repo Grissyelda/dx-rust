@@ -27,7 +27,7 @@ use crate::ai::{Npc, NpcState, OutOfWorld, PlayerHealth};
 use crate::LevelRes;
 use bevy::prelude::*;
 use glam::DVec3;
-use imsim_net::game::{self, Endpoint, Event as NetEvent, JoinInfo, PeerId};
+use imsim_net::game::{self, Endpoint, Event as NetEvent, HostAuth, JoinInfo, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -102,6 +102,10 @@ pub struct PState {
     pub flash: bool,
     /// Augmentations running (shown as their glow on this player's body for the others).
     pub augs: Vec<String>,
+    /// How much light falls on him (stealth::PlayerLight.brightness), and thermoptic camo: the host's pawns see
+    /// his body by the same rules as the host's own JC.
+    pub light: f32,
+    pub camo: bool,
 }
 
 /// The augmentations whose glow shows on a body.
@@ -160,11 +164,18 @@ pub enum HitOn {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 enum Msg {
-    Hello { proto: u32, look: Look, version: String },
+    /// `mods`: the mods this player runs (unreal_pkg::mods ids): a room's players all run the same ones.
+    Hello { proto: u32, look: Look, version: String, mods: Vec<String> },
+    /// Host -> a joiner who said hello: his player id.
+    YouAre(u8),
+    /// A joiner is ready (or not) to start.
+    Ready(bool),
+    /// A line typed in chat (host -> everyone: `from` = who said it).
+    Chat { from: u8, text: String },
     Welcome { you: u8, map: String, rules: Rules },
     Refuse(String),
-    /// Every player (the host is 0).
-    Roster(Vec<(u8, Look)>),
+    /// Every player (the host is 0) and whether he's ready.
+    Roster(Vec<(u8, Look, bool)>),
     Me(PState),
     Players(Vec<(u8, PState)>),
     Pawns(Vec<PawnNet>),
@@ -178,7 +189,7 @@ enum Msg {
     /// `by`: the player who did it (friendly fire / deathmatch), None = a pawn.
     Damage { damage: f32, kind: String, from: [f32; 3], by: Option<u8> },
     /// A player went down (`by`: the player who did it).
-    Died { by: Option<u8> },
+    Died { by: Option<u8>, kind: String },
     Travel(String),
     Speech { at: Option<[f32; 3]>, sound: String, name: String, text: String, radius: f32 },
     Noise { at: [f32; 3], radius: f32 },
@@ -187,6 +198,66 @@ enum Msg {
     Goals(Vec<crate::consys::Goal>),
     /// A line for everyone's log ("X joined").
     Note(String),
+    /// Host -> all: placed decorations that moved, and ones that broke, on map `map`.
+    Decos { map: u32, moved: Vec<DecoNet>, gone: Vec<u32> },
+    /// Joiner -> host: a decoration he pushed / carried / threw.
+    DecoMove(u32, DecoNet),
+    /// Joiner -> host: his shot / blow on a placed decoration.
+    DecoHit { actor: u32, damage: f32, kind: String },
+    /// Host -> all: an item dropped in the world (`id` > 0); joiner -> host: an item he dropped (id 0).
+    ItemSpawn(u32, ItemNet),
+    /// Joiner -> host: he picks the item up. Host -> the taker: it's his (the item as it was).
+    ItemTake(u32),
+    ItemGranted(ItemNet),
+    /// Host -> all: the item is gone (somebody took it).
+    ItemGone(u32),
+    /// Joiner -> host: he searches the body of placed pawn `actor`. Host -> him: what he found.
+    Search(u32),
+    Loot { actor: u32, items: Vec<(String, i32)>, key: Option<(String, String)> },
+    /// Host -> all: the laser tripwires / beams whose beam is on (placed actors), on map `map`.
+    Lasers(u32, Vec<u32>),
+    /// A projectile somebody launched (rocket, dart, plasma...): everyone else sees it fly (it does no harm there).
+    Ghost(GhostNet),
+}
+
+/// A placed decoration's place (Unreal units) and rotation.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DecoNet {
+    pub actor: u32,
+    pub pos: [f32; 3],
+    pub rot: [i32; 3],
+}
+
+/// A property value an item carries over its class defaults (a canister's AddAugs, a weapon's ammo...).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum NetVal {
+    Int(i32),
+    Float(f32),
+    Bool(bool),
+    Name(String),
+    Str(String),
+    Path(String),
+}
+
+/// An item dropped in the world: class, where it starts, how it's thrown, rounds for a weapon, overrides.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ItemNet {
+    pub map: u32,
+    pub class: String,
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub ammo: Option<i32>,
+    pub extra: Vec<(String, u32, NetVal)>,
+}
+
+/// A projectile's launch, for the others to see.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GhostNet {
+    pub map: u32,
+    pub class: String,
+    pub pos: [f32; 3],
+    pub dir: [f32; 3],
+    pub speed: Option<f32>,
 }
 
 fn encode(m: &Msg) -> Vec<u8> {
@@ -221,6 +292,10 @@ pub struct Remote {
     /// Host: said hello, Welcome not sent yet (the host isn't in a game).
     waiting: bool,
     pub ping: f32,
+    /// Ready to start (the host's lobby).
+    pub ready: bool,
+    /// Said hello (his name and look are known).
+    pub hello: bool,
 }
 
 #[derive(Default)]
@@ -232,6 +307,17 @@ struct Inbox {
 
 struct Net {
     role: Role,
+    /// Host: the room's public key (direct codes carry its fingerprint), the direct code once our address is
+    /// known, and what happened finding it (for the Host Room screen).
+    public: Option<[u8; 32]>,
+    direct: Option<String>,
+    direct_note: String,
+    /// Host: the game has started (players in the lobby are let in only then; later ones drop straight in).
+    started: bool,
+    /// Joiner: we said we're ready.
+    ready: bool,
+    /// The mods this player runs.
+    mods: Vec<String>,
     my_id: u8,
     rules: Rules,
     look: Look,
@@ -348,8 +434,16 @@ fn start(role: Role, ep: Endpoint, rules: Rules, look: Look) {
     let inbox = Arc::new(Mutex::new(Inbox::default()));
     let ib = inbox.clone();
     let _ = std::thread::Builder::new().name("netplay".into()).spawn(move || net_thread(ep, rx, ib));
+    let mut mods: Vec<String> = unreal_pkg::mods::active_ids().into_iter().map(str::to_string).collect();
+    mods.sort();
     let net = Net {
         role,
+        public: None,
+        direct: None,
+        direct_note: String::new(),
+        started: false,
+        ready: false,
+        mods,
         my_id: if role == Role::Host { 0 } else { 255 },
         rules,
         look,
@@ -391,6 +485,10 @@ fn start(role: Role, ep: Endpoint, rules: Rules, look: Look) {
     if let Ok(mut l) = LAST_END.lock() {
         l.clear();
     }
+    if let Ok(mut h) = HOST_HEARD.lock() {
+        *h = None;
+    }
+    *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *NET.lock().unwrap_or_else(|e| e.into_inner()) = Some(net);
 }
 
@@ -450,6 +548,7 @@ fn send_host(n: &Net, m: &Msg, reliable: bool) {
 /// lobby's HOST line. Joiners are let in once the host is in a game.
 pub fn open_host(rules: Rules) -> Result<(u16, String, Option<SocketAddr>), String> {
     leave("");
+    host_mods_check(rules.classic)?;
     let (private, public) = game::keypair();
     let ep = Endpoint::host(imsim_net::DEFAULT_PORT + 10, private, lobby_udp(), None).map_err(|e| format!("Couldn't open the game port ({e})."))?;
     let port = ep.local_port();
@@ -458,6 +557,12 @@ pub fn open_host(rules: Rules) -> Result<(u16, String, Option<SocketAddr>), Stri
     let mut ep = ep;
     ep.max_peers = rules.max_players.saturating_sub(1).clamp(1, 15);
     start(Role::Host, ep, rules, my_look());
+    with(|n| {
+        n.public = Some(public);
+        n.started = !crate::menus::intro_map();
+        n.direct_note = "Finding this PC's internet address...".into();
+    });
+    find_direct_code(port, public);
     Ok((port, game::hex(&public), lan))
 }
 
@@ -509,7 +614,7 @@ pub fn join(j: &imsim_net::client::Joined, look: Look) -> Result<(), String> {
             targets.push(a);
         }
     }
-    let ep = Endpoint::join(JoinInfo { host_key: key, targets, lobby: lobby_udp(), ticket: j.ticket, force_relay: env_on!("DXVIEW_FORCE_RELAY") })
+    let ep = Endpoint::join(JoinInfo { host: HostAuth::Key(key), targets, lobby: lobby_udp(), ticket: j.ticket, force_relay: env_on!("DXVIEW_FORCE_RELAY") })
         .map_err(|e| format!("Couldn't open a game socket ({e})."))?;
     let rules = Rules { coop: j.mode == imsim_net::Mode::Coop, classic: j.look == imsim_net::Look::Classic, tough: j.tough, max_players: j.max_players, ..Rules::default() };
     start(Role::Client, ep, rules, look);
@@ -520,6 +625,12 @@ pub fn join(j: &imsim_net::client::Joined, look: Look) -> Result<(), String> {
 pub fn leave(why: &str) {
     let mut g = NET.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(n) = g.take() {
+        if n.role == Role::Host {
+            close_router_port();
+        }
+        if let Ok(mut c) = CHATBOX.lock() {
+            c.open = false;
+        }
         let _ = n.tx.send(Out::Stop);
         // Long enough for the link thread to say goodbye (the game may be quitting).
         std::thread::sleep(Duration::from_millis(30));
@@ -805,9 +916,14 @@ pub fn net_in_system(
             }
             if role == Role::Client && *p == 0 {
                 n.status = format!("Connected ({:.0} ms)", r);
+                heard_host();
             }
         }
     });
+    // A joiner who hasn't heard from the host for HOST_SILENCE seconds has lost him.
+    if role == Role::Client && with(|n| n.welcomed).unwrap_or(false) && host_silent() {
+        with(|n| n.lost = Some("Lost connection to the host.".into()));
+    }
     if let Some(why) = with(|n| n.lost.take()).flatten() {
         crate::classic_hud::client_message(&why);
         leave(&why);
@@ -844,6 +960,9 @@ pub fn net_in_system(
             let map = lvl.name.clone();
             let rules = n.rules.clone();
             let mut welcomed = Vec::new();
+            if !n.started {
+                return;
+            }
             for r in n.remotes.iter_mut().filter(|r| r.waiting) {
                 r.waiting = false;
                 welcomed.push(r.id);
@@ -1235,9 +1354,10 @@ fn respawn_tick(
         if n.respawn.is_none() {
             // Just went down: who did it is everyone's news.
             let by = n.last_by.take();
+            let kind = LAST_HURT.lock().map(|k| k.clone()).unwrap_or_default();
             match n.role {
-                Role::Host => died(n, 0, by),
-                Role::Client => send_host(n, &Msg::Died { by }, true),
+                Role::Host => died(n, 0, by, &kind),
+                Role::Client => send_host(n, &Msg::Died { by, kind }, true),
                 Role::Off => {}
             }
         }
@@ -1293,7 +1413,7 @@ fn dm_spot(lvl: &dx_level::Level, others: &[DVec3]) -> Option<DVec3> {
 }
 
 /// Host: a player went down - the line for everyone, and the deathmatch score.
-fn died(n: &mut Net, who: u8, by: Option<u8>) {
+fn died(n: &mut Net, who: u8, by: Option<u8>, kind: &str) {
     let name = |n: &Net, id: u8| -> String {
         if id == 0 && n.role == Role::Host {
             n.look.name.clone()
@@ -1307,15 +1427,20 @@ fn died(n: &mut Net, who: u8, by: Option<u8>) {
             n.scores.entry(k).or_default().0 += 1;
             let (kills, _) = n.scores[&k];
             if n.rules.coop {
-                format!("{} was shot by {}.", name(n, who), name(n, k))
+                format!("{} was {} by {}.", name(n, who), how_died(kind), name(n, k))
             } else {
                 format!("{} killed {} ({} kills).", name(n, k), name(n, who), kills)
             }
         }
-        _ => format!("{} went down.", name(n, who)),
+        _ => match kind {
+            "Drowned" => format!("{} drowned.", name(n, who)),
+            "Fell" => format!("{} fell to his death.", name(n, who)),
+            "" => format!("{} went down.", name(n, who)),
+            k => format!("{} was {}.", name(n, who), how_died(k)),
+        },
     };
     if n.role == Role::Host {
-        crate::classic_hud::client_message(&line);
+        feed(&line, DEATH);
         send_all(n, &Msg::Note(line), true, None);
     }
 }
@@ -1395,7 +1520,8 @@ fn handle(role: Role, e: NetEvent, lvl: &dx_level::Level) {
                 if role == Role::Client {
                     n.status = "Connected. Waiting for the host's game...".into();
                     let look = n.look.clone();
-                    send_host(n, &Msg::Hello { proto: PROTO, look, version: env!("CARGO_PKG_VERSION").into() }, true);
+                    let mods = n.mods.clone();
+                    send_host(n, &Msg::Hello { proto: PROTO, look, version: env!("CARGO_PKG_VERSION").into(), mods }, true);
                 }
             });
         }
@@ -1408,8 +1534,15 @@ fn handle(role: Role, e: NetEvent, lvl: &dx_level::Level) {
                 }
                 if let Some(i) = n.remotes.iter().position(|r| r.id == id) {
                     let r = n.remotes.remove(i);
-                    let line = format!("{} left the game.", r.look.name);
-                    crate::classic_hud::client_message(&line);
+                    let line = if why.contains("timed out") {
+                        format!("{} lost connection.", r.look.name)
+                    } else {
+                        format!("{} left the game.", r.look.name)
+                    };
+                    sync(|s| {
+                        s.synced.remove(&id);
+                    });
+                    feed(&line, NEWS);
                     if role == Role::Host {
                         send_all(n, &Msg::Note(line), true, None);
                         send_roster(n);
@@ -1427,6 +1560,9 @@ fn handle(role: Role, e: NetEvent, lvl: &dx_level::Level) {
             }
         }
         NetEvent::Message { peer, data, .. } => {
+            if role == Role::Client && peer == 0 {
+                heard_host();
+            }
             let Some(m) = decode(&data) else { return };
             with(|n| on_msg(n, role, peer, m, lvl));
         }
@@ -1434,8 +1570,8 @@ fn handle(role: Role, e: NetEvent, lvl: &dx_level::Level) {
 }
 
 fn send_roster(n: &Net) {
-    let mut list = vec![(0u8, n.look.clone())];
-    list.extend(n.remotes.iter().map(|r| (r.id, r.look.clone())));
+    let mut list = vec![(0u8, n.look.clone(), true)];
+    list.extend(n.remotes.iter().filter(|r| r.hello).map(|r| (r.id, r.look.clone(), r.ready)));
     send_all(n, &Msg::Roster(list), true, None);
 }
 
@@ -1443,27 +1579,60 @@ fn remote_mut(n: &mut Net, id: u8) -> &mut Remote {
     if let Some(i) = n.remotes.iter().position(|r| r.id == id) {
         return &mut n.remotes[i];
     }
-    n.remotes.push(Remote { id, look: Look::default(), st: PState::default(), at: None, body: None, blocker: None, asked: false, waiting: false, ping: 0.0 });
+    n.remotes.push(Remote {
+        id,
+        look: Look::default(),
+        st: PState::default(),
+        at: None,
+        body: None,
+        blocker: None,
+        asked: false,
+        waiting: false,
+        ping: 0.0,
+        ready: false,
+        hello: false,
+    });
     n.remotes.last_mut().unwrap()
 }
 
 fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
     match (role, m) {
         // Host side.
-        (Role::Host, Msg::Hello { proto, mut look, version }) => {
+        (Role::Host, Msg::Hello { proto, mut look, version, mut mods }) => {
             if proto != PROTO {
                 send_to(n, peer, &Msg::Refuse(format!("The host plays version {} (you have {version}).", env!("CARGO_PKG_VERSION"))), true);
                 let _ = n.tx.send(Out::Kick(peer, "version".into()));
                 return;
             }
+            // Mod parity: a Classic room is played without mods, a Modern one with the host's mods, every one.
+            mods.sort();
+            if let Some(why) = mods_mismatch(n.rules.classic, &n.mods, &mods) {
+                send_to(n, peer, &Msg::Refuse(why), true);
+                let _ = n.tx.send(Out::Kick(peer, "mods".into()));
+                return;
+            }
             look.name = imsim_net::show_name(&imsim_net::clean_name(&look.name));
             let line = format!("{} joined the game.", look.name);
+            send_to(n, peer, &Msg::YouAre(peer), true);
             let r = remote_mut(n, peer);
             r.look = look;
             r.waiting = true;
-            crate::classic_hud::client_message(&line);
+            r.hello = true;
+            feed(&line, NEWS);
             send_all(n, &Msg::Note(line), true, Some(peer));
             send_roster(n);
+        }
+        (Role::Host, Msg::Ready(on)) => {
+            remote_mut(n, peer).ready = on;
+            send_roster(n);
+        }
+        (Role::Host, Msg::Chat { text, .. }) => {
+            let text = clean_chat(&text);
+            if !text.is_empty() {
+                let name = n.remotes.iter().find(|r| r.id == peer).map(|r| r.look.name.clone()).unwrap_or_default();
+                feed(&format!("{name}: {text}"), CHAT);
+                send_all(n, &Msg::Chat { from: peer, text }, true, Some(peer));
+            }
         }
         (Role::Host, Msg::Me(st)) => {
             let r = remote_mut(n, peer);
@@ -1476,7 +1645,16 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Host, Msg::Lock(i, l)) => n.locks.push((i, l)),
         (Role::Host, Msg::Hit { on, damage, kind, at, from }) => n.hits_in.push((peer, on, damage, kind, at, from)),
         (Role::Host, Msg::Noise { at, radius }) => n.noises_in.push((peer, at, radius)),
-        (Role::Host, Msg::Died { by }) => died(n, peer, by),
+        (Role::Host, Msg::Died { by, kind }) => died(n, peer, by, &kind),
+        (Role::Host, Msg::DecoMove(_, d)) => sync(|s| s.deco_moves.push(d)),
+        (Role::Host, Msg::DecoHit { actor, damage, kind }) => sync(|s| s.deco_hits.push((actor, damage, kind))),
+        (Role::Host, Msg::ItemSpawn(_, it)) => sync(|s| s.item_spawns.push((0, it))),
+        (Role::Host, Msg::ItemTake(id)) => sync(|s| s.takes.push((peer, id))),
+        (Role::Host, Msg::Search(actor)) => sync(|s| s.searches.push((peer, actor))),
+        (Role::Host, Msg::Ghost(g)) => {
+            send_all(n, &Msg::Ghost(g.clone()), false, Some(peer));
+            sync(|s| s.ghosts.push(g));
+        }
         // Joiner side.
         (Role::Client, Msg::Welcome { you, map, rules }) => {
             force_look(&rules);
@@ -1496,14 +1674,28 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             n.travel_in = Some(map);
         }
         (Role::Client, Msg::Refuse(why)) => n.lost = Some(why),
+        (Role::Client, Msg::YouAre(id)) => {
+            n.my_id = id;
+            n.remotes.retain(|r| r.id != id);
+            n.status = "In the host's lobby".into();
+        }
         (Role::Client, Msg::Roster(list)) => {
             let me = n.my_id;
-            n.remotes.retain(|r| list.iter().any(|(id, _)| *id == r.id));
-            for (id, look) in list {
+            n.remotes.retain(|r| list.iter().any(|(id, ..)| *id == r.id));
+            for (id, look, ready) in list {
                 if id != me {
-                    remote_mut(n, id).look = look;
+                    let r = remote_mut(n, id);
+                    r.look = look;
+                    r.ready = ready;
+                    r.hello = true;
+                } else {
+                    n.ready = ready;
                 }
             }
+        }
+        (Role::Client, Msg::Chat { from, text }) => {
+            let name = n.remotes.iter().find(|r| r.id == from).map(|r| r.look.name.clone()).unwrap_or_else(|| format!("Player {from}"));
+            feed(&format!("{name}: {}", clean_chat(&text)), CHAT);
         }
         (Role::Client, Msg::Players(list)) => {
             let me = n.my_id;
@@ -1534,7 +1726,27 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             force_look(&r);
             n.rules = r;
         }
-        (Role::Client, Msg::Note(line)) => crate::classic_hud::client_message(&line),
+        (Role::Client, Msg::Note(line)) => feed(&line, NEWS),
+        (Role::Client, Msg::Decos { map, moved, gone }) => sync(|s| {
+            if map == s.map {
+                s.deco_moves.extend(moved);
+                s.deco_gone.extend(gone);
+            }
+        }),
+        (Role::Client, Msg::ItemSpawn(id, it)) => sync(|s| {
+            if it.map == s.map {
+                s.item_spawns.push((id, it));
+            }
+        }),
+        (Role::Client, Msg::ItemGranted(it)) => sync(|s| s.granted.push(it)),
+        (Role::Client, Msg::ItemGone(id)) => sync(|s| s.items_gone.push(id)),
+        (Role::Client, Msg::Loot { actor, items, key }) => sync(|s| s.loot.push((actor, items, key))),
+        (Role::Client, Msg::Lasers(map, on)) => sync(|s| {
+            if map == s.map {
+                s.lasers = Some(on);
+            }
+        }),
+        (Role::Client, Msg::Ghost(g)) => sync(|s| s.ghosts.push(g)),
         _ => {}
     }
 }
@@ -1549,11 +1761,13 @@ pub fn net_out_system(
     movers: Res<crate::movers::Movers>,
     flags: Res<crate::ai::GameFlags>,
     weapons: Res<crate::weapons::Weapons>,
+    plight: Res<crate::stealth::PlayerLight>,
     cam: Single<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<Npc>)>,
     npcs: Query<(&Npc, &crate::actors::Deco, &crate::actors::Animated, Option<&OutOfWorld>)>,
 ) {
     let Some(role) = with(|n| n.role) else { return };
     let _prof = crate::prof::scope("netplay::net_out_system");
+    ME_DEAD.store(ph.dead, std::sync::atomic::Ordering::Relaxed);
     let dt = time.delta_secs();
     let lvl = &level.0;
     if crate::loader::busy() || !!crate::menus::intro_map() {
@@ -1595,6 +1809,8 @@ pub fn net_out_system(
             map: my_map,
             flash: crate::dynlight::flashlight().is_some(),
             augs: SHOWN_AUGS.iter().filter(|a| crate::abilities::aug_active(a)).map(|a| a.to_string()).collect(),
+            light: plight.brightness,
+            camo: ph.camo,
         };
         with(|n| match role {
             Role::Client => send_host(n, &Msg::Me(st), false),
@@ -1777,8 +1993,41 @@ pub fn dev_system(mut stage: Local<u8>, mut wait: Local<f32>, time: Res<Time>) {
         return;
     }
     *wait += time.delta_secs();
+    // The host's direct code goes beside the room code (<file>.direct) once it's known.
+    if let Some(path) = host.as_ref() {
+        if *stage >= 2 && *stage != 20 {
+            if let Some(code) = direct_code() {
+                println!("NET dev direct code {code}");
+                let _ = std::fs::write(format!("{path}.direct"), &code);
+                *stage = if *stage == 9 { 20 } else { *stage };
+            }
+        }
+    }
     match *stage {
         0 => {
+            // Without online services (DXVIEW_MP_OFFLINE=1 for the host; a direct code in the joiner's file).
+            if host.is_some() && env_on!("DXVIEW_MP_OFFLINE") {
+                let rules = Rules { classic: !crate::remaster::is_modern(), ..Rules::default() };
+                match open_host(rules) {
+                    Ok((port, ..)) => println!("NET dev offline host on port {port}"),
+                    Err(e) => println!("NET dev offline host failed: {e}"),
+                }
+                *stage = 9;
+                return;
+            }
+            if let Some(code) = join.as_ref().map(|p| std::fs::read_to_string(p).unwrap_or_else(|_| p.clone())).map(|c| c.trim().to_string()) {
+                if game::is_direct_code(&code) {
+                    println!("NET dev joining direct {code}");
+                    let r = join_code(&code);
+                    println!("NET dev join: {r:?}");
+                    *stage = 9;
+                    return;
+                }
+                if host.is_none() && env_on!("DXVIEW_MP_OFFLINE") {
+                    // Wait for the file to hold a direct code.
+                    return;
+                }
+            }
             crate::online::connect();
             *stage = 1;
         }
@@ -1932,4 +2181,987 @@ fn hue_sat(r: f32, g: f32, b: f32) -> (u8, u8) {
         (r - g) / d + 4.0
     } / 6.0;
     ((h * 255.0) as u8, ((1.0 - s) * 255.0) as u8)
+}
+
+/// A player's body (host side): how much light falls on him (0..1), as his own game measured it.
+pub fn body_light(id: u8) -> Option<f32> {
+    with(|n| n.remotes.iter().find(|r| r.id == id && r.at.is_some()).map(|r| r.st.light)).flatten()
+}
+
+/// A player's body (host side): (crouched, ground speed, thermoptic camo on).
+pub fn body_state(id: u8) -> Option<(bool, f32, bool)> {
+    with(|n| {
+        n.remotes.iter().find(|r| r.id == id && r.at.is_some()).map(|r| {
+            let v = r.st.vel;
+            (r.st.crouch, (v[0] * v[0] + v[1] * v[1]).sqrt(), r.st.camo)
+        })
+    })
+    .flatten()
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Direct codes: joining without online services.
+
+/// The router the host opened his port on (closed again when the room closes).
+static GATEWAY: Mutex<Option<(imsim_net::upnp::Gateway, u16)>> = Mutex::new(None);
+
+/// Host: work out the direct code on a thread - ask the router to open the game port (UPnP) and tell us its
+/// internet address, else ask a public STUN server for the address (the port must then be forwarded by hand).
+fn find_direct_code(port: u16, public: [u8; 32]) {
+    let _ = std::thread::Builder::new().name("direct code".into()).spawn(move || {
+        use imsim_net::upnp;
+        let note: String;
+        let mut ip = None;
+        match upnp::find_gateway(Duration::from_millis(2500)) {
+            Ok(g) => match g.add_port(upnp::Proto::Udp, port, 4 * 3600, "DX RUST game") {
+                Ok(()) => {
+                    ip = g.external_ip().ok().filter(|a| !a.is_private() && !a.is_unspecified());
+                    note = format!("Your router opened port {port} for the game.");
+                    if let Ok(mut gw) = GATEWAY.lock() {
+                        *gw = Some((g, port));
+                    }
+                }
+                Err(e) => note = format!("Couldn't open the port on the router ({e}): forward UDP port {port} to this PC."),
+            },
+            Err(_) => note = format!("No router answered (UPnP): forward UDP port {port} to this PC for players outside your network."),
+        }
+        if ip.is_none() {
+            ip = upnp::public_ip().ok();
+        }
+        let code = ip.map(|ip| game::direct_code(ip, port, &public));
+        with(|n| {
+            if n.public == Some(public) {
+                n.direct_note = match &code {
+                    Some(_) => note,
+                    None => "Couldn't find this PC's internet address: players on your network can still join with the code.".into(),
+                };
+                // Without an internet address the code still finds us on the LAN (it carries the key's fingerprint).
+                n.direct = Some(code.unwrap_or_else(|| game::direct_code(std::net::Ipv4Addr::UNSPECIFIED, port, &public)));
+            }
+        });
+    });
+}
+
+/// Host: the direct code (None while it's being worked out).
+pub fn direct_code() -> Option<String> {
+    with(|n| n.direct.clone()).flatten()
+}
+
+/// Host: what happened opening the router's port, for the Host Room screen.
+pub fn direct_note() -> String {
+    with(|n| n.direct_note.clone()).unwrap_or_default()
+}
+
+/// Whether `code` is a direct code (rather than a 4-character lobby code).
+pub fn is_direct_code(code: &str) -> bool {
+    game::is_direct_code(code)
+}
+
+/// Join with a direct code, as the character chosen (no online services needed).
+pub fn join_code(code: &str) -> Result<(), String> {
+    let (addr, fp) = game::parse_direct(code).ok_or("That isn't a room code.")?;
+    if CHARACTER.lock().map(|c| c.is_none()).unwrap_or(true) {
+        choose_character(crate::travel::session().unwrap_or_default(), None);
+    }
+    let look = my_look();
+    leave("");
+    let mut targets = Vec::new();
+    if !addr.ip().is_unspecified() {
+        targets.push(SocketAddr::V4(addr));
+    }
+    let ep = Endpoint::join(JoinInfo { host: HostAuth::Fingerprint(fp), targets, lobby: None, ticket: 0, force_relay: false })
+        .map_err(|e| format!("Couldn't open a game socket ({e})."))?;
+    start(Role::Client, ep, Rules::default(), look);
+    Ok(())
+}
+
+/// Copy text (the direct code) to the system clipboard.
+pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let mut c = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    c.set_text(text.to_string()).map_err(|e| e.to_string())
+}
+
+fn close_router_port() {
+    if let Some((g, port)) = GATEWAY.lock().ok().and_then(|mut g| g.take()) {
+        let _ = std::thread::Builder::new().name("upnp close".into()).spawn(move || {
+            let _ = g.remove_port(imsim_net::upnp::Proto::Udp, port);
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Mods: everyone in a room runs the same ones.
+
+fn mod_names(ids: &[String]) -> String {
+    ids.iter().map(|i| unreal_pkg::mods::def(i).map_or(i.as_str(), |d| d.name)).collect::<Vec<_>>().join(", ")
+}
+
+/// Host: a Classic room is played without mods.
+pub fn host_mods_check(classic: bool) -> Result<(), String> {
+    let ids: Vec<String> = unreal_pkg::mods::active_ids().into_iter().map(str::to_string).collect();
+    if classic && !ids.is_empty() {
+        return Err(format!(
+            "Classic rooms are played without mods, and this game runs {}. Switch them off on the launcher's Mods page, or host a Modern room.",
+            mod_names(&ids)
+        ));
+    }
+    Ok(())
+}
+
+/// Why a joiner running `theirs` can't play in this room (None = he can).
+fn mods_mismatch(classic: bool, host: &[String], theirs: &[String]) -> Option<String> {
+    if classic {
+        return (!theirs.is_empty()).then(|| {
+            format!("This is a Classic room, played without mods: switch off {} on the launcher's Mods page to join.", mod_names(theirs))
+        });
+    }
+    if host == theirs {
+        return None;
+    }
+    let missing: Vec<String> = host.iter().filter(|m| !theirs.contains(m)).cloned().collect();
+    let extra: Vec<String> = theirs.iter().filter(|m| !host.contains(m)).cloned().collect();
+    let mut why = "This Modern room's players all run the host's mods.".to_string();
+    if !missing.is_empty() {
+        why += &format!(" Install and turn on: {}.", mod_names(&missing));
+    }
+    if !extra.is_empty() {
+        why += &format!(" Turn off: {}.", mod_names(&extra));
+    }
+    Some(why)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The lobby before the game: who's in, who's ready.
+
+/// A player as the lobby screens list him.
+#[derive(Clone, Debug)]
+pub struct LobbyPlayer {
+    pub id: u8,
+    pub name: String,
+    pub ready: bool,
+    pub ping: f32,
+    pub host: bool,
+    pub me: bool,
+}
+
+/// Everyone in the room, the host first.
+pub fn lobby_players() -> Vec<LobbyPlayer> {
+    with(|n| {
+        let mut v = Vec::new();
+        if n.role == Role::Host {
+            v.push(LobbyPlayer { id: 0, name: n.look.name.clone(), ready: true, ping: 0.0, host: true, me: true });
+        }
+        for r in n.remotes.iter().filter(|r| r.hello) {
+            v.push(LobbyPlayer { id: r.id, name: r.look.name.clone(), ready: r.ready || r.id == 0, ping: r.ping, host: r.id == 0, me: false });
+        }
+        if n.role == Role::Client && n.my_id != 255 {
+            v.push(LobbyPlayer { id: n.my_id, name: n.look.name.clone(), ready: n.ready, ping: 0.0, host: false, me: true });
+        }
+        v.sort_by_key(|p| (!p.host, p.id));
+        v
+    })
+    .unwrap_or_default()
+}
+
+/// Joiner: ready (or not) to start.
+pub fn set_ready(on: bool) {
+    with(|n| {
+        if n.role == Role::Client {
+            n.ready = on;
+            send_host(n, &Msg::Ready(on), true);
+        }
+    });
+}
+
+pub fn is_ready() -> bool {
+    with(|n| n.ready).unwrap_or(false)
+}
+
+/// Host: every player in the lobby is ready (true with nobody else in).
+pub fn all_ready() -> bool {
+    with(|n| n.remotes.iter().filter(|r| r.hello && r.waiting).all(|r| r.ready)).unwrap_or(true)
+}
+
+/// Host: the game starts - players in the lobby come in once a map is up (and anyone joining later drops in).
+pub fn start_game() {
+    with(|n| n.started = true);
+}
+
+pub fn started() -> bool {
+    with(|n| n.started).unwrap_or(false)
+}
+
+/// Joiner: connected to the host and waiting in his lobby (not in his game yet).
+pub fn in_lobby() -> bool {
+    with(|n| n.role == Role::Client && n.my_id != 255 && !n.welcomed).unwrap_or(false)
+}
+
+/// Host: send a player away.
+pub fn kick(id: u8) {
+    with(|n| {
+        if n.role == Role::Host {
+            send_to(n, id, &Msg::Refuse("The host removed you from the game.".into()), true);
+            let _ = n.tx.send(Out::Kick(id, "kicked".into()));
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// News and chat at the top of the screen.
+
+const NEWS: [u8; 3] = [200, 230, 255];
+const CHAT: [u8; 3] = [255, 255, 255];
+const DEATH: [u8; 3] = [255, 120, 100];
+/// Seconds a line stays up.
+const FEED_SECS: f32 = 7.0;
+const FEED_LINES: usize = 5;
+
+static FEED: Mutex<Vec<(Instant, String, [u8; 3])>> = Mutex::new(Vec::new());
+
+struct Chat {
+    open: bool,
+    text: String,
+    blink: Option<Instant>,
+}
+static CHATBOX: Mutex<Chat> = Mutex::new(Chat { open: false, text: String::new(), blink: None });
+
+/// A line of news for the top of the screen (and the log).
+pub fn feed(line: &str, colour: [u8; 3]) {
+    if let Ok(mut f) = FEED.lock() {
+        f.push((Instant::now(), line.to_string(), colour));
+        if f.len() > 32 {
+            f.remove(0);
+        }
+    }
+}
+
+/// Host only: a news line for everyone in the room (alarms and the like).
+pub fn host_news(line: &str) {
+    let sent = with(|n| {
+        if n.role == Role::Host {
+            send_all(n, &Msg::Note(line.to_string()), true, None);
+            true
+        } else {
+            false
+        }
+    })
+    .unwrap_or(false);
+    if sent {
+        feed(line, NEWS);
+    }
+}
+
+fn clean_chat(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(120).collect::<String>().trim().to_string()
+}
+
+/// What the HUD's Net window shows: the latest news, and the chat line while typing.
+pub fn hud_lines() -> Vec<(String, [u8; 3])> {
+    if !active() {
+        return Vec::new();
+    }
+    if list_held() {
+        let mut out = vec![(format!("PLAYERS ({})", player_list().len()), [255, 242, 140])];
+        for (name, ping, alive, host) in player_list() {
+            let what = if alive { "" } else { "  - down" };
+            let who = if host { "  (host)" } else { "" };
+            let col = if alive { [220, 230, 240] } else { [255, 120, 100] };
+            out.push((format!("{name}{who}   {ping:.0} ms{what}"), col));
+        }
+        return out;
+    }
+    let mut out: Vec<(String, [u8; 3])> = FEED
+        .lock()
+        .map(|f| {
+            let n = f.len();
+            f.iter()
+                .skip(n.saturating_sub(FEED_LINES))
+                .filter(|(t, ..)| t.elapsed().as_secs_f32() < FEED_SECS)
+                .map(|(_, l, c)| (l.clone(), *c))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Ok(c) = CHATBOX.lock() {
+        if c.open {
+            let caret = c.blink.is_none_or(|t| t.elapsed().as_millis() % 1000 < 500);
+            out.push((format!("Say: {}{}", c.text, if caret { "_" } else { " " }), [255, 242, 140]));
+        }
+    }
+    out
+}
+
+/// The chat line is being typed (the game sees no keys meanwhile).
+pub fn chat_open() -> bool {
+    CHATBOX.lock().map(|c| c.open).unwrap_or(false)
+}
+
+/// Keys typed this frame while chatting (keybinds hands them over): letters go in, Enter sends, Escape cancels.
+pub fn chat_keys(typed: &[(KeyCode, Option<String>)]) {
+    let mut send = None;
+    if let Ok(mut c) = CHATBOX.lock() {
+        for (k, t) in typed {
+            match k {
+                KeyCode::Enter | KeyCode::NumpadEnter => {
+                    send = Some(std::mem::take(&mut c.text));
+                    c.open = false;
+                }
+                KeyCode::Escape => {
+                    c.text.clear();
+                    c.open = false;
+                }
+                KeyCode::Backspace => {
+                    c.text.pop();
+                }
+                _ => {
+                    if let Some(t) = t {
+                        for ch in t.chars().filter(|ch| !ch.is_control()) {
+                            if c.text.chars().count() < 120 {
+                                c.text.push(ch);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        c.blink = Some(c.blink.unwrap_or_else(Instant::now));
+    }
+    if let Some(text) = send {
+        say(&text);
+    }
+}
+
+/// Say something to everyone.
+pub fn say(text: &str) {
+    let text = clean_chat(text);
+    if text.is_empty() {
+        return;
+    }
+    with(|n| {
+        feed(&format!("{}: {text}", n.look.name), CHAT);
+        match n.role {
+            Role::Host => send_all(n, &Msg::Chat { from: 0, text: text.clone() }, true, None),
+            Role::Client => send_host(n, &Msg::Chat { from: n.my_id, text: text.clone() }, true),
+            Role::Off => {}
+        }
+    });
+}
+
+/// The chat key (Y by default, "Chat (multiplayer)") opens the chat line in play.
+pub fn chat_system(keys: Res<ButtonInput<KeyCode>>) {
+    if !active() || crate::keybinds::UI_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyY) && !chat_open() {
+        if let Ok(mut c) = CHATBOX.lock() {
+            c.open = true;
+            c.text.clear();
+            c.blink = Some(Instant::now());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The shared world: decorations, items dropped in the world, bodies' loot, laser beams, projectiles in flight.
+// The host decides; joiners ask and show. (Placed pickups stay each player's own copy.)
+
+#[derive(Default)]
+struct Sync {
+    /// The map this state is for (map_hash), and the loader generation it was made in.
+    map: u32,
+    gen: u64,
+    // In (both sides): positions to put decorations at, decorations to break, items to spawn ((id, item); host:
+    // id 0 = a joiner's drop to give an id), items gone, items granted to us, loot, laser states, projectiles.
+    deco_moves: Vec<DecoNet>,
+    deco_gone: Vec<u32>,
+    item_spawns: Vec<(u32, ItemNet)>,
+    items_gone: Vec<u32>,
+    granted: Vec<ItemNet>,
+    loot: Vec<(u32, Vec<(String, i32)>, Option<(String, String)>)>,
+    lasers: Option<Vec<u32>>,
+    ghosts: Vec<GhostNet>,
+    // Host in: joiners' hits on decorations, take requests, searches.
+    deco_hits: Vec<(u32, f32, String)>,
+    takes: Vec<(u8, u32)>,
+    searches: Vec<(u8, u32)>,
+    // Host bookkeeping: what the joiners were last told, the items lying about, the broken decorations, which
+    // joiner has had the whole picture for this map.
+    sent_decos: HashMap<u32, DecoNet>,
+    broken: Vec<u32>,
+    new_broken: Vec<u32>,
+    items: HashMap<u32, ItemNet>,
+    next_item: u32,
+    lasers_on: Vec<u32>,
+    synced: HashMap<u8, u32>,
+    // Joiner bookkeeping: where the host last put each decoration.
+    applied: HashMap<u32, DecoNet>,
+    deco_t: f32,
+}
+
+static SYNC: Mutex<Option<Sync>> = Mutex::new(None);
+static HOST_HEARD: Mutex<Option<Instant>> = Mutex::new(None);
+/// Seconds without a word from the host before a joiner gives up on him.
+const HOST_SILENCE: f32 = 10.0;
+const DECO_HZ: f32 = 10.0;
+/// The kind of the last damage this player took (for the line when he goes down).
+static LAST_HURT: Mutex<String> = Mutex::new(String::new());
+
+/// Work on the shared-world state. Never call `with` (the NET lock) inside: NET may be held around this, not the
+/// other way round.
+fn sync<R>(f: impl FnOnce(&mut Sync) -> R) -> R {
+    let mut g = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(Sync::default))
+}
+
+fn heard_host() {
+    if let Ok(mut h) = HOST_HEARD.lock() {
+        *h = Some(Instant::now());
+    }
+}
+
+fn host_silent() -> bool {
+    HOST_HEARD.lock().ok().and_then(|h| *h).is_some_and(|t| t.elapsed().as_secs_f32() > HOST_SILENCE)
+}
+
+/// The player took damage of this kind (PlayerHealth::damage): the line when he goes down says how.
+pub fn note_hurt(kind: &str) {
+    if active() {
+        if let Ok(mut k) = LAST_HURT.lock() {
+            k.clear();
+            k.push_str(kind);
+        }
+    }
+}
+
+fn how_died(kind: &str) -> &'static str {
+    match kind {
+        "Shot" | "AutoShot" | "Sabot" => "shot",
+        "Exploded" => "blown up",
+        "Burned" | "Flamed" => "burned",
+        "Shocked" | "Stunned" => "electrocuted",
+        "PoisonGas" | "TearGas" | "Poison" | "PoisonEffect" | "HalonGas" => "gassed",
+        "Radiation" => "irradiated",
+        "Drowned" => "drowned",
+        "Fell" => "killed by the fall",
+        "KnockedOut" => "knocked out",
+        _ => "killed",
+    }
+}
+
+fn v3(v: DVec3) -> [f32; 3] {
+    [v.x as f32, v.y as f32, v.z as f32]
+}
+
+fn d3(v: [f32; 3]) -> DVec3 {
+    DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64)
+}
+
+/// The map the shared-world state is for: a new map starts it over.
+fn sync_map(lvl: &dx_level::Level) -> u32 {
+    let m = map_hash(&lvl.name);
+    let g = crate::loader::generation();
+    sync(|s| {
+        if s.gen != g || s.map != m {
+            let next = s.next_item.max(1);
+            *s = Sync { map: m, gen: g, next_item: next, ..Default::default() };
+        }
+    });
+    m
+}
+
+/// Property overrides an item carries, for the wire.
+pub fn net_props(extra: &[unreal_pkg::props::Property]) -> Vec<(String, u32, NetVal)> {
+    use unreal_pkg::props::Value;
+    extra
+        .iter()
+        .filter_map(|p| {
+            let v = match &p.value {
+                Value::Int(i) => NetVal::Int(*i),
+                Value::Float(f) => NetVal::Float(*f),
+                Value::Bool(b) => NetVal::Bool(*b),
+                Value::Name(n) => NetVal::Name(n.clone()),
+                Value::Str(t) => NetVal::Str(t.clone()),
+                Value::Path(t) => NetVal::Path(t.clone()),
+                _ => return None,
+            };
+            Some((p.name.clone(), p.index, v))
+        })
+        .collect()
+}
+
+/// The overrides back as properties.
+pub fn game_props(extra: &[(String, u32, NetVal)]) -> Vec<unreal_pkg::props::Property> {
+    use unreal_pkg::props::{Property, Value};
+    extra
+        .iter()
+        .map(|(name, index, v)| Property {
+            name: name.clone(),
+            index: *index,
+            value: match v {
+                NetVal::Int(i) => Value::Int(*i),
+                NetVal::Float(f) => Value::Float(*f),
+                NetVal::Bool(b) => Value::Bool(*b),
+                NetVal::Name(n) => Value::Name(n.clone()),
+                NetVal::Str(t) => Value::Str(t.clone()),
+                NetVal::Path(t) => Value::Path(t.clone()),
+            },
+        })
+        .collect()
+}
+
+/// An item lying in the world that everybody shares (picked up once, by whoever is first).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct NetItem(pub u32);
+
+/// A joiner asked the host for this item; it's hidden until the host answers.
+#[derive(Component)]
+pub struct NetItemAsked;
+
+// --- Hooks for destruct.rs / pickups.rs / security.rs / projectiles.rs ----------------------------------------
+
+/// Joiner: his hit on placed decoration `actor` goes to the host. Returns true when the caller must not apply it.
+pub fn deco_hit(actor: usize, damage: f32, kind: &str) -> bool {
+    if !is_client() {
+        return false;
+    }
+    with(|n| send_host(n, &Msg::DecoHit { actor: actor as u32, damage, kind: kind.to_string() }, true));
+    true
+}
+
+/// Host: joiners' hits on decorations this frame (actor, damage, kind). Joiner: decorations the host broke
+/// (actor, kind "NetBreak").
+pub fn take_deco_hits() -> Vec<(usize, f32, String)> {
+    sync(|s| {
+        let mut v: Vec<(usize, f32, String)> = s.deco_hits.drain(..).map(|(a, d, k)| (a as usize, d, k)).collect();
+        v.extend(s.deco_gone.drain(..).map(|a| (a as usize, 1.0e9, "NetBreak".to_string())));
+        v
+    })
+}
+
+/// Host: placed decoration `actor` broke.
+pub fn deco_broken(actor: usize) {
+    if is_host() {
+        sync(|s| {
+            s.broken.push(actor as u32);
+            s.new_broken.push(actor as u32);
+        });
+    }
+}
+
+/// An item spawned in the world here. Host: it gets an id and every joiner sees it (returns the id). Joiner:
+/// None (his drops go through `throw_item`).
+pub fn item_spawned(class: &str, pos: DVec3, vel: DVec3, ammo: Option<i32>, extra: &[unreal_pkg::props::Property]) -> Option<u32> {
+    if !is_host() {
+        return None;
+    }
+    let it = ItemNet { map: sync(|s| s.map), class: class.to_string(), pos: v3(pos), vel: v3(vel), ammo, extra: net_props(extra) };
+    let id = sync(|s| {
+        s.next_item = s.next_item.max(1);
+        let id = s.next_item;
+        s.next_item += 1;
+        s.items.insert(id, it.clone());
+        id
+    });
+    with(|n| send_all(n, &Msg::ItemSpawn(id, it), true, None));
+    Some(id)
+}
+
+/// Joiner: an item he drops is the host's to put in the world (and so everyone's). Returns true when the caller
+/// must not spawn it here.
+pub fn throw_item(class: &str, pos: DVec3, vel: DVec3, ammo: Option<i32>, extra: &[unreal_pkg::props::Property]) -> bool {
+    if !is_client() {
+        return false;
+    }
+    let it = ItemNet { map: sync(|s| s.map), class: class.to_string(), pos: v3(pos), vel: v3(vel), ammo, extra: net_props(extra) };
+    with(|n| send_host(n, &Msg::ItemSpawn(0, it), true));
+    true
+}
+
+/// Items to spawn here this frame: (id, item). Joiner: the host's (id > 0). Host: joiners' drops (id 0: give it
+/// one with `item_spawned`).
+pub fn take_item_spawns() -> Vec<(u32, ItemNet)> {
+    sync(|s| std::mem::take(&mut s.item_spawns))
+}
+
+/// Items that are gone (taken) this frame.
+pub fn take_items_gone() -> Vec<u32> {
+    sync(|s| std::mem::take(&mut s.items_gone))
+}
+
+/// Host: somebody here (the host) took shared item `id`.
+pub fn item_taken(id: u32) {
+    if is_host() {
+        sync(|s| {
+            s.items.remove(&id);
+        });
+        with(|n| send_all(n, &Msg::ItemGone(id), true, None));
+    }
+}
+
+/// Joiner: ask the host for shared item `id`.
+pub fn ask_item(id: u32) {
+    with(|n| send_host(n, &Msg::ItemTake(id), true));
+}
+
+/// Host: joiners asking for items this frame (who, id).
+pub fn take_item_requests() -> Vec<(u8, u32)> {
+    sync(|s| std::mem::take(&mut s.takes))
+}
+
+/// Host: give item `id` to joiner `peer` (it's gone for everyone). False when it was already gone.
+pub fn grant_item(peer: u8, id: u32) -> bool {
+    let it = sync(|s| s.items.remove(&id));
+    with(|n| {
+        send_all(n, &Msg::ItemGone(id), true, None);
+        if let Some(it) = &it {
+            send_to(n, peer, &Msg::ItemGranted(it.clone()), true);
+        }
+    });
+    it.is_some()
+}
+
+/// Joiner: items the host gave us this frame.
+pub fn take_granted() -> Vec<ItemNet> {
+    sync(|s| std::mem::take(&mut s.granted))
+}
+
+/// Joiner: search the body of placed pawn `actor` (the host says what's on it).
+pub fn search(actor: usize) {
+    with(|n| send_host(n, &Msg::Search(actor as u32), true));
+}
+
+/// Host: joiners' searches this frame (who, actor).
+pub fn take_searches() -> Vec<(u8, usize)> {
+    sync(|s| s.searches.drain(..).map(|(p, a)| (p, a as usize)).collect())
+}
+
+/// Host: what joiner `peer` found on body `actor` (items: class, count; a nanokey: id, description).
+pub fn send_loot(peer: u8, actor: usize, items: Vec<(String, i32)>, key: Option<(String, String)>) {
+    with(|n| send_to(n, peer, &Msg::Loot { actor: actor as u32, items, key }, true));
+}
+
+/// Joiner: what we found on bodies (actor, items, key).
+pub fn take_loot() -> Vec<(usize, Vec<(String, i32)>, Option<(String, String)>)> {
+    sync(|s| s.loot.drain(..).map(|(a, i, k)| (a as usize, i, k)).collect())
+}
+
+/// Host: the lasers whose beam is on now (placed actors): the joiners are told when it changes.
+pub fn lasers_on(mut on: Vec<u32>) {
+    if !is_host() {
+        return;
+    }
+    on.sort_unstable();
+    let (changed, map) = sync(|s| {
+        let c = s.lasers_on != on;
+        if c {
+            s.lasers_on = on.clone();
+        }
+        (c, s.map)
+    });
+    if changed {
+        with(|n| send_all(n, &Msg::Lasers(map, on), true, None));
+    }
+}
+
+/// Joiner: the host's laser beams, when they changed.
+pub fn take_lasers() -> Option<Vec<u32>> {
+    sync(|s| s.lasers.take())
+}
+
+/// A blocker that is another player's body here: whether he's hidden by camouflage. None = not a player.
+pub fn player_blocker(b: usize) -> Option<bool> {
+    with(|n| n.remotes.iter().find(|r| r.blocker == Some(b)).map(|r| r.st.camo)).flatten()
+}
+
+/// A projectile launched here that the others should see (rockets, darts, plasma...): host -> everyone,
+/// joiner -> host (who passes it on).
+pub fn ghost_out(class: &str, pos: DVec3, dir: DVec3, speed: Option<f64>) {
+    if !in_game() {
+        return;
+    }
+    let g = GhostNet { map: sync(|s| s.map), class: class.to_string(), pos: v3(pos), dir: v3(dir), speed: speed.map(|v| v as f32) };
+    with(|n| match n.role {
+        Role::Host => send_all(n, &Msg::Ghost(g), false, None),
+        Role::Client => send_host(n, &Msg::Ghost(g), false),
+        Role::Off => {}
+    });
+}
+
+/// Projectiles the others launched, to fly here harmlessly: (class, pos, dir, speed).
+pub fn take_ghosts() -> Vec<(String, DVec3, DVec3, Option<f64>)> {
+    sync(|s| {
+        let map = s.map;
+        s.ghosts.drain(..).filter(|g| g.map == map).map(|g| (g.class, d3(g.pos), d3(g.dir), g.speed.map(|v| v as f64))).collect()
+    })
+}
+
+// --- Decorations ------------------------------------------------------------------------------------------------
+
+fn deco_net(actor: usize, d: &crate::actors::Deco) -> DecoNet {
+    let l = d.body.location;
+    DecoNet { actor: actor as u32, pos: [l.x as f32, l.y as f32, l.z as f32], rot: d.rotation }
+}
+
+fn differs(a: &DecoNet, b: &DecoNet) -> bool {
+    let d = (a.pos[0] - b.pos[0]).abs() + (a.pos[1] - b.pos[1]).abs() + (a.pos[2] - b.pos[2]).abs();
+    d > 0.75 || a.rot != b.rot
+}
+
+fn put_deco(d: &mut crate::actors::Deco, tf: &mut Transform, blockers: &mut crate::actors::Blockers, to: &DecoNet) {
+    let p = d3(to.pos);
+    let far = p.distance(d.body.location) > 12.0;
+    d.body.location = p;
+    d.body.velocity = DVec3::ZERO;
+    if d.rotation != to.rot {
+        d.rotation = to.rot;
+        d.spun = true;
+    }
+    if let Some(b) = d.blocker {
+        if let Some(c) = blockers.list.get_mut(b) {
+            c.center = p;
+        }
+    }
+    let draw = p + d.pre;
+    tf.translation = Vec3::from(dx_level::ue_to_bevy([draw.x as f32, draw.y as f32, draw.z as f32]));
+    if far {
+        // Let its own physics settle and relight it where it now is.
+        d.body.physics = imsim_core::body::BodyPhysics::Falling;
+    }
+}
+
+/// The shared world each frame: decorations' places both ways, the host's broken-decoration and item news, and
+/// the whole picture for a joiner who has just arrived on the host's map.
+#[allow(clippy::too_many_arguments)]
+pub fn world_sync_system(
+    time: Res<Time>,
+    level: Res<LevelRes>,
+    player: Res<crate::Player>,
+    mut blockers: ResMut<crate::actors::Blockers>,
+    mut decos: Query<(&mut crate::actors::Deco, &mut Transform), Without<Npc>>,
+) {
+    let role = role();
+    if role == Role::Off {
+        return;
+    }
+    let _prof = crate::prof::scope("netplay::world_sync_system");
+    let lvl = &level.0;
+    if crate::loader::busy() || crate::menus::intro_map() {
+        return;
+    }
+    let my_map = sync_map(lvl);
+    let placed = crate::save::placed_count().min(lvl.actors.len());
+    let actor_of = |d: &crate::actors::Deco, blockers: &crate::actors::Blockers| -> Option<usize> {
+        let b = d.blocker?;
+        let a = blockers.list.get(b)?.actor;
+        (a < placed).then_some(a)
+    };
+    // Positions to apply (host: from joiners; joiner: from the host).
+    let moves = sync(|s| std::mem::take(&mut s.deco_moves));
+    if !moves.is_empty() {
+        let want: HashMap<u32, &DecoNet> = moves.iter().map(|m| (m.actor, m)).collect();
+        for (mut d, mut tf) in &mut decos {
+            let Some(a) = actor_of(&d, &blockers) else { continue };
+            if let Some(m) = want.get(&(a as u32)) {
+                put_deco(&mut d, &mut tf, &mut blockers, m);
+                if role == Role::Client {
+                    sync(|s| {
+                        s.applied.insert(a as u32, (*m).clone());
+                    });
+                }
+            }
+        }
+    }
+    let tick = sync(|s| {
+        s.deco_t += time.delta_secs();
+        if s.deco_t >= 1.0 / DECO_HZ {
+            s.deco_t = 0.0;
+            true
+        } else {
+            false
+        }
+    });
+    if !tick {
+        return;
+    }
+    let me = player.body.location;
+    match role {
+        Role::Host => {
+            if !with(|n| n.remotes.iter().any(|r| !r.waiting && r.hello)).unwrap_or(false) {
+                return;
+            }
+            // Moved since the joiners were last told (or since the map began).
+            let mut moved = Vec::new();
+            let mut all_moved = Vec::new();
+            sync(|s| {
+                for (d, _) in &decos {
+                    let Some(a) = actor_of(&d, &blockers) else { continue };
+                    let now = deco_net(a, &d);
+                    let start = DecoNet { actor: a as u32, pos: v3(d.start), rot: d.orig_rot };
+                    let last = s.sent_decos.get(&(a as u32)).unwrap_or(&start);
+                    if differs(&now, last) {
+                        s.sent_decos.insert(a as u32, now.clone());
+                        moved.push(now);
+                    }
+                }
+                all_moved.extend(s.sent_decos.values().cloned());
+            });
+            let gone = sync(|s| std::mem::take(&mut s.new_broken));
+            if !moved.is_empty() || !gone.is_empty() {
+                with(|n| send_all(n, &Msg::Decos { map: my_map, moved, gone }, true, None));
+            }
+            // A joiner who has just arrived on this map gets the whole picture: moved and broken decorations, the
+            // items lying about, the laser beams.
+            let arrivals: Vec<u8> = with(|n| {
+                n.remotes.iter().filter(|r| r.hello && !r.waiting && r.at.is_some() && r.st.map == my_map).map(|r| r.id).collect()
+            })
+            .unwrap_or_default();
+            for id in arrivals {
+                let fresh = sync(|s| {
+                    if s.synced.get(&id) == Some(&my_map) {
+                        None
+                    } else {
+                        s.synced.insert(id, my_map);
+                        Some((s.broken.clone(), s.items.iter().map(|(k, v)| (*k, v.clone())).collect::<Vec<_>>(), s.lasers_on.clone()))
+                    }
+                });
+                if let Some((broken, items, lasers)) = fresh {
+                    with(|n| {
+                        send_to(n, id, &Msg::Decos { map: my_map, moved: all_moved.clone(), gone: broken }, true);
+                        for (k, it) in items {
+                            send_to(n, id, &Msg::ItemSpawn(k, it), true);
+                        }
+                        send_to(n, id, &Msg::Lasers(my_map, lasers), true);
+                    });
+                }
+            }
+        }
+        Role::Client => {
+            if !with(|n| n.welcomed).unwrap_or(false) {
+                return;
+            }
+            // What this player moved himself (pushed, carried, threw) goes to the host. Only things near him: the
+            // rest only move because the host says so.
+            let mut out = Vec::new();
+            sync(|s| {
+                for (d, _) in &decos {
+                    let Some(a) = actor_of(&d, &blockers) else { continue };
+                    if d.body.location.distance(me) > 400.0 {
+                        continue;
+                    }
+                    let now = deco_net(a, &d);
+                    let start = DecoNet { actor: a as u32, pos: v3(d.start), rot: d.orig_rot };
+                    let last = s.applied.get(&(a as u32)).unwrap_or(&start);
+                    if differs(&now, last) {
+                        s.applied.insert(a as u32, now.clone());
+                        out.push(now);
+                    }
+                }
+            });
+            if !out.is_empty() {
+                with(|n| {
+                    for d in out {
+                        send_host(n, &Msg::DecoMove(my_map, d), false);
+                    }
+                });
+            }
+        }
+        Role::Off => {}
+    }
+}
+
+/// Items the others took, gone here too; the host hands out the items joiners asked for.
+pub fn item_sync_system(mut commands: Commands, time: Res<Time>, items: Query<(Entity, &NetItem)>, added: Query<(&NetItem, &crate::pickups::PickupItem), Added<NetItem>>) {
+    if role() == Role::Off {
+        return;
+    }
+    let log = env_on!("DXVIEW_NETLOG");
+    if log {
+        for (ni, it) in &added {
+            println!("NETITEM spawn {} {}", ni.0, it.class);
+        }
+    }
+    let gone = take_items_gone();
+    if !gone.is_empty() {
+        for (e, ni) in &items {
+            if gone.contains(&ni.0) {
+                if log {
+                    println!("NETITEM gone {}", ni.0);
+                }
+                commands.entity(e).despawn();
+            }
+        }
+    }
+    // Developer aid: DXVIEW_NETTAKE=<secs> - this player grabs every shared item lying about at that game time.
+    if let Some(t) = env_val!("DXVIEW_NETTAKE").and_then(|v| v.parse::<f32>().ok()) {
+        let now = time.elapsed_secs();
+        if now >= t && now - time.delta_secs() < t {
+            for (e, ni) in &items {
+                println!("NETITEM take {}", ni.0);
+                if is_client() {
+                    ask_item(ni.0);
+                    commands.entity(e).remove::<crate::pickups::PickupItem>().insert((NetItemAsked, Visibility::Hidden));
+                } else {
+                    item_taken(ni.0);
+                    commands.entity(e).despawn();
+                }
+            }
+        }
+    }
+    if is_host() {
+        for (peer, id) in take_item_requests() {
+            if grant_item(peer, id) {
+                if let Some((e, _)) = items.iter().find(|(_, ni)| ni.0 == id) {
+                    commands.entity(e).despawn();
+                }
+            }
+        }
+    }
+}
+
+// --- Name tags and the player list --------------------------------------------------------------------------------
+
+/// Other players' bodies here that a name tag goes over: (name, head position).
+pub fn tag_targets() -> Vec<(String, DVec3, bool)> {
+    with(|n| {
+        let coop = n.rules.coop;
+        n.remotes
+            .iter()
+            .filter(|r| r.at.is_some() && r.body.is_some() && !r.st.dead && !r.st.camo)
+            .map(|r| (r.look.name.clone(), d3(r.st.pos) + DVec3::Z * 50.0, coop))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Everyone in the game for the player list (held key): name, ping (ms), alive, host.
+pub fn player_list() -> Vec<(String, f32, bool, bool)> {
+    with(|n| {
+        let mut v = Vec::new();
+        let me_dead = ME_DEAD.load(std::sync::atomic::Ordering::Relaxed);
+        if n.role == Role::Host {
+            v.push((n.look.name.clone(), 0.0, !me_dead, true));
+        }
+        for r in n.remotes.iter().filter(|r| r.hello) {
+            v.push((r.look.name.clone(), r.ping, !r.st.dead, r.id == 0));
+        }
+        if n.role == Role::Client {
+            let host_ping = n.remotes.iter().find(|r| r.id == 0).map(|r| r.ping).unwrap_or(0.0);
+            v.push((n.look.name.clone(), host_ping, !me_dead, false));
+        }
+        v.sort_by_key(|p| !p.3);
+        v
+    })
+    .unwrap_or_default()
+}
+
+static ME_DEAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LIST_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The player list key ("Player list (multiplayer)", P by default) is held.
+pub fn list_held() -> bool {
+    LIST_HELD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn player_list_key_system(keys: Res<ButtonInput<KeyCode>>) {
+    let on = active() && !chat_open() && !crate::keybinds::UI_MODE.load(std::sync::atomic::Ordering::Relaxed) && keys.pressed(KeyCode::KeyP);
+    LIST_HELD.store(on, std::sync::atomic::Ordering::Relaxed);
 }

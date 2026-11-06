@@ -817,6 +817,8 @@ enum Body {
     Chars(MpChars),
     /// Ours: Online Services - the lobby server's address.
     Addr(MpAddr),
+    /// Ours: the waiting room (a joiner in the host's lobby).
+    Wait(MpWait),
 }
 
 struct AchieveView {
@@ -909,7 +911,7 @@ impl Enhance {
             ("DiegeticScreens", "Interface", "Terminals In The World", "Computers, ATMs and keypads are used where they stand: the view moves in to the screen (the security terminal unfolds first), the original interface shows on the monitor and the mouse works on it; keypads are pressed button by button. Move the mouse off the screen for a second to step away."),
             ("DiscordPresence", "Interface", "Discord Rich Presence", "Show your location, mission and difficulty in Discord."),
             ("BodyAlarms", "AI", "Bodies Raise Alarms", "Guards who find a friend's body - dead or unconscious - run for the nearest alarm and then search the spot; with no alarm about they shout and others come to look."),
-            ("SmarterAI", "AI", "Smarter AI", "GMDX's AI work plus our stealth: guards see better by difficulty and may open fire at once when they spot or hear you close by, wait a moment before shooting after losing you, lay down suppressive fire where you vanished, miss more against a moving target; cameras see farther and tell guards where you are. Ours: true darkness hides you beyond arm's reach, guards that searched in vain stay on edge, call each other over, and notice lights going out and doors opening."),
+            ("SmarterAI", "AI", "Smarter AI", "GMDX's AI work plus our stealth: guards see better by difficulty and may open fire at once when they spot or hear you close by, wait a moment before shooting after losing you, lay down suppressive fire where you vanished, miss more against a moving target, strafe across your aim and pick new firing spots between shots, throw grenades when you're dug in, answer alarms from much farther away; cameras see farther and tell guards where you are. Ours: true darkness hides you beyond arm's reach, guards that searched in vain stay on edge, call each other over, and notice lights going out and doors opening."),
             ("HudFade", "Interface", "Combat HUD", "Out of combat the crosshair and the status displays (health, compass, ammo, belt, active augs) fade away; they come back at once in a fight, when you aim down the sights or at an enemy, fire, get hurt, are badly hurt or change weapons."),
             ("AlertIndicators", "AI", "Alert Indicators", "A small marker over a hostile guard's head: an eye filling as they grow suspicious, a question mark while they search, an exclamation mark in a fight."),
             ("ThrownNoise", "AI", "Thrown Objects Make Noise", "Anything you throw is heard where it lands or bounces - further for heavy things - and armed guards in earshot go to look. Good for distractions."),
@@ -971,6 +973,10 @@ impl Enhance {
             ("Mantling", "Gameplay", "Mantling", "Jump at a ledge you can reach - up to about the height of your arms - and you climb onto it; jump at a low obstacle and you vault onto it. Not while crouched or carrying anything heavy."),
             ("CarryCover", "Gameplay", "Carried Objects As Cover", "A crate or anything else of some weight held in front of you stops the bullets meant for you, and takes the damage itself (it can break)."),
             ("ThirdPerson", "Gameplay", "Third Person View", "H switches between first person and a view of JC from behind (J swaps the side the camera sits on). The camera keeps out of walls and comes in closer while you aim with the scope key; first person is where you start. See Third Person Camera for how it turns."),
+            ("ThirdPersonCover", "Gameplay", "Third-Person Cover", "In third person, leaning (Q / E) swaps the camera to that shoulder and peeks round the edge of the wall or corner beside you; your shots leave from where you peek. JC's body leans with it, crouched or standing."),
+            ("MeleeBash", "Gameplay", "Melee Bash", "F swings the gun in your hands as a club: a short blow that can knock a guard out (heavier guns hit harder). Not while scoped, reloading or firing."),
+            ("SmoothAnimation", "Visuals", "Smooth Animation", "People, JC's body and the weapon in your hands blend from one move to the next instead of snapping, and turn smoothly. Shots and blows still land on the original's frames."),
+            ("PosableBodies", "Gameplay", "Posable Bodies", "With Ragdolls on, Use on a body's arm, leg or head takes hold of it and drags that limb along with your view; Use again lets go and the body settles in its new pose. Use on the chest or hips searches and picks up the body as before."),
             ("AtmosphericFog", "Visuals", "Atmospheric Fog", "A thin night haze over distance, thicker in the rain, so far-off buildings and the skyline melt into the dark."),
             ("ModernCoronas", "Visuals", "Modern Coronas", "Lamps and lights get a soft bloom in the light's colour round a small bright core, sized to the lamp so it shrinks with distance, fading in and out smoothly, instead of the original's corona pictures."),
             ("LightHalos", "Visuals", "Light Halos", "The air around lamps glows softly with their colour, fading as you get close; brighter in the rain."),
@@ -1172,7 +1178,7 @@ impl Enhance {
             ("RemasteredLighting", "Remastered Lighting", "Every wall and floor lit per pixel by the lamps that reach it, with real falloff and shape, and the original's shadows kept. Needed for Relief Maps and Material Highlights. Takes effect on the next map.", vec!["Off", "On"]),
             ("ReliefMaps", "Relief Maps", "With Remastered Lighting: bricks, planks, tiles and grates catch the light with normal maps - the Parallax Occlusion addon's where it has them (shipped with the game), the rest made from each texture. Parallax adds depth to them as you move. Takes effect on the next map.", vec!["Off", "Normal Maps", "Normal + Parallax"]),
             ("MaterialSpecular", "Material Highlights", "With Remastered Lighting: metal, glass, tiles and polished floors shine where the light catches them. Takes effect on the next map.", vec!["Off", "On"]),
-            ("EmissiveSurfaces", "Glowing Surfaces", "Light fittings, screens and signs glow past white (with Bloom, a soft halo). Takes effect on the next map.", vec!["Off", "On"]),
+            ("EmissiveSurfaces", "Glowing Surfaces", "Light fittings, screens and signs glow past white (with Bloom, a soft halo) and cast their own colour on the walls, floors and people around them. Takes effect on the next map.", vec!["Off", "On"]),
         ] {
             let mut c = debug_mode_choice();
             c.key = key.into();
@@ -1539,7 +1545,7 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             Body::Menu { buttons, x, w, notes: Vec::new() }
         }
         "MenuScreenMultiplayer" | "MenuScreenHostRoom" | "MenuScreenJoinRoom" | "MenuScreenLobbyBrowser" | "MenuScreenChooseCharacter"
-        | "MenuScreenOnlineServices" => {
+        | "MenuScreenOnlineServices" | "MenuScreenWaitingRoom" => {
             let (mf, body) = mp_window(assets, class);
             f = mf;
             body
@@ -2106,13 +2112,14 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             (crate::diegetic::keypad_active(), crate::gamepad::pad_in_use()).hash(h);
             hash_debug(h, &crate::gamepad::glyph_kind());
         }
-        Body::Host(MpHost { choices, name, code, players, joiners }) => {
+        Body::Host(MpHost { choices, name, code, players, offline, open, direct, note, lobby, all_ready, copied }) => {
             choices.len().hash(h);
             for c in choices {
                 choice_key(c, h);
             }
-            (name, code, players, joiners).hash(h);
+            (name, code, players, offline, open, direct, note, lobby, all_ready, copied.is_some()).hash(h);
         }
+        Body::Wait(MpWait { rows, ready, connected, scroll }) => (rows, ready, connected, scroll).hash(h),
         Body::Join(MpJoin { code }) => code.hash(h),
         Body::Addr(MpAddr { edit }) => edit_key(edit, h),
         Body::Chars(MpChars { list, rows, room, sel, scroll }) => (list, rows, room, sel, scroll).hash(h),
@@ -2318,9 +2325,9 @@ fn action_enabled(win: &Win, action: u8, key: &str) -> bool {
         Body::NewGame(ng) if action == 5 && key == "START" => !ng.name.text.is_empty(),
         Body::SaveLoad(sl) if action == 5 && (key == "LOAD" || key == "DELETE") => sl.sel.and_then(|r| sl.game(r)).is_some(),
         Body::SaveLoad(sl) if action == 5 && key == "SAVE" => sl.sel.is_some() && !sl.edit.get().trim().is_empty() && crate::save::can_save(false),
-        Body::Host(h) if action == ACT_START => h.code.is_some(),
+        Body::Host(h) if action == ACT_START => h.open && h.all_ready,
         Body::Chars(c) if action == ACT_CHAR_GO => c.sel.is_some(),
-        Body::Join(j) if action == ACT_JOIN_CODE => imsim_net::valid_code(&j.code),
+        Body::Join(j) if action == ACT_JOIN_CODE => mp_join_act(&j.code).is_some(),
         Body::Browse(b) if action == ACT_JOIN_ROW => b.sel.is_some(),
         _ => true,
     }
@@ -2341,6 +2348,7 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
         Body::Browse(b) => draw_mp_browse(u, b, cx, cy),
         Body::Chars(c) => draw_mp_chars(u, c, cx, cy),
         Body::Addr(a) => draw_mp_addr(u, a, cx, cy),
+        Body::Wait(w) => draw_mp_wait(u, w, cx, cy),
         Body::Choices { choices } => draw_choices(u, choices, &win.f, &mut win.drop, cx, cy),
         Body::NewGame(ng) => draw_new_game(u, ng, focus, fonts, cx, cy),
         Body::Keys(k) if k.pad => draw_pad_keys(u, k, cx, cy, waiting_keys),
@@ -2826,6 +2834,10 @@ enum Act {
     MpLeave,
     /// Ours: Online Services saved: the lobby's new address (as typed), then connect there.
     MpSetAddr(String),
+    /// Ours: join with a direct code (Choose Character first).
+    MpDirect(String),
+    /// Ours: the connect-failed box's Play Offline.
+    MpOffline,
 }
 
 /// A new save's description: where the player is (DeusExLevelInfo.MissionLocation), as the original's default.
@@ -3844,7 +3856,7 @@ fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
     }
     // The join screen's room code.
     if let Body::Join(j) = &mut win.body {
-        return mp_join_typing(j, k, text);
+        return mp_join_typing(j, k, text, ctrl);
     }
     // The server address (host names, IPv4 / IPv6, a port).
     if let Body::Addr(a) = &mut win.body {
@@ -3919,7 +3931,7 @@ fn menu_key(cx: &mut InCx, k: &KeyCode) {
                     st.waiting_key = Some(0.0);
                 }
                 Body::NewGame(_) | Body::Keypad(_) => {}
-                Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_) | Body::Addr(_) => mp_enter(win, acts),
+                Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_) | Body::Addr(_) | Body::Wait(_) => mp_enter(win, acts),
                 Body::SaveLoad(sl) => {
                     let saving = sl.saving;
                     let heading = !saving
@@ -3954,7 +3966,9 @@ fn menu_key(cx: &mut InCx, k: &KeyCode) {
         KeyCode::ArrowLeft | KeyCode::ArrowRight => {
             // MenuUIScreenWindow: left / right cycle the focused choice.
             if let (Some(W::ChoiceBtn(i)), Body::Host(h)) = (win.focus, &mut win.body) {
-                mp_host_cycle(h, i, if *k == KeyCode::ArrowLeft { -1 } else { 1 });
+                if let Some(e) = mp_host_cycle(h, i, if *k == KeyCode::ArrowLeft { -1 } else { 1 }) {
+                    acts.push(Act::Msg("Host Room".into(), e, false, MsgPurpose::Info));
+                }
             }
             if let (Some(W::ChoiceBtn(i)), Body::Choices { choices }) = (win.focus, &mut win.body) {
                 if let Some(c) = choices.get_mut(i as usize) {
@@ -4195,6 +4209,8 @@ fn apply_acts(
             }
             Act::MpLeave => mp_leave(st),
             Act::MpSetAddr(a) => mp_set_addr(st, hud, assets, &a),
+            Act::MpDirect(code) => mp_direct(st, hud, assets, code),
+            Act::MpOffline => mp_offline(st, hud, assets),
         }
     }
 }
@@ -4228,7 +4244,10 @@ fn help_text(top_w: &Win, assets: &mut RuntimeAssets) -> String {
         (Body::Host(h), focus) => mp_host_help(h, focus, &top_w.f),
         (Body::Addr(_), _) => "The online services' host name or IP address, with :port when it isn't 27962 (ask whoever runs \
              the server). Empty: this PC. Save & Connect or [Enter].".into(),
-        (Body::Join(_), _) => "Type the four-character code the host gave you (letters and digits; codes never use look-alikes such as zero and O), then Join Room or [Enter].".into(),
+        (Body::Join(_), _) => "Type the host's room code: four characters from online services, or the long direct code (Ctrl+V pastes it). Then Join Room or [Enter].".into(),
+        (Body::Wait(w), _) if !w.connected => "Connecting to the host...".into(),
+        (Body::Wait(w), _) if w.ready => "Ready. The game starts when the host starts it.".into(),
+        (Body::Wait(_), _) => "Press Ready when you are; the host starts the game once everyone is.".into(),
         (Body::Choices { .. }, _) if top_w.f.class == "MenuScreenBrightness" => {
             pstr(&assets.classes.defaults("MenuScreenBrightness"), "HelpMessage")
         }
@@ -4417,6 +4436,7 @@ fn scroll_by(win: &mut Win, id: u8, d: i32) {
         Body::Achieve(av) if id == 0 => av.scroll = (av.scroll + d).max(0),
         Body::Browse(b) if id == 0 => b.scroll = (b.scroll + d).max(0),
         Body::Chars(c) if id == 0 => c.scroll = (c.scroll + d).max(0),
+        Body::Wait(w) if id == 0 => w.scroll = (w.scroll + d).max(0),
         Body::Welcome(sc) if id == 0 => *sc = (*sc + d).max(0),
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = (ng.desc_scroll + d).max(0),
         _ => {}
@@ -4437,6 +4457,7 @@ fn set_scroll(win: &mut Win, id: u8, v: i32) {
         Body::Achieve(av) if id == 0 => av.scroll = v,
         Body::Browse(b) if id == 0 => b.scroll = v,
         Body::Chars(c) if id == 0 => c.scroll = v,
+        Body::Wait(w) if id == 0 => w.scroll = v,
         Body::Welcome(sc) if id == 0 => *sc = v,
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = v,
         _ => {}
@@ -4680,7 +4701,13 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
         }
         (W::ChoiceBtn(i) | W::ChoiceVal(i), Body::Host(h)) => {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
-            mp_host_cycle(h, i, if right { -1 } else { 1 });
+            if let Some(e) = mp_host_cycle(h, i, if right { -1 } else { 1 }) {
+                acts.push(Act::Msg("Host Room".into(), e, false, MsgPurpose::Info));
+            }
+        }
+        (W::Header(k), Body::Host(h)) => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            mp_host_widget(h, k, acts);
         }
         (W::Header(k), Body::Browse(b)) => {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
@@ -4785,7 +4812,16 @@ const ACT_MP_NEWGAME: u8 = 44;
 /// The connect-failed box: Change Address; Online Services: Save & Connect.
 const ACT_ADDR: u8 = 45;
 const ACT_ADDR_SAVE: u8 = 46;
-const ACT_LAST: u8 = ACT_ADDR_SAVE;
+/// The connect-failed box: Play Offline; the waiting room: Leave, Ready / Not Ready.
+const ACT_OFFLINE: u8 = 47;
+const ACT_LEAVE: u8 = 48;
+const ACT_READY: u8 = 49;
+const ACT_LAST: u8 = ACT_READY;
+/// Host Room widgets: Copy Code, and a Kick per player row (40 + row).
+const HDR_COPY: u8 = 29;
+const HDR_KICK: u8 = 40;
+/// Player rows the Host Room's panel shows.
+const HOST_ROWS: usize = 5;
 
 /// How often the open multiplayer screen reads online services again.
 const MP_POLL: f32 = 0.25;
@@ -4802,6 +4838,24 @@ struct MpLink {
     join_code: String,
     /// The room found, kept while a character is chosen for it.
     joined: Option<imsim_net::client::Joined>,
+    /// Ours: playing without online services (rooms by direct code only).
+    offline: bool,
+    /// The direct code being joined (instead of `joined`).
+    direct: Option<String>,
+    /// Hosting without online services failed: why (shown by mp_tick).
+    host_error: Option<String>,
+    /// The waiting room is (or was just) up: closing it leaves the host's lobby.
+    waiting: bool,
+}
+
+/// MenuScreenWaitingRoom: a joiner in the host's lobby before the game starts.
+struct MpWait {
+    /// Player, status, ping.
+    rows: Vec<Vec<String>>,
+    ready: bool,
+    /// In the host's lobby (else still connecting).
+    connected: bool,
+    scroll: i32,
 }
 
 /// Choose Character: the player's multiplayer characters (id, name, saved), newest first, after a "New Character"
@@ -4824,8 +4878,18 @@ struct MpHost {
     /// The room's code once the lobby has handed one out.
     code: Option<String>,
     players: u8,
-    /// IPs of players who looked the room up, newest last.
-    joiners: Vec<String>,
+    /// Without online services: no lobby code, no browser.
+    offline: bool,
+    /// The game session is up (netplay host).
+    open: bool,
+    /// The long direct code (no lobby needed) and what opening the router's port said.
+    direct: Option<String>,
+    note: String,
+    /// The room's players: (id, name, ready, ping ms, host, me).
+    lobby: Vec<(u8, String, bool, u32, bool, bool)>,
+    all_ready: bool,
+    /// Copy Code was pressed (the button says Copied for a moment).
+    copied: Option<std::time::Instant>,
 }
 
 /// Online Services: the lobby's address being typed.
@@ -4899,11 +4963,23 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
             f.class = class.to_string();
             f.title = "Host Room".into();
             let choices = mp_host_choices();
-            let slots = art_rows(&f);
-            cut_empty_rows(&mut f, choices.len(), slots);
             f.actions = vec![(0, ACT_START, "Start Game".into(), String::new()), (2, ACT_CLOSE_ROOM, "Close Room".into(), String::new())];
             let name = crate::travel::with_session(|s| s.name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Player".into());
-            (f, Body::Host(MpHost { choices, name, code: None, players: 1, joiners: Vec::new() }))
+            // All nine rows of art: the six choices, then the players panel over the last three.
+            let host = MpHost {
+                choices,
+                name,
+                code: None,
+                players: 1,
+                offline: false,
+                open: false,
+                direct: None,
+                note: String::new(),
+                lobby: Vec::new(),
+                all_ready: true,
+                copied: None,
+            };
+            (f, Body::Host(host))
         }
         "MenuScreenJoinRoom" => {
             let mut f = frame(assets, "MenuScreenOptions");
@@ -4928,6 +5004,13 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
             edit.cur = edit.text.len();
             edit.anchor = 0;
             (f, Body::Addr(MpAddr { edit }))
+        }
+        "MenuScreenWaitingRoom" => {
+            let mut f = frame(assets, "MenuScreenCustomizeKeys");
+            f.class = class.to_string();
+            f.title = "Waiting Room".into();
+            f.actions = vec![(2, ACT_LEAVE, "Leave".into(), String::new()), (2, ACT_READY, "Ready".into(), String::new())];
+            (f, Body::Wait(MpWait { rows: Vec::new(), ready: false, connected: false, scroll: 0 }))
         }
         "MenuScreenChooseCharacter" => {
             let mut f = frame(assets, "MenuScreenLoadGame");
@@ -5032,13 +5115,37 @@ fn mp_host_settings(h: &MpHost) -> RoomSettings {
 }
 
 /// A host choice stepped (click, Left / Right): the lobby (or, for Friendly Fire, the game session) hears of it at once.
-fn mp_host_cycle(h: &mut MpHost, i: u8, dir: i32) {
-    let Some(c) = h.choices.get_mut(i as usize) else { return };
+/// A Classic look with mods installed is refused (netplay::host_mods_check): the choice steps back and the reason
+/// comes back for a message box.
+fn mp_host_cycle(h: &mut MpHost, i: u8, dir: i32) -> Option<String> {
+    let c = h.choices.get_mut(i as usize)?;
     c.cycle(dir);
+    if c.key == "MpLook" && c.value < 0.5 {
+        if let Err(e) = crate::netplay::host_mods_check(true) {
+            c.cycle(-dir);
+            return Some(e);
+        }
+    }
     if c.key == "MpFriendly" {
         crate::netplay::set_friendly_fire(c.value > 0.5);
     } else {
         crate::online::update(mp_host_settings(h));
+    }
+    None
+}
+
+/// The Host Room's own buttons: Copy Code, Kick on a player's row.
+fn mp_host_widget(h: &mut MpHost, k: u8, acts: &mut Vec<Act>) {
+    if k == HDR_COPY {
+        let Some(code) = h.direct.as_deref() else { return };
+        match crate::netplay::copy_to_clipboard(code) {
+            Ok(()) => h.copied = Some(std::time::Instant::now()),
+            Err(e) => acts.push(Act::Msg("Copy Code".into(), format!("The code couldn't be copied ({e}). It is {code}."), false, MsgPurpose::Info)),
+        }
+    } else if let Some(p) = k.checked_sub(HDR_KICK).and_then(|r| h.lobby.get(r as usize)) {
+        if !p.4 {
+            crate::netplay::kick(p.0);
+        }
     }
 }
 
@@ -5050,7 +5157,10 @@ fn mp_host_help(h: &MpHost, focus: Option<W>, f: &Frame) -> String {
     match (focus, action) {
         (Some(W::ChoiceBtn(i)), _) => h.choices.get(i as usize).map(|c| c.help.clone()).unwrap_or_default(),
         (_, Some(ACT_CLOSE_ROOM)) => "Close the room: everyone in it leaves.".into(),
-        _ if h.code.is_none() => "Creating room...".into(),
+        (Some(W::Header(HDR_COPY)), _) => "Copy the direct code to the clipboard: players can join with it without online services.".into(),
+        (Some(W::Header(k)), _) if k >= HDR_KICK => "Send this player away.".into(),
+        _ if !h.open => "Creating room...".into(),
+        _ if !h.all_ready => "Waiting for every player to be ready.".into(),
         _ if intro_map() => "Start Game: load your game or start a new one; players who join are let in once you're on a playable map.".into(),
         _ => "Start Game: back to your game with the room open; players who join come into your map.".into(),
     }
@@ -5066,9 +5176,13 @@ fn mp_status_text() -> String {
     }
 }
 
-/// The join screen takes the code: letters typed in upper case, only CODE_ALPHABET, at most four; Backspace /
-/// Delete take the last one off. True when the key was the code's (Escape / Enter / Tab / arrows go on).
-fn mp_join_typing(j: &mut MpJoin, k: &KeyCode, text: &Option<String>) -> bool {
+/// Characters of a direct code (15, shown in three groups of five).
+const DIRECT_LEN: usize = 15;
+
+/// The join screen takes the code: letters typed in upper case, only CODE_ALPHABET (dashes and spaces skipped), a
+/// lobby code (4) or a direct code (15); Ctrl+V pastes; Backspace / Delete take the last one off. True when the key
+/// was the code's (Escape / Enter / Tab / arrows go on).
+fn mp_join_typing(j: &mut MpJoin, k: &KeyCode, text: &Option<String>, ctrl: bool) -> bool {
     match k {
         KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab => false,
         KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => false,
@@ -5076,26 +5190,71 @@ fn mp_join_typing(j: &mut MpJoin, k: &KeyCode, text: &Option<String>) -> bool {
             j.code.pop();
             true
         }
+        KeyCode::KeyV if ctrl => {
+            let pasted = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+            j.code.clear();
+            mp_code_push(&mut j.code, &pasted);
+            true
+        }
         _ => {
-            for c in text.as_deref().unwrap_or("").chars() {
-                let u = c.to_ascii_uppercase();
-                if j.code.len() < 4 && u.is_ascii() && imsim_net::CODE_ALPHABET.contains(&(u as u8)) {
-                    j.code.push(u);
-                }
+            if !ctrl {
+                mp_code_push(&mut j.code, text.as_deref().unwrap_or(""));
             }
             true
         }
     }
 }
 
+/// Code characters of `text` added to `code` (upper case, the alphabet only, at most a direct code's length).
+fn mp_code_push(code: &mut String, text: &str) {
+    for c in text.chars() {
+        let u = c.to_ascii_uppercase();
+        if code.len() < DIRECT_LEN && u.is_ascii() && imsim_net::CODE_ALPHABET.contains(&(u as u8)) {
+            code.push(u);
+        }
+    }
+}
+
+/// A code as shown: a direct code's characters in groups of five.
+fn mp_code_shown(code: &str) -> String {
+    if code.len() <= 4 {
+        return code.to_string();
+    }
+    let mut s = String::with_capacity(DIRECT_LEN + 2);
+    for (i, c) in code.chars().enumerate() {
+        if i > 0 && i % 5 == 0 {
+            s.push('-');
+        }
+        s.push(c);
+    }
+    s
+}
+
+/// What Join Room does with the code typed: look a lobby code up, or join a direct code.
+fn mp_join_act(code: &str) -> Option<Act> {
+    if code.len() == 4 && imsim_net::valid_code(code) {
+        return Some(Act::Join(code.to_string()));
+    }
+    let shown = mp_code_shown(code);
+    (code.len() == DIRECT_LEN && crate::netplay::is_direct_code(&shown)).then_some(Act::MpDirect(shown))
+}
+
 /// Enter on a multiplayer screen: step the focused host choice, join the typed code or the selected room.
 fn mp_enter(win: &mut Win, acts: &mut Vec<Act>) {
     match (&mut win.body, win.focus) {
-        (Body::Host(h), Some(W::ChoiceBtn(i))) => mp_host_cycle(h, i, 1),
-        (Body::Join(j), _) if imsim_net::valid_code(&j.code) => acts.push(Act::Join(j.code.clone())),
+        (Body::Host(h), Some(W::ChoiceBtn(i))) => {
+            if let Some(e) = mp_host_cycle(h, i, 1) {
+                acts.push(Act::Msg("Host Room".into(), e, false, MsgPurpose::Info));
+            }
+        }
+        (Body::Join(j), _) => acts.extend(mp_join_act(&j.code)),
         (Body::Browse(b), _) => acts.extend(mp_browse_join(b)),
         (Body::Chars(c), _) => acts.extend(mp_chars_go(c)),
         (Body::Addr(a), _) => acts.push(Act::MpSetAddr(a.edit.get())),
+        (Body::Wait(w), _) => {
+            crate::netplay::set_ready(!w.ready);
+            w.ready = !w.ready;
+        }
         _ => {}
     }
 }
@@ -5212,10 +5371,20 @@ fn mp_chars_move(c: &mut MpChars, d: i32) {
 
 /// Into the found room with the chosen character (netplay.rs): the character screens close, a box says how it went.
 fn mp_join_room(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
-    let text = match st.mp.joined.as_ref().map(crate::netplay::join_room) {
+    let r = match (&st.mp.direct, &st.mp.joined) {
+        (Some(code), _) => Some(crate::netplay::join_code(code)),
+        (None, Some(j)) => Some(crate::netplay::join_room(j)),
+        _ => None,
+    };
+    let text = match r {
         Some(Ok(())) => {
+            // Connected: the waiting room until the host starts.
             st.stack.retain(|w| !matches!(&w.body, Body::Chars(_)) && !matches!(&w.body, Body::NewGame(ng) if ng.multiplayer));
-            "Joining the host's game...".to_string()
+            st.mp.waiting = true;
+            st.mp.poll = 0.0;
+            let w = open_window(hud, assets, "MenuScreenWaitingRoom");
+            st.push(w);
+            return;
         }
         Some(Err(e)) => e,
         None => "The room was lost. Look it up again.".into(),
@@ -5227,9 +5396,10 @@ fn mp_join_room(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets
 /// The action bar of a multiplayer screen. True when the room was closed.
 fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
     match (action, &mut win.body) {
-        (ACT_START, Body::Host(h)) if h.code.is_some() => {
-            // On a playable map: back to the game, the room open. On the logo map: the host's story first (a save,
-            // or New Game on the same screen).
+        (ACT_START, Body::Host(h)) if h.open && h.all_ready => {
+            // The lobby's players come in once a map is up. On a playable map: back to the game, the room open. On
+            // the logo map: the host's story first (a save, or New Game on the same screen).
+            crate::netplay::start_game();
             if intro_map() {
                 acts.push(Act::Push("MenuScreenLoadGame:mp".into()));
             } else {
@@ -5257,10 +5427,100 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
             mp_browse_rebuild(b);
         }
         (ACT_JOIN_ROW, Body::Browse(b)) => acts.extend(mp_browse_join(b)),
-        (ACT_JOIN_CODE, Body::Join(j)) if imsim_net::valid_code(&j.code) => acts.push(Act::Join(j.code.clone())),
+        (ACT_JOIN_CODE, Body::Join(j)) => acts.extend(mp_join_act(&j.code)),
+        (ACT_OFFLINE, _) => {
+            acts.push(Act::Pop);
+            acts.push(Act::MpOffline);
+        }
+        (ACT_READY, Body::Wait(w)) => {
+            crate::netplay::set_ready(!w.ready);
+            w.ready = !w.ready;
+        }
+        (ACT_LEAVE, Body::Wait(_)) => {
+            crate::netplay::leave("");
+            acts.push(Act::Pop);
+        }
         _ => {}
     }
     false
+}
+
+/// Join with a direct code: choose a character first (Choose Character, then netplay::join_code).
+fn mp_direct(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, code: String) {
+    if !crate::netplay::is_direct_code(&code) {
+        let w = msg_box(hud, assets, "Join Room", "That isn't a room code.", false, MsgPurpose::MpResult);
+        st.push(w);
+        return;
+    }
+    let room = format!("Direct code {code}: the host's PC is reached without online services.");
+    st.mp.direct = Some(code);
+    st.mp.joined = None;
+    let mut w = open_window(hud, assets, "MenuScreenChooseCharacter");
+    if let Some(Body::Chars(c)) = w.as_mut().map(|w| &mut w.body) {
+        c.room = room;
+    }
+    st.push(w);
+}
+
+/// Play Offline (online services couldn't be reached): the Multiplayer screen without the lobby - rooms are hosted
+/// and joined by direct code.
+fn mp_offline(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    crate::online::disconnect();
+    st.mp = MpLink { online: true, offline: true, ..Default::default() };
+    let mut w = open_window(hud, assets, "MenuScreenMultiplayer");
+    if let Some(Body::Menu { buttons, notes, .. }) = w.as_mut().map(|w| &mut w.body) {
+        for b in buttons.iter_mut().filter(|b| b.invoke == "MenuScreenLobbyBrowser") {
+            b.enabled = false;
+        }
+        if let Some(n) = notes.first_mut() {
+            n.1 = "Offline: rooms by direct code".into();
+        }
+    }
+    st.push(w);
+}
+
+/// A connected joiner's waiting room (or why the host turned him away), a few times a second.
+fn mp_wait_tick(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    let Some(Body::Wait(w)) = st.stack.last_mut().map(|w| &mut w.body) else { return };
+    if crate::netplay::in_game() {
+        // The host started: he travels us in.
+        st.mp.waiting = false;
+        st.stack.clear();
+        return;
+    }
+    if !crate::netplay::active() {
+        let why = crate::netplay::last_end();
+        let why = if why.is_empty() { "The connection to the host was lost.".to_string() } else { why };
+        st.mp.waiting = false;
+        st.pop();
+        let w = msg_box(hud, assets, "Join Room", &why, false, MsgPurpose::MpResult);
+        st.push(w);
+        return;
+    }
+    let lobby = crate::netplay::in_lobby();
+    w.connected |= lobby;
+    w.ready = crate::netplay::is_ready();
+    let rows: Vec<Vec<String>> = crate::netplay::lobby_players()
+        .into_iter()
+        .map(|p| {
+            let who = if p.host { format!("{} (host)", p.name) } else if p.me { format!("{} (you)", p.name) } else { p.name };
+            let state = if p.ready || p.host { "Ready" } else { "Not ready" };
+            let ping = if p.me { String::new() } else { format!("{} ms", p.ping.round() as u32) };
+            vec![who, state.to_string(), ping]
+        })
+        .collect();
+    if rows != w.rows {
+        w.rows = rows;
+    }
+    // The Ready button says what it will do.
+    let label = if w.ready { "Not Ready" } else { "Ready" };
+    if let Some(top) = st.stack.last_mut() {
+        if let Some(a) = top.f.actions.iter_mut().find(|a| a.1 == ACT_READY) {
+            if a.2 != label {
+                a.2 = label.into();
+            }
+        }
+    }
 }
 
 /// Multiplayer pressed: in at once when connected, else connect behind "Connecting to online services...".
@@ -5278,6 +5538,13 @@ fn mp_connect(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) 
 
 /// Look a room up by code behind "Looking for room...".
 fn mp_join(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, code: String) {
+    if st.mp.offline {
+        let t = "Four-character room codes are looked up by online services. Without them, ask the host for the long direct code.";
+        let w = msg_box(hud, assets, "Join Room", t, false, MsgPurpose::MpResult);
+        st.push(w);
+        return;
+    }
+    st.mp.direct = None;
     crate::online::join(&code);
     st.mp.join_code = code;
     let w = mp_wait_box(hud, assets, "Join Room", "Looking for room...", MsgPurpose::Joining);
@@ -5298,13 +5565,27 @@ fn mp_wait_box(hud: &mut ClassicHud, assets: &mut RuntimeAssets, title: &str, te
 fn mp_opened(link: &mut MpLink, w: &mut Win) {
     match &mut w.body {
         Body::Host(h) => {
-            crate::online::host(mp_host_settings(h));
+            if link.offline {
+                // Without online services: the game socket alone (direct code only), no lobby room.
+                h.offline = true;
+                if let Some(c) = h.choices.iter_mut().find(|c| c.key == "MpRoom") {
+                    c.kind = ChoiceKind::Enum(vec!["Direct Code".into()]);
+                    c.value = 0.0;
+                    c.help = "Without online services the room isn't listed: players join with its direct code.".into();
+                }
+                if let Err(e) = crate::netplay::open_host(crate::online::rules_of(&mp_host_settings(h))) {
+                    link.host_error = Some(e);
+                }
+            } else {
+                crate::online::host(mp_host_settings(h));
+            }
             crate::netplay::set_friendly_fire(h.choices.iter().any(|c| c.key == "MpFriendly" && c.value > 0.5));
             link.hosting = true;
             w.focus = Some(W::ChoiceBtn(0));
         }
         Body::Browse(_) => crate::online::refresh_list(),
         Body::Join(_) | Body::Addr(_) => w.focus = Some(W::ChoiceBtn(0)),
+        Body::Wait(_) => link.waiting = true,
         _ => {}
     }
     link.poll = 0.0;
@@ -5312,7 +5593,7 @@ fn mp_opened(link: &mut MpLink, w: &mut Win) {
 
 /// A window of the multiplayer screens (or one of their boxes).
 fn mp_win(w: &Win) -> bool {
-    matches!(w.body, Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_))
+    matches!(w.body, Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_) | Body::Wait(_))
         || matches!(&w.body, Body::NewGame(ng) if ng.multiplayer)
         || w.f.class == "MenuScreenMultiplayer"
         || matches!(&w.body, Body::Msg(m) if matches!(m.purpose, MsgPurpose::Connecting | MsgPurpose::Joining | MsgPurpose::MpResult))
@@ -5338,8 +5619,16 @@ fn mp_tick(st: &mut Menus, dt: f32, hud: &mut ClassicHud, assets: &mut RuntimeAs
         }
         st.mp.hosting = false;
     }
+    // The waiting room closed (Leave, Escape) before the host started: out of his lobby.
+    if st.mp.waiting && !st.stack.iter().any(|w| matches!(w.body, Body::Wait(_))) {
+        st.mp.waiting = false;
+        if crate::netplay::in_lobby() || (session && !crate::netplay::in_game() && !crate::netplay::is_host()) {
+            crate::netplay::leave("");
+        }
+    }
     if !st.stack.iter().any(mp_win) {
-        if !session {
+        // (Asked again: closing the room above ends the host's session.)
+        if !crate::netplay::active() {
             crate::online::disconnect();
         }
         st.mp = MpLink::default();
@@ -5357,8 +5646,12 @@ fn mp_tick(st: &mut Menus, dt: f32, hud: &mut ClassicHud, assets: &mut RuntimeAs
         return;
     }
     st.mp.poll = MP_POLL;
+    if matches!(st.stack.last().map(|w| &w.body), Some(Body::Wait(_))) {
+        mp_wait_tick(st, hud, assets);
+        return;
+    }
     if matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(_))) {
-        if let Some(e) = crate::online::take_host_error() {
+        if let Some(e) = st.mp.host_error.take().or_else(crate::online::take_host_error) {
             // Hosting failed: back off the room's screen, with the reason.
             st.pop();
             st.mp.hosting = false;
@@ -5378,7 +5671,7 @@ fn mp_tick(st: &mut Menus, dt: f32, hud: &mut ClassicHud, assets: &mut RuntimeAs
     let Some(top) = st.stack.last_mut() else { return };
     let multiplayer = top.f.class == "MenuScreenMultiplayer";
     match &mut top.body {
-        Body::Menu { notes, .. } if multiplayer => {
+        Body::Menu { notes, .. } if multiplayer && !st.mp.offline => {
             if let Some((_, n)) = notes.first_mut() {
                 let t = mp_status_text();
                 if *n != t {
@@ -5402,9 +5695,11 @@ fn mp_connecting(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAsset
         }
         crate::online::Status::Failed(m) => {
             st.pop();
-            let mut w = msg_box(hud, assets, "Multiplayer", &m, false, MsgPurpose::Info);
+            let text = format!("{m}|nPlay Offline: rooms by direct code.");
+            let mut w = msg_box(hud, assets, "Multiplayer", &text, false, MsgPurpose::Info);
             if let Some(w) = w.as_mut() {
-                w.f.actions.push((0, ACT_ADDR, "Change Address".into(), String::new()));
+                w.f.actions.push((2, ACT_OFFLINE, "Play Offline".into(), String::new()));
+                w.f.actions.push((0, ACT_ADDR, "Server...".into(), String::new()));
             }
             st.push(w);
         }
@@ -5464,9 +5759,24 @@ fn mp_poll_host(h: &mut MpHost) {
         }
         h.players = hd.players;
     }
-    let j = crate::online::joiners();
-    if j != h.joiners {
-        h.joiners = j;
+    h.open = crate::netplay::is_host();
+    let direct = crate::netplay::direct_code();
+    if direct != h.direct {
+        h.direct = direct;
+    }
+    let note = crate::netplay::direct_note();
+    if note != h.note {
+        h.note = note;
+    }
+    let lobby: Vec<(u8, String, bool, u32, bool, bool)> =
+        crate::netplay::lobby_players().into_iter().map(|p| (p.id, p.name, p.ready || p.host, p.ping.round().max(0.0) as u32, p.host, p.me)).collect();
+    if lobby != h.lobby {
+        h.lobby = lobby;
+    }
+    h.players = h.players.max(h.lobby.len() as u8);
+    h.all_ready = crate::netplay::all_ready();
+    if h.copied.is_some_and(|t| t.elapsed().as_secs_f32() > 2.0) {
+        h.copied = None;
     }
 }
 
@@ -5580,58 +5890,130 @@ fn draw_menu_note(u: &mut Ui<W>, x: i32, w: i32, y: i32, text: &str, cx: i32, cy
     u.c.set_clip(None);
 }
 
-/// MenuScreenHostRoom: the choices, then the room's box on the right (code, players, who found it).
+/// MenuScreenHostRoom: the choices, the room's box on the right (lobby code, direct code + Copy Code, the router
+/// note), and the players panel under them (ready, ping, Kick).
 fn draw_mp_host(u: &mut Ui<W>, h: &MpHost, f: &Frame, drop: &mut Option<(u8, i32)>, cx: i32, cy: i32) {
     draw_choices(u, &h.choices, f, drop, cx, cy);
-    let (bx, by, bw, bh) = (cx + 394, cy + 22, 136, 198);
+    draw_mp_host_codes(u, h, cx, cy);
+    draw_mp_host_players(u, h, cx, cy);
+}
+
+/// A black box with the menu's border colour (as the save screen's snapshot well).
+fn mp_box(u: &mut Ui<W>, (bx, by, bw, bh): Rect) {
     u.c.fill(bx, by, bw, bh, Style::Normal, BLACK);
     for (x, y, w, hh) in [(0, 0, bw, 1), (0, bh - 1, bw, 1), (0, 0, 1, bh), (bw - 1, 0, 1, bh)] {
         u.c.fill(bx + x, by + y, w, hh, Style::Normal, m_col(3));
     }
+}
+
+/// The Host Room's codes box: the lobby code (with online services), the direct code and its Copy Code button, the
+/// note about the router's port.
+fn draw_mp_host_codes(u: &mut Ui<W>, h: &MpHost, cx: i32, cy: i32) {
+    let (bx, by, bw, bh) = (cx + 394, cy + 22, 136, 210);
+    mp_box(u, (bx, by, bw, bh));
     let (fh, fs) = (u.f.headers.clone(), u.f.small.clone());
     let big = u.hud.font(u.assets, "FontMenuExtraLarge").unwrap_or_else(|| u.f.title.clone());
-    u.c.text(&fh, bx, by + 8, bw, fh.height, HAlign::Center, VAlign::Top, m_col(8), "Room Code:");
-    match &h.code {
-        Some(code) => u.c.text(&big, bx, by + 24, bw, big.height, HAlign::Center, VAlign::Top, WHITE, code),
-        None => u.c.text(&fs, bx, by + 30, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), "Creating room..."),
-    }
-    let max = mp_host_settings(h).max_players;
-    let public = h.choices.iter().any(|c| c.key == "MpRoom" && c.value < 0.5);
-    let y0 = by + 28 + big.height;
-    u.c.text(&fs, bx, y0, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), &format!("Players: {} / {max}", h.players));
-    let reach = if public { "Listed in the browser" } else { "Private: share the code" };
-    u.c.text(&fs, bx, y0 + fs.height + 2, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), reach);
-    // Who looked the room up, newest first, as many as fit.
-    let (lx, lw) = (bx + 5, bw - 10);
-    let mut ly = y0 + 2 * fs.height + 10;
     u.c.set_clip(Some((bx + 1, by + 1, bw - 2, bh - 2)));
-    for j in h.joiners.iter().rev() {
-        // (The lobby's line may carry more after the IP.)
-        let ip = j.split_whitespace().next().unwrap_or(j);
-        let lines = wrap(&fs, &format!("Someone at {ip} found your room"), lw);
-        if ly + lines.len() as i32 * fs.height > by + bh - 4 {
-            break;
-        }
-        for l in &lines {
-            u.c.text(&fs, lx, ly, lw, fs.height, HAlign::Left, VAlign::Top, m_col(3), l);
-            ly += fs.height;
-        }
-        ly += 2;
+    u.c.text(&fh, bx, by + 6, bw, fh.height, HAlign::Center, VAlign::Top, m_col(8), "Room Code:");
+    let mut y = by + 20;
+    match (&h.code, h.offline) {
+        (Some(code), false) => u.c.text(&big, bx, y, bw, big.height, HAlign::Center, VAlign::Top, WHITE, code),
+        (None, false) => u.c.text(&fs, bx, y + 6, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), "Creating room..."),
+        (_, true) => u.c.text(&fs, bx, y + 6, bw, fs.height, HAlign::Center, VAlign::Top, m_col(8), "Offline: none"),
     }
+    y += big.height + 6;
+    u.c.text(&fh, bx, y, bw, fh.height, HAlign::Center, VAlign::Top, m_col(8), "Direct Code:");
+    y += fh.height + 2;
+    let direct = h.direct.as_deref().unwrap_or("Working it out...");
+    u.c.text(&fs, bx, y, bw, fs.height, HAlign::Center, VAlign::Top, if h.direct.is_some() { WHITE } else { m_col(8) }, direct);
+    y += fs.height + 4;
+    u.c.set_clip(None);
+    let copy = if h.copied.is_some() { "Copied!" } else { "Copy Code" };
+    action_button(u, W::Header(HDR_COPY), bx + 14, y, bw - 28, copy, h.direct.is_some());
+    y += 23;
+    u.c.set_clip(Some((bx + 1, by + 1, bw - 2, bh - 2)));
+    u.wrapped(&fs, bx + 6, y, bw - 12, by + bh - 4 - y, HAlign::Left, VAlign::Top, m_col(3), &h.note);
     u.c.set_clip(None);
 }
 
-/// MenuScreenJoinRoom: "Room Code" and the code box (the letters still to type shown as _).
+/// The Host Room's players panel (over the art's last three rows): name, ready, ping, Kick for joiners.
+fn draw_mp_host_players(u: &mut Ui<W>, h: &MpHost, cx: i32, cy: i32) {
+    let (px, py, pw, ph) = (cx + 7, cy + 238, 523, 110);
+    mp_box(u, (px, py, pw, ph));
+    let max = mp_host_settings(h).max_players;
+    let head = format!("Players {} / {max}", h.lobby.len().max(1));
+    let cols = [(250, head.as_str()), (110, "Status"), (80, "Ping"), (73, "")];
+    let mut hx = px + 3;
+    for (k, (w, t)) in cols.iter().enumerate() {
+        header_button(u, W::Header(60 + k as u8), hx, py + 3, *w, t);
+        hx += w;
+    }
+    let fs = u.f.small.clone();
+    let row_h = 15;
+    for (r, (_, name, ready, ping, host, me)) in h.lobby.iter().take(HOST_ROWS).enumerate() {
+        let ry = py + 21 + r as i32 * row_h;
+        let name = if name.trim().is_empty() { "Player" } else { name.as_str() };
+        let who = match (*host, *me) {
+            (true, true) => format!("{name} (host, you)"),
+            (true, false) => format!("{name} (host)"),
+            (false, true) => format!("{name} (you)"),
+            _ => name.to_string(),
+        };
+        let col = m_col(8);
+        u.c.set_clip(Some((px + 6, ry, 244, row_h)));
+        u.c.text(&fs, px + 8, ry, 242, row_h, HAlign::Left, VAlign::Center, col, &who);
+        u.c.set_clip(None);
+        let state = if *ready { "Ready" } else { "Not ready" };
+        u.c.text(&fs, px + 3 + 250 + 5, ry, 105, row_h, HAlign::Left, VAlign::Center, col, state);
+        if !*me {
+            u.c.text(&fs, px + 3 + 360 + 5, ry, 75, row_h, HAlign::Left, VAlign::Center, col, &format!("{ping} ms"));
+        }
+        if !*host {
+            header_button(u, W::Header(HDR_KICK + r as u8), px + 3 + 440 + 6, ry, 62, "Kick");
+        }
+    }
+    let more = h.lobby.len().saturating_sub(HOST_ROWS);
+    let note = if more > 0 {
+        format!("and {more} more")
+    } else if h.lobby.len() <= 1 {
+        "Nobody has joined yet. Share a code: players wait here until you start.".to_string()
+    } else {
+        String::new()
+    };
+    if !note.is_empty() {
+        let ry = py + 21 + h.lobby.len().min(HOST_ROWS) as i32 * row_h;
+        u.c.text(&fs, px + 8, ry, pw - 16, row_h, HAlign::Left, VAlign::Center, m_col(3), &note);
+    }
+}
+
+/// MenuScreenJoinRoom: "Room Code" and the code box (a lobby code's letters still to type shown as _; a direct code
+/// in groups of five).
 fn draw_mp_join(u: &mut Ui<W>, j: &MpJoin, cx: i32, cy: i32) {
     let y = cy + 27;
     action_button(u, W::ChoiceBtn(0), cx + 7, y, 243, "|&Room Code", true);
-    let mut shown = String::with_capacity(4);
-    shown.push_str(&j.code);
-    while shown.len() < 4 {
+    let mut shown = mp_code_shown(&j.code);
+    if j.code.len() < 4 {
+        while shown.len() < 4 {
+            shown.push('_');
+        }
+    } else if j.code.len() < DIRECT_LEN {
         shown.push('_');
     }
-    info_button(u, cx + 7 + 270, y, 77, &shown, m_btn(1));
-    u.hit(W::Edit(3), (cx + 7 + 270, y, 77, 19), true);
+    info_button(u, cx + 7 + 270, y, 220, &shown, m_btn(1));
+    u.hit(W::Edit(3), (cx + 7 + 270, y, 220, 19), true);
+}
+
+/// MenuScreenWaitingRoom: who's in the host's lobby and whether they're ready.
+fn draw_mp_wait(u: &mut Ui<W>, w: &mut MpWait, cx: i32, cy: i32) {
+    header_button(u, W::Header(0), cx + 10, cy + 3, 162, "Player");
+    header_button(u, W::Header(1), cx + 175, cy + 3, 157, "Status");
+    let (lx, ly, lw, lh) = (cx + 11, cy + 23, 369, 268);
+    list(u, 0, (lx, ly, lw, lh), &[164, 110, 95], &w.rows, None, &mut w.scroll, false);
+    if w.rows.is_empty() {
+        let fs = u.f.small.clone();
+        let t = if w.connected { "Waiting for the host..." } else { "Connecting to the host..." };
+        u.wrapped(&fs, lx + 10, ly + 10, lw - 20, 40, HAlign::Center, VAlign::Top, m_col(8), t);
+    }
 }
 
 /// MenuScreenLobbyBrowser: filter headers, the room list, the selected room's card, the list's state.
@@ -5927,12 +6309,31 @@ mod tests {
         assert_eq!(j.max_players, RoomSettings::default().max_players);
         // Game Mode -> Deathmatch, Players 4 -> 6: the lobby hears of each.
         if let Some(Body::Host(h)) = st.stack.last_mut().map(|w| &mut w.body) {
-            mp_host_cycle(h, 0, 1);
-            mp_host_cycle(h, 2, 1);
-            mp_host_cycle(h, 2, 1);
+            assert!(mp_host_cycle(h, 0, 1).is_none());
+            assert!(mp_host_cycle(h, 2, 1).is_none());
+            assert!(mp_host_cycle(h, 2, 1).is_none());
         }
-        wait(&mut st, hud, assets, "the guest's lookup", &|st| matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(h)) if !h.joiners.is_empty()));
+        // The game session is up; the direct code (and its router note) can take a moment.
+        wait(&mut st, hud, assets, "the room's session", &|st| matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(h)) if h.open));
+        mp_wait_direct(&mut st, hud, assets);
         shot(&mut st, hud, assets, "MenuScreenHostRoom");
+        // The players panel with joiners (one not ready: Start Game waits) and Copy Code's feedback.
+        if let Some(Body::Host(h)) = st.stack.last_mut().map(|w| &mut w.body) {
+            h.lobby.push((1, "Paul Denton".into(), true, 42, false, false));
+            h.lobby.push((2, "Anna Navarre".into(), false, 118, false, false));
+            h.all_ready = false;
+            h.copied = Some(Instant::now());
+        }
+        shot(&mut st, hud, assets, "MP_HostPlayers");
+        {
+            let w = st.stack.last().unwrap();
+            assert!(!action_enabled(w, ACT_START, ""));
+        }
+        if let Some(Body::Host(h)) = st.stack.last_mut().map(|w| &mut w.body) {
+            h.lobby.truncate(1);
+            h.all_ready = true;
+            h.copied = None;
+        }
         // Start Game: back to the game on a playable map; on the logo map the Load Game screen, with New Game.
         {
             let mut acts = Vec::new();
@@ -5977,9 +6378,12 @@ mod tests {
         mp_opened(&mut st.mp, &mut w);
         if let Body::Join(j) = &mut w.body {
             for t in ["d", "x", "0", "2"] {
-                mp_join_typing(j, &KeyCode::KeyA, &Some(t.into()));
+                mp_join_typing(j, &KeyCode::KeyA, &Some(t.into()), false);
             }
             assert_eq!(j.code, "DX2");
+            assert!(mp_join_act(&j.code).is_none());
+            mp_join_typing(j, &KeyCode::KeyA, &Some("3".into()), false);
+            assert!(matches!(mp_join_act(&j.code), Some(Act::Join(c)) if c == "DX23"));
         }
         st.push(Some(w));
         shot(&mut st, hud, assets, "MenuScreenJoinRoom");
@@ -6003,8 +6407,19 @@ mod tests {
         shot(&mut st, hud, assets, "MP_NewCharacter");
         mp_join_room(&mut st, hud, assets);
         assert!(!st.stack.iter().any(|w| matches!(&w.body, Body::Chars(_)) || matches!(&w.body, Body::NewGame(ng) if ng.multiplayer)));
-        shot(&mut st, hud, assets, "MP_JoinFound");
-        st.stack.pop();
+        // Connected (to a host that never answers here): the waiting room, then as it looks in the host's lobby.
+        assert!(matches!(st.stack.last().map(|w| &w.body), Some(Body::Wait(_))));
+        assert!(st.mp.waiting);
+        shot(&mut st, hud, assets, "MP_WaitingConnecting");
+        if let Some(Body::Wait(w)) = st.stack.last_mut().map(|w| &mut w.body) {
+            w.connected = true;
+            w.rows = vec![
+                vec!["Gunther (host)".into(), "Ready".into(), "38 ms".into()],
+                vec!["Paul Denton".into(), "Ready".into(), "61 ms".into()],
+                vec!["JC Denton (you)".into(), "Not ready".into(), String::new()],
+            ];
+        }
+        shot(&mut st, hud, assets, "MenuScreenWaitingRoom");
         // In a session the main menu offers Leave Multiplayer.
         if crate::netplay::active() {
             let mut w = open_window(hud, assets, "MenuMain").unwrap();
@@ -6016,6 +6431,16 @@ mod tests {
             shot(&mut st, hud, assets, "MP_MainLeave");
             st.stack.pop();
         }
+        // Leave on the waiting room: out of the session.
+        {
+            let mut acts = Vec::new();
+            mp_action(st.stack.last_mut().unwrap(), ACT_LEAVE, &mut acts);
+            assert!(matches!(acts.as_slice(), [Act::Pop]));
+            st.stack.pop();
+            mp_tick(&mut st, 0.02, hud, assets);
+            assert!(!st.mp.waiting && !crate::netplay::active());
+        }
+        st.stack.retain(|w| !matches!(&w.body, Body::Msg(_)));
         let bad = if private == "ZZZZ" { "YYYY" } else { "ZZZZ" };
         mp_join(&mut st, hud, assets, bad.into());
         wait(&mut st, hud, assets, "the failed join", &|st| top_box(st, MsgPurpose::MpResult));
@@ -6042,7 +6467,7 @@ mod tests {
         shot(&mut st, hud, assets, "MP_ConnectFailed");
         // Change Address on that box: the Online Services screen, then saving there rewrites only LobbyServer= and
         // connects again (still nothing there: the reason again).
-        let (i, _) = st.stack.last().unwrap().f.actions.iter().enumerate().find(|(_, a)| a.1 == ACT_ADDR).expect("Change Address");
+        let (i, _) = st.stack.last().unwrap().f.actions.iter().enumerate().find(|(_, a)| a.1 == ACT_ADDR).expect("Server...");
         let mut acts = Vec::new();
         let top = st.stack.len() - 1;
         activate(&mut st, top, W::Act(i as u8), false, hud, assets, &mut acts);
@@ -6077,6 +6502,93 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&launcher).unwrap(), "GamePath=C:\\Games\\Deus Ex\r\nModPath=D:\\Mods\r\n");
         let _ = std::fs::remove_file(&launcher);
         drop(others);
+        preview_offline(out, &mut st, hud, assets, fonts);
+    }
+
+    /// Wait (at most 10 s, no failure) for the Host Room's direct code.
+    fn mp_wait_direct(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+        let t = std::time::Instant::now();
+        while t.elapsed() < std::time::Duration::from_secs(10) {
+            if matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(h)) if h.direct.is_some()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            st.mp.poll = 0.0;
+            mp_tick(st, 0.02, hud, assets);
+        }
+        println!("multiplayer preview: no direct code after 10 s");
+    }
+
+    /// Without online services: Play Offline on the connect-failed box, the Multiplayer screen without the browser,
+    /// a Host Room with only the direct code, Join Room taking that code (and refusing a lobby code).
+    fn preview_offline(out: &str, st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, fonts: &Fonts) {
+        let shot = |st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, name: &str| {
+            let w = st.stack.last_mut().unwrap();
+            render(hud, assets, fonts, w, &format!("{out}/menu_{name}.rgba"));
+        };
+        std::env::set_var("DXVIEW_LOBBY", "127.0.0.1:1");
+        mp_connect(st, hud, assets);
+        let t = std::time::Instant::now();
+        while !top_box(st, MsgPurpose::Info) {
+            assert!(t.elapsed() < std::time::Duration::from_secs(8), "offline preview: no failure box");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            mp_tick(st, 0.02, hud, assets);
+        }
+        let (i, _) = st.stack.last().unwrap().f.actions.iter().enumerate().find(|(_, a)| a.1 == ACT_OFFLINE).expect("Play Offline");
+        let mut acts = Vec::new();
+        let top = st.stack.len() - 1;
+        activate(st, top, W::Act(i as u8), false, hud, assets, &mut acts);
+        assert!(matches!(acts.as_slice(), [Act::Pop, Act::MpOffline]));
+        st.stack.pop();
+        mp_offline(st, hud, assets);
+        assert!(st.mp.offline);
+        if let Some(Body::Menu { buttons, .. }) = st.stack.last().map(|w| &w.body) {
+            assert!(buttons.iter().any(|b| b.invoke == "MenuScreenLobbyBrowser" && !b.enabled));
+        }
+        shot(st, hud, assets, "MP_Offline");
+        // Host Room offline: the game socket alone.
+        let mut w = open_window(hud, assets, "MenuScreenHostRoom").unwrap();
+        mp_opened(&mut st.mp, &mut w);
+        st.push(Some(w));
+        assert!(st.mp.host_error.is_none(), "{:?}", st.mp.host_error);
+        st.mp.poll = 0.0;
+        mp_tick(st, 0.02, hud, assets);
+        assert!(matches!(st.stack.last().map(|w| &w.body), Some(Body::Host(h)) if h.open && h.offline));
+        mp_wait_direct(st, hud, assets);
+        shot(st, hud, assets, "MP_HostOffline");
+        let direct = match &st.stack.last().unwrap().body {
+            Body::Host(h) => h.direct.clone(),
+            _ => None,
+        };
+        // Join Room offline: the direct code goes to Choose Character, a lobby code is refused.
+        let mut w = open_window(hud, assets, "MenuScreenJoinRoom").unwrap();
+        mp_opened(&mut st.mp, &mut w);
+        if let (Body::Join(j), Some(code)) = (&mut w.body, direct.as_ref()) {
+            mp_join_typing(j, &KeyCode::KeyA, &Some(code.to_ascii_lowercase()), false);
+            assert_eq!(mp_code_shown(&j.code), *code);
+        }
+        st.push(Some(w));
+        shot(st, hud, assets, "MP_JoinDirect");
+        if let Some(code) = direct {
+            let act = match &st.stack.last().unwrap().body {
+                Body::Join(j) => mp_join_act(&j.code),
+                _ => None,
+            };
+            assert!(matches!(&act, Some(Act::MpDirect(c)) if *c == code));
+            mp_direct(st, hud, assets, code.clone());
+            assert!(matches!(st.stack.last().map(|w| &w.body), Some(Body::Chars(c)) if c.room.contains(&code)));
+            assert_eq!(st.mp.direct.as_deref(), Some(code.as_str()));
+            shot(st, hud, assets, "MP_ChooseDirect");
+            st.stack.pop();
+        }
+        mp_join(st, hud, assets, "DX23".into());
+        assert!(top_box(st, MsgPurpose::MpResult));
+        shot(st, hud, assets, "MP_JoinOfflineCode");
+        // Leaving: the room and the session close, nothing stays connected.
+        st.stack.retain(|w| w.f.class == "MenuMain");
+        mp_tick(st, 0.02, hud, assets);
+        assert!(!crate::netplay::active());
+        assert!(!st.mp.online && !st.mp.offline);
     }
 }
 

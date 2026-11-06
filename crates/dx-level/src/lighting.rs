@@ -68,6 +68,10 @@ pub struct LightInfo {
     pub flat: bool,
     /// LE_Cylinder: distance measured across, not up and down.
     pub cylinder: bool,
+    /// Emissive Surfaces (emissive.rs): the light of a glowing face, not a placed light. It lights meshes, shining
+    /// out of the face along `dir` (all round when `dir` is zero); nothing else that walks the static lights (light
+    /// halos, real-time shadows, stealth) uses it.
+    pub emitter: bool,
 }
 
 impl LightInfo {
@@ -105,15 +109,15 @@ struct Rect {
 }
 
 pub struct Baked {
-    width: u32,
+    pub(crate) width: u32,
     height: u32,
-    rgba: Vec<u8>,
+    pub(crate) rgba: Vec<u8>,
     mask: Vec<u8>,
     rects: HashMap<usize, Rect>, // surface index -> atlas rect (includes 1px border offset)
     /// Surface -> its three strongest lights (indices into `table`, -1 = none), in mask channel order.
     surf_lights: HashMap<usize, [i32; 3]>,
     table: Vec<LightInfo>,
-    patches: Vec<Patch>,
+    pub(crate) patches: Vec<Patch>,
 }
 
 fn byte(ps: &[props::Property], name: &str) -> Option<u8> {

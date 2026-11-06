@@ -166,6 +166,7 @@ impl PlayerHealth {
         if self.dead || GOD_MODE.load(std::sync::atomic::Ordering::Relaxed) || *ENV_GOD.get_or_init(|| env_on!("DXVIEW_GOD")) {
             return;
         }
+        crate::netplay::note_hurt(damage_type);
         self.damage_icons.push((damage_type.to_string(), offset));
         if damage_type == "NanoVirus" {
             return;
@@ -1301,7 +1302,7 @@ impl Npc {
             play_idle: flag(p, "bPlayIdle"),
             shadow_scale: fv(p, "ShadowScale", 1.0),
             idle_bark: 8.0 + crate::sound::frand() * 14.0,
-            smart: Default::default(),
+            smart: crate::smartai::SmartState::new(p),
         }
     }
 
@@ -2912,6 +2913,9 @@ struct Snap {
     bind: String,
     /// An EMP'd robot (state Disabled).
     disabled: bool,
+    /// Multiplayer: a player's body (that player's id).
+    net_player: Option<u8>,
+    yaw: f64,
 }
 
 /// npc_system's working buffers, kept between frames so a frame allocates nothing once they're warm.
@@ -3143,7 +3147,15 @@ fn alerting_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
                     // TriggerAlarm: only if it hasn't been hacked; GMDX Sabotage shocks whoever
                     // pushes a bypassed one (200 'Stunned').
                     if !alarms.units[i].bypassed {
-                        alarms.trigger(i, npc.target);
+                        // Smarter AI (GMDX AlarmUnit.Trigger): alarmLocation = the instigator's feet.
+                        let at = npc.target.filter(|_| crate::smartai::on()).map(|t| {
+                            let (c, h) = match t {
+                                Target::Player => (cx.player_center, cx.player.params.height),
+                                Target::Pawn(b) => (cx.blockers.list[b].center, cx.blockers.list[b].height),
+                            };
+                            c - DVec3::new(0.0, 0.0, h - 1.0)
+                        });
+                        alarms.trigger(i, npc.target, at);
                     } else if crate::perks::has("PerkSabotage") {
                         new_hits.push(crate::damage::PawnHit {
                             blocker: npc.blocker,
@@ -3660,6 +3672,8 @@ fn fill_snaps<'a>(snaps: &mut Vec<Snap>, pawns: impl Iterator<Item = (&'a Npc, &
         s.height = d.body.height;
         s.bind.clone_from(&n.bind_name);
         s.disabled = n.hp_body.robot && n.emp_hp <= 0.0;
+        s.net_player = n.net_player;
+        s.yaw = n.yaw;
     }
     snaps.truncate(count);
 }
@@ -3904,6 +3918,17 @@ fn smart_tick(npc: &mut Npc, npc_class: &str, me: &Cylinder, new_noises: &mut Ve
         }
     }
     npc.smart.was_attacking = atk;
+    if npc.state != NpcState::Attacking {
+        // Out of Attacking: whatever move or throw it was on is over.
+        npc.smart.repos = None;
+        npc.smart.nade = None;
+        npc.smart.nade_roll = false;
+        npc.smart.chasing = false;
+        npc.smart.in_cover = false;
+        if npc.anim == "NadeThrow" {
+            npc.anim = "";
+        }
+    }
 }
 
 /// UpdateReactionLevel: ReactionLevel climbs while anything is up and ebbs otherwise.
@@ -4084,12 +4109,29 @@ fn react_alarms(npc: &mut Npc, cx: &ReactCx, alarms: &crate::alarms::Alarms, dt:
     // HandleAlarm: an alarm going off within earshot sends pawns who hate whoever set it off to search there.
     // The klaxon (AIStartEvent('Alarm', EAITYPE_Audio, 128/255, 25 x 65)) carries its full volume out to the
     // radius: the lobby guards hear the statue's front camera and run out to where it saw the player.
-    if looking && cx.lf.alarm && (npc.react_alarm || npc.fear_alarm) && npc.alarm_timer <= 0.0 {
+    // Smarter AI (GMDX HandleAlarm, "don't ignore alarms"): military pawns, thugs and robots not already fighting
+    // answer any alarm they hear, whoever set it off. Deviation: not one belonging to an alliance they're at war
+    // with (Liberty Island's UNATCO troops would otherwise walk into the NSF's klaxons).
+    let any_alarm = crate::smartai::answers_any_alarm(cx.npc_class) && npc.weapon.is_some();
+    if looking && cx.lf.alarm && (npc.react_alarm || npc.fear_alarm || any_alarm) && npc.alarm_timer <= 0.0 {
         for u in alarms.units.iter().filter(|u| u.active) {
             let d = u.pos.distance(my_eye);
-            let r = crate::alarms::AlarmRt::HEAR_RADIUS;
+            let r = u.hear_radius();
             if d >= r || (128.0 / 255.0) < npc.hear_threshold {
                 continue;
+            }
+            if any_alarm && !(npc.hates(&u.alliance) && !u.alliance.is_empty()) {
+                npc.alarm_timer = 120.0;
+                crate::smartai::alarm_boost(npc, cx.npc_class);
+                // 40%: a post-combat search there (SEEKTYPE_Guess, bSeekPostCombat); else as a sound.
+                let (kind, post) = if crate::sound::frand() < 0.4 { (SeekKind::Guess, true) } else { (SeekKind::Sound, false) };
+                if npc.state == NpcState::Idle {
+                    npc.set_seek_location(u.seek, kind, post);
+                    npc.enter_seeking();
+                } else {
+                    npc.reseek(u.seek, kind);
+                }
+                break;
             }
             // HandleAlarm, bFearAlarm: IncreaseFear(instigator, 2.0) -> flee.
             if npc.fear_alarm {
@@ -4865,6 +4907,10 @@ fn animate_pawn(
     if matches!(npc.state, NpcState::TakingHit(_)) {
         return;
     }
+    // Smarter AI: a grenade throw's Attack swing plays out.
+    if npc.anim == "NadeThrow" && npc.state == NpcState::Attacking {
+        return;
+    }
     if matches!(npc.state, NpcState::Stunned(_)) {
         if npc.hp_body.robot {
             set_anim(an, level, npc, "Disabled1", "Still", 1.0);
@@ -4895,6 +4941,9 @@ fn animate_pawn(
     } else if npc.state == NpcState::Burning {
         // PlayPanicRunning.
         set_anim(an, level, npc, "Panic", "Run", run_m);
+    } else if speed > 20.0 && running && firing && !melee_w && strafing_sideways(npc) {
+        // PlayRunningAndFiring: running more sideways than forward to the enemy (|dot| < 0.707) strafes.
+        set_anim(an, level, npc, if two { "Strafe2H" } else { "Strafe" }, if two { "RunShoot2H" } else { "RunShoot" }, run_m);
     } else if speed > 20.0 {
         match (running, firing, two) {
             (true, true, true) => set_anim(an, level, npc, "RunShoot2H", "Run", run_m),
@@ -4912,6 +4961,14 @@ fn animate_pawn(
     } else {
         idle_anim(npc, an, level, two, dt);
     }
+}
+
+/// Whether a pawn in a fight is moving more across than toward / away from the way it faces (it faces its enemy
+/// while strafing).
+fn strafing_sideways(npc: &Npc) -> bool {
+    let Some(b) = npc.body.as_ref() else { return false };
+    let v = DVec3::new(b.velocity.x, b.velocity.y, 0.0).normalize_or_zero();
+    npc.state == NpcState::Attacking && v.length_squared() > 0.5 && v.dot(DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0)).abs() < 0.707
 }
 
 /// PlayShoot / TweenToShoot: once per shot, and the aim held (the Shoot sequence's first frame) between shots.
@@ -5174,10 +5231,16 @@ fn sight_check(npc: &mut Npc, cx: &SightCx) {
                 }
                 let c = blockers.list[p.blocker];
                 let d = (c.center - my_eye).length();
-                if cand.is_none_or(|(_, _, bd, _)| d < bd)
-                    && sees(c.center, c.height, true, Some(p.blocker)).is_some()
-                {
-                    cand = Some((Target::Pawn(p.blocker), c.center, d, 100000.0));
+                if cand.is_none_or(|(_, _, bd, _)| d < bd) {
+                    if let Some(seen_d) = sees(c.center, c.height, true, Some(p.blocker)) {
+                        // Multiplayer: another player's body is seen as the player is (his light, movement,
+                        // crouching, camo); other pawns at once.
+                        match p.net_player.and_then(|id| net_body_vis(npc, id, seen_d)) {
+                            Some(v) if v > 0.0 => cand = Some((Target::Pawn(p.blocker), c.center, d, v + npc.vis_threshold)),
+                            Some(_) => {}
+                            None => cand = Some((Target::Pawn(p.blocker), c.center, d, 100000.0)),
+                        }
+                    }
                 }
             }
             // CheckCycle: readiness climbs at up to 2/s (full view) or as slow as 1/4.5 s (barely visible), holds
@@ -5226,9 +5289,16 @@ fn sight_check(npc: &mut Npc, cx: &SightCx) {
                         (blockers.list[b].center, blockers.list[b].height, Some(b))
                     }
                 };
+                // A player's body under thermoptic camo is as hidden as the player would be.
+                let net_camo = other
+                    .and_then(|b| senses.snap_of(b))
+                    .and_then(|p| p.net_player)
+                    .and_then(crate::netplay::body_state)
+                    .is_some_and(|(_, _, camo)| camo);
                 if (valid_enemy(npc, t) || (npc.state == NpcState::Fleeing && npc.fear_flee))
                     && !(t == Target::Player
                         && crate::abilities::invisible_to(npc.hp_body.robot, ph.camo))
+                    && !net_camo
                     && sees(c, h, false, other).is_some()
                 {
                     npc.last_seen = now;
@@ -5237,6 +5307,22 @@ fn sight_check(npc: &mut Npc, cx: &SightCx) {
             }
         }
     }
+}
+
+/// Multiplayer: how visible another player's body is to this pawn, by the rules used for the player here
+/// (stealth::player_visibility on his light and speed, Smarter AI's darkness rule, crouching, thermoptic camo),
+/// from what his own game reports. None = nothing reported yet: seen at once, as any pawn.
+fn net_body_vis(npc: &Npc, id: u8, dist: f64) -> Option<f32> {
+    let light = crate::netplay::body_light(id)?;
+    let (crouched, speed, camo) = crate::netplay::body_state(id).unwrap_or((false, 0.0, false));
+    if camo {
+        return Some(0.0);
+    }
+    // stealth::player_visibility: light plus a little for moving.
+    let sp = (speed / 320.0).min(1.5);
+    let base = (light + 0.15 * sp * sp).clamp(0.0, 1.0);
+    let vis = crate::smartai::player_vis(base, light, dist, crouched, speed as f64);
+    Some(crate::stealth::sight_visibility(vis, dist, npc.sight_radius, npc.vis_threshold))
 }
 
 /// Hearing (ScriptedPawn's HearNoise / HandleLoudNoise): what this pawn makes of the noises heard since last frame.
@@ -5521,13 +5607,13 @@ fn attack_engage(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bo
     let seen_recently = now - npc.last_seen < 0.6;
     // Smarter AI: the fire react time (must see the enemy for a moment before shooting) and
     // suppressive fire (keep shooting where it was last seen for a while after losing it).
-    let react_ok = crate::smartai::combat_tick(
-        npc,
-        npc_class,
-        now - npc.last_seen < 0.25,
-        npc.target == Some(Target::Player),
-        dt,
-    );
+    // Another player's body counts as the player (bSpottedPlayer, the grenade rules).
+    let target_is_player = match npc.target {
+        Some(Target::Player) => true,
+        Some(Target::Pawn(b)) => cx.senses.snap_of(b).is_some_and(|p| p.net_player.is_some()),
+        None => false,
+    };
+    let react_ok = crate::smartai::combat_tick(npc, npc_class, now - npc.last_seen < 0.25, target_is_player, dt);
     let suppress = !seen_recently && npc.smart.sfire > 0.0;
     let target_pos = if suppress { npc.last_pos } else { target_pos };
     let chase_to = if seen_recently {
@@ -5548,10 +5634,21 @@ fn attack_engage(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bo
         None => 600.0,
     };
     let e = Engage { target_pos, chase_to, to, dist, seen_recently, react_ok, suppress, melee, accurate };
+    // Smarter AI: a grenade throw under way (or starting) holds everything else.
+    if let Some(r) = grenade_step(npc, an, cx, &e, target_is_player) {
+        return r;
+    }
     attack_crouch(npc, lvl, &me, dt, &e);
-    let Some((wish, running)) = attack_close_in(npc, lvl, &me, dt, &e) else {
+    let smart = smart_combat_move(npc, cx, &e);
+    let Some((wish, running)) = smart.or_else(|| attack_close_in(npc, lvl, &me, dt, &e)) else {
         return (DVec3::ZERO, false, false);
     };
+    // RunToRange's bSmartStrafe roll on each new chase.
+    let chasing = smart.is_none() && npc.route.is_some();
+    if chasing && !npc.smart.chasing {
+        crate::smartai::roll_smart_strafe(npc, now - npc.last_seen);
+    }
+    npc.smart.chasing = chasing;
     let moving = wish.length_squared() > 1e-6;
     let (wish, running, fire_ok) = attack_phase_step(npc, &me, dt, &e, moving, wish, running);
     karkian_bump(npc, cx);
@@ -5679,6 +5776,333 @@ fn attack_close_in(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, dt: f32,
     Some((wish, running))
 }
 
+/// Smarter AI's combat moves (enhancement #38; GMDX on top of ScriptedPawn's PickDestination): a dash for cover to
+/// reload (ours), a picked move under way, holding ground (bDefensiveStyle), and while the enemy is in range and in
+/// sight ComputeBestFiringPosition every half second or so. None = the usual RunToRange (attack_close_in).
+fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bool)> {
+    let (lvl, me, dt) = (cx.lvl, cx.me, cx.dt);
+    let reloading = npc.reload_timer > 0.0;
+    let started_reload = reloading && !npc.smart.was_reloading;
+    npc.smart.was_reloading = reloading;
+    if !reloading {
+        npc.smart.in_cover = false;
+    }
+    if !crate::smartai::on() || e.melee || e.suppress || npc.animal {
+        npc.smart.repos = None;
+        return None;
+    }
+    let flat = |v: DVec3| DVec3::new(v.x, v.y, 0.0);
+    // Ours: a reload started close to the enemy in sight - duck round the nearest corner to do it.
+    if started_reload && e.seen_recently && e.dist < 1500.0 && npc.can_strafe {
+        let eye = e.target_pos + DVec3::new(0.0, 0.0, 30.0);
+        if let Some(at) = find_cover(lvl, npc, &me, eye) {
+            let d = flat(at - me.center).length();
+            if env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n)) {
+                println!("PAWNMOVE {} takes cover to reload at ({:.0},{:.0})", lvl.actors[npc.actor].name, at.x, at.y);
+            }
+            npc.smart.repos = Some(crate::smartai::Repos {
+                dest: at,
+                t: 0.0,
+                max_t: (d / npc.params.ground_speed.max(1.0)) as f32 * 1.5 + 0.5,
+                strafe: false,
+                cover: true,
+            });
+        }
+    }
+    if npc.smart.in_cover && reloading {
+        npc.route = None;
+        return Some((DVec3::ZERO, false));
+    }
+    // A move under way: straight there (TryLocation found the way clear), done within 12 or out of time.
+    if let Some(r) = npc.smart.repos.as_mut() {
+        r.t += dt;
+        let to = flat(r.dest - me.center);
+        if to.length() < 12.0 || r.t > r.max_t {
+            npc.smart.in_cover = r.cover && reloading;
+            npc.smart.repos = None;
+            if npc.smart.in_cover {
+                return Some((DVec3::ZERO, false));
+            }
+        } else {
+            npc.route = None;
+            return Some((to.normalize(), true));
+        }
+    }
+    let class = cx.npc_class;
+    let w = npc.weapon.clone()?;
+    // bDefensiveStyle: early in a close fight a long gun holds its ground (EnemyTimer < EnemyTimeout x 0.3).
+    if npc.smart.defensive
+        && e.dist < 768.0
+        && npc.smart.engage_t > 0.0
+        && npc.smart.engage_t < npc.enemy_timeout * 0.3
+        && w.accurate_range > 768.0
+    {
+        npc.route = None;
+        return Some((DVec3::ZERO, false));
+    }
+    if npc.crouching && npc.crouch_timer > 0.0 {
+        return None;
+    }
+    if !e.seen_recently || e.dist > e.accurate {
+        return None;
+    }
+    // PickDestination is asked again and again between shots (ContinueFire's loop, every tick until the weapon is
+    // ready): here ten times a second, once the pawn has fired since its last move (the Fire label shoots first).
+    if !npc.smart.shot_since_move {
+        return None;
+    }
+    npc.smart.pick_t -= dt;
+    if npc.smart.pick_t > 0.0 {
+        return None;
+    }
+    npc.smart.pick_t = 0.1;
+    let Some(t) = npc.target else { return None };
+    let (enemy_radius, enemy_yaw, enemy_is_player, enemy_armed, enemy_max) = match t {
+        Target::Player => {
+            let held = crate::perks::in_hand();
+            let max = match &held {
+                Some((_, true)) => 96.0,
+                Some(_) => 1200.0,
+                None => cx.player.params.radius,
+            };
+            (cx.player.params.radius, cx.player_yaw, true, held.is_some(), max)
+        }
+        Target::Pawn(b) => {
+            let snap = cx.senses.snap_of(b);
+            (cx.blockers.list[b].radius, snap.map_or(0.0, |p| p.yaw), snap.is_some_and(|p| p.net_player.is_some()), true, 1200.0)
+        }
+    };
+    let accurate = if w.accurate_range > 0.0 { w.accurate_range } else { w.max_range } as f64;
+    let input = crate::smartai::FirePosIn {
+        me: me.center,
+        radius: me.radius,
+        ground_speed: npc.params.ground_speed,
+        enemy: e.target_pos,
+        enemy_radius,
+        enemy_yaw,
+        enemy_is_player,
+        enemy_armed,
+        enemy_min: 0.0,
+        enemy_max,
+        self_min: 0.0,
+        self_max: accurate.min(w.max_range as f64),
+        can_strafe: npc.can_strafe,
+        reloading,
+    };
+    let params = npc.params.clone();
+    let props = npc.smart.props.clone();
+    // FRand (the shared generator: the pawn's own seed, stepped a fixed number of times between picks, came out
+    // nearly the same every time).
+    let mut rand = crate::sound::frand;
+    let r2 = crate::sound::frand;
+    let home_ok = |pos: DVec3| !npc.defend_home || is_near_home(lvl, npc, pos);
+    let mut try_loc = |pos: DVec3, min: f64| -> Option<DVec3> {
+        let d = flat(pos - me.center);
+        let mag = d.length();
+        direction_reachable_v(lvl, me.center, &params, d, min.min(mag), mag).filter(|p| home_ok(*p))
+    };
+    let mut random_dest = |yaw: f64, max: f64| -> Option<DVec3> {
+        // AIPickRandomDestination: two tries, biased toward `yaw`.
+        for _ in 0..2 {
+            let y = yaw + (r2() as f64 * 2.0 - 1.0) * std::f64::consts::PI * 0.4;
+            let len = (me.radius + 16.0) + (max - me.radius - 16.0).max(0.0) * (0.5 + 0.5 * r2() as f64);
+            let v = DVec3::new(y.cos(), y.sin(), 0.0);
+            if let Some(p) = direction_reachable_v(lvl, me.center, &params, v, me.radius + 16.0, len).filter(|p| home_ok(*p)) {
+                return Some(p);
+            }
+        }
+        None
+    };
+    let pick = crate::smartai::best_firing_position(&props, &input, &mut rand, &mut try_loc, &mut random_dest);
+    let log = env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n));
+    if log && matches!(pick, crate::smartai::FirePos::Fail) {
+        println!("PAWNPICK t={:.2} {}: nowhere to go", cx.now, lvl.actors[npc.actor].name);
+    }
+    let crate::smartai::FirePos::New(dest) = pick else { return None };
+    npc.smart.shot_since_move = false;
+    // RunToRange: EndCrouch.
+    npc.crouching = false;
+    npc.crouch_timer = 0.0;
+    let d = flat(dest - me.center).length();
+    if d < 16.0 {
+        return None;
+    }
+    // ShouldStrafe: the spot must see the enemy (GMDX), and there's a shot from here.
+    let sees_enemy = lvl.collision.trace(e.target_pos, dest + DVec3::new(0.0, 0.0, 16.0), DVec3::ZERO).fraction >= 0.98;
+    let strafe = npc.can_strafe && crate::smartai::strafe_ok(npc, class, sees_enemy, e.seen_recently, e.dist);
+    if strafe {
+        npc.smart.nade_roll = true;
+    }
+    if log {
+        println!(
+            "PAWNMOVE t={:.2} {} from ({:.0},{:.0}) to ({:.0},{:.0}) strafe={strafe} enemy dist {:.0}",
+            cx.now, lvl.actors[npc.actor].name, me.center.x, me.center.y, dest.x, dest.y, e.dist
+        );
+    }
+    npc.smart.repos = Some(crate::smartai::Repos {
+        dest,
+        t: 0.0,
+        max_t: (d / npc.params.ground_speed.max(1.0)) as f32 * 1.5 + 0.4,
+        strafe,
+        cover: false,
+    });
+    npc.route = None;
+    Some((flat(dest - me.center).normalize(), true))
+}
+
+/// Ours (Smarter AI): the nearest spot within a second and a half's run that the enemy can't see (its eyes to our
+/// head), for reloading.
+fn find_cover(lvl: &dx_level::Level, npc: &Npc, me: &Cylinder, enemy_eye: DVec3) -> Option<DVec3> {
+    let max = npc.params.ground_speed * 1.5;
+    let mut best: Option<(DVec3, f64)> = None;
+    for k in 0..12 {
+        let yaw = k as f64 / 12.0 * std::f64::consts::TAU;
+        let v = DVec3::new(yaw.cos(), yaw.sin(), 0.0);
+        let Some(end) = direction_reachable_v(lvl, me.center, &npc.params, v, 48.0, max) else { continue };
+        let reach = (end - me.center).length();
+        let mut d = 48.0;
+        while d <= reach {
+            let at = me.center + v * d;
+            let head = at + DVec3::new(0.0, 0.0, npc.params.height * 0.7);
+            if lvl.collision.trace(enemy_eye, head, DVec3::ZERO).fraction < 0.98 {
+                // A little further on, so the whole body is out of sight.
+                let at = me.center + v * (d + npc.params.radius).min(reach);
+                if (!npc.defend_home || is_near_home(lvl, npc, at)) && best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((at, d));
+                }
+                break;
+            }
+            d += 24.0;
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// Smarter AI (GMDX bGrenadier: checkNadeThrow / nadeThrow). After a shot or the start of a strafe a grenadier has
+/// a small chance to check for a throw; a throw turns to the target, swings (Attack at 1.1x) and lets go 0.3 s in.
+/// Returns the frame's (wish, running, firing) while a throw is under way.
+fn grenade_step(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx, e: &Engage, target_is_player: bool) -> Option<(DVec3, bool, bool)> {
+    let (lvl, me, dt) = (cx.lvl, cx.me, cx.dt);
+    if npc.smart.nade.is_none() {
+        if !std::mem::take(&mut npc.smart.nade_roll) || !crate::smartai::on() || !npc.smart.grenadier || !target_is_player {
+            return None;
+        }
+        if npc.rand() >= crate::smartai::nade_chance(npc) && !env_on!("DXVIEW_NADETEST") {
+            return None;
+        }
+        let aim = check_nade_throw(npc, cx, e)?;
+        let (class, wide) = crate::smartai::grenade_kind(cx.npc_class);
+        npc.smart.nade = Some(crate::smartai::NadeThrow { class, wide, aim, t: 0.0, swing: None, thrown: false });
+        npc.smart.repos = None;
+        npc.route = None;
+        if env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n)) || env_on!("DXVIEW_NADETEST") {
+            println!(
+                "PAWN {} throws a {class} (dist {:.0}) from ({:.0},{:.0}) at ({:.0},{:.0})",
+                lvl.actors[npc.actor].name, e.dist, me.center.x, me.center.y, aim.x, aim.y
+            );
+        }
+    }
+    let n = npc.smart.nade.as_mut()?;
+    n.t += dt;
+    let to = n.aim - me.center;
+    let want = to.y.atan2(to.x);
+    npc.yaw = turn_toward(npc.yaw, want, npc.yaw_rate * dt as f64);
+    let facing = (want - npc.yaw).cos() > 0.98;
+    let mut done = n.t > 4.0;
+    match n.swing {
+        None => {
+            // TurnTo(target); FinishAnim; PlayAnimPivot('Attack', 1.1, 0.1).
+            if facing || n.t > 1.0 {
+                n.swing = Some(0.0);
+                let clip = lvl.mesh_actors[an.mesh_actor].anim.as_ref().and_then(|a| Clip::named(&a.mesh, "Attack", false));
+                if let Some(mut c) = clip {
+                    c.rate *= 1.1;
+                    an.clip = Some(c);
+                    npc.anim = "NadeThrow";
+                }
+            }
+        }
+        Some(t) => {
+            let t = t + dt;
+            n.swing = Some(t);
+            // Sleep(0.3); if still in the Attack swing, nadeThrow.
+            if !n.thrown && t >= 0.3 {
+                n.thrown = true;
+                if npc.anim == "NadeThrow" {
+                    let (class, wide) = (n.class, n.wide);
+                    let tgt = match npc.target {
+                        Some(Target::Pawn(b)) => cx.blockers.list[b].center,
+                        _ => cx.player_center,
+                    };
+                    let dist = (tgt - me.center).length();
+                    let dz = me.center.z - tgt.z;
+                    // bSafe: a ceiling within 160 overhead flattens the lob.
+                    let low = lvl.collision.trace(me.center + DVec3::new(0.0, 0.0, me.height), me.center + DVec3::new(0.0, 0.0, 160.0), DVec3::ZERO).fraction < 1.0;
+                    let wide = crate::sound::frand() < wide;
+                    let vel = crate::smartai::nade_velocity(npc.yaw, dist, dz, wide, low);
+                    crate::grenades::npc_throw(class, me.center + DVec3::new(0.0, 0.0, 50.0), vel, npc.blocker, crate::smartai::nade_blast());
+                }
+            }
+            let clip_done = an.clip.as_ref().is_none_or(|c| c.done()) || npc.anim != "NadeThrow";
+            if n.thrown && t >= 0.5 && clip_done {
+                done = true;
+            }
+        }
+    }
+    if done {
+        npc.smart.nade = None;
+        if npc.anim == "NadeThrow" {
+            npc.anim = "";
+        }
+        npc.atk_phase = AtkPhase::Settle(0.15);
+    }
+    Some((DVec3::ZERO, false, true))
+}
+
+/// checkNadeThrow: the player seen this fight, 640-1792 away, within 640 up or down, not on a ladder; a trace toward
+/// him (where he was last seen under suppressive fire) that ends within 192 of him; none of our friends within 224
+/// of him; and floor in front of or behind him. Returns where to throw.
+fn check_nade_throw(npc: &Npc, cx: &ActCx, e: &Engage) -> Option<DVec3> {
+    let (lvl, me) = (cx.lvl, cx.me);
+    let t = npc.target?;
+    let (tgt, radius, on_ladder, body) = match t {
+        Target::Player => {
+            if cx.ph.dead {
+                return None;
+            }
+            (cx.player_center, cx.player.params.radius, cx.player.body.physics == Physics::Climbing, None)
+        }
+        Target::Pawn(b) => (cx.blockers.list[b].center, cx.blockers.list[b].radius, false, Some(b)),
+    };
+    if !npc.smart.spotted {
+        return None;
+    }
+    let dist = (tgt - me.center).length();
+    if !(dist > 640.0 && dist < 1792.0 && (me.center.z - tgt.z).abs() < 640.0) || on_ladder {
+        return None;
+    }
+    let start = me.center + DVec3::new(0.0, 0.0, 10.0);
+    let end = if npc.smart.sfire > 0.0 { npc.last_pos } else { tgt };
+    let _ = e;
+    let h = cx.world.trace(start, end, DVec3::splat(4.0));
+    let hit_at = start + (end - start) * h.fraction;
+    if hit_at.distance(tgt) >= 192.0 {
+        return None;
+    }
+    let friend_near = cx.senses.pawns.iter().any(|p| {
+        !p.dead && p.blocker != npc.blocker && Some(p.blocker) != body && p.pos.distance(tgt) < 224.0 && !npc.hates(&p.alliance)
+    });
+    if friend_near {
+        return None;
+    }
+    let fwd = DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0) * (radius + 64.0);
+    let clear = |p: DVec3| lvl.collision.trace(p, p - DVec3::new(0.0, 0.0, 196.0), DVec3::ZERO).fraction >= 1.0;
+    if clear(tgt + fwd) && clear(tgt - fwd) {
+        return None;
+    }
+    Some(end)
+}
+
 /// Attacking's labels (atk_phase) and facing: turn first, settle, fire. Returns (wish, running, fire_ok).
 fn attack_phase_step(
     npc: &mut Npc,
@@ -5705,8 +6129,12 @@ fn attack_phase_step(
         running = false;
     }
     // StrafeFacing (bCanStrafe and a shot to take) runs facing the enemy; MoveToward faces the way it
-    // goes; standing, turning and firing face the enemy.
-    let strafing = npc.can_strafe && seen_recently;
+    // goes; standing, turning and firing face the enemy. Smarter AI: a picked firing position says for itself, and
+    // a smart strafe keeps facing an enemy just lost round a corner (within 1536).
+    let strafing = match npc.smart.repos {
+        Some(r) => r.strafe,
+        None => npc.can_strafe && (seen_recently || (npc.smart.smart_strafe && e.dist < 1536.0)),
+    };
     let face = if !moving || npc.atk_phase == AtkPhase::TurnFirst || strafing {
         to
     } else {
@@ -6067,6 +6495,11 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
     // A melee swing only starts here; its blow comes with the notify (strike_now, a later frame).
     if !strike_now && !begin_shot(npc, an, w, cx, f.moving) {
         return;
+    }
+    // Smarter AI (GMDX): every shot is a chance to check for a grenade throw.
+    if !f.melee {
+        npc.smart.nade_roll = true;
+        npc.smart.shot_since_move = true;
     }
     // Gunfire is heard by enemies (WeaponFire, LoudNoise) and friends (Distress).
     if let Some(mut n) = crate::stealth::weapon_noise(w, cx.me.center, Target::Pawn(npc.blocker)) {

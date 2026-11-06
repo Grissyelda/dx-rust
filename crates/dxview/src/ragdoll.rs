@@ -5,6 +5,14 @@
 //! coat). The level is solid to them through static triangle colliders built from the drawn BSP, a cell at a time
 //! around each body. Once a body has lain still for a moment (or after a while), its physics is removed and the
 //! pose stays. Explosions still gib (ai.rs / effects.rs).
+//!
+//! Posable Bodies (setting PosableBodies, ours, with Ragdolls): Use (right click, the pad's X) on a ragdolled body's
+//! limb or head takes hold of that part and drags it in front of the view - it's pulled toward a point at the grab's
+//! distance (velocity toward the target, so the joints and the floor still have their say) while the rest of the
+//! body hangs off it; Use again lets go and the body settles and stays in the new pose. A body already at rest gets
+//! its physics back for it (a wake, no push). Use on the trunk (hips, chest) does what it always did - search the
+//! body, then pick it up whole (POVCorpse) - so carrying and searching are unchanged. The carcass the AI and the
+//! frob trace know stays where the pawn fell (as for any ragdoll).
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -42,6 +50,8 @@ pub struct Death {
 }
 
 static DEATHS: Mutex<Vec<Death>> = Mutex::new(Vec::new());
+/// Bodies at rest to give their physics back without a push (Posable Bodies), by pawn blocker.
+static WAKES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 pub fn request(d: Death) {
     if let Ok(mut g) = DEATHS.lock() {
@@ -75,6 +85,8 @@ impl Plugin for RagdollPlugin {
             .add_systems(Update, (player_body_system.before(start_system), start_system.after(crate::skeletal::pose_system)))
             .add_systems(PostUpdate, drive_system.before(bevy::transform::TransformSystems::Propagate))
             .add_systems(Update, follow_movers_system)
+            .add_systems(Update, grab_system.after(crate::fly).before(crate::carry::carry_system).before(start_system))
+            .add_systems(Update, grab_test_system.after(crate::fly).before(grab_system))
             .add_systems(First, pause_system);
         // Avian puts dozens of small systems in FixedPostUpdate. Handed out one by one to worker threads they cost
         // close to a millisecond a frame in scheduling alone, idle or not; run in order on one thread they're
@@ -173,6 +185,8 @@ pub struct Ragdoll {
     anchors: Vec<(usize, usize, Vec3, Vec3)>,
     life: f32,
     still: f32,
+    /// Woken to be posed (Posable Bodies): no new blood pool when it settles again.
+    woken: bool,
 }
 
 /// Static colliders for the level, a cell at a time.
@@ -283,7 +297,10 @@ pub fn start_system(
     if crate::loader::new_map(&mut map_gen) {
         *world = RagWorld::default();
     }
-    let deaths: Vec<Death> = DEATHS.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default();
+    let mut deaths: Vec<(Death, bool)> = DEATHS.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default().into_iter().map(|d| (d, false)).collect();
+    // Posable Bodies: a body at rest woken for posing - the pose it lies in, no push.
+    let wakes: Vec<usize> = WAKES.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default();
+    deaths.extend(wakes.into_iter().map(|b| (Death { blocker: b, hit: DVec3::ZERO, from: DVec3::ZERO, damage: 0.0, vel: DVec3::ZERO }, true)));
     if deaths.is_empty() || !enabled() {
         return;
     }
@@ -296,8 +313,8 @@ pub fn start_system(
     // ran at 4 fps until they settled. The rest play their death animation.
     let mut live = active.iter().count();
     let me = player.as_ref().map(|p| p.body.location);
-    for d in deaths {
-        if d.blocker != PLAYER {
+    for (d, woken) in deaths {
+        if d.blocker != PLAYER && !woken {
             let near = match (me, blockers.list.get(d.blocker)) {
                 (Some(p), Some(c)) => c.center.distance(p) < FAR_UNITS,
                 _ => true,
@@ -328,7 +345,7 @@ pub fn start_system(
         };
         let hit = Vec3::from(dx_level::ue_to_bevy(d.hit.as_vec3().to_array()));
         let run = Vec3::new(d.vel.x as f32, d.vel.z as f32, d.vel.y as f32) * dx_level::METERS_PER_UNIT;
-        let kick = (d.damage * 0.12).clamp(1.5, 7.0);
+        let kick = if woken { 0.0 } else { (d.damage * 0.12).clamp(1.5, 7.0) };
         // The body's left-to-right axis (hips, else shoulders): the hinges' axis.
         let lr = |a: &str, b: &str| Some(g[idx(b)?].w_axis.truncate() - g[idx(a)?].w_axis.truncate()).filter(|v| v.length_squared() > 1e-6);
         let right = lr("DEF-thigh.L", "DEF-thigh.R").or_else(|| lr("DEF-upper_arm.L", "DEF-upper_arm.R")).unwrap_or(Vec3::X).normalize();
@@ -539,7 +556,7 @@ pub fn start_system(
         if env_on!("DXVIEW_RAGLOG") {
             println!("RAGDOLL start blocker {} hit part {near} kick {kick:.1} run {run:?} hips {:?}", d.blocker, segs[0].0);
         }
-        commands.entity(e).insert(Ragdoll { bodies, joints, driven, blocker: d.blocker, order, anchors, life: 0.0, still: 0.0 });
+        commands.entity(e).insert(Ragdoll { bodies, joints, driven, blocker: d.blocker, order, anchors, life: 0.0, still: 0.0, woken });
     }
 }
 
@@ -598,7 +615,7 @@ pub fn drive_system(
         }
         if r.life > MAX_LIFE || r.still > STILL_FOR {
             // Lying still: the pose stays, the physics goes; the blood pools where the chest lies.
-            if let Some(c) = w.get(1) {
+            if let Some(c) = w.get(1).filter(|_| !r.woken) {
                 let p = dx_level::bevy_to_ue(c.w_axis.truncate().to_array());
                 crate::gore::rested(r.blocker, DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64));
             }
@@ -731,4 +748,374 @@ fn mesh_trimesh(m: &Mesh) -> Option<Collider> {
     let verts: Vec<Vec3> = p.iter().map(|v| Vec3::from(*v)).collect();
     let tris: Vec<[u32; 3]> = idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
     Some(Collider::trimesh(verts, tris))
+}
+
+/// Posable Bodies (see the module notes).
+pub fn posable_on() -> bool {
+    setting!("PosableBodies") > 0.5 && enabled()
+}
+
+/// How far the hand reaches for a limb (Unreal units: MaxFrobDistance), the hold distance range (metres), how hard
+/// the part is pulled toward the hold point (1/s) and its fastest (m/s).
+const GRAB_REACH: f64 = 112.0;
+const HOLD_NEAR: f32 = 0.7;
+const HOLD_FAR: f32 = 1.4;
+const PULL: f32 = 14.0;
+const PULL_MAX: f32 = 7.0;
+/// Let go when the part has been this far (m) from the hand this long (s): caught on something.
+const STUCK_DIST: f32 = 0.6;
+const STUCK_SECS: f32 = 0.8;
+
+/// The limb in hand: the body (SkelBody entity), the part (PARTS index), where on its segment it was taken (0 at the
+/// joint .. 1 at the far end) and the segment's length (m), the hold distance (m), seconds it's been stuck.
+struct Grab {
+    body: Entity,
+    part: usize,
+    along: f32,
+    len: f32,
+    dist: f32,
+    stuck: f32,
+    /// The kinematic hand and the joint pinning the part to it (made once the body's physics is up).
+    hand: Option<(Entity, Entity)>,
+}
+
+/// Posable Bodies: the hand holding a limb.
+#[derive(Component)]
+struct GrabHand;
+
+/// Let go: the hand and its joint go (the body falls and settles in the new pose).
+fn release(commands: &mut Commands, g: &mut Grab) {
+    if let Some((h, j)) = g.hand.take() {
+        commands.entity(j).try_despawn();
+        commands.entity(h).try_despawn();
+    }
+}
+
+static GRAB: Mutex<Option<Grab>> = Mutex::new(None);
+/// The Use press this frame was taken by grabbing or letting go (carry.rs, so nothing else frobs with it).
+static CONSUMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// carry.rs: this frame's Use was taken by a limb grab / release.
+pub fn use_consumed() -> bool {
+    CONSUMED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The parts' segments on the body as drawn (Bevy metres), PARTS order.
+fn part_segments(s: &SkelBody, gts: &Query<&GlobalTransform>) -> Option<Vec<(Vec3, Vec3)>> {
+    let idx = |name: &str| s.rig.names.iter().position(|n| n == name);
+    let at = |i: usize| gts.get(*s.nodes.get(i)?).ok().map(|g| g.translation());
+    PARTS
+        .iter()
+        .map(|p| {
+            let a = at(idx(p.bone)?)?;
+            let mut b = at(idx(p.tail)?)?;
+            b += (b - a) * p.extend;
+            Some((a, b))
+        })
+        .collect()
+}
+
+/// Closest approach of the ray `o + d t` (d unit) to the segment a..b: (ray t, segment fraction, distance).
+fn ray_segment(o: Vec3, d: Vec3, a: Vec3, b: Vec3) -> (f32, f32, f32) {
+    let u = b - a;
+    let w = a - o;
+    let (aa, bb, cc, dd, ee) = (u.dot(u).max(1e-8), u.dot(d), d.dot(d), u.dot(w), d.dot(w));
+    let den = aa * cc - bb * bb;
+    let mut sc = if den.abs() > 1e-8 { ((bb * ee - cc * dd) / den).clamp(0.0, 1.0) } else { 0.0 };
+    let mut tc = (bb * sc + ee) / cc;
+    if tc < 0.0 {
+        tc = 0.0;
+        sc = (-dd / aa).clamp(0.0, 1.0);
+    }
+    let p = o + d * tc;
+    let q = a + u * sc;
+    (tc, sc, p.distance(q))
+}
+
+/// Posable Bodies: Use on a ragdolled body's limb takes hold of it (or Use again lets go), and the part in hand is
+/// pulled toward the point in front of the view.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn grab_system(
+    mut commands: Commands,
+    time: Res<Time>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    frob_req: Res<crate::pickups::FrobRequest>,
+    cursor: Single<&bevy::window::CursorOptions>,
+    cam: Single<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
+    level: Res<crate::LevelRes>,
+    ph: Res<crate::ai::PlayerHealth>,
+    weapons: Res<crate::weapons::Weapons>,
+    carrying: Res<crate::carry::Carrying>,
+    mut world: ResMut<RagWorld>,
+    mut skels: Query<(Entity, &SkelBody, Option<&crate::ai::Npc>, Option<&mut Ragdoll>), Without<PlayerBody>>,
+    gts: Query<&GlobalTransform>,
+    parts: Query<&Transform, (With<RigidBody>, Without<crate::FlyCam>, Without<GrabHand>)>,
+    mut hands: Query<(&Transform, &mut LinearVelocity), (With<GrabHand>, Without<crate::FlyCam>)>,
+) {
+    CONSUMED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let Ok(mut grab) = GRAB.lock() else { return };
+    // (DXVIEW_GRABTEST: the test presses Use without the mouse captured.)
+    let locked = cursor.grab_mode == bevy::window::CursorGrabMode::Locked || env_on!("DXVIEW_GRABTEST");
+    let use_pressed = locked && (mouse.just_pressed(MouseButton::Right) || frob_req.0);
+    let screens = crate::menus::open() || crate::inventory_screen::screen_open() || crate::computers::open();
+    let consume = || CONSUMED.store(true, std::sync::atomic::Ordering::Relaxed);
+    let eye_b = cam.translation;
+    let e = dx_level::bevy_to_ue(eye_b.to_array());
+    let eye = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
+    let f = cam.forward().as_vec3();
+    let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero();
+    // Third person: toward what the crosshair is on.
+    let fw = crate::thirdperson::aim_dir(&level.0, eye, fw);
+    let dir_b = Vec3::new(fw.x as f32, fw.z as f32, fw.y as f32).normalize_or(f);
+    if let Some(g) = grab.as_mut() {
+        let gone = !posable_on() || ph.dead || screens || weapons.corpse.is_some() || skels.get(g.body).is_err();
+        if use_pressed || gone {
+            if use_pressed {
+                consume();
+            }
+            release(&mut commands, g);
+            *grab = None;
+            return;
+        }
+        // (A body just woken has its physics from the next frame.)
+        let Ok((_, _, _, Some(mut r))) = skels.get_mut(g.body) else { return };
+        let Some(&b) = r.bodies.get(g.part) else { return };
+        let Ok(tf) = parts.get(b) else { return };
+        let local = Vec3::Y * ((g.along - 0.5) * g.len);
+        let anchor = tf.translation + tf.rotation * local;
+        // The hand: a kinematic body pinned to the part where it was taken, starting there (no jump).
+        let Some((hand, _)) = g.hand else {
+            let hand = commands.spawn((RigidBody::Kinematic, GrabHand, LinearVelocity::ZERO, Transform::from_translation(anchor))).id();
+            let joint = commands
+                .spawn((SphericalJoint::new(hand, b).with_local_anchor1(Vec3::ZERO).with_local_anchor2(local), JointCollisionDisabled))
+                .id();
+            g.hand = Some((hand, joint));
+            return;
+        };
+        let Ok((htf, mut hv)) = hands.get_mut(hand) else { return };
+        // The hold point, short of a wall in between; the hand goes there at up to PULL_MAX.
+        let want = eye + fw * (g.dist / dx_level::METERS_PER_UNIT) as f64;
+        let h = level.0.collision.trace(eye, want, DVec3::splat(4.0));
+        let target = eye_b + dir_b * g.dist * h.fraction.clamp(0.0, 1.0) as f32;
+        // (At most the whole way in one frame: at a low frame rate PULL alone overshoots and the hand swings.)
+        let v = (target - htf.translation) * PULL.min(0.8 / time.delta_secs().max(1e-3));
+        hv.0 = if v.length() > PULL_MAX { v.normalize() * PULL_MAX } else { v };
+        r.life = 0.0;
+        r.still = 0.0;
+        // The body caught on something: the part left behind the hand.
+        let lag = htf.translation.distance(anchor);
+        g.stuck = if lag > STUCK_DIST { g.stuck + time.delta_secs() } else { 0.0 };
+        if env_on!("DXVIEW_RAGLOG") {
+            println!("GRAB part {} hand {:.2} m from the hold point, part {lag:.2} m from the hand", g.part, target.distance(htf.translation));
+        }
+        world.ensure(&mut commands, anchor, 4.0);
+        if g.stuck > STUCK_SECS {
+            release(&mut commands, g);
+            *grab = None;
+        }
+        return;
+    }
+    if !use_pressed || !posable_on() || screens || ph.dead || weapons.corpse.is_some() || carrying.held.is_some() || crate::carry::carrying() {
+        return;
+    }
+    // What the hand reaches first: the level, else a body's part along the view.
+    let h = level.0.collision.trace(eye, eye + fw * GRAB_REACH, DVec3::ZERO);
+    let reach_m = (GRAB_REACH * h.fraction.clamp(0.0, 1.0)) as f32 * dx_level::METERS_PER_UNIT;
+    let mut best: Option<(f32, Entity, usize, f32, f32, Option<usize>, bool)> = None;
+    for (ent, s, npc, rag) in &skels {
+        if !s.ragdoll {
+            continue;
+        }
+        let Ok(rg) = gts.get(s.root) else { continue };
+        if rg.translation().distance(eye_b) > reach_m + 2.5 {
+            continue;
+        }
+        let Some(segs) = part_segments(s, &gts) else { continue };
+        for (i, (a, b)) in segs.iter().enumerate() {
+            let (t, along, d) = ray_segment(eye_b, dir_b, *a, *b);
+            if t > reach_m || d > PARTS[i].radius * 1.3 + 0.03 {
+                continue;
+            }
+            if best.as_ref().is_none_or(|x| t < x.0) {
+                best = Some((t, ent, i, along, a.distance(*b), npc.map(|n| n.blocker), rag.is_some()));
+            }
+        }
+    }
+    // The trunk (hips, chest): the old Use - search the body, pick it up whole.
+    let Some((t, ent, part, along, len, blocker, live)) = best.filter(|b| b.2 >= 2) else { return };
+    if !live {
+        let Some(bl) = blocker else { return };
+        if let Ok(mut w) = WAKES.lock() {
+            w.push(bl);
+        }
+    }
+    consume();
+    *grab = Some(Grab { body: ent, part, along, len: len.max(0.02), dist: t.clamp(HOLD_NEAR, HOLD_FAR), stuck: 0.0, hand: None });
+}
+
+/// Developer aid: `DXVIEW_GRABTEST="part;hold_secs;dir[;aim]"` tests Posable Bodies without a hand at the mouse. 3 s in,
+/// the nearest living pawn on a rebuilt body is killed (a 1000-point shot, the normal path, so it ragdolls); once it
+/// lies still the player is put 70 units from it looking at it, takes hold of PARTS[part] (2 head, 3-6 arms, 7-10
+/// legs) as a Use on it would ("aim": looks at the part and presses Use, the real pick), turns the view 25 degrees over the hold, then lets go. Screenshots `dir`/grab_held.png
+/// (during the hold) and `dir`/grab_rest.png (4 s after letting go); GRAB lines give the part's distance from the
+/// hold point.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn grab_test_system(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut player: ResMut<crate::Player>,
+    mut flycam: Query<&mut crate::FlyCam>,
+    mut hits: ResMut<crate::damage::PawnHits>,
+    skels: Query<(Entity, &SkelBody, &crate::ai::Npc, Option<&Ragdoll>)>,
+    blockers: Res<crate::actors::Blockers>,
+    gts: Query<&GlobalTransform>,
+    mut st: Local<(u8, f32, Option<Entity>, f32)>,
+    mut skip: Local<Vec<Entity>>,
+    mut frob: ResMut<crate::pickups::FrobRequest>,
+) {
+    let Some(cfg) = env_val!("DXVIEW_GRABTEST").map(str::to_owned) else { return };
+    let p: Vec<&str> = cfg.split(';').collect();
+    let part: usize = p.first().and_then(|v| v.parse().ok()).unwrap_or(4).clamp(2, PARTS.len() - 1);
+    let hold: f32 = p.get(1).and_then(|v| v.parse().ok()).unwrap_or(4.0);
+    let dir = p.get(2).copied().unwrap_or(".").to_string();
+    let aim = p.get(3) == Some(&"aim");
+    let now = time.elapsed_secs();
+    let ue = |v: Vec3| {
+        let u = dx_level::bevy_to_ue(v.to_array());
+        DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64)
+    };
+    let hips = |s: &SkelBody| s.nodes.first().and_then(|_| {
+        let i = s.rig.names.iter().position(|n| n == "DEF-spine")?;
+        gts.get(s.nodes[i]).ok().map(|g| ue(g.translation()))
+    });
+    let look = |flycam: &mut Query<&mut crate::FlyCam>, from: DVec3, at: DVec3, turn: f32| {
+        let d = at - from;
+        for mut c in flycam.iter_mut() {
+            c.yaw = (-d.x).atan2(-d.y) as f32 + turn;
+            c.pitch = d.z.atan2(d.truncate().length()) as f32;
+        }
+    };
+    let eye = player.body.location + DVec3::new(0.0, 0.0, player.eye_height);
+    match st.0 {
+        0 if now > 3.0 => {
+            let me = player.body.location;
+            let best = skels
+                .iter()
+                .filter(|(e, s, n, _)| n.state != crate::ai::NpcState::Dead && !s.ragdoll && n.blocker < blockers.list.len() && !skip.contains(e))
+                .min_by(|a, b| blockers.list[a.2.blocker].center.distance(me).total_cmp(&blockers.list[b.2.blocker].center.distance(me)));
+            if let Some((e, _, n, _)) = best {
+                // Near enough for a ragdoll (FAR_UNITS) first.
+                let c = blockers.list[n.blocker].center;
+                let away = (me - c).truncate().normalize_or(glam::DVec2::X);
+                player.body.location = DVec3::new(c.x + away.x * 160.0, c.y + away.y * 160.0, c.z + 10.0);
+                player.body.velocity = DVec3::ZERO;
+                *st = (6, now, Some(e), 0.0);
+            }
+        }
+        6 if now - st.1 > 1.0 => {
+            let Some((e, _, n, _)) = st.2.and_then(|e| skels.get(e).ok()) else { return };
+            let c = blockers.list[n.blocker].center;
+            let _ = e;
+            hits.0.push(crate::damage::PawnHit { blocker: n.blocker, damage: 1000.0, damage_type: "Shot", hit_loc: c, attacker: None, attacker_pos: player.body.location });
+            println!("GRABTEST killed blocker {} at {:?}", n.blocker, c);
+            *st = (1, now, Some(e), 0.0);
+        }
+        1 => {
+            let Some((_, s, _, rag)) = st.2.and_then(|e| skels.get(e).ok()) else { return };
+            // Didn't go down (invincible): the next one.
+            if !s.ragdoll && now - st.1 > 3.0 {
+                skip.extend(st.2);
+                *st = (0, now, None, 0.0);
+                return;
+            }
+            // Lying still (its physics gone), or 15 s.
+            if s.ragdoll && rag.is_none() || now - st.1 > 15.0 {
+                let Some(h) = hips(s) else { return };
+                let away = (player.body.location - h).truncate().normalize_or(glam::DVec2::X);
+                player.body.location = DVec3::new(h.x + away.x * 70.0, h.y + away.y * 70.0, h.z + 30.0);
+                player.body.velocity = DVec3::ZERO;
+                println!("GRABTEST body at rest at {h:?}, player to {:?}", player.body.location);
+                *st = (2, now, st.2, 0.0);
+            }
+        }
+        2 => {
+            let Some((_, s, _, _)) = st.2.and_then(|e| skels.get(e).ok()) else { return };
+            let Some(h) = hips(s) else { return };
+            let Some(segs) = part_segments(s, &gts) else { return };
+            let (a, b) = segs[part];
+            // "aim": look at the part itself and press Use (the real pick), else at the hips and take it directly.
+            if aim {
+                look(&mut flycam, eye, ue(a.lerp(b, 0.6)), 0.0);
+            } else {
+                look(&mut flycam, eye, h, 0.0);
+            }
+            if now - st.1 > 1.5 && aim {
+                frob.0 = true;
+                println!("GRABTEST pressed Use aiming at part {part}");
+                *st = (7, now, st.2, h.z as f32);
+            } else if now - st.1 > 1.5 {
+                if let Ok(mut g) = GRAB.lock() {
+                    *g = Some(Grab { body: st.2.unwrap(), part, along: 0.7, len: a.distance(b).max(0.02), dist: 0.9, stuck: 0.0, hand: None });
+                }
+                if let Ok(mut w) = WAKES.lock() {
+                    w.push(skels.get(st.2.unwrap()).map(|x| x.2.blocker).unwrap_or(0));
+                }
+                println!("GRABTEST took hold of part {part}");
+                *st = (3, now, st.2, h.z as f32);
+            }
+        }
+        7 => {
+            let took = GRAB.lock().ok().and_then(|g| g.as_ref().map(|g| g.part));
+            println!("GRABTEST the Use took hold of {took:?}");
+            *st = (3, now, st.2, st.3);
+        }
+        3 => {
+            let k = ((now - st.1) / hold).min(1.0);
+            let Some((_, s, _, _)) = st.2.and_then(|e| skels.get(e).ok()) else { return };
+            let _ = s;
+            // Look a little down and turn 25 degrees over the hold.
+            for mut c in flycam.iter_mut() {
+                c.pitch += (-0.25 - c.pitch) * 0.1;
+                c.yaw += 25f32.to_radians() * time.delta_secs() / hold;
+            }
+            if (st.3 - 1.0).abs() > 0.5 && k > 0.8 {
+                commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window()).observe(bevy::render::view::screenshot::save_to_disk(format!("{dir}/grab_held.png")));
+                st.3 = 1.0;
+            }
+            if k >= 1.0 {
+                if let Ok(mut g) = GRAB.lock() {
+                    if let Some(gr) = g.as_mut() {
+                        release(&mut commands, gr);
+                    }
+                    *g = None;
+                }
+                println!("GRABTEST let go");
+                *st = (4, now, st.2, 0.0);
+            }
+        }
+        4 if now - st.1 > 4.0 => {
+            commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window()).observe(bevy::render::view::screenshot::save_to_disk(format!("{dir}/grab_rest.png")));
+            if let Some(h) = st.2.and_then(|e| skels.get(e).ok()).and_then(|x| hips(x.1)) {
+                println!("GRABTEST rest hips {h:?}");
+            }
+            *st = (5, now, st.2, 0.0);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod grab_tests {
+    use super::*;
+
+    /// Posable Bodies' pick: the ray's closest approach to a part's segment.
+    #[test]
+    fn ray_meets_segment() {
+        // A limb lying across the view 1 m ahead, 5 cm below the ray.
+        let (t, along, d) = ray_segment(Vec3::ZERO, Vec3::NEG_Z, Vec3::new(-0.2, -0.05, -1.0), Vec3::new(0.2, -0.05, -1.0));
+        assert!((t - 1.0).abs() < 1e-4 && (along - 0.5).abs() < 1e-4 && (d - 0.05).abs() < 1e-4, "{t} {along} {d}");
+        // Behind the eye: clamped to the start of the ray.
+        let (t, _, d) = ray_segment(Vec3::ZERO, Vec3::NEG_Z, Vec3::new(-0.2, 0.0, 1.0), Vec3::new(0.2, 0.0, 1.0));
+        assert!(t == 0.0 && (d - 1.0).abs() < 1e-4, "{t} {d}");
+    }
 }

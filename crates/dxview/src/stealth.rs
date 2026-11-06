@@ -67,6 +67,10 @@ pub fn light_at(level: &Level, pos: DVec3) -> f32 {
 fn light_sum(level: &Level, pos: DVec3, gain: f32, dynamic: &[dx_level::lighting::LightInfo]) -> f32 {
     let mut sum = 0.0f32;
     for l in level.lights.iter().chain(dynamic.iter()) {
+        // Glowing faces' lights (Emissive Surfaces) are a look only: they don't change who sees the player.
+        if l.emitter {
+            continue;
+        }
         let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);
         let d = lp.distance(pos) as f32;
         if d >= l.radius {

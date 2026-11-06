@@ -601,6 +601,11 @@ pub struct MirrorBody {
     gen: u64,
     /// Seconds crouched (0 standing): Human.PlayDuck drops into the crouch once (Crouch), then holds CrouchWalk.
     crouch_t: f32,
+    /// Smooth Animation: the drawn yaw (eased toward his facing), and a blend from the pose shown before a sequence
+    /// change (start, frames, frame, seconds so far) for the vertex body.
+    yaw_shown: Option<f64>,
+    blend: Option<(usize, usize, f32, f32)>,
+    shown: Option<(usize, usize, f32)>,
 }
 
 #[derive(Resource, Default)]
@@ -638,6 +643,7 @@ pub fn mirror_body_system(
     weapons: Res<crate::weapons::Weapons>,
     keys: Res<ButtonInput<KeyCode>>,
     ph: Res<crate::ai::PlayerHealth>,
+    gts: Query<&GlobalTransform>,
 ) {
     // Something else shows JC (conversation puppet, death), or no mirror reflecting: hide.
     // DXVIEW_MIRROR_BODY=1: show him under a flying camera too (screenshot tests).
@@ -701,6 +707,9 @@ pub fn mirror_body_system(
                     held: None,
                     gen: crate::augmentique::generation(),
                     crouch_t: 0.0,
+                    yaw_shown: None,
+                    blend: None,
+                    shown: None,
                 });
             }
             None => {
@@ -731,12 +740,50 @@ pub fn mirror_body_system(
     if let Some((_, deg)) = ahead {
         ue_yaw += deg.to_radians();
     }
+    // Smooth Animation (third person): the body turns after the view a moment late (critically damped, ~70 ms)
+    // instead of snapping with every flick of the mouse. Mirrors and the shots keep the true facing.
+    let dt = time.delta_secs();
+    if crate::actors::smooth_on() && crate::thirdperson::active() && ahead.is_none() {
+        let shown = b.yaw_shown.unwrap_or(ue_yaw);
+        let d = (ue_yaw - shown + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+        let k = 1.0 - (-(dt as f64) / 0.07).exp();
+        let y = if d.abs() > 2.6 { ue_yaw } else { shown + d * k };
+        b.yaw_shown = Some(y);
+        ue_yaw = y;
+    } else {
+        b.yaw_shown = None;
+    }
     let rot = [0, (ue_yaw / std::f64::consts::TAU * 65536.0) as i32, 0];
     let m = dx_level::actors::rotator_to_bevy_mat3(rot);
-    let quat = Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2])));
+    let mut quat = Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2])));
     // The mesh is built around the standing cylinder's centre: keep the feet where the (crouched) body's are.
     let mut loc = player.body.location;
     loc.z += player.stand_height - player.params.height;
+    // Leaning, the vertex body (the rebuilt one bends itself: skeletal::apply_lean): the feet stay where they stood
+    // before the slide and the whole body tilts about them so the head goes where the eyes went - or, leaning from
+    // cover in third person, toward the peek (thirdperson::body_lean). At most 15 degrees (a stiff whole-body tilt).
+    let mut tilt: Option<(glam::DVec3, Quat)> = None;
+    if !crate::skeletal::mirror_skel_on() && !(test && player.noclip) {
+        let slide = player.lean;
+        let bend = crate::thirdperson::body_lean(slide as f32) as f64;
+        if slide.abs() > 0.05 || bend.abs() > 0.05 {
+            let (c, s) = (look_yaw.cos(), look_yaw.sin());
+            let right = glam::DVec3::new(-s, c, 0.0);
+            loc -= right * slide;
+            let tall = (player.stand_height + player.eye_height).max(40.0);
+            let ang = (bend / tall).clamp(-0.95, 0.95).asin().clamp(-15f64.to_radians(), 15f64.to_radians()) as f32;
+            // (ue_to_bevy scales units to metres: directions are normalised again.)
+            let fwd_b = Vec3::from(dx_level::ue_to_bevy([c as f32, s as f32, 0.0])).normalize_or(Vec3::NEG_Z);
+            let right_b = Vec3::from(dx_level::ue_to_bevy([-s as f32, c as f32, 0.0])).normalize_or(Vec3::X);
+            let mut r = Quat::from_axis_angle(fwd_b, ang);
+            // The head goes toward the lean.
+            if (r * Vec3::Y).dot(right_b) * ang.signum() < 0.0 {
+                r = Quat::from_axis_angle(fwd_b, -ang);
+            }
+            let feet = loc - glam::DVec3::new(0.0, 0.0, player.stand_height);
+            tilt = Some((feet, r));
+        }
+    }
     if test && player.noclip {
         if let Some((_, tf)) = cams.iter().next() {
             let e = dx_level::bevy_to_ue(tf.translation.to_array());
@@ -746,9 +793,13 @@ pub fn mirror_body_system(
             }
         }
     }
-    commands
-        .entity(b.root)
-        .insert(Transform::from_translation(Vec3::from(dx_level::ue_to_bevy(loc.as_vec3().to_array()))).with_rotation(quat));
+    let mut at_b = Vec3::from(dx_level::ue_to_bevy(loc.as_vec3().to_array()));
+    if let Some((feet, r)) = tilt {
+        let pivot = Vec3::from(dx_level::ue_to_bevy(feet.as_vec3().to_array()));
+        at_b = pivot + r * (at_b - pivot);
+        quat = r * quat;
+    }
+    commands.entity(b.root).insert(Transform::from_translation(at_b).with_rotation(quat));
     let speed = player.body.velocity.truncate().length();
     let moving = speed > 10.0;
     let running = speed > player.params.ground_speed * 0.6;
@@ -805,7 +856,8 @@ pub fn mirror_body_system(
         }
     } else if reloading && ranged && !moving {
         ("Reload", true, 1.0)
-    } else if firing && !ranged {
+    } else if (firing && !ranged) || crate::weapons::bashing() {
+        // (A melee bash with a gun in hand swings it the way a melee weapon's Attack does.)
         ("Attack", true, 1.0)
     } else if moving && shooting && ranged && {
         // Aiming while moving sideways to where he faces (the free third-person camera lets him): Human's
@@ -856,16 +908,22 @@ pub fn mirror_body_system(
             *t += time.delta_secs();
             if *t > 0.5 {
                 *t = 0.0;
-                println!("BODY {want} speed {speed:.0} crouched {} aiming {aiming} firing {firing} pose {aim_pose}", player.crouched);
+                println!(
+                    "BODY {want} speed {speed:.0} crouched {} aiming {aiming} firing {firing} pose {aim_pose} lean {:.1} tilt {:?} drawn up {:?}",
+                    player.crouched,
+                    player.lean,
+                    tilt.map(|t| t.1.to_axis_angle().1.to_degrees().round()),
+                    gts.get(b.root).ok().map(|g| g.up().as_vec3())
+                );
             }
         }
     }
     let key = format!("{want}{}", if aim_pose { "#aim" } else { "" });
-    if b.seq != key {
+    let changed = b.seq != key;
+    if changed {
         b.seq = key;
         b.t = 0.0;
     }
-    let dt = time.delta_secs();
     b.t += dt;
     let (start, frames, rate) = b
         .mesh
@@ -945,14 +1003,42 @@ pub fn mirror_body_system(
     }
     let at = loc.as_vec3().to_array();
     if skel {
+        b.blend = None;
+        b.shown = None;
         return;
     }
+    // Smooth Animation: a new sequence eases in from the pose on screen (actors::SMOOTH_TWEEN) instead of snapping.
+    if crate::actors::smooth_on() {
+        if let (true, Some(prev)) = (changed, b.shown) {
+            b.blend = Some((prev.0, prev.1, prev.2, 0.0));
+        }
+    } else {
+        b.blend = None;
+    }
+    let blend = b.blend.as_mut().and_then(|bl| {
+        bl.3 += dt;
+        let x = (bl.3 / crate::actors::SMOOTH_TWEEN).min(1.0);
+        (x < 1.0).then_some(((bl.0, bl.1, bl.2), x * x * (3.0 - 2.0 * x)))
+    });
+    if blend.is_none() {
+        b.blend = None;
+    }
+    b.shown = Some((start, frames, f));
     for (pi, h) in b.handles.iter().enumerate() {
         if let Some(mut mm) = meshes.get_mut(h) {
             let pos: Vec<[f32; 3]> = b.parts[pi]
                 .vert_ids
                 .iter()
-                .map(|&v| dx_level::ue_to_bevy(b.mesh.sample(start, frames, f, v as usize)))
+                .map(|&v| {
+                    let mut p = b.mesh.sample(start, frames, f, v as usize);
+                    if let Some(((s0, n0, f0), k)) = blend {
+                        let q = b.mesh.sample(s0, n0, f0, v as usize);
+                        for i in 0..3 {
+                            p[i] = q[i] + (p[i] - q[i]) * k;
+                        }
+                    }
+                    dx_level::ue_to_bevy(p)
+                })
                 .collect();
             mm.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
             if relight {

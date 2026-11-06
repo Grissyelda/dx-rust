@@ -145,6 +145,9 @@ enum Win {
     Fps,
     /// Debug Mode's corner readout (main.rs overlay_update), top left.
     Debug,
+    /// Multiplayer (ours): the news of the game (joined, left, went down, chat) at the top, and the chat line
+    /// being typed under it.
+    Net,
 }
 
 /// The Debug Mode readout's text (None = hidden).
@@ -209,7 +212,7 @@ pub fn quote_text(lines: &[String], secs: f32) {
 }
 
 impl Win {
-    const ALL: [Win; 20] = [
+    const ALL: [Win; 21] = [
         Win::Hit,
         Win::Compass,
         Win::Ammo,
@@ -230,6 +233,7 @@ impl Win {
         Win::Msg,
         Win::Fps,
         Win::Debug,
+        Win::Net,
     ];
     /// Fixed window sizes in UI units (InitWindow SetSize / ParentRequestedPreferredSize); the log is sized
     /// by the layout.
@@ -250,7 +254,8 @@ impl Win {
             | Win::Info
             | Win::Msg
             | Win::Fps
-            | Win::Debug => (0, 0),
+            | Win::Debug
+            | Win::Net => (0, 0),
             Win::ConCursor | Win::InfoLinkFace => (64, 64),
             Win::InfoLink => crate::conui::INFOLINK_SIZE,
             // DamageHUDDisplay: arrowiconWidth + iconMargin, (iconHeight + iconMargin) x 7 + arrowiconHeight.
@@ -578,7 +583,7 @@ pub fn spawn_classic_hud(
             Pickable::IGNORE,
             GlobalZIndex(-2),
             // The windows share a GlobalZIndex, so ZIndex decides: the InfoLink's portrait lies over the InfoLink.
-            ZIndex(if matches!(w, Win::InfoLinkFace | Win::Fps | Win::Debug) { 1 } else { 0 }),
+            ZIndex(if matches!(w, Win::InfoLinkFace | Win::Fps | Win::Debug | Win::Net) { 1 } else { 0 }),
             HudWindow(w),
         ));
     }
@@ -687,6 +692,9 @@ struct HudFrame {
     debug_lines: Vec<String>,
     debug_w: i32,
     debug_h: i32,
+    net_lines: Vec<(String, [u8; 3])>,
+    net_w: i32,
+    net_h: i32,
     msg_w: i32,
     msg_h: i32,
     ammo_visible: bool,
@@ -790,6 +798,7 @@ pub fn classic_hud_system(
             Win::Msg => "hud::Msg",
             Win::Fps => "hud::Fps",
             Win::Debug => "hud::Debug",
+            Win::Net => "hud::Net",
         });
         // Windows that only change with what they show are redrawn only when that changes.
         let key = window_key(w, &f, snap, hud, &inv, ww, wh, y, dt);
@@ -1029,6 +1038,14 @@ fn hud_frame(
         ),
         _ => (1, 1),
     };
+    let net_lines = crate::netplay::hud_lines();
+    let (net_w, net_h) = match &msg_font {
+        Some(f) if !net_lines.is_empty() => (
+            net_lines.iter().map(|(l, _)| f.width(l)).max().unwrap_or(1).min(sw - 40) + 4,
+            net_lines.len() as i32 * (f.height + 1) + 2,
+        ),
+        _ => (1, 1),
+    };
     let (msg_w, msg_h) = match (&stay_msg, &msg_font) {
         (Some(t), Some(f)) => (f.width(t) + 2, f.height + 2),
         _ => (1, 1),
@@ -1094,6 +1111,9 @@ fn hud_frame(
         debug_lines,
         debug_w,
         debug_h,
+        net_lines,
+        net_w,
+        net_h,
         msg_w,
         msg_h,
         ammo_visible,
@@ -1231,6 +1251,9 @@ impl HudFrame {
             ref debug_lines,
             debug_w,
             debug_h,
+            ref net_lines,
+            net_w,
+            net_h,
             msg_w,
             msg_h,
             ammo_visible,
@@ -1324,6 +1347,7 @@ impl HudFrame {
             }
             Win::Fps => (sw - fps_w - 4, 2, fps_w.max(1), fps_h.max(1), fps_text.is_some()),
             Win::Debug => (4, 4, debug_w.max(1), debug_h.max(1), !debug_lines.is_empty()),
+            Win::Net => (sw / 2 - net_w / 2, 8, net_w.max(1), net_h.max(1), !net_lines.is_empty()),
             Win::Msg => (
                 sw / 2 - msg_w / 2,
                 sh - Win::Belt.size().1 - msg_h - 20,
@@ -1398,7 +1422,7 @@ fn window_key(
     y: i32,
     dt: f32,
 ) -> Option<u64> {
-    let HudFrame { s, sw, face_split, ref con, info_id, ref stay_msg, ref fps_text, ref debug_lines, ref log_lines, .. } = *f;
+    let HudFrame { s, sw, face_split, ref con, info_id, ref stay_msg, ref fps_text, ref debug_lines, ref net_lines, ref log_lines, .. } = *f;
     match w {
         // With the portrait on a window of its own, the InfoLink changes only with its text.
         Win::InfoLink if face_split => con.link.as_ref().map(|l| {
@@ -1435,6 +1459,7 @@ fn window_key(
         Win::Msg => Some(hkey(&(stay_msg, ww, wh, s))),
         Win::Fps => Some(hkey(&(fps_text, ww, wh, s))),
         Win::Debug => Some(hkey(&(debug_lines, ww, wh, s))),
+        Win::Net => Some(hkey(&(net_lines, ww, wh, s))),
         Win::ConCursor => Some(hkey(&(ww, wh, s))),
         // The ammo display changes with the gun, its rounds, the pool and the lock line.
         Win::Ammo => {
@@ -1544,6 +1569,7 @@ fn draw_window(
         ref msg_font,
         ref fps_text,
         ref debug_lines,
+        ref net_lines,
         ref log_font,
         ref log_lines,
         ..
@@ -1612,6 +1638,16 @@ fn draw_window(
                     let y = i as i32 * f.height;
                     canvas.text(f, 1, y + 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
                     canvas.text(f, 0, y, ww, f.height, HAlign::Left, VAlign::Top, [220, 255, 220], l);
+                }
+            }
+        }
+        Win::Net => {
+            if let Some(f) = msg_font {
+                for (i, (l, c)) in net_lines.iter().enumerate() {
+                    let y = i as i32 * (f.height + 1);
+                    let x = (ww - f.width(l).min(ww)) / 2;
+                    canvas.text(f, x + 1, y + 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
+                    canvas.text(f, x, y, ww, f.height, HAlign::Left, VAlign::Top, *c, l);
                 }
             }
         }

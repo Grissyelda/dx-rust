@@ -32,6 +32,7 @@ pub mod client;
 #[cfg(feature = "game")]
 pub mod game;
 pub mod server;
+pub mod upnp;
 
 /// The protocol version in HELLO / WELCOME.
 pub const PROTOCOL: u32 = 2;
