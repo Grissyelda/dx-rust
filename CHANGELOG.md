@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Architecture sweep (November 5, night)
+- Sound no longer holds the game up: the game used to wait for the audio thread to finish mixing (music, reverb,
+  every voice) each time it started, moved or checked a sound, dozens of times a frame. It now queues its changes
+  and the mixer picks them up at the start of its next buffer; the mixer itself no longer allocates memory while
+  it mixes.
+- The game's largest systems (the AI, weapons, frobbing, menus, the inventory and persona screens, computers,
+  security devices, the HUD and the player's movement and level building) are split into named steps, so each
+  reads as what it does in order. Nothing should play differently.
+- Burning: the player's burn timer ticked once for every living NPC on the map each frame, so with many people
+  around you burned out sooner and took damage faster, and on a map with no one alive the fire never went out. It
+  now ticks once a frame.
+- Small allocation cuts in skeletal characters' aiming, menu buttons and frob checks.
+- `PROFILE_RENDER_AB.bat` measures four ways of running the renderer side by side (as now, the render schedule on
+  its own thread, six worker threads, DirectX 12) for the next performance step.
+
 ### Modern defaults and the Steam Deck HUD (November 5, night)
 - The Modern look's default mix (the one you get before you've picked your own) no longer turns on HDTP's people
   or the two-attacker rule for combat music.

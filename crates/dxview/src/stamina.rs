@@ -40,10 +40,6 @@ pub fn fraction() -> Option<f32> {
     enabled().then(|| ST.lock().map(|s| s.value / MAX).unwrap_or(1.0))
 }
 
-pub fn sprinting() -> bool {
-    enabled() && ST.lock().is_ok_and(|s| s.sprinting)
-}
-
 /// The pad's Walk button (left stick click) with Sprint on: a click starts or stops sprinting.
 pub fn pad_button(down: bool) {
     if let Ok(mut s) = ST.lock() {

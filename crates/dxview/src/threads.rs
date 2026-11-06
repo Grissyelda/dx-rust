@@ -95,6 +95,14 @@ impl bevy::app::Plugin for RenderSchedulesPlugin {
         render.edit_schedule(bevy::core_pipeline::Core2d, |s| {
             s.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
+        // Experiment (PROFILE_RENDER_AB.bat): the render world's own Render schedule (extract follow-up, prepare,
+        // queue, sort) in order on the render thread too, instead of handing each system to the busy worker pool.
+        if env_on!("DXVIEW_ST_RENDER") {
+            render.edit_schedule(bevy::render::Render, |s| {
+                s.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+            });
+            println!("dxview: Render schedule runs single-threaded");
+        }
     }
 }
 

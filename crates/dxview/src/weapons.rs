@@ -2426,6 +2426,34 @@ fn through_wall(cx: &mut ShotCx, world: &World, at: DVec3, dir: DVec3, end: DVec
     cx.pawn_hits.push(crate::damage::PawnHit { blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at2, attacker: None, attacker_pos: cx.player_at });
 }
 
+/// What weapon_system's steps read and write, besides `Weapons` (the held weapon is borrowed from it). Resources
+/// are reborrowed as `Mut`, so a step marks one changed only where it writes it, as before (belt_ui watches the
+/// inventory).
+struct WeaponCx<'a> {
+    dt: f32,
+    cam: &'a Transform,
+    player: &'a Player,
+    level: &'a dx_level::Level,
+    blockers: &'a Blockers,
+    mv: &'a Movers,
+    seed: &'a mut u64,
+    inv: Mut<'a, PlayerInventory>,
+    clips: Mut<'a, Clips>,
+    hud: Mut<'a, HudMessage>,
+    ph: Mut<'a, crate::ai::PlayerHealth>,
+    zoom: Mut<'a, Zoom>,
+    launches: Mut<'a, crate::projectiles::Launches>,
+    flares: Mut<'a, crate::ai::FlareThrows>,
+    charged: Mut<'a, crate::charged::ActiveCharged>,
+    rt_assets: Mut<'a, RuntimeAssets>,
+    pawn_hits: Mut<'a, crate::damage::PawnHits>,
+    deco_hits: Mut<'a, crate::destruct::DecoHits>,
+    blood: Mut<'a, crate::effects::BloodFx>,
+    noises: Mut<'a, crate::stealth::Noises>,
+    shells: Mut<'a, crate::destruct::Shells>,
+    grenades: Mut<'a, crate::grenades::GrenadeThrows>,
+}
+
 /// Fire, reload and animate the held weapon; apply hits to pawns.
 #[allow(clippy::too_many_arguments)]
 pub fn weapon_system(
@@ -2472,6 +2500,138 @@ pub fn weapon_system(
     ),
 ) {
     let _prof = crate::prof::scope("weapons::weapon_system");
+    let dt = time.delta_secs();
+    let cam: &Transform = &cam;
+    let mut cx = WeaponCx {
+        dt,
+        cam,
+        player: &player,
+        level: &level.0,
+        blockers: &blockers,
+        mv: &mv,
+        seed: &mut seed,
+        inv: inv.reborrow(),
+        clips: clips.reborrow(),
+        hud: hud.reborrow(),
+        ph: ph.reborrow(),
+        zoom: zoom.reborrow(),
+        launches: launches.reborrow(),
+        flares: flares.reborrow(),
+        charged: charged.reborrow(),
+        rt_assets: rt_assets.reborrow(),
+        pawn_hits: pawn_hits.reborrow(),
+        deco_hits: deco_hits.reborrow(),
+        blood: blood.reborrow(),
+        noises: noises.reborrow(),
+        shells: shells.reborrow(),
+        grenades: grenades.reborrow(),
+    };
+    report_hands(&cx, &weapons, &keys, &picking, &hacking);
+    let injected_fire = std::mem::take(&mut scripted.fire);
+    let mut pending_ammo: Option<(String, String)> = None;
+    halon_spray(&mut cx, &mut weapons);
+    if let Some((c, a)) = std::mem::take(&mut weapons.ammo_note) {
+        weapons.loaded_ammo.insert(c, a);
+    }
+    use_requests(&mut cx, &mut weapons);
+    let Some(h) = weapons.held.as_mut() else {
+        if !lock_text.0 .0.is_empty() {
+            lock_text.0 .0.clear();
+        }
+        return;
+    };
+    let root: &mut Transform = &mut root;
+    // Where the diegetic scope's lens goes (scope.rs): the eyepiece, in the view model camera's space.
+    // Where the diegetic scope's lens goes (scope.rs): in the eyepiece as posed now (it follows the shot's kick, the
+    // idle sway and the reload), in the view model camera's space. Set after the pose below.
+    let lens_eye = place_view_model(h, &cx, root);
+
+    h.clip.t += dt;
+    h.timer -= dt;
+    match track_target(h, &cx, &pawn_health) {
+        Some((msg, col)) => {
+            let (ref mut t, ref mut c) = *lock_text;
+            if t.0 != msg {
+                t.0 = msg;
+            }
+            c.0 = col;
+        }
+        None => {
+            if !lock_text.0 .0.is_empty() {
+                lock_text.0 .0.clear();
+            }
+        }
+    }
+    tool_anims(h, &picking, &hacking);
+    anim_notifies(h, &mut cx);
+    let loaded = *cx.clips.0.get(&h.stats.class).unwrap_or(&0);
+    let pool = h.stats.ammo_class.as_ref().map(|a| {
+        cx.inv
+            .0
+            .ammo
+            .iter()
+            .find(|x| &x.0 == a)
+            .map(|x| x.1)
+            .unwrap_or(0)
+    });
+    if !advance_state(h, &mut cx, loaded) {
+        weapons.held = None;
+        return;
+    }
+    if throw_corpse(&mut cx, &mut weapons, &mouse, &cursor, &mut corpse_drops) {
+        return;
+    }
+    if weapons.held.is_none() {
+        return;
+    }
+    let locked = cursor.grab_mode == CursorGrabMode::Locked || injected_fire;
+    if !item_or_scope(&mut cx, &mut weapons, root, &mouse, &keys, locked) {
+        return;
+    }
+    let Some(h) = weapons.held.as_mut() else {
+        return;
+    };
+    let pulled = weapons_can_fire(&h.stats)
+        && (mouse.just_pressed(MouseButton::Left)
+            || injected_fire
+            || (h.stats.automatic && mouse.pressed(MouseButton::Left)));
+    if !pulled {
+        h.flame_shots = 0;
+    }
+    weapon_keys(h, &mut cx, &keys, loaded, &mut pending_ammo);
+    reload_or_fire(h, &mut cx, &mut flashes, &keys, &aim, TriggerPull { loaded, pool, locked, pulled });
+
+    pose_view_model(h, &mut meshes, dt);
+    blade_lights(h, cam, &time);
+    light_view_model(h, &mut meshes, cx.level, cam.translation, cam.rotation, root, dt);
+    place_lens(h, lens_eye.as_ref(), root);
+
+    if let Some(p) = pending_ammo {
+        weapons.ammo_note = Some(p);
+    }
+    let _ = &mut commands;
+}
+
+/// The rounds and the trigger as weapon_system read them this frame (reload_or_fire).
+#[derive(Clone, Copy)]
+struct TriggerPull {
+    /// Rounds in the clip, and in the ammo box (None: the weapon takes no ammo), before this frame's changes.
+    loaded: u32,
+    pool: Option<u32>,
+    /// The game has the mouse (or a test fired).
+    locked: bool,
+    pulled: bool,
+}
+
+/// GMDX Remote Detonation, DTS energy, and what pawns see the player doing (reactions.rs): a weapon out (BringUp's
+/// WeaponDrawn), a tool at work on a lock or a device (MegaFutz).
+fn report_hands(
+    cx: &WeaponCx,
+    weapons: &Weapons,
+    keys: &ButtonInput<KeyCode>,
+    picking: &crate::movers::Picking,
+    hacking: &crate::devices::Hacking,
+) {
     crate::perks::set_in_hand(weapons.held.as_ref().map(|h| (h.stats.class.as_str(), h.stats.hand_to_hand)));
     // GMDX Remote Detonation (DeusExPlayer.SwitchAmmo): Change Ammo with empty hands sets off the player's mines.
     if weapons.held.is_none()
@@ -2480,39 +2640,41 @@ pub fn weapon_system(
     {
         crate::grenades::remote_detonate();
     }
-    DTS_EMPTY.store(dts_energy() && ph.energy < 1.0, std::sync::atomic::Ordering::Relaxed);
-    let dt = time.delta_secs();
+    DTS_EMPTY.store(dts_energy() && cx.ph.energy < 1.0, std::sync::atomic::Ordering::Relaxed);
     // What pawns see the player doing (reactions.rs): a weapon out (BringUp's WeaponDrawn), a tool at work on a lock
     // or a device (MegaFutz).
     {
         let drawn = weapons.held.as_ref().is_some_and(|h| {
             h.stats.class.starts_with("Weapon") && !matches!(h.state, WState::Lowering)
         });
-        crate::reactions::set_weapon_drawn(drawn && !ph.dead);
-        let at = player.body.location;
+        crate::reactions::set_weapon_drawn(drawn && !cx.ph.dead);
+        let at = cx.player.body.location;
         // GMDX Sleight of Hand: picking and hacking send no MegaFutz.
         let sly = crate::perks::has("PerkSleightOfHand");
         crate::reactions::set_hacking((!sly && (picking.0.is_some() || hacking.job.is_some())).then_some(at));
     }
-    let injected_fire = std::mem::take(&mut scripted.fire);
-    let mut pending_ammo: Option<(String, String)> = None;
+}
+
+/// FireExtinguisher spray: halon clouds out along the view at 300 units/s, living 1.5 s, ~9 a second.
+fn halon_spray(cx: &mut WeaponCx, weapons: &mut Weapons) {
     // Fire extinguisher spray: halon clouds out along the view at 300 units/s, living 1.5 s, ~9 a second.
     if weapons.spray > 0.0 {
-        weapons.spray -= dt;
-        weapons.spray_acc += dt * 9.0;
-        let eye = bevy_to_ue(cam.translation.to_array());
+        weapons.spray -= cx.dt;
+        weapons.spray_acc += cx.dt * 9.0;
+        let eye = bevy_to_ue(cx.cam.translation.to_array());
         let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
-        let f = cam.forward().as_vec3();
+        let f = cx.cam.forward().as_vec3();
         let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
         while weapons.spray_acc >= 1.0 {
             weapons.spray_acc -= 1.0;
-            *seed = seed
+            *cx.seed = cx
+                .seed
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
-            let dir = crate::projectiles::projectile_dir(fw, 0.15, &mut seed);
-            launches.0.push(crate::projectiles::Launch {
+            let dir = crate::projectiles::projectile_dir(fw, 0.15, cx.seed);
+            cx.launches.0.push(crate::projectiles::Launch {
                 class: "HalonGas".into(),
-                pos: eye + fw * player.params.radius,
+                pos: eye + fw * cx.player.params.radius,
                 dir,
                 from: None,
                 mult: 1.0,
@@ -2527,56 +2689,59 @@ pub fn weapon_system(
             });
         }
     }
-    if let Some((c, a)) = std::mem::take(&mut weapons.ammo_note) {
-        weapons.loaded_ammo.insert(c, a);
-    }
+}
+
+/// Pickups used without raising them: from the floor (FloorConsumables) and the inventory screen's Use
+/// (UseSelectedItem: inv.Activate()).
+fn use_requests(cx: &mut WeaponCx, weapons: &mut Weapons) {
     // Ours: a consumable used straight from the floor (no room in the inventory): used without taking one.
     if let Some(class) = weapons.floor_use.take() {
-        let r = activate_pickup(&class, &mut ph, &cam, &player, &mut launches, &mut flares, &mut zoom, &mut charged, &mut rt_assets, &mut weapons);
+        let r = activate_pickup(&class, &mut cx.ph, cx.cam, cx.player, &mut cx.launches, &mut cx.flares, &mut cx.zoom, &mut cx.charged, &mut cx.rt_assets, weapons);
         if !r.msg.is_empty() {
-            hud.text = r.msg;
-            hud.time_left = 2.0;
+            cx.hud.text = r.msg;
+            cx.hud.time_left = 2.0;
         }
     }
     // Use from the inventory screen (UseSelectedItem: inv.Activate()).
     if let Some(class) = weapons.use_request.take() {
         let r = activate_pickup(
             &class,
-            &mut ph,
-            &cam,
-            &player,
-            &mut launches,
-            &mut flares,
-            &mut zoom,
-            &mut charged,
-            &mut rt_assets,
-            &mut weapons,
+            &mut cx.ph,
+            cx.cam,
+            cx.player,
+            &mut cx.launches,
+            &mut cx.flares,
+            &mut cx.zoom,
+            &mut cx.charged,
+            &mut cx.rt_assets,
+            weapons,
         );
         if r.spray {
             weapons.spray = firefighter_spray();
             weapons.spray_acc = 1.0;
         }
         if !r.msg.is_empty() {
-            hud.text = r.msg;
-            hud.time_left = 2.0;
+            cx.hud.text = r.msg;
+            cx.hud.time_left = 2.0;
         }
         if r.consumed
-            && inv.0.use_one(&class) == 0
+            && cx.inv.0.use_one(&class) == 0
             && weapons
                 .held
                 .as_ref()
                 .is_some_and(|h| h.stats.class == class)
         {
             weapons.held = None;
-            zoom.0 = None;
+            cx.zoom.0 = None;
         }
     }
-    let Some(h) = weapons.held.as_mut() else {
-        if !lock_text.0 .0.is_empty() {
-            lock_text.0 .0.clear();
-        }
-        return;
-    };
+}
+
+/// The weapon skill (GetWeaponSkill) and the view model's place: Weapon.SetHand / Inventory.CalcDrawOffset, Modern
+/// Aiming's sights, the Diegetic Scope's eyepiece, GMDX viewmodel inertia. Returns the scope eyepiece when the eye
+/// is in it (for the lens, placed after the pose).
+fn place_view_model(h: &mut Held, cx: &WeaponCx, root: &mut Transform) -> Option<ScopeEye> {
+    let (cam, zoom, dt) = (cx.cam, &cx.zoom, cx.dt);
     // GetWeaponSkill: the governing skill's value plus the Targeting aug's.
     h.stats.skill = h
         .stats
@@ -2589,7 +2754,7 @@ pub fn weapon_system(
     // walk bob, and the view model is drawn relative to the camera, so only the difference shows: the weapon lags
     // the head bob by 4% sideways and ~2% vertically.
     let k = 0.9 / DEFAULT_FOV * 100.0;
-    let bob = player.view.walk_bob;
+    let bob = cx.player.view.walk_bob;
     let r = cam.right().as_vec3();
     let damping = 0.96f32;
     let side = (bob.x * r.x as f64 + bob.y * r.z as f64) as f32 * (damping - 1.0);
@@ -2666,52 +2831,51 @@ pub fn weapon_system(
         root.translation = r * root.translation;
         root.rotation = r * root.rotation;
     }
-    // Where the diegetic scope's lens goes (scope.rs): the eyepiece, in the view model camera's space.
-    // Where the diegetic scope's lens goes (scope.rs): in the eyepiece as posed now (it follows the shot's kick, the
-    // idle sway and the reload), in the view model camera's space. Set after the pose below.
-    let lens_eye = scoped_eye;
+    scoped_eye
+}
 
-    h.clip.t += dt;
-    h.timer -= dt;
+/// DeusExWeapon.Tick lock-on (bCanTrack): the lock state and the LockText line for what's in the sights; None for
+/// a weapon that doesn't track (the line is cleared).
+fn track_target(h: &mut Held, cx: &WeaponCx, pawn_health: &PawnHealth) -> Option<(String, Color)> {
     // DeusExWeapon.Tick lock-on (bCanTrack): AcquireTarget traces 10000 units along the view for the first
     // decoration or pawn. A pawn within MaxRange held for LockTime (2 s untrained) locks; a different pawn breaks
     // the lock; anything else is INVALID. The timer runs back down while there's no good target.
-    if h.stats.can_track {
-        let eye = bevy_to_ue(cam.translation.to_array());
-        let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
-        let f = cam.forward().as_vec3();
-        let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
-        let world = World {
-            level: &level.0,
-            blockers: &blockers.list,
-            ignore: None,
-            pushable: None,
-            movers: Some(&mv.rt),
-        };
-        let hit = world.trace(eye, eye + fw * 10000.0, DVec3::ZERO);
-        // What's in the sights: (blocker, its range, a living pawn).
-        // Nothing is aimed at during a conversation or cut scene (the camera is the scene's; with the GEP in hand the
-        // speaker was "acquired", beeping and locking under the dialogue).
-        let away = crate::consys::third_person() || crate::cinematic::active() || crate::computers::open();
-        if away {
-            h.lock_mode = 0;
-            h.lock_target = None;
-            h.lock_timer = 0.0;
-        }
-        let target = hit.actor.filter(|_| h.state != WState::Reloading && !away).map(|b| {
-            let a = &level.0.actors[blockers.list[b].actor];
-            let alive = find(&a.props, "GroundSpeed").is_some() && pawn_health.0.get(&b).is_none_or(|&hp| hp > 0.0);
-            (b, blockers.list[b].center.distance(player.body.location), alive)
-        });
-        let (msg, col) = lock_on(h, target, dt);
-        let (ref mut t, ref mut c) = *lock_text;
-        if t.0 != msg {
-            t.0 = msg;
-        }
-        c.0 = col;
-    } else if !lock_text.0 .0.is_empty() {
-        lock_text.0 .0.clear();
+    if !h.stats.can_track {
+        return None;
     }
+    let (cam, level, blockers) = (cx.cam, cx.level, cx.blockers);
+    let eye = bevy_to_ue(cam.translation.to_array());
+    let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
+    let f = cam.forward().as_vec3();
+    let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
+    let world = World {
+        level,
+        blockers: &blockers.list,
+        ignore: None,
+        pushable: None,
+        movers: Some(&cx.mv.rt),
+    };
+    let hit = world.trace(eye, eye + fw * 10000.0, DVec3::ZERO);
+    // What's in the sights: (blocker, its range, a living pawn).
+    // Nothing is aimed at during a conversation or cut scene (the camera is the scene's; with the GEP in hand the
+    // speaker was "acquired", beeping and locking under the dialogue).
+    let away = crate::consys::third_person() || crate::cinematic::active() || crate::computers::open();
+    if away {
+        h.lock_mode = 0;
+        h.lock_target = None;
+        h.lock_timer = 0.0;
+    }
+    let target = hit.actor.filter(|_| h.state != WState::Reloading && !away).map(|b| {
+        let a = &level.actors[blockers.list[b].actor];
+        let alive = find(&a.props, "GroundSpeed").is_some() && pawn_health.0.get(&b).is_none_or(|&hp| hp > 0.0);
+        (b, blockers.list[b].center.distance(cx.player.body.location), alive)
+    });
+    Some(lock_on(h, target, cx.dt))
+}
+
+/// Tool animations: NanoKeyRing.UseIt (UseBegin -> UseEnd -> idle) and SkilledTool UseBegin / UseLoop / UseEnd
+/// while picking or hacking, with the tool's use loop sound.
+fn tool_anims(h: &mut Held, picking: &crate::movers::Picking, hacking: &crate::devices::Hacking) {
     // NanoKeyRing: DeusExMover.Frob calls PlayUseAnim. The ring's own UseIt state (NanoKeyRing.uc, not
     // SkilledTool's) plays UseBegin, finishes it, starts UseLoop and goes straight to StopIt, which plays UseEnd
     // and returns to Idle at DontPlaySelect (finish, then Idle1). So: UseBegin -> UseEnd -> idle (#37). Using it
@@ -2763,13 +2927,18 @@ pub fn weapon_system(
             crate::sound::hold(crate::sound::key_of("tool-use"), snd, None, 0.7, 825.0, 1.0);
         }
     }
+}
+
+/// Mesh notifies partway through the firing animation: the sawed-off's rack (SawedOffCockSound), the melee blow
+/// (HandToHandAttack) and the grenade leaving the hand.
+fn anim_notifies(h: &mut Held, cx: &mut WeaponCx) {
     // Shotgun mesh notify: Shoot at 0.40 calls SawedOffCockSound (the pump rack, if there's ammo left).
     if h.state == WState::Firing
         && !h.racked
         && h.clip.t * h.clip.rate >= h.clip.frames as f32 * 0.4
     {
         h.racked = true;
-        let left = *clips.0.get(&h.stats.class).unwrap_or(&0);
+        let left = *cx.clips.0.get(&h.stats.class).unwrap_or(&0);
         if h.stats.class == "WeaponSawedOffShotgun" && left > 0 {
             if let Some(s) = &h.stats.snd.select {
                 crate::sound::play_player(s, 1.0, 1024.0);
@@ -2784,38 +2953,34 @@ pub fn weapon_system(
         h.melee_pending = false;
         // Enhancement: each Dragon's Tooth swing costs bioenergy (GMDX WeaponNanoSword.DrainPower, 5 a use).
         if h.stats.class == "WeaponNanoSword" && dts_energy() {
-            ph.energy = (ph.energy - DTS_DRAIN).max(0.0);
+            cx.ph.energy = (cx.ph.energy - DTS_DRAIN).max(0.0);
         }
-        let eye = bevy_to_ue(cam.translation.to_array());
+        let eye = bevy_to_ue(cx.cam.translation.to_array());
         let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
-        let f = cam.forward().as_vec3();
+        let f = cx.cam.forward().as_vec3();
         let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
-        let mut cx = ShotCx {
-            level: &level.0,
-            blockers: &blockers.list,
-            movers: &mv.rt,
-            player_at: player.body.location,
-            pawn_hits: &mut pawn_hits.0,
-            deco_hits: &mut deco_hits.0,
-            blood: &mut blood.0,
+        let mut shot = ShotCx {
+            level: cx.level,
+            blockers: &cx.blockers.list,
+            movers: &cx.mv.rt,
+            player_at: cx.player.body.location,
+            pawn_hits: &mut cx.pawn_hits.0,
+            deco_hits: &mut cx.deco_hits.0,
+            blood: &mut cx.blood.0,
         };
-        melee_blow(&h.stats, &mut cx, eye, fw);
+        melee_blow(&h.stats, &mut shot, eye, fw);
     }
     // The grenade leaves the hand halfway through the throw (or place) animation.
     if h.state == WState::Firing && h.clip.t * h.clip.rate >= h.clip.frames as f32 * 0.5 {
         if let Some(t) = h.pending_throw.take() {
-            grenades.0.push((t.0, t.1, t.2, None, t.3));
+            cx.grenades.0.push((t.0, t.1, t.2, None, t.3));
         }
     }
-    let loaded = *clips.0.get(&h.stats.class).unwrap_or(&0);
-    let pool = h.stats.ammo_class.as_ref().map(|a| {
-        inv.0
-            .ammo
-            .iter()
-            .find(|x| &x.0 == a)
-            .map(|x| x.1)
-            .unwrap_or(0)
-    });
+}
+
+/// The weapon's state script moving on when its animation / timer ends: Select -> Idle, NormalFire, Reload's
+/// phases, PutDown, Idle fidgets (PlayIdleAnim). False when the weapon is gone (thrown away or put down).
+fn advance_state(h: &mut Held, cx: &mut WeaponCx, loaded: u32) -> bool {
     match h.state {
         WState::Selecting if h.clip.done() => {
             h.state = WState::Idle;
@@ -2827,9 +2992,8 @@ pub fn weapon_system(
             if h.last_throw {
                 // Hand-to-hand with ReloadCount and no ammo left: the weapon is destroyed.
                 let class = h.stats.class.clone();
-                inv.0.use_one(&class);
-                weapons.held = None;
-                return;
+                cx.inv.0.use_one(&class);
+                return false;
             }
             let thrown = h.stats.hand_to_hand && h.stats.projectile.is_some();
             if thrown && h.pending_throw.is_none() {
@@ -2861,11 +3025,11 @@ pub fn weapon_system(
         }
         WState::Reloading if (h.phase == 2 && h.clip.done()) || h.phase == 3 || (h.phase == 4 && h.clip.done()) => {
             if let Some(a) = h.stats.ammo_class.clone() {
-                if let Some(entry) = inv.0.ammo.iter_mut().find(|x| x.0 == a) {
+                if let Some(entry) = cx.inv.0.ammo.iter_mut().find(|x| x.0 == a) {
                     let need = h.stats.reload_count.saturating_sub(loaded);
                     let take = need.min(entry.1);
                     entry.1 -= take;
-                    clips.0.insert(h.stats.class.clone(), loaded + take);
+                    cx.clips.0.insert(h.stats.class.clone(), loaded + take);
                 }
             }
             h.state = WState::Idle;
@@ -2873,13 +3037,13 @@ pub fn weapon_system(
             h.timer = 3.0;
         }
         WState::Lowering if h.clip.done() => {
-            weapons.held = None;
-            return;
+            return false;
         }
         // State Idle: every 3 s there's a 30% chance of one of the fidget animations (PlayIdleAnim).
         // (Not while looking through a scope: the rifle stays put at the eye.)
-        WState::Idle if h.timer <= 0.0 && !h.using && zoom.0.is_none() => {
+        WState::Idle if h.timer <= 0.0 && !h.using && cx.zoom.0.is_none() => {
             h.timer = 3.0;
+            let seed = &mut *cx.seed;
             if *seed == 0 {
                 *seed = 0x9E37_79B9_7F4A_7C15;
             }
@@ -2902,52 +3066,79 @@ pub fn weapon_system(
         }
         _ => {}
     }
+    true
+}
+
+/// Carrying a body (POVCorpse): either button throws it (DropItem). True when it was thrown (the hands are empty).
+fn throw_corpse(
+    cx: &mut WeaponCx,
+    weapons: &mut Weapons,
+    mouse: &ButtonInput<MouseButton>,
+    cursor: &CursorOptions,
+    corpse_drops: &mut ResMut<CorpseDrops>,
+) -> bool {
     // Carrying a body: either button throws it (DropItem): from 0.8 x radius ahead at eye height. The original
     // halves view x 300 x AugMuscle + 220 up + 40 x VRand for a corpse, which barely leaves the hands; ours throws
     // it at the full speed, like a crate (the user's call), and it slides on landing (actors::deco_physics).
-    if let Some(body) = weapons.corpse {
-        if !mouse.pressed(MouseButton::Left) && !mouse.pressed(MouseButton::Right) {
-            weapons.corpse_armed = true;
-        }
-        let clicked = cursor.grab_mode == CursorGrabMode::Locked
-            && weapons.corpse_armed
-            && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right))
-            // A right click on a door or device frobs it instead (pickups::frob_system, ParseRightClick).
-            && !(mouse.just_pressed(MouseButton::Right) && crate::frobui::body_frob());
-        if clicked {
-            let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64).normalize();
-            let fw = conv(cam.forward().as_vec3());
-            if *seed == 0 {
-                *seed = 0x9E37_79B9_7F4A_7C15;
-            }
-            let mut rnd = || {
-                *seed = seed
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                ((*seed >> 33) as f64) / (1u64 << 31) as f64 * 2.0 - 1.0
-            };
-            let jitter = DVec3::new(rnd(), rnd(), rnd()).normalize_or_zero() * 40.0;
-            let vel = fw * 300.0 * crate::abilities::aug_level("AugMuscle").map_or(1.0, |l| 1.25 + 0.25 * l as f64) + DVec3::new(0.0, 0.0, 220.0) + jitter;
-            let flat = DVec3::new(fw.x, fw.y, 0.0).normalize_or_zero();
-            let pos = player.body.location
-                + flat * (0.8 * player.params.radius)
-                + DVec3::new(0.0, 0.0, player.eye_height);
-            corpse_drops.0.push((body, pos, vel));
-            weapons.corpse = None;
-            weapons.held = None;
-            return;
-        }
-    }
-    let Some(h) = weapons.held.as_mut() else {
-        return;
+    let Some(body) = weapons.corpse else {
+        return false;
     };
-    let locked = cursor.grab_mode == CursorGrabMode::Locked || injected_fire;
+    if !mouse.pressed(MouseButton::Left) && !mouse.pressed(MouseButton::Right) {
+        weapons.corpse_armed = true;
+    }
+    let clicked = cursor.grab_mode == CursorGrabMode::Locked
+        && weapons.corpse_armed
+        && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right))
+        // A right click on a door or device frobs it instead (pickups::frob_system, ParseRightClick).
+        && !(mouse.just_pressed(MouseButton::Right) && crate::frobui::body_frob());
+    if !clicked {
+        return false;
+    }
+    let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64).normalize();
+    let fw = conv(cx.cam.forward().as_vec3());
+    let seed = &mut *cx.seed;
+    if *seed == 0 {
+        *seed = 0x9E37_79B9_7F4A_7C15;
+    }
+    let mut rnd = || {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*seed >> 33) as f64) / (1u64 << 31) as f64 * 2.0 - 1.0
+    };
+    let jitter = DVec3::new(rnd(), rnd(), rnd()).normalize_or_zero() * 40.0;
+    let vel = fw * 300.0 * crate::abilities::aug_level("AugMuscle").map_or(1.0, |l| 1.25 + 0.25 * l as f64) + DVec3::new(0.0, 0.0, 220.0) + jitter;
+    let flat = DVec3::new(fw.x, fw.y, 0.0).normalize_or_zero();
+    let player = cx.player;
+    let pos = player.body.location
+        + flat * (0.8 * player.params.radius)
+        + DVec3::new(0.0, 0.0, player.eye_height);
+    corpse_drops.0.push((body, pos, vel));
+    weapons.corpse = None;
+    weapons.held = None;
+    true
+}
+
+/// A pickup in hand is used on a left click (DeusExPickup Activated states, Diegetic Healing); a scoped weapon
+/// toggles its scope (ScopeToggle); anything else has no zoom. Also shows or hides the view model while zoomed.
+/// False when the pickup was used up (the hands are empty).
+fn item_or_scope(
+    cx: &mut WeaponCx,
+    weapons: &mut Weapons,
+    root: &mut Transform,
+    mouse: &ButtonInput<MouseButton>,
+    keys: &ButtonInput<KeyCode>,
+    locked: bool,
+) -> bool {
+    let Some(h) = weapons.held.as_mut() else {
+        return false;
+    };
     // Pickups in hand: left click uses them (DeusExPickup Activated states).
     if h.stats.item {
         if h.stats.class != "Binoculars" {
-            zoom.0 = None;
+            cx.zoom.0 = None;
         }
-        root.scale = if zoom.0.is_some() {
+        root.scale = if cx.zoom.0.is_some() {
             Vec3::ZERO
         } else {
             Vec3::ONE
@@ -2958,15 +3149,15 @@ pub fn weapon_system(
             let class = h.stats.class.clone();
             let r = activate_pickup(
                 &class,
-                &mut ph,
-                &cam,
-                &player,
-                &mut launches,
-                &mut flares,
-                &mut zoom,
-                &mut charged,
-                &mut rt_assets,
-                &mut weapons,
+                &mut cx.ph,
+                cx.cam,
+                cx.player,
+                &mut cx.launches,
+                &mut cx.flares,
+                &mut cx.zoom,
+                &mut cx.charged,
+                &mut cx.rt_assets,
+                weapons,
             );
             let (consumed, msg, weapons_spray) = (r.consumed, r.msg, r.spray);
             if weapons_spray {
@@ -2974,16 +3165,16 @@ pub fn weapon_system(
                 weapons.spray_acc = 1.0;
             }
             if !msg.is_empty() {
-                hud.text = msg;
-                hud.time_left = 2.0;
+                cx.hud.text = msg;
+                cx.hud.time_left = 2.0;
             }
             if consumed {
                 println!("USE {class}");
-                if inv.0.use_one(&class) == 0 {
+                if cx.inv.0.use_one(&class) == 0 {
                     weapons.held = None;
-                    zoom.0 = None;
+                    cx.zoom.0 = None;
                     root.scale = Vec3::ONE;
-                    return;
+                    return false;
                 }
             }
         }
@@ -2992,42 +3183,42 @@ pub fn weapon_system(
         if (keys.just_pressed(KeyCode::BracketLeft) || keys.just_pressed(KeyCode::KeyZ))
             && h.state == WState::Idle
         {
-            zoom.0 = if zoom.0.is_some() {
+            cx.zoom.0 = if cx.zoom.0.is_some() {
                 None
             } else {
                 Some(h.stats.scope_fov)
             };
         }
         // DXVIEW_FORCE_SCOPE=1: look through the scope whenever the weapon is ready (screenshots).
-        if env_on!("DXVIEW_FORCE_SCOPE") && h.state == WState::Idle && zoom.0.is_none() {
-            zoom.0 = Some(h.stats.scope_fov);
+        if env_on!("DXVIEW_FORCE_SCOPE") && h.state == WState::Idle && cx.zoom.0.is_none() {
+            cx.zoom.0 = Some(h.stats.scope_fov);
         }
         if !matches!(h.state, WState::Idle | WState::Firing) {
-            zoom.0 = None;
+            cx.zoom.0 = None;
         }
         // Looking through the scope (the original's picture, or the diegetic lens: its tube rings the glass) the
         // weapon itself is out of sight - unless the diegetic lens sits in the rifle's own eyepiece.
         let in_eyepiece = h.scope_eye.is_some() && crate::scope::setting_on() && !crate::thirdperson::active();
-        root.scale = if zoom.0.is_some() && !in_eyepiece {
+        root.scale = if cx.zoom.0.is_some() && !in_eyepiece {
             Vec3::ZERO
         } else {
             Vec3::ONE
         };
     } else {
-        zoom.0 = None;
+        cx.zoom.0 = None;
         root.scale = Vec3::ONE;
     }
-    let Some(h) = weapons.held.as_mut() else {
-        return;
-    };
-    let pulled = weapons_can_fire(&h.stats)
-        && (mouse.just_pressed(MouseButton::Left)
-            || injected_fire
-            || (h.stats.automatic && mouse.pressed(MouseButton::Left)));
-    if !pulled {
-        h.flame_shots = 0;
-    }
+    true
+}
 
+/// Keys for the weapon in hand: ToggleLaser, CycleAmmo (SwitchAmmo) and GMDX Short Fuse.
+fn weapon_keys(
+    h: &mut Held,
+    cx: &mut WeaponCx,
+    keys: &ButtonInput<KeyCode>,
+    loaded: u32,
+    pending_ammo: &mut Option<(String, String)>,
+) {
     // Optional Fixes: a conversation turns the laser off (a stray dot stayed on the speakers).
     if h.lasing && crate::optfixes::fixes() && crate::consys::third_person() {
         h.lasing = false;
@@ -3035,12 +3226,12 @@ pub fn weapon_system(
     // ToggleLaser (']'): only with a laser mod fitted.
     if keys.just_pressed(KeyCode::BracketRight) && h.stats.has_laser {
         h.lasing = !h.lasing;
-        hud.text = if h.lasing {
+        cx.hud.text = if h.lasing {
             "Laser sight on".into()
         } else {
             "Laser sight off".into()
         };
-        hud.time_left = 1.5;
+        cx.hud.time_left = 1.5;
     }
     // CycleAmmo (' in the default keys, also T): load the next ammo type this weapon takes that we have. The
     // rounds left in the clip go back to their box, then the weapon reloads with the new type.
@@ -3053,25 +3244,25 @@ pub fn weapon_system(
         let i = names.iter().position(|n| *n == cur).unwrap_or(0);
         let next = (1..names.len())
             .map(|k| names[(i + k) % names.len()].clone())
-            .find(|n| inv.0.ammo.iter().any(|x| &x.0 == n && x.1 > 0));
+            .find(|n| cx.inv.0.ammo.iter().any(|x| &x.0 == n && x.1 > 0));
         match next {
             Some(n) => {
                 if loaded > 0 {
-                    match inv.0.ammo.iter_mut().find(|x| x.0 == cur) {
+                    match cx.inv.0.ammo.iter_mut().find(|x| x.0 == cur) {
                         Some(e) => e.1 += loaded,
-                        None => inv.0.ammo.push((cur.clone(), loaded)),
+                        None => cx.inv.0.ammo.push((cur.clone(), loaded)),
                     }
                 }
-                clips.0.insert(h.stats.class.clone(), 0);
+                cx.clips.0.insert(h.stats.class.clone(), 0);
                 h.stats.ammo_class = Some(n.clone());
-                weapons_loaded_ammo_set(&mut pending_ammo, &h.stats.class, &n);
-                let pretty = rt_assets.classes.defaults(&n);
+                weapons_loaded_ammo_set(pending_ammo, &h.stats.class, &n);
+                let pretty = cx.rt_assets.classes.defaults(&n);
                 let pretty = match find(&pretty, "ItemName") {
                     Some(Value::Str(s)) => s.clone(),
                     _ => n.clone(),
                 };
-                hud.text = format!("{} now has {} loaded", h.stats.name, pretty);
-                hud.time_left = 2.0;
+                cx.hud.text = format!("{} now has {} loaded", h.stats.name, pretty);
+                cx.hud.time_left = 2.0;
                 // Reload with it straight away.
                 h.state = WState::Reloading;
                 if let Some(s) = &h.stats.snd.reload_begin {
@@ -3080,8 +3271,8 @@ pub fn weapon_system(
                 begin_reload_clip(h);
             }
             None => {
-                hud.text = "No other ammo for this weapon".into();
-                hud.time_left = 1.5;
+                cx.hud.text = "No other ammo for this weapon".into();
+                cx.hud.time_left = 1.5;
             }
         }
     }
@@ -3091,10 +3282,23 @@ pub fn weapon_system(
         && crate::perks::has("PerkShortFuse")
     {
         let on = crate::grenades::toggle_short_fuse();
-        hud.text = if on { "Short Fuse Enabled".into() } else { "Short Fuse Disabled".into() };
-        hud.time_left = 2.0;
+        cx.hud.text = if on { "Short Fuse Enabled".into() } else { "Short Fuse Disabled".into() };
+        cx.hud.time_left = 2.0;
         crate::sound::play_player("DeusExSounds.Generic.Beep4", 0.8, 1024.0);
     }
+}
+
+/// ReloadWeapon on R (or auto reload on an empty clip), else the trigger: the Dragon's Tooth without energy, the
+/// dry fire click, or DeusExWeapon.Fire.
+fn reload_or_fire(
+    h: &mut Held,
+    cx: &mut WeaponCx,
+    flashes: &mut Query<&mut MuzzleFlashPart>,
+    keys: &ButtonInput<KeyCode>,
+    aim: &crate::hud::Aim,
+    tr: TriggerPull,
+) {
+    let TriggerPull { loaded, pool, locked, pulled } = tr;
     // Reload on R, or automatically when the clip is empty and ammo remains.
     let can_reload =
         h.stats.reload_count > 0 && loaded < h.stats.reload_count && pool.unwrap_or(0) > 0;
@@ -3107,10 +3311,10 @@ pub fn weapon_system(
             crate::sound::play_player(s, 1.0, 1024.0);
         }
         begin_reload_clip(h);
-    } else if h.state == WState::Idle && locked && pulled && h.stats.class == "WeaponNanoSword" && dts_energy() && ph.energy < 1.0 {
+    } else if h.state == WState::Idle && locked && pulled && h.stats.class == "WeaponNanoSword" && dts_energy() && cx.ph.energy < 1.0 {
         // Enhancement (Dragon's Tooth energy, after GMDX's ChargeManager): no bioenergy, no blade.
-        hud.text = "Not enough bioelectric energy".into();
-        hud.time_left = 1.5;
+        cx.hud.text = "Not enough bioelectric energy".into();
+        cx.hud.time_left = 1.5;
     } else if h.state == WState::Idle && locked && pulled {
         let thrown = h.stats.hand_to_hand && h.stats.reload_count > 0;
         let has_round = if thrown {
@@ -3125,222 +3329,240 @@ pub fn weapon_system(
                     crate::sound::play_player(s, h.stats.snd.volume * 2.0, 1024.0);
                 }
             }
-            hud.text = "Out of ammo".into();
-            hud.time_left = 2.0;
+            cx.hud.text = "Out of ammo".into();
+            cx.hud.time_left = 2.0;
         } else {
-            if !h.stats.hand_to_hand && h.stats.reload_count > 0 {
-                clips.0.insert(h.stats.class.clone(), loaded - 1);
-            }
-            h.state = WState::Firing;
-            h.timer = h.stats.player_shot_time();
-            h.racked = false;
-            // PlayFiringSound: a silencer swaps in StealthPistolFire.
-            let fire = if h.stats.silenced && !h.stats.hand_to_hand {
-                Some("DeusExSounds.Weapons.StealthPistolFire".to_string())
-            } else {
-                h.stats.snd.fire.clone()
-            };
-            // The flamethrower (FlameThrowerOn) roars once per seven shots instead of every 0.1 s.
-            let flame = h.stats.class == "WeaponFlamethrower";
-            let sound_now = !flame || h.flame_shots == 0;
-            if flame {
-                h.flame_shots = if h.flame_shots == 0 {
-                    6
-                } else {
-                    h.flame_shots - 1
-                };
-            }
-            if let (Some(s), true) = (fire, sound_now) {
-                crate::sound::play_player(&s, h.stats.snd.volume, 2048.0);
-            }
-            if let Some(f) = h.flash.and_then(|e| flashes.get_mut(e).ok()) {
-                f.into_inner().left = 0.1;
-            }
-            // MuzzleFlashLight: Owner.Location + view x CollisionRadius x 2, 0.1 s.
-            if h.stats.muzzle_flash {
-                let f = cam.forward().as_vec3();
-                let fwd = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero();
-                {
-                    let r = cam.right().as_vec3();
-                    let rt = DVec3::new(r.x as f64, r.z as f64, r.y as f64);
-                    let e = bevy_to_ue(cam.translation.to_array());
-                    let e = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
-                    crate::fx::muzzle(e + fwd * 40.0 + rt * 8.0 - DVec3::Z * 8.0, fwd);
-                    crate::wisp::player_shot(e + fwd * 40.0 + rt * 8.0 - DVec3::Z * 8.0, fwd);
-                    crate::hudfade::note();
-                }
-                crate::dynlight::flash(
-                    player.body.location + fwd * player.params.radius * 2.0,
-                    crate::dynlight::MUZZLE_FLASH,
-                    0.1,
-                );
-            }
-            if !h.stats.hand_to_hand {
-                if let Some(class) = crate::destruct::shell_for(
-                    h.stats.ammo_class.as_deref(),
-                    h.stats.silenced || h.stats.noise_level < 0.1,
-                ) {
-                    let f = cam.forward().as_vec3();
-                    let fwd = DVec3::new(f.x as f64, f.z as f64, f.y as f64);
-                    let (pos, vel) = crate::destruct::shell_launch(
-                        player.body.location,
-                        player.params.radius,
-                        player.params.height,
-                        fwd,
-                        &mut seed,
-                    );
-                    shells.0.push((class, pos, vel));
-                }
-            }
-            // GetAIVolume: unsilenced guns are heard (WeaponFire + LoudNoise) out to 800 x NoiseLevel.
-            if let Some(n) = crate::stealth::weapon_noise(
-                &h.stats,
-                player.body.location,
-                crate::ai::Target::Player,
-            ) {
-                // AISendEvent WeaponFire (needs the listener to see the shooter) and LoudNoise (heard anywhere in range).
-                let mut loud = n.clone();
-                loud.kind = crate::stealth::NoiseKind::Loud;
-                noises.0.push(n);
-                noises.0.push(loud);
-            }
-            // PlaySelectiveFiring: Shoot, or one of Attack/Attack2/Attack3 at random for hand-to-hand.
-            *seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            let r3 = ((*seed >> 33) % 3) as usize;
-            let attack = ["Attack", "Attack2", "Attack3"][r3];
-            let first = if h.stats.hand_to_hand {
-                attack
-            } else {
-                "Shoot"
-            };
-            h.clip = Clip::named(&h.mesh, first, false)
-                .or_else(|| Clip::named(&h.mesh, "Shoot", false))
-                .or_else(|| Clip::named(&h.mesh, "Attack", false))
-                .unwrap_or(h.clip.clone());
-
-            // Instant-hit trace from the eye.
-            let eye = bevy_to_ue(cam.translation.to_array());
-            let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
-            let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64).normalize();
-            let (fw, rt, up) = (
-                conv(cam.forward().as_vec3()),
-                conv(cam.right().as_vec3()),
-                conv(cam.up().as_vec3()),
-            );
-            // Third person: from the eyes toward what the over-the-shoulder crosshair is on.
-            let fw = crate::thirdperson::aim_dir(&level.0, eye, fw);
-            if *seed == 0 {
-                *seed = 0x9E37_79B9_7F4A_7C15;
-            }
-            let acc = aim.accuracy as f64;
-            // DeusExWeapon.Fire: shake us based on accuracy.
-            if !h.stats.hand_to_hand {
-                let [t, m, v] = h.stats.shake;
-                crate::shake::shake_view(t, aim.accuracy * m + m, aim.accuracy * v);
-                let heavy = matches!(h.stats.class.as_str(), "WeaponGEPGun" | "WeaponLAW" | "WeaponSawedOffShotgun" | "WeaponAssaultShotgun");
-                let s = if heavy { 1.0 } else { (h.stats.hit_damage / 30.0).clamp(0.25, 0.9) };
-                crate::dualsense::event(crate::dualsense::Haptic::Shot(s));
-            }
-            // Ammo for hand-to-hand weapons with a ReloadCount (grenades, throwing knives) is used per throw
-            // (Fire: AmmoType.UseAmmo(1)); out of it, the weapon goes once the animation ends. Single-use launchers
-            // (ReloadCount 0: LAW, PS20) are destroyed after one shot.
-            if h.stats.hand_to_hand && h.stats.reload_count > 0 {
-                if let Some(a) = h.stats.ammo_class.clone() {
-                    if let Some(e) = inv.0.ammo.iter_mut().find(|x| x.0 == a) {
-                        e.1 = e.1.saturating_sub(1);
-                        h.last_throw = e.1 == 0;
-                    }
-                }
-            } else if h.stats.reload_count == 0 && !h.stats.hand_to_hand && !h.stats.item {
-                h.last_throw = true;
-            }
-            let thrown = matches!(
-                h.stats.class.as_str(),
-                "WeaponLAM" | "WeaponGasGrenade" | "WeaponEMPGrenade" | "WeaponNanoVirusGrenade"
-            );
-            let grenade = h.stats.projectile.clone().filter(|_| thrown);
-            if let Some(class) = grenade {
-                // Thrown weapons (LAM, gas, EMP): placed on a wall within a foot (NearWallCheck), else thrown.
-                // NearWallCheck's Trace has bTraceActors off: only the level and movers count, so a crate, a pawn
-                // or an invisible blocker in front of the wall doesn't turn the placement into a throw.
-                let world = World {
-                    level: &level.0,
-                    blockers: &[],
-                    ignore: None,
-                    pushable: None,
-                    movers: Some(&mv.rt),
-                };
-                let wh = world.trace(eye, eye + fw * 32.0, DVec3::ZERO);
-                if wh.fraction < 1.0 && wh.actor.is_none() {
-                    let at = eye + fw * 32.0 * wh.fraction + wh.normal * 2.0;
-                    h.pending_throw = Some((class, at, fw, Some(wh.normal)));
-                    if let Some(c) = Clip::named(&h.mesh, "Place", false) {
-                        h.clip = c;
-                    }
-                } else {
-                    h.pending_throw = Some((class, eye + fw * 16.0, fw, None));
-                }
-            } else if let Some(class) = h.stats.projectile_for(h.stats.ammo_class.as_deref()) {
-                // Projectile weapons (mini-crossbow): launch from just in front of the eyes.
-                for _ in 0..h.stats.shots_per_fire() {
-                    let dir = crate::aimmode::projectile_dir(fw, rt, up, acc, &mut seed);
-                    // Locked on: the rocket gets the target and tracks it.
-                    let track = if h.stats.can_track && h.lock_mode == 4 {
-                        h.lock_target
-                    } else {
-                        None
-                    };
-                    launches.0.push(crate::projectiles::Launch {
-                        class: class.clone(),
-                        pos: eye + fw * 12.0,
-                        dir,
-                        from: None,
-                        mult: h.stats.damage_mult(),
-                        life: None,
-                        scale: None,
-                        still: false,
-                        track,
-                        track_at: None,
-                        speed: None,
-                        ownerless: false,
-                    });
-                }
-                // GMDX Plasma Breeder (WeaponPlasmaRifle.OnProjectileFired): a free plasma round every PerkValue
-                // (5) bolts fired (never checked against the maximum, as in GMDX).
-                if h.stats.class == "WeaponPlasmaRifle" {
-                    if let Some(v) = crate::perks::value_if("PerkPlasmaBreeder") {
-                        let n = PLASMA_BRED.fetch_add(h.stats.shots_per_fire() as u32, std::sync::atomic::Ordering::Relaxed)
-                            + h.stats.shots_per_fire() as u32;
-                        if n as f32 >= v {
-                            PLASMA_BRED.store(0, std::sync::atomic::Ordering::Relaxed);
-                            match inv.0.ammo.iter_mut().find(|x| x.0 == "AmmoPlasma") {
-                                Some(e) => e.1 += 1,
-                                None => inv.0.ammo.push(("AmmoPlasma".to_string(), 1)),
-                            }
-                        }
-                    }
-                }
-            } else if h.stats.hand_to_hand {
-                // The swing (FireSound) starts now; the blow lands at the HandToHandAttack notify.
-                h.melee_pending = true;
-            } else {
-                let mut cx = ShotCx {
-                    level: &level.0,
-                    blockers: &blockers.list,
-                    movers: &mv.rt,
-                    player_at: player.body.location,
-                    pawn_hits: &mut pawn_hits.0,
-                    deco_hits: &mut deco_hits.0,
-                    blood: &mut blood.0,
-                };
-                trace_fire(&h.stats, &mut cx, Aim3 { eye, fw, rt, up }, acc, zoom.0.is_some(), &mut seed);
-            }
+            fire_effects(h, cx, flashes, loaded);
+            launch_shot(h, cx, aim);
         }
     }
+}
 
-    pose_view_model(h, &mut meshes, dt);
+/// DeusExWeapon.Fire, the show: the round out of the clip, the firing state, PlayFiringSound, the muzzle flash
+/// (MuzzleFlashLight), a shell casing, the noise pawns hear (GetAIVolume) and PlaySelectiveFiring's animation.
+fn fire_effects(h: &mut Held, cx: &mut WeaponCx, flashes: &mut Query<&mut MuzzleFlashPart>, loaded: u32) {
+    let (cam, player) = (cx.cam, cx.player);
+    if !h.stats.hand_to_hand && h.stats.reload_count > 0 {
+        cx.clips.0.insert(h.stats.class.clone(), loaded - 1);
+    }
+    h.state = WState::Firing;
+    h.timer = h.stats.player_shot_time();
+    h.racked = false;
+    // PlayFiringSound: a silencer swaps in StealthPistolFire.
+    let fire = if h.stats.silenced && !h.stats.hand_to_hand {
+        Some("DeusExSounds.Weapons.StealthPistolFire".to_string())
+    } else {
+        h.stats.snd.fire.clone()
+    };
+    // The flamethrower (FlameThrowerOn) roars once per seven shots instead of every 0.1 s.
+    let flame = h.stats.class == "WeaponFlamethrower";
+    let sound_now = !flame || h.flame_shots == 0;
+    if flame {
+        h.flame_shots = if h.flame_shots == 0 {
+            6
+        } else {
+            h.flame_shots - 1
+        };
+    }
+    if let (Some(s), true) = (fire, sound_now) {
+        crate::sound::play_player(&s, h.stats.snd.volume, 2048.0);
+    }
+    if let Some(f) = h.flash.and_then(|e| flashes.get_mut(e).ok()) {
+        f.into_inner().left = 0.1;
+    }
+    // MuzzleFlashLight: Owner.Location + view x CollisionRadius x 2, 0.1 s.
+    if h.stats.muzzle_flash {
+        let f = cam.forward().as_vec3();
+        let fwd = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero();
+        {
+            let r = cam.right().as_vec3();
+            let rt = DVec3::new(r.x as f64, r.z as f64, r.y as f64);
+            let e = bevy_to_ue(cam.translation.to_array());
+            let e = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
+            crate::fx::muzzle(e + fwd * 40.0 + rt * 8.0 - DVec3::Z * 8.0, fwd);
+            crate::wisp::player_shot(e + fwd * 40.0 + rt * 8.0 - DVec3::Z * 8.0, fwd);
+            crate::hudfade::note();
+        }
+        crate::dynlight::flash(
+            player.body.location + fwd * player.params.radius * 2.0,
+            crate::dynlight::MUZZLE_FLASH,
+            0.1,
+        );
+    }
+    if !h.stats.hand_to_hand {
+        if let Some(class) = crate::destruct::shell_for(
+            h.stats.ammo_class.as_deref(),
+            h.stats.silenced || h.stats.noise_level < 0.1,
+        ) {
+            let f = cam.forward().as_vec3();
+            let fwd = DVec3::new(f.x as f64, f.z as f64, f.y as f64);
+            let (pos, vel) = crate::destruct::shell_launch(
+                player.body.location,
+                player.params.radius,
+                player.params.height,
+                fwd,
+                cx.seed,
+            );
+            cx.shells.0.push((class, pos, vel));
+        }
+    }
+    // GetAIVolume: unsilenced guns are heard (WeaponFire + LoudNoise) out to 800 x NoiseLevel.
+    if let Some(n) = crate::stealth::weapon_noise(
+        &h.stats,
+        player.body.location,
+        crate::ai::Target::Player,
+    ) {
+        // AISendEvent WeaponFire (needs the listener to see the shooter) and LoudNoise (heard anywhere in range).
+        let mut loud = n.clone();
+        loud.kind = crate::stealth::NoiseKind::Loud;
+        cx.noises.0.push(n);
+        cx.noises.0.push(loud);
+    }
+    // PlaySelectiveFiring: Shoot, or one of Attack/Attack2/Attack3 at random for hand-to-hand.
+    *cx.seed = cx
+        .seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    let r3 = ((*cx.seed >> 33) % 3) as usize;
+    let attack = ["Attack", "Attack2", "Attack3"][r3];
+    let first = if h.stats.hand_to_hand {
+        attack
+    } else {
+        "Shoot"
+    };
+    h.clip = Clip::named(&h.mesh, first, false)
+        .or_else(|| Clip::named(&h.mesh, "Shoot", false))
+        .or_else(|| Clip::named(&h.mesh, "Attack", false))
+        .unwrap_or(h.clip.clone());
+}
+
+/// DeusExWeapon.Fire, the shot: the view shake, ammo used per throw, then a grenade thrown or placed
+/// (NearWallCheck), projectiles launched (ProjectileFire), a melee swing begun, or TraceFire from the eye.
+fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
+    let (cam, level) = (cx.cam, cx.level);
+    // Instant-hit trace from the eye.
+    let eye = bevy_to_ue(cam.translation.to_array());
+    let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
+    let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64).normalize();
+    let (fw, rt, up) = (
+        conv(cam.forward().as_vec3()),
+        conv(cam.right().as_vec3()),
+        conv(cam.up().as_vec3()),
+    );
+    // Third person: from the eyes toward what the over-the-shoulder crosshair is on.
+    let fw = crate::thirdperson::aim_dir(level, eye, fw);
+    if *cx.seed == 0 {
+        *cx.seed = 0x9E37_79B9_7F4A_7C15;
+    }
+    let acc = aim.accuracy as f64;
+    // DeusExWeapon.Fire: shake us based on accuracy.
+    if !h.stats.hand_to_hand {
+        let [t, m, v] = h.stats.shake;
+        crate::shake::shake_view(t, aim.accuracy * m + m, aim.accuracy * v);
+        let heavy = matches!(h.stats.class.as_str(), "WeaponGEPGun" | "WeaponLAW" | "WeaponSawedOffShotgun" | "WeaponAssaultShotgun");
+        let s = if heavy { 1.0 } else { (h.stats.hit_damage / 30.0).clamp(0.25, 0.9) };
+        crate::dualsense::event(crate::dualsense::Haptic::Shot(s));
+    }
+    // Ammo for hand-to-hand weapons with a ReloadCount (grenades, throwing knives) is used per throw
+    // (Fire: AmmoType.UseAmmo(1)); out of it, the weapon goes once the animation ends. Single-use launchers
+    // (ReloadCount 0: LAW, PS20) are destroyed after one shot.
+    if h.stats.hand_to_hand && h.stats.reload_count > 0 {
+        if let Some(a) = h.stats.ammo_class.clone() {
+            if let Some(e) = cx.inv.0.ammo.iter_mut().find(|x| x.0 == a) {
+                e.1 = e.1.saturating_sub(1);
+                h.last_throw = e.1 == 0;
+            }
+        }
+    } else if h.stats.reload_count == 0 && !h.stats.hand_to_hand && !h.stats.item {
+        h.last_throw = true;
+    }
+    let thrown = matches!(
+        h.stats.class.as_str(),
+        "WeaponLAM" | "WeaponGasGrenade" | "WeaponEMPGrenade" | "WeaponNanoVirusGrenade"
+    );
+    let grenade = h.stats.projectile.clone().filter(|_| thrown);
+    if let Some(class) = grenade {
+        // Thrown weapons (LAM, gas, EMP): placed on a wall within a foot (NearWallCheck), else thrown.
+        // NearWallCheck's Trace has bTraceActors off: only the level and movers count, so a crate, a pawn
+        // or an invisible blocker in front of the wall doesn't turn the placement into a throw.
+        let world = World {
+            level,
+            blockers: &[],
+            ignore: None,
+            pushable: None,
+            movers: Some(&cx.mv.rt),
+        };
+        let wh = world.trace(eye, eye + fw * 32.0, DVec3::ZERO);
+        if wh.fraction < 1.0 && wh.actor.is_none() {
+            let at = eye + fw * 32.0 * wh.fraction + wh.normal * 2.0;
+            h.pending_throw = Some((class, at, fw, Some(wh.normal)));
+            if let Some(c) = Clip::named(&h.mesh, "Place", false) {
+                h.clip = c;
+            }
+        } else {
+            h.pending_throw = Some((class, eye + fw * 16.0, fw, None));
+        }
+    } else if let Some(class) = h.stats.projectile_for(h.stats.ammo_class.as_deref()) {
+        // Projectile weapons (mini-crossbow): launch from just in front of the eyes.
+        for _ in 0..h.stats.shots_per_fire() {
+            let dir = crate::aimmode::projectile_dir(fw, rt, up, acc, cx.seed);
+            // Locked on: the rocket gets the target and tracks it.
+            let track = if h.stats.can_track && h.lock_mode == 4 {
+                h.lock_target
+            } else {
+                None
+            };
+            cx.launches.0.push(crate::projectiles::Launch {
+                class: class.clone(),
+                pos: eye + fw * 12.0,
+                dir,
+                from: None,
+                mult: h.stats.damage_mult(),
+                life: None,
+                scale: None,
+                still: false,
+                track,
+                track_at: None,
+                speed: None,
+                ownerless: false,
+            });
+        }
+        // GMDX Plasma Breeder (WeaponPlasmaRifle.OnProjectileFired): a free plasma round every PerkValue
+        // (5) bolts fired (never checked against the maximum, as in GMDX).
+        if h.stats.class == "WeaponPlasmaRifle" {
+            if let Some(v) = crate::perks::value_if("PerkPlasmaBreeder") {
+                let n = PLASMA_BRED.fetch_add(h.stats.shots_per_fire() as u32, std::sync::atomic::Ordering::Relaxed)
+                    + h.stats.shots_per_fire() as u32;
+                if n as f32 >= v {
+                    PLASMA_BRED.store(0, std::sync::atomic::Ordering::Relaxed);
+                    match cx.inv.0.ammo.iter_mut().find(|x| x.0 == "AmmoPlasma") {
+                        Some(e) => e.1 += 1,
+                        None => cx.inv.0.ammo.push(("AmmoPlasma".to_string(), 1)),
+                    }
+                }
+            }
+        }
+    } else if h.stats.hand_to_hand {
+        // The swing (FireSound) starts now; the blow lands at the HandToHandAttack notify.
+        h.melee_pending = true;
+    } else {
+        let scoped = cx.zoom.0.is_some();
+        let mut shot = ShotCx {
+            level,
+            blockers: &cx.blockers.list,
+            movers: &cx.mv.rt,
+            player_at: cx.player.body.location,
+            pawn_hits: &mut cx.pawn_hits.0,
+            deco_hits: &mut cx.deco_hits.0,
+            blood: &mut cx.blood.0,
+        };
+        trace_fire(&h.stats, &mut shot, Aim3 { eye, fw, rt, up }, acc, scoped, cx.seed);
+    }
+}
+
+/// Weapons that light what's round them in hand: the Dragon's Tooth's blade, and (Emissive Surfaces) the riot
+/// prod's arcs.
+fn blade_lights(h: &Held, cam: &Transform, time: &Time) {
     // WeaponNanoSword: in hand (state Idle and swinging; not while drawn or put away) the blade lights what's round
     // it - LT_Steady, hue 160, saturation 64, brightness 224, radius 4, LE_WateryShimmer. Dark with Dragon's Tooth
     // Uses Bioenergy and no energy left.
@@ -3370,8 +3592,11 @@ pub fn weapon_system(
         let bri = ((if firing { 200.0 } else { 70.0 }) * flick) as u8;
         crate::dynlight::hold(0x9D0_0000, DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64), crate::dynlight::Spec::new(150, 96, bri, if firing { 4.0 } else { 2.5 }), 0.08);
     }
-    light_view_model(h, &mut meshes, &level.0, cam.translation, cam.rotation, &root, dt);
-    crate::scope::set_lens(lens_eye.as_ref().and_then(|se| se.posed(&h.shown)).map(|(c, axis, r)| {
+}
+
+/// The Diegetic Scope's lens (scope::set_lens) in the eyepiece as posed this frame, or none.
+fn place_lens(h: &Held, lens_eye: Option<&ScopeEye>, root: &Transform) {
+    crate::scope::set_lens(lens_eye.and_then(|se| se.posed(&h.shown)).map(|(c, axis, r)| {
         let axis = root.rotation * axis;
         if env_on!("DXVIEW_SCOPELOG") {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -3379,7 +3604,7 @@ pub fn weapon_system(
                 println!(
                     "SCOPE posed c {:?} rest {:?} r {:.4} axis {:?} root {:?} lens {:?} start {} t {:.2}",
                     c,
-                    view_to_cam([se_rest(lens_eye.as_ref())[0], se_rest(lens_eye.as_ref())[1], se_rest(lens_eye.as_ref())[2]]),
+                    view_to_cam([se_rest(lens_eye)[0], se_rest(lens_eye)[1], se_rest(lens_eye)[2]]),
                     r,
                     axis,
                     root.translation,
@@ -3392,20 +3617,15 @@ pub fn weapon_system(
         // The lens sits at the scope's rear end (the original's closed eyepiece cap, HDTP's eyecup), facing along
         // the gun (the next ring forward isn't on the same centre line, so its tilt isn't used).
         let _ = axis;
-        let pull = lens_eye.as_ref().map_or(0.0, |se| (se.rest[0] - se.back) * METERS_PER_UNIT) + 0.002;
+        let pull = lens_eye.map_or(0.0, |se| (se.rest[0] - se.back) * METERS_PER_UNIT) + 0.002;
         // Toward the eye along the tube (in the model's space), the disc facing back along it.
-        let back_dir = lens_eye.as_ref().map_or(Vec3::Z, |se| -Vec3::from(view_to_cam(se.axis)).normalize_or(Vec3::NEG_Z));
+        let back_dir = lens_eye.map_or(Vec3::Z, |se| -Vec3::from(view_to_cam(se.axis)).normalize_or(Vec3::NEG_Z));
         (
             root.translation + root.rotation * (c + back_dir * pull),
             root.rotation * Quat::from_rotation_arc(Vec3::Z, back_dir),
             r,
         )
     }));
-
-    if let Some(p) = pending_ammo {
-        weapons.ammo_note = Some(p);
-    }
-    let _ = &mut commands;
 }
 
 fn weapons_loaded_ammo_set(slot: &mut Option<(String, String)>, class: &str, ammo: &str) {

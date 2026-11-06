@@ -2175,6 +2175,83 @@ fn despawn_feeds(st: &mut Computers, commands: &mut Commands) {
 
 // ------------------------------------------------------------------------------------------------ system
 
+/// What the computer system's steps borrow: the system's resources, reborrowed (a `Mut` only marks its resource
+/// changed where a step writes through it, as the system's own `ResMut` did).
+struct CompCx<'a> {
+    window: &'a Window,
+    cursor_opts: Mut<'a, CursorOptions>,
+    st: &'a mut Computers,
+    binds: Mut<'a, Bindings>,
+    hud: Mut<'a, ClassicHud>,
+    assets: Mut<'a, RuntimeAssets>,
+    images: Mut<'a, Assets<Image>>,
+    layers: Mut<'a, Assets<HudLayer>>,
+    lvl: &'a dx_level::Level,
+    sec: Mut<'a, Security>,
+    movers: Mut<'a, Movers>,
+    alarms: Mut<'a, Alarms>,
+    events: Mut<'a, GameEvents>,
+    inv: Mut<'a, PlayerInventory>,
+    ph: Mut<'a, PlayerHealth>,
+    dt: f32,
+    now: f64,
+    mission: u8,
+}
+
+/// The terminal's world access (`Wx`) built from a `CompCx` (field by field, so the open `Term` can stay borrowed).
+macro_rules! wx {
+    ($cx:expr) => {
+        Wx {
+            data: &mut $cx.st.data,
+            sec: &mut $cx.sec,
+            movers: &mut $cx.movers,
+            lvl: $cx.lvl,
+            inv: &mut $cx.inv,
+            ph: &mut $cx.ph,
+            events: &mut $cx.events,
+            hud: &mut $cx.hud,
+            assets: &mut $cx.assets,
+            texts: &mut $cx.st.texts,
+            now: $cx.now,
+            mission: $cx.mission,
+        }
+    };
+}
+
+/// This frame's UI scale and placement (or the diegetic monitor's), the mouse in UI units, and the hack filler.
+struct CompFrame {
+    fill: String,
+    /// Canvases' whole-number scale.
+    s: i32,
+    /// The scale shown (fractional with HUD Scale Large).
+    d: f32,
+    sw: i32,
+    sh: i32,
+    sf: f32,
+    mouse: (i32, i32),
+    dg: Option<crate::diegetic::CompView>,
+}
+
+/// The terminal drawing's borrows: the open terminal and the rest of the computers' state, split field by field.
+struct DrawCx<'b> {
+    t: &'b mut Term,
+    data: &'b HashMap<usize, CompData>,
+    nodes: &'b mut Nodes,
+    feeds: &'b mut [Option<Feed>; 3],
+    desk_key: &'b mut String,
+    noise_t: &'b mut f32,
+    seed: &'b mut u64,
+    hud: &'b mut ClassicHud,
+    assets: &'b mut RuntimeAssets,
+    images: &'b mut Assets<Image>,
+    layers: &'b mut Assets<HudLayer>,
+    sec: &'b Security,
+    movers: &'b Movers,
+    lvl: &'b dx_level::Level,
+    now: f64,
+    dt: f32,
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn computer_system(
     mut commands: Commands,
@@ -2217,48 +2294,100 @@ pub fn computer_system(
             .map(|a| pfloat(&a.props, "MissionNumber", 0.0) as u8)
             .unwrap_or(0)
     });
+    let mut cx = CompCx {
+        window: *window,
+        cursor_opts: cursor_opts.reborrow(),
+        st,
+        binds: binds.reborrow(),
+        hud: hud.reborrow(),
+        assets: assets.reborrow(),
+        images: images.reborrow(),
+        layers: layers.reborrow(),
+        lvl,
+        sec: sec.reborrow(),
+        movers: movers.reborrow(),
+        alarms: alarms.reborrow(),
+        events: events.reborrow(),
+        inv: inv.reborrow(),
+        ph: ph.reborrow(),
+        dt,
+        now,
+        mission,
+    };
+    let cx = &mut cx;
     // ---- UI nodes
-    if st.nodes.is_none() {
-        let backdrop_e = commands
-            .spawn((
-                bevy::ui::Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(0.0),
-                    top: Val::Px(0.0),
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(Color::BLACK),
-                Visibility::Hidden,
-                Pickable::IGNORE,
-                GlobalZIndex(48),
-                Backdrop,
-            ))
-            .id();
-        let comp = layer(&mut commands, &mut images, &mut layers, 49);
-        let mut noise_img = blank(FEED_SIZE.0 as u32, FEED_SIZE.1 as u32);
-        noise_img.sampler = bevy::image::ImageSampler::nearest();
-        let noise = images.add(noise_img);
-        let feed_nodes_e: [Entity; 3] = std::array::from_fn(|_| {
-            commands
-                .spawn((
-                    ImageNode::new(noise.clone()),
-                    bevy::ui::Node { position_type: PositionType::Absolute, ..default() },
-                    Visibility::Hidden,
-                    Pickable::IGNORE,
-                    GlobalZIndex(50),
-                ))
-                .id()
-        });
-        let overlay = layer(&mut commands, &mut images, &mut layers, 51);
-        let hack = layer(&mut commands, &mut images, &mut layers, 52);
-        let accounts = layer(&mut commands, &mut images, &mut layers, 52);
-        let cursor = layer(&mut commands, &mut images, &mut layers, 53);
-        let desk = layer(&mut commands, &mut images, &mut layers, 48);
-        st.nodes = Some(Nodes { backdrop: backdrop_e, comp, overlay, hack, accounts, cursor, desk, feed_nodes: feed_nodes_e, noise });
+    if cx.st.nodes.is_none() {
+        spawn_nodes(cx, &mut commands);
+    }
+    tick_alarms(cx);
+    open_frobbed(cx);
+
+    // ---- an open terminal
+    let fr = term_view(cx);
+    set_ui_target(cx, &mut commands, fr.dg);
+    // Walked away is impossible (no input reaches the game); the computer blown up closes it.
+    let _ = &blockers;
+    let close = term_frame(cx, &fr, &mut wheel);
+    if close {
+        close_term(cx, &mut commands);
+    }
+    if !show_open_state(cx, &fr, close, &mut wheel, &mut backdrop, &mut layer_nodes, &mut feed_nodes) {
+        return;
     }
 
+    // ---- draw
+    draw_terminal(cx, &fr, &mut commands, &mut layer_nodes, &mut feed_nodes, &mut feed_cams);
+    let _ = &player;
+}
+
+/// The black backdrop, the canvas layers (computer, selection overlay, hack, accounts, cursor, desktop) and the
+/// three camera-feed image nodes, made once.
+fn spawn_nodes(cx: &mut CompCx, commands: &mut Commands) {
+    let CompCx { st, images, layers, .. } = cx;
+    let backdrop_e = commands
+        .spawn((
+            bevy::ui::Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::BLACK),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            GlobalZIndex(48),
+            Backdrop,
+        ))
+        .id();
+    let comp = layer(commands, images, layers, 49);
+    let mut noise_img = blank(FEED_SIZE.0 as u32, FEED_SIZE.1 as u32);
+    noise_img.sampler = bevy::image::ImageSampler::nearest();
+    let noise = images.add(noise_img);
+    let feed_nodes_e: [Entity; 3] = std::array::from_fn(|_| {
+        commands
+            .spawn((
+                ImageNode::new(noise.clone()),
+                bevy::ui::Node { position_type: PositionType::Absolute, ..default() },
+                Visibility::Hidden,
+                Pickable::IGNORE,
+                GlobalZIndex(50),
+            ))
+            .id()
+    });
+    let overlay = layer(commands, images, layers, 51);
+    let hack = layer(commands, images, layers, 52);
+    let accounts = layer(commands, images, layers, 52);
+    let cursor = layer(commands, images, layers, 53);
+    let desk = layer(commands, images, layers, 48);
+    st.nodes = Some(Nodes { backdrop: backdrop_e, comp, overlay, hack, accounts, cursor, desk, feed_nodes: feed_nodes_e, noise });
+}
+
+/// The computers' own ticking: alarms run out (Computers.Tick -> EndAlarm).
+fn tick_alarms(cx: &mut CompCx) {
+    let CompCx { st, alarms, now, .. } = cx;
+    let now = *now;
     // ---- the computers' own ticking: alarms run out (Computers.Tick -> EndAlarm)
     for (actor, d) in st.data.iter_mut() {
         if d.last_alarm_time != 0.0 {
@@ -2273,13 +2402,19 @@ pub fn computer_system(
             }
         }
     }
+}
 
+/// A frobbed computer (Computers.Frob / NetworkTerminal): unless locked out, its terminal opens on the login /
+/// bulletins / ATM screen, with the ICE Breaker when the player has the skill.
+fn open_frobbed(cx: &mut CompCx) {
+    let now = cx.now;
+    let lvl = cx.lvl;
     // ---- frob
     let frobbed = FROB.lock().ok().and_then(|mut f| f.take());
     if let Some(actor) = frobbed {
-        if st.term.is_none() && !ph.dead && !crate::inventory_screen::screen_open() && actor < lvl.actors.len() {
-            first_load(st, lvl, actor, &mut assets);
-            let d = st.data.get_mut(&actor).unwrap();
+        if cx.st.term.is_none() && !cx.ph.dead && !crate::inventory_screen::screen_open() && actor < lvl.actors.len() {
+            first_load(cx.st, lvl, actor, &mut cx.assets);
+            let d = cx.st.data.get_mut(&actor).unwrap();
             let skill_value = crate::abilities::skill("SkillComputer").max(0.01);
             if d.locked_out {
                 let delay = d.lockout_delay as f64 / skill_value as f64;
@@ -2301,7 +2436,7 @@ pub fn computer_system(
                     let hack_time = detection / (skill_value * 1.5);
                     detection *= skill_value;
                     let total = detection + hack_time;
-                    st.seed = st.seed.wrapping_add(actor as u64 * 7919 + 1);
+                    cx.st.seed = cx.st.seed.wrapping_add(actor as u64 * 7919 + 1);
                     hack = Some(Hack {
                         detection: total,
                         save_detection: total,
@@ -2314,13 +2449,13 @@ pub fn computer_system(
                         done: false,
                         detected: false,
                         notified: false,
-                        msg: txt(&mut hud, &mut assets, "ComputerScreenHack", "HackReadyLabel", "Ice Breaker Ready..."),
+                        msg: txt(&mut cx.hud, &mut cx.assets, "ComputerScreenHack", "HackReadyLabel", "Ice Breaker Ready..."),
                         msg_shown: true,
                         red: false,
                         digits: Default::default(),
                         btn_return: false,
                         btn_enabled: true,
-                        seed: st.seed,
+                        seed: cx.st.seed,
                     });
                 }
                 if kind != Kind::Atm {
@@ -2349,40 +2484,32 @@ pub fn computer_system(
                     exit: false,
                     comp_rect: (0, 0, 0, 0),
                 };
-                let mut wx = Wx {
-                    data: &mut st.data,
-                    sec: &mut sec,
-                    movers: &mut movers,
-                    lvl,
-                    inv: &mut inv,
-                    ph: &mut ph,
-                    events: &mut events,
-                    hud: &mut hud,
-                    assets: &mut assets,
-                    texts: &mut st.texts,
-                    now,
-                    mission,
-                };
+                let mut wx = wx!(cx);
                 let first = match kind {
                     Kind::Atm => Which::Atm,
                     Kind::Public => Which::Bulletins,
                     _ => Which::Login,
                 };
                 t.show(first, &mut wx);
-                st.term = Some(t);
-                st.grabbed_before = cursor_opts.grab_mode != bevy::window::CursorGrabMode::None;
-                cursor_opts.grab_mode = bevy::window::CursorGrabMode::None;
-                cursor_opts.visible = false;
+                cx.st.term = Some(t);
+                cx.st.grabbed_before = cx.cursor_opts.grab_mode != bevy::window::CursorGrabMode::None;
+                cx.cursor_opts.grab_mode = bevy::window::CursorGrabMode::None;
+                cx.cursor_opts.visible = false;
                 println!("COMPUTER open {} ({:?})", lvl.actors[actor].name, kind);
             }
         }
     }
+}
 
-    // ---- an open terminal
-    let fill = txt(&mut hud, &mut assets, "ComputerScreenHack", "digitFillerChars", "01234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()_+-=][}{");
+/// The hack window's filler characters, the UI scale and mouse (or, diegetic, the monitor's desktop and the mouse
+/// where the view's ray meets it).
+fn term_view(cx: &mut CompCx) -> CompFrame {
+    let CompCx { st, hud, assets, window, .. } = cx;
+    let window: &Window = window;
+    let fill = txt(hud, assets, "ComputerScreenHack", "digitFillerChars", "01234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()_+-=][}{");
     let (pw, phh) = (window.physical_width() as i32, window.physical_height() as i32);
     // (s: canvases' whole-number scale; d: the scale shown, fractional with HUD Scale Large.)
-    let (s, d) = crate::hud::screen_scales(&window, 640, 480);
+    let (s, d) = crate::hud::screen_scales(window, 640, 480);
     let (sw, sh) = ((pw as f32 / d) as i32, (phh as f32 / d) as i32);
     let sf = window.scale_factor();
     let mouse = window
@@ -2396,6 +2523,12 @@ pub fn computer_system(
         Some(v) => (v.s, v.s as f32, v.sw, v.sh, 1.0, v.mouse.unwrap_or((-100, -100))),
         None => (s, d, sw, sh, sf, mouse),
     };
+    CompFrame { fill, s, d, sw, sh, sf, mouse, dg }
+}
+
+/// Diegetic: every computer node renders through the monitor's UI camera (UiTargetCamera) while there is one.
+fn set_ui_target(cx: &mut CompCx, commands: &mut Commands, dg: Option<crate::diegetic::CompView>) {
+    let st = &mut *cx.st;
     {
         let nodes = st.nodes.as_ref().unwrap();
         let all = [nodes.backdrop, nodes.comp.e, nodes.overlay.e, nodes.hack.e, nodes.accounts.e, nodes.cursor.e, nodes.desk.e, nodes.feed_nodes[0], nodes.feed_nodes[1], nodes.feed_nodes[2]];
@@ -2414,328 +2547,44 @@ pub fn computer_system(
             }
         }
     }
+}
+
+/// The open terminal's frame (NetworkTerminal): the dev test, death / stepping away, mouse, wheel and key input,
+/// then the ICE Breaker and the ATM's disabled timer. True = it asked to close.
+fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWheel>) -> bool {
     let mut close = false;
-    if let Some(t) = st.term.as_mut() {
-        let mut wx = Wx {
-            data: &mut st.data,
-            sec: &mut sec,
-            movers: &mut movers,
-            lvl,
-            inv: &mut inv,
-            ph: &mut ph,
-            events: &mut events,
-            hud: &mut hud,
-            assets: &mut assets,
-            texts: &mut st.texts,
-            now,
-            mission,
-        };
+    let dt = cx.dt;
+    if let Some(t) = cx.st.term.as_mut() {
+        let mut wx = wx!(cx);
+        let binds: &Bindings = &cx.binds;
         t.clock += dt;
-        // Dev aid: DXVIEW_COMPTEST="user;pass;n" logs in once the login shows, then on the security screen presses
-        // the turret choice n times a second apart, printing the turret's mode each time.
-        if let Some(v) = env_val!("DXVIEW_COMPTEST") {
-            let parts: Vec<&str> = v.split(';').collect();
-            if let (Some(Screen::Login { user, pass, .. }), [u, p, ..]) = (t.screen.as_mut(), parts.as_slice()) {
-                user.text = u.chars().collect();
-                pass.text = p.chars().collect();
-                activate(t, Wid::Btn(Btn::Login), false, &mut wx);
-            } else if let Some(Screen::Security(sc)) = t.screen.as_ref() {
-                let want: u32 = parts.get(2).and_then(|n| n.parse().ok()).unwrap_or(4);
-                static DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let done = DONE.load(std::sync::atomic::Ordering::Relaxed);
-                let d = wx.data.get(&t.actor).unwrap();
-                let tag = d.views[sc.sel].turret.clone();
-                if done < want && (t.clock * 0.5) as u32 > done {
-                    DONE.store(done + 1, std::sync::atomic::Ordering::Relaxed);
-                    let en = choice_enabled(sc, d, wx.sec, wx.lvl);
-                    activate(t, Wid::Choice(3), false, &mut wx);
-                    let vals = match t.screen.as_ref() {
-                        Some(Screen::Security(sc)) => sc.values,
-                        _ => [9; 4],
-                    };
-                    println!("COMPTEST view turret tag {tag:?} enabled {:?} -> mode {:?} values {vals:?}", en, control::turret(wx.sec, &tag));
-                }
-            }
-        }
+        comp_test(t, &mut wx);
         // The player died (NetworkTerminal.Tick).
         if wx.ph.dead {
             t.close_screen("EXIT", &mut wx);
         }
         // Diegetic: stepping away (diegetic.rs asks; or right click off a choice, or a walk key while not typing).
         let mut leave = crate::diegetic::take_leave();
-        if dg.is_some_and(|v| v.mouse.is_some()) {
+        if fr.dg.is_some_and(|v| v.mouse.is_some()) {
             let typing = matches!(t.focus, Some(Wid::Edit(_)));
             let walk = !typing
                 && [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::ArrowUp, KeyCode::ArrowDown]
                     .iter()
                     .any(|k| binds.keys.just_pressed(*k));
-            let over_choice = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(mouse, *r)).is_some_and(|h| matches!(h.0, Wid::Choice(_)));
+            let over_choice = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(fr.mouse, *r)).is_some_and(|h| matches!(h.0, Wid::Choice(_)));
             let right = binds.buttons.just_pressed(MouseButton::Right) && !over_choice;
             leave |= walk || right;
         }
         if leave {
             t.close_screen("EXIT", &mut wx);
         }
-        // Walked away is impossible (no input reaches the game); the computer blown up closes it.
-        let _ = &blockers;
         // ---- input (hits from the last frame)
-        let hover = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(mouse, *r)).map(|(w, _, e)| (*w, *e));
-        let hover_w = hover.map(|h| h.0);
-        let shift = binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight);
-        let ctrl = binds.keys.pressed(KeyCode::ControlLeft) || binds.keys.pressed(KeyCode::ControlRight);
-        if binds.buttons.just_pressed(MouseButton::Left) {
-            t.pressed = None;
-            if let Some((w, enabled)) = hover {
-                if enabled {
-                    match w {
-                        Wid::Title => {
-                            let (x, y, _, _) = t.comp_rect;
-                            t.drag = Some((mouse.0 - x, mouse.1 - y));
-                        }
-                        Wid::Edit(n) => {
-                            t.focus = Some(w);
-                            let e = edit_mut(t, n);
-                            if let Some(e) = e {
-                                let font = wx.hud.font(wx.assets, "FontMenuSmall");
-                                if let Some(font) = font {
-                                    let i = font.caret_at(&e.text, mouse.0 - e.org);
-                                    e.cur = i;
-                                    if !shift {
-                                        e.anchor = i;
-                                    }
-                                }
-                            }
-                        }
-                        Wid::Row(l, r) => {
-                            let double = t.last_click.1 == Some(w) && t.clock - t.last_click.0 < 0.4;
-                            t.last_click = (t.clock, Some(w));
-                            sound("Menu_Press");
-                            if l == L_ACCOUNTS {
-                                if let Some(a) = t.accounts.as_mut() {
-                                    a.sel = r;
-                                }
-                                if double {
-                                    t.change_account(r, &mut wx);
-                                }
-                            } else {
-                                let pkg = wx.data.get(&t.actor).unwrap().text_package.clone();
-                                match t.screen.as_mut() {
-                                    Some(Screen::Email(m)) | Some(Screen::Bulletins(m))
-                                        if m.sel != Some(r) => {
-                                            select_doc(m, r, &pkg, &mut wx);
-                                        }
-                                    _ => {}
-                                }
-                                t.focus = Some(Wid::Row(L_LIST, r));
-                            }
-                        }
-                        Wid::ScrollUp(_) | Wid::ScrollDown(_) => {
-                            scroll(t, w, ROW_H);
-                            t.repeat = 0.35;
-                            sound("Menu_Press");
-                        }
-                        Wid::Pan(k) => {
-                            pan(t, &mut wx, k, shift);
-                            t.repeat = 0.35;
-                            sound("Menu_Press");
-                        }
-                        Wid::Slider => sound("Menu_Press"),
-                        Wid::CompWin | Wid::HackWin | Wid::AcctWin => {}
-                        _ => {
-                            if !matches!(w, Wid::ScrollTrack(_)) {
-                                t.focus = Some(w);
-                            }
-                        }
-                    }
-                    t.pressed = Some(w);
-                }
-            }
-        }
-        if binds.buttons.pressed(MouseButton::Left) {
-            if let Some((ox, oy)) = t.drag {
-                t.win_pos = Some((mouse.0 - ox, mouse.1 - oy));
-            }
-            match t.pressed {
-                Some(w @ (Wid::ScrollUp(_) | Wid::ScrollDown(_))) if hover_w == Some(w) => {
-                    t.repeat -= dt;
-                    if t.repeat <= 0.0 {
-                        t.repeat = 0.05;
-                        scroll(t, w, ROW_H);
-                    }
-                }
-                Some(Wid::Pan(k)) if hover_w == Some(Wid::Pan(k)) => {
-                    t.repeat -= dt;
-                    if t.repeat <= 0.0 {
-                        t.repeat = 0.05;
-                        pan(t, &mut wx, k, shift);
-                    }
-                }
-                Some(Wid::Slider) => {
-                    if let Some((_, r, _)) = t.hits.iter().find(|h| h.0 == Wid::Slider) {
-                        let rel = (mouse.0 - r.0 - 8) as f32 / 61.0;
-                        if let Some(Screen::Security(sc)) = t.screen.as_mut() {
-                            let tick = (rel * 8.0).round().clamp(0.0, 8.0) as usize;
-                            if tick != sc.tick {
-                                sc.tick = tick;
-                                crate::sound::play_player("DeusExSounds.UserInterface.Menu_Slider", 0.25, 0.0);
-                            }
-                        }
-                    }
-                }
-                Some(Wid::ScrollTrack(id)) if id < 100 => {
-                    if let Some((_, r, _)) = t.hits.iter().find(|h| h.0 == Wid::ScrollTrack(id)) {
-                        let frac = ((mouse.1 - r.1) as f32 / r.3.max(1) as f32).clamp(0.0, 1.0);
-                        set_scroll_frac(t, id, frac);
-                    }
-                }
-                _ => {}
-            }
-        }
-        if binds.buttons.just_released(MouseButton::Left) {
-            t.drag = None;
-            if let Some(w) = t.pressed.take() {
-                let on_release = matches!(
-                    w,
-                    Wid::Btn(_) | Wid::SpecialOpt(_) | Wid::HackBtn | Wid::AcctBtn | Wid::Header(_) | Wid::CamView(_) | Wid::Choice(_) | Wid::ChoiceInfo(_)
-                );
-                if on_release && hover_w == Some(w) {
-                    activate(t, w, false, &mut wx);
-                }
-            }
-        }
-        // Right click on a choice cycles too (ButtonActivatedRight).
-        if binds.buttons.just_pressed(MouseButton::Right) {
-            t.pressed_right = hover.filter(|h| h.1 && matches!(h.0, Wid::Choice(_))).map(|h| h.0);
-        }
-        if binds.buttons.just_released(MouseButton::Right) {
-            if let Some(w) = t.pressed_right.take() {
-                if hover_w == Some(w) {
-                    activate(t, w, true, &mut wx);
-                }
-            }
-        }
-        // Wheel: scroll what's under the mouse.
-        let lines: f32 = wheel
-            .read()
-            .map(|w| if w.unit == bevy::input::mouse::MouseScrollUnit::Line { w.y } else { w.y / 40.0 })
-            .sum();
-        if lines != 0.0 {
-            let id = match hover_w {
-                Some(Wid::Row(l, _)) => Some(l),
-                Some(Wid::ScrollTrack(i)) => Some(if i >= 100 { i - 100 } else { i }),
-                Some(Wid::ScrollUp(i)) | Some(Wid::ScrollDown(i)) => Some(i),
-                _ => None,
-            };
-            if let Some(id) = id {
-                let px = (-lines * 3.0 * ROW_H as f32) as i32;
-                add_scroll(t, id, px);
-            }
-        }
-        // Keys.
-        let typed = binds.typed.clone();
-        let edit_focus = match t.focus {
-            Some(Wid::Edit(n)) => Some(n),
-            _ => None,
-        };
-        let mut handled_escape = false;
-        if crate::gamepad::PAD_NOTES.load(std::sync::atomic::Ordering::Relaxed) {
-            t.fill_from_notes();
-        }
-        for (k, text) in &typed {
-            if t.screen.is_none() || t.exit {
-                break;
-            }
-            match k {
-                KeyCode::Escape => {
-                    if !handled_escape {
-                        handled_escape = true;
-                        t.escape(&mut wx);
-                    }
-                }
-                KeyCode::Enter | KeyCode::NumpadEnter => {
-                    // EditActivated: [Return] logs in / withdraws.
-                    match t.screen {
-                        Some(Screen::Login { .. }) | Some(Screen::Atm { .. }) => {
-                            let ok = match &t.screen {
-                                Some(Screen::Login { user, pass, .. }) => !user.text.is_empty() && !pass.text.is_empty(),
-                                Some(Screen::Atm { acct, pin, .. }) => !acct.text.is_empty() && !pin.text.is_empty(),
-                                _ => false,
-                            };
-                            if ok && edit_focus.is_some() {
-                                activate(t, Wid::Btn(Btn::Login), false, &mut wx);
-                            }
-                        }
-                        Some(Screen::Withdraw { .. }) if edit_focus.is_some() => t.withdraw(&mut wx),
-                        _ => {}
-                    }
-                }
-                KeyCode::Tab if t.fill_from_notes() => {}
-                KeyCode::Tab => {
-                    if let Some(n) = edit_focus {
-                        let other = if n == 0 { 1 } else { 0 };
-                        if matches!(t.screen, Some(Screen::Login { .. }) | Some(Screen::Atm { .. })) {
-                            t.focus = Some(Wid::Edit(other));
-                        }
-                    }
-                }
-                _ => {
-                    if let Some(n) = edit_focus {
-                        if let Some(e) = edit_mut(t, n) {
-                            e.key(*k, text.as_deref(), shift, ctrl);
-                        }
-                        continue;
-                    }
-                    // Security keys (ComputerScreenSecurity.VirtualKeyPressed).
-                    if matches!(t.screen, Some(Screen::Security(_))) {
-                        let p = match k {
-                            KeyCode::ArrowUp => Some(0),
-                            KeyCode::ArrowDown => Some(1),
-                            KeyCode::ArrowLeft => Some(2),
-                            KeyCode::ArrowRight => Some(3),
-                            KeyCode::NumpadAdd | KeyCode::Equal => Some(4),
-                            KeyCode::NumpadSubtract | KeyCode::Minus => Some(5),
-                            _ => None,
-                        };
-                        if let Some(p) = p {
-                            let actor = t.actor;
-                            let ok = matches!(&t.screen, Some(Screen::Security(sc)) if control::camera(wx.sec, &wx.data.get(&actor).unwrap().views[sc.sel].camera).is_some());
-                            if ok {
-                                pan(t, &mut wx, p, shift);
-                            }
-                        }
-                        let v = match k {
-                            KeyCode::Digit1 => Some(0),
-                            KeyCode::Digit2 => Some(1),
-                            KeyCode::Digit3 => Some(2),
-                            _ => None,
-                        };
-                        if let Some(v) = v {
-                            activate(t, Wid::CamView(v), false, &mut wx);
-                        }
-                    }
-                    // Lists: up / down move the selection.
-                    if matches!(k, KeyCode::ArrowUp | KeyCode::ArrowDown) {
-                        let up = *k == KeyCode::ArrowUp;
-                        let pkg = wx.data.get(&t.actor).unwrap().text_package.clone();
-                        if let Some(Screen::Email(m)) | Some(Screen::Bulletins(m)) = t.screen.as_mut() {
-                            if !m.order.is_empty() {
-                                let cur = m.sel.unwrap_or(0);
-                                let next = if up { cur.saturating_sub(1) } else { (cur + 1).min(m.order.len() - 1) };
-                                if Some(next) != m.sel {
-                                    select_doc(m, next, &pkg, &mut wx);
-                                    let top = next as i32 * ROW_H;
-                                    if top < m.list_scroll {
-                                        m.list_scroll = top;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let hover = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(fr.mouse, *r)).map(|(w, _, e)| (*w, *e));
+        term_mouse(t, &mut wx, binds, fr, hover, dt);
+        term_wheel(t, wheel, hover.map(|h| h.0));
+        term_keys(t, &mut wx, binds);
         // ---- ticking
-        tick_hack(t, &mut wx, dt, &fill);
+        tick_hack(t, &mut wx, dt, &fr.fill);
         let mut go_disabled = false;
         if let Some(Screen::Withdraw { disabled_t: Some(dtl), .. }) = t.screen.as_mut() {
             *dtl -= dt;
@@ -2750,46 +2599,354 @@ pub fn computer_system(
             close = true;
         }
     }
+    close
+}
 
-    // ---- close (NetworkTerminal.DestroyWindow, Computers state Off)
-    if close {
-        if let Some(mut t) = st.term.take() {
-            let mut wx = Wx {
-                data: &mut st.data,
-                sec: &mut sec,
-                movers: &mut movers,
-                lvl,
-                inv: &mut inv,
-                ph: &mut ph,
-                events: &mut events,
-                hud: &mut hud,
-                assets: &mut assets,
-                texts: &mut st.texts,
-                now,
-                mission,
-            };
-            t.close_hack(&mut wx);
-            let d = st.data.get_mut(&t.actor).unwrap();
-            if t.hacked {
-                d.last_hack_time = now;
+/// Dev aid: DXVIEW_COMPTEST="user;pass;n" logs in once the login shows, then on the security screen presses the
+/// turret choice n times a second apart, printing the turret's mode each time.
+fn comp_test(t: &mut Term, wx: &mut Wx) {
+    // Dev aid: DXVIEW_COMPTEST="user;pass;n" logs in once the login shows, then on the security screen presses
+    // the turret choice n times a second apart, printing the turret's mode each time.
+    if let Some(v) = env_val!("DXVIEW_COMPTEST") {
+        let parts: Vec<&str> = v.split(';').collect();
+        if let (Some(Screen::Login { user, pass, .. }), [u, p, ..]) = (t.screen.as_mut(), parts.as_slice()) {
+            user.text = u.chars().collect();
+            pass.text = p.chars().collect();
+            activate(t, Wid::Btn(Btn::Login), false, wx);
+        } else if let Some(Screen::Security(sc)) = t.screen.as_ref() {
+            let want: u32 = parts.get(2).and_then(|n| n.parse().ok()).unwrap_or(4);
+            static DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let done = DONE.load(std::sync::atomic::Ordering::Relaxed);
+            let d = wx.data.get(&t.actor).unwrap();
+            let tag = d.views[sc.sel].turret.clone();
+            if done < want && (t.clock * 0.5) as u32 > done {
+                DONE.store(done + 1, std::sync::atomic::Ordering::Relaxed);
+                let en = choice_enabled(sc, d, wx.sec, wx.lvl);
+                activate(t, Wid::Choice(3), false, wx);
+                let vals = match t.screen.as_ref() {
+                    Some(Screen::Security(sc)) => sc.values,
+                    _ => [9; 4],
+                };
+                println!("COMPTEST view turret tag {tag:?} enabled {:?} -> mode {:?} values {vals:?}", en, control::turret(wx.sec, &tag));
             }
-            if d.kind != Kind::Atm {
-                IGNORED.store(false, Ordering::Relaxed);
-                // State Off: a locked-out computer sounds its alarm.
-                if d.locked_out {
-                    d.last_alarm_time = now;
-                    crate::sound::own_ambient(t.actor);
-                    let a = *d.alarm.get_or_insert_with(|| alarms.add_external(t.actor, d.pos));
-                    alarms.set_external(a, true, d.pos, Some(Target::Player));
+        }
+    }
+}
+
+/// Mouse buttons on the terminal's widgets (hits from the last frame): press focuses / starts a drag or a scroll
+/// repeat, holding drags the window / slider / scroll thumb, release activates; right click cycles a choice
+/// (ButtonActivatedRight).
+fn term_mouse(t: &mut Term, wx: &mut Wx, binds: &Bindings, fr: &CompFrame, hover: Option<(Wid, bool)>, dt: f32) {
+    let mouse = fr.mouse;
+    let hover_w = hover.map(|h| h.0);
+    let shift = binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight);
+    if binds.buttons.just_pressed(MouseButton::Left) {
+        t.pressed = None;
+        if let Some((w, enabled)) = hover {
+            if enabled {
+                match w {
+                    Wid::Title => {
+                        let (x, y, _, _) = t.comp_rect;
+                        t.drag = Some((mouse.0 - x, mouse.1 - y));
+                    }
+                    Wid::Edit(n) => {
+                        t.focus = Some(w);
+                        let e = edit_mut(t, n);
+                        if let Some(e) = e {
+                            let font = wx.hud.font(wx.assets, "FontMenuSmall");
+                            if let Some(font) = font {
+                                let i = font.caret_at(&e.text, mouse.0 - e.org);
+                                e.cur = i;
+                                if !shift {
+                                    e.anchor = i;
+                                }
+                            }
+                        }
+                    }
+                    Wid::Row(l, r) => {
+                        let double = t.last_click.1 == Some(w) && t.clock - t.last_click.0 < 0.4;
+                        t.last_click = (t.clock, Some(w));
+                        sound("Menu_Press");
+                        if l == L_ACCOUNTS {
+                            if let Some(a) = t.accounts.as_mut() {
+                                a.sel = r;
+                            }
+                            if double {
+                                t.change_account(r, wx);
+                            }
+                        } else {
+                            let pkg = wx.data.get(&t.actor).unwrap().text_package.clone();
+                            match t.screen.as_mut() {
+                                Some(Screen::Email(m)) | Some(Screen::Bulletins(m))
+                                    if m.sel != Some(r) => {
+                                        select_doc(m, r, &pkg, wx);
+                                    }
+                                _ => {}
+                            }
+                            t.focus = Some(Wid::Row(L_LIST, r));
+                        }
+                    }
+                    Wid::ScrollUp(_) | Wid::ScrollDown(_) => {
+                        scroll(t, w, ROW_H);
+                        t.repeat = 0.35;
+                        sound("Menu_Press");
+                    }
+                    Wid::Pan(k) => {
+                        pan(t, wx, k, shift);
+                        t.repeat = 0.35;
+                        sound("Menu_Press");
+                    }
+                    Wid::Slider => sound("Menu_Press"),
+                    Wid::CompWin | Wid::HackWin | Wid::AcctWin => {}
+                    _ => {
+                        if !matches!(w, Wid::ScrollTrack(_)) {
+                            t.focus = Some(w);
+                        }
+                    }
+                }
+                t.pressed = Some(w);
+            }
+        }
+    }
+    if binds.buttons.pressed(MouseButton::Left) {
+        if let Some((ox, oy)) = t.drag {
+            t.win_pos = Some((mouse.0 - ox, mouse.1 - oy));
+        }
+        match t.pressed {
+            Some(w @ (Wid::ScrollUp(_) | Wid::ScrollDown(_))) if hover_w == Some(w) => {
+                t.repeat -= dt;
+                if t.repeat <= 0.0 {
+                    t.repeat = 0.05;
+                    scroll(t, w, ROW_H);
                 }
             }
-            println!("COMPUTER closed (hacked {}, locked out {})", t.hacked, d.locked_out);
+            Some(Wid::Pan(k)) if hover_w == Some(Wid::Pan(k)) => {
+                t.repeat -= dt;
+                if t.repeat <= 0.0 {
+                    t.repeat = 0.05;
+                    pan(t, wx, k, shift);
+                }
+            }
+            Some(Wid::Slider) => {
+                if let Some((_, r, _)) = t.hits.iter().find(|h| h.0 == Wid::Slider) {
+                    let rel = (mouse.0 - r.0 - 8) as f32 / 61.0;
+                    if let Some(Screen::Security(sc)) = t.screen.as_mut() {
+                        let tick = (rel * 8.0).round().clamp(0.0, 8.0) as usize;
+                        if tick != sc.tick {
+                            sc.tick = tick;
+                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Slider", 0.25, 0.0);
+                        }
+                    }
+                }
+            }
+            Some(Wid::ScrollTrack(id)) if id < 100 => {
+                if let Some((_, r, _)) = t.hits.iter().find(|h| h.0 == Wid::ScrollTrack(id)) {
+                    let frac = ((mouse.1 - r.1) as f32 / r.3.max(1) as f32).clamp(0.0, 1.0);
+                    set_scroll_frac(t, id, frac);
+                }
+            }
+            _ => {}
         }
-        despawn_feeds(st, &mut commands);
-        cursor_opts.visible = !st.grabbed_before;
-        cursor_opts.grab_mode = if st.grabbed_before { bevy::window::CursorGrabMode::Locked } else { bevy::window::CursorGrabMode::None };
     }
+    if binds.buttons.just_released(MouseButton::Left) {
+        t.drag = None;
+        if let Some(w) = t.pressed.take() {
+            let on_release = matches!(
+                w,
+                Wid::Btn(_) | Wid::SpecialOpt(_) | Wid::HackBtn | Wid::AcctBtn | Wid::Header(_) | Wid::CamView(_) | Wid::Choice(_) | Wid::ChoiceInfo(_)
+            );
+            if on_release && hover_w == Some(w) {
+                activate(t, w, false, wx);
+            }
+        }
+    }
+    // Right click on a choice cycles too (ButtonActivatedRight).
+    if binds.buttons.just_pressed(MouseButton::Right) {
+        t.pressed_right = hover.filter(|h| h.1 && matches!(h.0, Wid::Choice(_))).map(|h| h.0);
+    }
+    if binds.buttons.just_released(MouseButton::Right) {
+        if let Some(w) = t.pressed_right.take() {
+            if hover_w == Some(w) {
+                activate(t, w, true, wx);
+            }
+        }
+    }
+}
 
+/// Wheel: scroll what's under the mouse.
+fn term_wheel(t: &mut Term, wheel: &mut MessageReader<MouseWheel>, hover_w: Option<Wid>) {
+    // Wheel: scroll what's under the mouse.
+    let lines: f32 = wheel
+        .read()
+        .map(|w| if w.unit == bevy::input::mouse::MouseScrollUnit::Line { w.y } else { w.y / 40.0 })
+        .sum();
+    if lines != 0.0 {
+        let id = match hover_w {
+            Some(Wid::Row(l, _)) => Some(l),
+            Some(Wid::ScrollTrack(i)) => Some(if i >= 100 { i - 100 } else { i }),
+            Some(Wid::ScrollUp(i)) | Some(Wid::ScrollDown(i)) => Some(i),
+            _ => None,
+        };
+        if let Some(id) = id {
+            let px = (-lines * 3.0 * ROW_H as f32) as i32;
+            add_scroll(t, id, px);
+        }
+    }
+}
+
+/// Typed keys (VirtualKeyPressed): Escape, Return logs in / withdraws, Tab fills from notes or swaps fields, the
+/// focused edit field's keys, the security screen's pan / zoom / view keys, list up / down.
+fn term_keys(t: &mut Term, wx: &mut Wx, binds: &Bindings) {
+    let shift = binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight);
+    let ctrl = binds.keys.pressed(KeyCode::ControlLeft) || binds.keys.pressed(KeyCode::ControlRight);
+    // Keys.
+    let typed = binds.typed.clone();
+    let edit_focus = match t.focus {
+        Some(Wid::Edit(n)) => Some(n),
+        _ => None,
+    };
+    let mut handled_escape = false;
+    if crate::gamepad::PAD_NOTES.load(std::sync::atomic::Ordering::Relaxed) {
+        t.fill_from_notes();
+    }
+    for (k, text) in &typed {
+        if t.screen.is_none() || t.exit {
+            break;
+        }
+        match k {
+            KeyCode::Escape => {
+                if !handled_escape {
+                    handled_escape = true;
+                    t.escape(wx);
+                }
+            }
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                // EditActivated: [Return] logs in / withdraws.
+                match t.screen {
+                    Some(Screen::Login { .. }) | Some(Screen::Atm { .. }) => {
+                        let ok = match &t.screen {
+                            Some(Screen::Login { user, pass, .. }) => !user.text.is_empty() && !pass.text.is_empty(),
+                            Some(Screen::Atm { acct, pin, .. }) => !acct.text.is_empty() && !pin.text.is_empty(),
+                            _ => false,
+                        };
+                        if ok && edit_focus.is_some() {
+                            activate(t, Wid::Btn(Btn::Login), false, wx);
+                        }
+                    }
+                    Some(Screen::Withdraw { .. }) if edit_focus.is_some() => t.withdraw(wx),
+                    _ => {}
+                }
+            }
+            KeyCode::Tab if t.fill_from_notes() => {}
+            KeyCode::Tab => {
+                if let Some(n) = edit_focus {
+                    let other = if n == 0 { 1 } else { 0 };
+                    if matches!(t.screen, Some(Screen::Login { .. }) | Some(Screen::Atm { .. })) {
+                        t.focus = Some(Wid::Edit(other));
+                    }
+                }
+            }
+            _ => {
+                if let Some(n) = edit_focus {
+                    if let Some(e) = edit_mut(t, n) {
+                        e.key(*k, text.as_deref(), shift, ctrl);
+                    }
+                    continue;
+                }
+                // Security keys (ComputerScreenSecurity.VirtualKeyPressed).
+                if matches!(t.screen, Some(Screen::Security(_))) {
+                    let p = match k {
+                        KeyCode::ArrowUp => Some(0),
+                        KeyCode::ArrowDown => Some(1),
+                        KeyCode::ArrowLeft => Some(2),
+                        KeyCode::ArrowRight => Some(3),
+                        KeyCode::NumpadAdd | KeyCode::Equal => Some(4),
+                        KeyCode::NumpadSubtract | KeyCode::Minus => Some(5),
+                        _ => None,
+                    };
+                    if let Some(p) = p {
+                        let actor = t.actor;
+                        let ok = matches!(&t.screen, Some(Screen::Security(sc)) if control::camera(wx.sec, &wx.data.get(&actor).unwrap().views[sc.sel].camera).is_some());
+                        if ok {
+                            pan(t, wx, p, shift);
+                        }
+                    }
+                    let v = match k {
+                        KeyCode::Digit1 => Some(0),
+                        KeyCode::Digit2 => Some(1),
+                        KeyCode::Digit3 => Some(2),
+                        _ => None,
+                    };
+                    if let Some(v) = v {
+                        activate(t, Wid::CamView(v), false, wx);
+                    }
+                }
+                // Lists: up / down move the selection.
+                if matches!(k, KeyCode::ArrowUp | KeyCode::ArrowDown) {
+                    let up = *k == KeyCode::ArrowUp;
+                    let pkg = wx.data.get(&t.actor).unwrap().text_package.clone();
+                    if let Some(Screen::Email(m)) | Some(Screen::Bulletins(m)) = t.screen.as_mut() {
+                        if !m.order.is_empty() {
+                            let cur = m.sel.unwrap_or(0);
+                            let next = if up { cur.saturating_sub(1) } else { (cur + 1).min(m.order.len() - 1) };
+                            if Some(next) != m.sel {
+                                select_doc(m, next, &pkg, wx);
+                                let top = next as i32 * ROW_H;
+                                if top < m.list_scroll {
+                                    m.list_scroll = top;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Close (NetworkTerminal.DestroyWindow, Computers state Off): the ICE Breaker shut, the hack time kept, a
+/// locked-out computer sounds its alarm; the feeds go and the pointer goes back as it was.
+fn close_term(cx: &mut CompCx, commands: &mut Commands) {
+    let now = cx.now;
+    // ---- close (NetworkTerminal.DestroyWindow, Computers state Off)
+    if let Some(mut t) = cx.st.term.take() {
+        let mut wx = wx!(cx);
+        t.close_hack(&mut wx);
+        let CompCx { st, alarms, .. } = &mut *cx;
+        let d = st.data.get_mut(&t.actor).unwrap();
+        if t.hacked {
+            d.last_hack_time = now;
+        }
+        if d.kind != Kind::Atm {
+            IGNORED.store(false, Ordering::Relaxed);
+            // State Off: a locked-out computer sounds its alarm.
+            if d.locked_out {
+                d.last_alarm_time = now;
+                crate::sound::own_ambient(t.actor);
+                let a = *d.alarm.get_or_insert_with(|| alarms.add_external(t.actor, d.pos));
+                alarms.set_external(a, true, d.pos, Some(Target::Player));
+            }
+        }
+        println!("COMPUTER closed (hacked {}, locked out {})", t.hacked, d.locked_out);
+    }
+    despawn_feeds(cx.st, commands);
+    cx.cursor_opts.visible = !cx.st.grabbed_before;
+    cx.cursor_opts.grab_mode = if cx.st.grabbed_before { bevy::window::CursorGrabMode::Locked } else { bevy::window::CursorGrabMode::None };
+}
+
+/// Publishes whether a terminal is open (OPEN / OPEN_ACTOR, input capture) and shows the backdrop; with none open
+/// every node is hidden and false is returned (nothing to draw).
+#[allow(clippy::type_complexity)]
+fn show_open_state(
+    cx: &mut CompCx,
+    fr: &CompFrame,
+    close: bool,
+    wheel: &mut MessageReader<MouseWheel>,
+    backdrop: &mut Query<&mut Visibility, (With<Backdrop>, Without<ImageNode>, Without<MaterialNode<HudLayer>>)>,
+    layer_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), (Without<ImageNode>, Without<Backdrop>)>,
+    feed_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &mut ImageNode), (Without<MaterialNode<HudLayer>>, Without<Backdrop>)>,
+) -> bool {
+    let CompCx { st, binds, .. } = cx;
     let is_open = st.term.is_some();
     OPEN.store(is_open, Ordering::Relaxed);
     OPEN_ACTOR.store(st.term.as_ref().map_or(usize::MAX, |t| t.actor), Ordering::Relaxed);
@@ -2799,7 +2956,7 @@ pub fn computer_system(
     let nodes = st.nodes.as_mut().unwrap();
     if let Ok(mut v) = backdrop.get_mut(nodes.backdrop) {
         // (Diegetic: the desktop stands in for the black backdrop.)
-        v.set_if_neq(if is_open && dg.is_none() { Visibility::Inherited } else { Visibility::Hidden });
+        v.set_if_neq(if is_open && fr.dg.is_none() { Visibility::Inherited } else { Visibility::Hidden });
     }
     if !is_open {
         st.desk_key.clear();
@@ -2818,12 +2975,26 @@ pub fn computer_system(
         if !close {
             wheel.clear();
         }
-        return;
+        return false;
     }
+    true
+}
 
+/// Draws the open terminal: desktop (diegetic), the computer window (NetworkTerminal.ConfigurationChanged
+/// placement), camera feeds, the ICE Breaker and accounts windows, then the pointer.
+#[allow(clippy::type_complexity)]
+fn draw_terminal(
+    cx: &mut CompCx,
+    fr: &CompFrame,
+    commands: &mut Commands,
+    layer_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), (Without<ImageNode>, Without<Backdrop>)>,
+    feed_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &mut ImageNode), (Without<MaterialNode<HudLayer>>, Without<Backdrop>)>,
+    feed_cams: &mut Query<(&mut Transform, &mut Projection), With<FeedCam>>,
+) {
+    let CompFrame { s, d, sw, sh, sf, mouse, dg, .. } = *fr;
     // ---- draw
     let fonts = {
-        let mut get = |n: &str| hud.font(&mut assets, n);
+        let mut get = |n: &str| cx.hud.font(&mut cx.assets, n);
         let (Some(title), Some(small), Some(headers), Some(fixed)) =
             (get("FontMenuTitle"), get("FontMenuSmall"), get("FontMenuHeaders"), get("FontFixedWidthSmall"))
         else {
@@ -2831,10 +3002,12 @@ pub fn computer_system(
         };
         Fonts { title, small, headers, fixed }
     };
-    let t = st.term.as_mut().unwrap();
+    let CompCx { st, hud, assets, images, layers, sec, movers, lvl, cursor_opts, window, now, dt, .. } = cx;
+    let Computers { term, data, nodes, feeds, desk_key, noise_t, seed, .. } = &mut **st;
+    let t = term.as_mut().unwrap();
     let hover_now = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(mouse, *r)).map(|(w, _, _)| *w);
     let mut hits: Vec<(Wid, Rect, bool)> = Vec::new();
-    let g = geo(t, st.data.get(&t.actor).unwrap(), &mut hud, &mut assets);
+    let g = geo(t, data.get(&t.actor).unwrap(), hud, assets);
     let (cw, ch) = comp_size(&g, &fonts);
     // NetworkTerminal.ConfigurationChanged: centred, or left of the hack window if it would overlap it.
     let hack_h = if t.hack.is_some() { HACK_SIZE.1 } else { 0 };
@@ -2850,80 +3023,164 @@ pub fn computer_system(
     });
     t.comp_rect = (pos.0, pos.1, cw, ch);
     let (pressed, focus) = (t.pressed, t.focus);
-    let dv = Dv { data: &st.data, sec: &sec, movers: &movers, lvl };
-    let nodes = st.nodes.as_mut().unwrap();
-    // Diegetic: the terminal's desktop behind its windows (desktop.rs), redrawn as the clock ticks.
-    match dg {
-        Some(_) => {
-            let d0 = st.data.get(&t.actor).unwrap();
-            let hint = crate::desktop::leave_hint();
-            let key = format!("{}|{}|{}|{}|{sw}x{sh}|{}", d0.node.name, t.user, crate::desktop::clock(now, true), (now * 1.6).fract() < 0.6, hint);
-            if st.desk_key != key {
-                st.desk_key = key;
-                let logo = if d0.node.texture.is_empty() { None } else { hud.tex(&mut assets, &d0.node.texture) };
-                let mut c = Canvas::new(sw, sh, 1);
-                crate::desktop::desk(&mut c, &fonts.small, &fonts.headers, logo.as_ref(), &d0.node.name, &t.user, now, &hint);
-                place(&mut nodes.desk, &c, (0, 0), d, sf, &mut images, &mut layers, &mut layer_nodes);
-            }
-        }
-        None => {
-            if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.desk.e) {
-                if *v != Visibility::Hidden {
-                    v.set_if_neq(Visibility::Hidden);
-                }
-            }
-            st.desk_key.clear();
-        }
-    }
+    let mut dc = DrawCx {
+        t,
+        data,
+        nodes: nodes.as_mut().unwrap(),
+        feeds,
+        desk_key,
+        noise_t,
+        seed,
+        hud,
+        assets,
+        images,
+        layers,
+        sec,
+        movers,
+        lvl,
+        now: *now,
+        dt: *dt,
+    };
+    draw_desktop(&mut dc, fr, &fonts, layer_nodes);
     // Computer window.
     let mut sec_sel: Option<(usize, [f32; 3])> = None;
-    if t.screen.is_some() {
-        let mut ui = Ui { c: Canvas::new(cw, ch, s), hud: &mut hud, assets: &mut assets, f: &fonts, o: pos, hits: &mut hits, pressed, hover: hover_now, focus };
-        draw_comp(&mut ui, t, &dv, &g);
+    if dc.t.screen.is_some() {
+        let dv = Dv { data: dc.data, sec: dc.sec, movers: dc.movers, lvl: dc.lvl };
+        let mut ui = Ui { c: Canvas::new(cw, ch, s), hud: &mut *dc.hud, assets: &mut *dc.assets, f: &fonts, o: pos, hits: &mut hits, pressed, hover: hover_now, focus };
+        draw_comp(&mut ui, dc.t, &dv, &g);
         let Ui { c, .. } = ui;
-        place(&mut nodes.comp, &c, pos, d, sf, &mut images, &mut layers, &mut layer_nodes);
-        if let Some(Screen::Security(sc)) = t.screen.as_ref() {
+        place(&mut dc.nodes.comp, &c, pos, d, sf, dc.images, dc.layers, layer_nodes);
+        if let Some(Screen::Security(sc)) = dc.t.screen.as_ref() {
             sec_sel = Some((sc.sel, sc.fov));
         }
-    } else if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.comp.e) {
+    } else if let Ok((_, mut v, _)) = layer_nodes.get_mut(dc.nodes.comp.e) {
         v.set_if_neq(Visibility::Hidden);
     }
     // Camera feeds and the selection border above them.
     let client = (pos.0 + TITLE_LEFT_BOTTOM.0, pos.1 + TITLE_H + g.voff);
+    draw_feeds(&mut dc, fr, sec_sel, (pos, cw, ch, g.voff, client), commands, layer_nodes, feed_nodes, feed_cams);
+    draw_side_windows(&mut dc, fr, &fonts, &mut hits, (pressed, hover_now, focus), hack_h, layer_nodes);
+    dc.t.hits = hits;
+    // Diegetic: the pointer stays locked and hidden; diegetic.rs moves the terminal's own cursor by the mouse's
+    // motion, kept on the monitor (no wandering off it).
+    if dg.is_some() {
+        if cursor_opts.grab_mode != bevy::window::CursorGrabMode::Locked {
+            cursor_opts.grab_mode = bevy::window::CursorGrabMode::Locked;
+        }
+        if cursor_opts.visible {
+            cursor_opts.visible = false;
+        }
+    }
+    if dg.is_none() {
+    crate::snap::offer(
+        crate::snap::LAYER_COMPUTER,
+        crate::snap::Map { s: d, ox: 0, oy: 0, sf: window.scale_factor() },
+        dc.t.hits
+            .iter()
+            .filter(|h| h.2 && !matches!(h.0, Wid::CompWin | Wid::Title | Wid::HackWin | Wid::AcctWin | Wid::ScrollTrack(_)))
+            .map(|h| h.1),
+    );
+    }
+    // The mouse cursor (ComputerUIWindow.StyleChanged: DeusExCursor1, hot spot 32, 32).
+    let mut cc = Canvas::new(64, 64, s);
+    if let Some(tx) = dc.hud.ui(dc.assets, "DeusExCursor2") {
+        cc.drop_shadow(0, 0, &tx, (2.0, 2.5), 2.5, 0.6);
+        cc.texture(0, 0, 64, 64, 0, 0, &tx, Style::Masked, m_col(12));
+    }
+    let cp = (mouse.0 - 32, mouse.1 - 32);
+    place(&mut dc.nodes.cursor, &cc, cp, d, sf, dc.images, dc.layers, layer_nodes);
+    if (dg.is_none() && window.cursor_position().is_none()) || dg.is_some_and(|v| v.mouse.is_none()) {
+        if let Ok((_, mut v, _)) = layer_nodes.get_mut(dc.nodes.cursor.e) {
+            v.set_if_neq(Visibility::Hidden);
+        }
+    }
+}
+
+/// Diegetic: the terminal's desktop behind its windows (desktop.rs), redrawn as the clock ticks; hidden otherwise.
+#[allow(clippy::type_complexity)]
+fn draw_desktop(
+    dc: &mut DrawCx,
+    fr: &CompFrame,
+    fonts: &Fonts,
+    layer_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), (Without<ImageNode>, Without<Backdrop>)>,
+) {
+    let CompFrame { d, sw, sh, sf, dg, .. } = *fr;
+    let (t, now) = (&*dc.t, dc.now);
+    // Diegetic: the terminal's desktop behind its windows (desktop.rs), redrawn as the clock ticks.
+    match dg {
+        Some(_) => {
+            let d0 = dc.data.get(&t.actor).unwrap();
+            let hint = crate::desktop::leave_hint();
+            let key = format!("{}|{}|{}|{}|{sw}x{sh}|{}", d0.node.name, t.user, crate::desktop::clock(now, true), (now * 1.6).fract() < 0.6, hint);
+            if *dc.desk_key != key {
+                *dc.desk_key = key;
+                let logo = if d0.node.texture.is_empty() { None } else { dc.hud.tex(dc.assets, &d0.node.texture) };
+                let mut c = Canvas::new(sw, sh, 1);
+                crate::desktop::desk(&mut c, &fonts.small, &fonts.headers, logo.as_ref(), &d0.node.name, &t.user, now, &hint);
+                place(&mut dc.nodes.desk, &c, (0, 0), d, sf, dc.images, dc.layers, layer_nodes);
+            }
+        }
+        None => {
+            if let Ok((_, mut v, _)) = layer_nodes.get_mut(dc.nodes.desk.e) {
+                if *v != Visibility::Hidden {
+                    v.set_if_neq(Visibility::Hidden);
+                }
+            }
+            dc.desk_key.clear();
+        }
+    }
+}
+
+/// The security screen's camera feeds (render-to-texture cameras per view, NO SIGNAL noise) and the selection
+/// border above them; with no security screen the feeds and their cameras go.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn draw_feeds(
+    dc: &mut DrawCx,
+    fr: &CompFrame,
+    sec_sel: Option<(usize, [f32; 3])>,
+    (pos, cw, ch, voff, client): ((i32, i32), i32, i32, i32, (i32, i32)),
+    commands: &mut Commands,
+    layer_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), (Without<ImageNode>, Without<Backdrop>)>,
+    feed_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &mut ImageNode), (Without<MaterialNode<HudLayer>>, Without<Backdrop>)>,
+    feed_cams: &mut Query<(&mut Transform, &mut Projection), With<FeedCam>>,
+) {
+    let CompFrame { s, d, sf, .. } = *fr;
+    let DrawCx { t, data, nodes, feeds, noise_t, seed, hud, assets, images, layers, sec, dt, .. } = dc;
+    let dt = *dt;
     match sec_sel {
         Some((sel, fov)) => {
             let mut oc = Canvas::new(cw, ch, s);
-            let (bx, by) = (TITLE_LEFT_BOTTOM.0 + CAM_WINDOWS[sel].0, TITLE_H + g.voff + CAM_WINDOWS[sel].1 + 16);
-            draw_selection(&mut oc, &mut hud, &mut assets, bx, by);
-            place(&mut nodes.overlay, &oc, pos, d, sf, &mut images, &mut layers, &mut layer_nodes);
-            st.noise_t -= dt;
-            if st.noise_t <= 0.0 {
-                st.noise_t = 0.05;
+            let (bx, by) = (TITLE_LEFT_BOTTOM.0 + CAM_WINDOWS[sel].0, TITLE_H + voff + CAM_WINDOWS[sel].1 + 16);
+            draw_selection(&mut oc, hud, assets, bx, by);
+            place(&mut nodes.overlay, &oc, pos, d, sf, images, layers, layer_nodes);
+            **noise_t -= dt;
+            if **noise_t <= 0.0 {
+                **noise_t = 0.05;
                 if let Some(mut img) = images.get_mut(&nodes.noise) {
                     let n = (FEED_SIZE.0 * FEED_SIZE.1) as usize;
                     let mut data = Vec::with_capacity(n * 4);
                     for _ in 0..n {
-                        st.seed = st.seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                        let v = (st.seed >> 56) as u8;
+                        **seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        let v = (**seed >> 56) as u8;
                         data.extend_from_slice(&[v, v, v, 255]);
                     }
                     img.data = Some(data);
                 }
             }
-            let views = st.data.get(&t.actor).unwrap().views.clone();
+            let views = data.get(&t.actor).unwrap().views.clone();
             for j in 0..3 {
                 let tag = &views[j].camera;
-                let view = control::camera_view(&sec, tag);
+                let view = control::camera_view(sec, tag);
                 let img = match view {
                     Some((cp, pitch, yaw)) => {
-                        if st.feeds[j].as_ref().is_some_and(|f| f.scale != s) {
-                            if let Some(f) = st.feeds[j].take() {
+                        if feeds[j].as_ref().is_some_and(|f| f.scale != s) {
+                            if let Some(f) = feeds[j].take() {
                                 for c in f.cams {
                                     commands.entity(c).despawn();
                                 }
                             }
                         }
-                        let f = st.feeds[j].get_or_insert_with(|| spawn_feed(&mut commands, &mut images, j, d.ceil().max(1.0) as i32));
+                        let f = feeds[j].get_or_insert_with(|| spawn_feed(commands, images, j, d.ceil().max(1.0) as i32));
                         let to_rad = |u: f64| (u / 65536.0 * std::f64::consts::TAU) as f32;
                         let rot = Quat::from_rotation_y(-to_rad(yaw) - std::f32::consts::FRAC_PI_2) * Quat::from_rotation_x(to_rad(pitch));
                         let eye = Vec3::from(dx_level::ue_to_bevy([cp.x as f32, cp.y as f32, cp.z as f32]));
@@ -2944,7 +3201,7 @@ pub fn computer_system(
                     }
                     None => {
                         // NO SIGNAL: the slot's cameras (if any) would draw into an image nobody shows.
-                        if let Some(f) = st.feeds[j].take() {
+                        if let Some(f) = feeds[j].take() {
                             for c in f.cams {
                                 commands.entity(c).despawn();
                             }
@@ -2974,8 +3231,8 @@ pub fn computer_system(
                     v.set_if_neq(Visibility::Hidden);
                 }
             }
-            if st.feeds.iter().any(|f| f.is_some()) {
-                for f in st.feeds.iter_mut() {
+            if feeds.iter().any(|f| f.is_some()) {
+                for f in feeds.iter_mut() {
                     if let Some(f) = f.take() {
                         for c in f.cams {
                             commands.entity(c).despawn();
@@ -2985,14 +3242,29 @@ pub fn computer_system(
             }
         }
     }
+}
+
+/// The ICE Breaker window (top right) and the account list under it.
+#[allow(clippy::type_complexity)]
+fn draw_side_windows(
+    dc: &mut DrawCx,
+    fr: &CompFrame,
+    fonts: &Fonts,
+    hits: &mut Vec<(Wid, Rect, bool)>,
+    (pressed, hover_now, focus): (Option<Wid>, Option<Wid>, Option<Wid>),
+    hack_h: i32,
+    layer_nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), (Without<ImageNode>, Without<Backdrop>)>,
+) {
+    let CompFrame { s, d, sw, sf, .. } = *fr;
+    let DrawCx { t, data, nodes, hud, assets, images, layers, .. } = dc;
     // ICE Breaker window (top right) and the account list under it.
     match t.hack.as_ref() {
         Some(h) => {
             let hp = (sw - HACK_SIZE.0, 0);
-            let mut ui = Ui { c: Canvas::new(HACK_SIZE.0, HACK_SIZE.1, s), hud: &mut hud, assets: &mut assets, f: &fonts, o: hp, hits: &mut hits, pressed, hover: hover_now, focus };
+            let mut ui = Ui { c: Canvas::new(HACK_SIZE.0, HACK_SIZE.1, s), hud: &mut **hud, assets: &mut **assets, f: fonts, o: hp, hits: &mut *hits, pressed, hover: hover_now, focus };
             draw_hack(&mut ui, h);
             let Ui { c, .. } = ui;
-            place(&mut nodes.hack, &c, hp, d, sf, &mut images, &mut layers, &mut layer_nodes);
+            place(&mut nodes.hack, &c, hp, d, sf, images, layers, layer_nodes);
         }
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.hack.e) {
@@ -3000,15 +3272,15 @@ pub fn computer_system(
             }
         }
     }
-    let users: Vec<String> = st.data.get(&t.actor).unwrap().users.iter().map(|u| u.name.clone()).collect();
+    let users: Vec<String> = data.get(&t.actor).unwrap().users.iter().map(|u| u.name.clone()).collect();
     let current = t.user.clone();
     match t.accounts.as_mut() {
         Some(a) => {
             let ap = (sw - ACCOUNTS_SIZE.0, hack_h + 20);
-            let mut ui = Ui { c: Canvas::new(ACCOUNTS_SIZE.0, ACCOUNTS_SIZE.1, s), hud: &mut hud, assets: &mut assets, f: &fonts, o: ap, hits: &mut hits, pressed, hover: hover_now, focus };
+            let mut ui = Ui { c: Canvas::new(ACCOUNTS_SIZE.0, ACCOUNTS_SIZE.1, s), hud: &mut **hud, assets: &mut **assets, f: fonts, o: ap, hits: &mut *hits, pressed, hover: hover_now, focus };
             draw_accounts(&mut ui, a, &users, &current);
             let Ui { c, .. } = ui;
-            place(&mut nodes.accounts, &c, ap, d, sf, &mut images, &mut layers, &mut layer_nodes);
+            place(&mut nodes.accounts, &c, ap, d, sf, images, layers, layer_nodes);
         }
         None => {
             if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.accounts.e) {
@@ -3016,41 +3288,6 @@ pub fn computer_system(
             }
         }
     }
-    t.hits = hits;
-    // Diegetic: the pointer stays locked and hidden; diegetic.rs moves the terminal's own cursor by the mouse's
-    // motion, kept on the monitor (no wandering off it).
-    if dg.is_some() {
-        if cursor_opts.grab_mode != bevy::window::CursorGrabMode::Locked {
-            cursor_opts.grab_mode = bevy::window::CursorGrabMode::Locked;
-        }
-        if cursor_opts.visible {
-            cursor_opts.visible = false;
-        }
-    }
-    if dg.is_none() {
-    crate::snap::offer(
-        crate::snap::LAYER_COMPUTER,
-        crate::snap::Map { s: d, ox: 0, oy: 0, sf: window.scale_factor() },
-        t.hits
-            .iter()
-            .filter(|h| h.2 && !matches!(h.0, Wid::CompWin | Wid::Title | Wid::HackWin | Wid::AcctWin | Wid::ScrollTrack(_)))
-            .map(|h| h.1),
-    );
-    }
-    // The mouse cursor (ComputerUIWindow.StyleChanged: DeusExCursor1, hot spot 32, 32).
-    let mut cc = Canvas::new(64, 64, s);
-    if let Some(tx) = hud.ui(&mut assets, "DeusExCursor2") {
-        cc.drop_shadow(0, 0, &tx, (2.0, 2.5), 2.5, 0.6);
-        cc.texture(0, 0, 64, 64, 0, 0, &tx, Style::Masked, m_col(12));
-    }
-    let cp = (mouse.0 - 32, mouse.1 - 32);
-    place(&mut nodes.cursor, &cc, cp, d, sf, &mut images, &mut layers, &mut layer_nodes);
-    if (dg.is_none() && window.cursor_position().is_none()) || dg.is_some_and(|v| v.mouse.is_none()) {
-        if let Ok((_, mut v, _)) = layer_nodes.get_mut(nodes.cursor.e) {
-            v.set_if_neq(Visibility::Hidden);
-        }
-    }
-    let _ = &player;
 }
 
 fn edit_mut(t: &mut Term, n: u8) -> Option<&mut Edit> {
@@ -3109,7 +3346,9 @@ mod tests {
         assert_eq!(p.emails[1].to, "KLloyd");
         assert_eq!(p.emails[1].cc, "");
         let body = "<COMMENT>inbox</COMMENT>\r\n<DC=255,255,255>\r\n<P><B>From:</B> JReed\r\n<P>Hi <PLAYERNAME>.\r\n";
-        assert_eq!(parse_text(body).body, "From: JReed\nHi JC Denton.");
+        // (The player's name is global state another test may set at the same time.)
+        let b = parse_text(body).body;
+        assert!(b.starts_with("From: JReed\nHi ") && b.ends_with('.') && b.len() > "From: JReed\nHi .".len(), "{b}");
         let files = parse_text("<FILE=02_Bulletin01,Weather>");
         assert_eq!(files.files[0].name, "02_Bulletin01");
         assert_eq!(files.files[0].subject, "Weather");

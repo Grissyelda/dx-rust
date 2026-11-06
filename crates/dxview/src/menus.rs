@@ -836,13 +836,34 @@ fn split_group(label: &str) -> (&str, &str) {
     label.split_once(": ").unwrap_or(("Other", label))
 }
 
+/// A "Group: Label" item of the Enhancements list.
+fn tag(mut c: Choice, group: &str) -> Choice {
+    c.label = format!("{group}: {}", label(&c.label));
+    c
+}
+
 impl Enhance {
     fn new() -> Enhance {
         let mut items = Vec::new();
-        let tag = |mut c: Choice, group: &str| {
-            c.label = format!("{group}: {}", label(&c.label));
-            c
-        };
+        Self::controller_items(&mut items);
+        Self::toggle_items(&mut items);
+        Self::mod_items(&mut items);
+        Self::option_items(&mut items);
+        Self::performance_items(&mut items);
+        Self::hud_items(&mut items);
+        Enhance {
+            items,
+            search: Edit::new(40),
+            sel: Some(Row::Master),
+            scroll: 0,
+            open: Default::default(),
+            modern: crate::remaster::is_modern(),
+            mode_changed: false,
+            memory: Vec::new(),
+        }
+    }
+    /// Controller and DualSense options (the Enhancements screen's old pad rows, Controller Options, DualSense Options).
+    fn controller_items(items: &mut Vec<Choice>) {
         for c in enhancement_choices() {
             if c.key == "PadOptions" || c.key == "PadDualSense" || c.key == "DebugMode" {
                 continue;
@@ -851,6 +872,9 @@ impl Enhance {
         }
         items.extend(pad_option_choices().into_iter().map(|c| tag(c, "Controller")));
         items.extend(dualsense_choices().into_iter().map(|c| tag(c, "DualSense")));
+    }
+    /// The on / off enhancements: gameplay, interface, AI, visuals, fixes, quality of life, sound.
+    fn toggle_items(items: &mut Vec<Choice>) {
         for (key, group, lbl, help) in [
             ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo, reload every clip and switch weapons (or to melee) when they run dry, as the original scripts say."),
             ("FloorConsumables", "Gameplay", "Use Consumables From The Floor", "With no room in your inventory, a medkit, bioelectric cell, food or drink you pick up is used on the spot."),
@@ -948,6 +972,9 @@ impl Enhance {
             c.saved = c.value;
             items.push(tag(c, group));
         }
+    }
+    /// Mod switches (while the mod is on in the launcher), Augmentique's people / outfits, the Precipitation rain.
+    fn mod_items(items: &mut Vec<Choice>) {
         // Mod switches, listed while the mod is on in the launcher.
         for (key, id, lbl, help) in [
             ("OutfitBoxes", "augmentique", "Outfit Boxes In The Original Maps", "Without GMDX's maps, Augmentique's outfits are hidden in boxes across the campaign - a few in a map, by a clothes rack, a couch or a chair - instead of all being open. Takes effect on the next start."),
@@ -997,6 +1024,10 @@ impl Enhance {
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }
+    }
+    /// Settings with their own values: third person camera, FOV, frame cap, water reflections, worker threads,
+    /// grass and trees, upscaling, shadows.
+    fn option_items(items: &mut Vec<Choice>) {
         {
             let mut c = debug_mode_choice();
             c.key = "ThirdPersonCamera".into();
@@ -1095,6 +1126,9 @@ impl Enhance {
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }
+    }
+    /// Performance switches (perf.rs) and Remastered Lighting (relight.rs).
+    fn performance_items(items: &mut Vec<Choice>) {
         // Performance (perf.rs): by default 4x MSAA and HDR are on and the lean switches off.
         for (key, lbl, help) in [
             ("AntiAliasing", "Anti-Aliasing (4x MSAA)", "Smooths the edges of the world and the weapon with 4x multisampling. Off saves a lot of GPU time and memory on slow GPUs. (With Ambient Occlusion on, SMAA smooths the edges instead; with Upscaling, its own antialiasing.)"),
@@ -1127,6 +1161,9 @@ impl Enhance {
             c.saved = c.value;
             items.push(tag(c, "Visuals"));
         }
+    }
+    /// HUD parts (hidden / size / opacity), Smooth Lip Sync, and Debug Mode last.
+    fn hud_items(items: &mut Vec<Choice>) {
         // HUD customisation: each part shown or hidden, sized, faded.
         for (key, name) in crate::classic_hud::HUD_PARTS {
             let mut c = debug_mode_choice();
@@ -1161,16 +1198,6 @@ impl Enhance {
         lip.saved = lip.value;
         items.push(tag(lip, "Visuals"));
         items.push(tag(debug_mode_choice(), "Developer"));
-        Enhance {
-            items,
-            search: Edit::new(40),
-            sel: Some(Row::Master),
-            scroll: 0,
-            open: Default::default(),
-            modern: crate::remaster::is_modern(),
-            mode_changed: false,
-            memory: Vec::new(),
-        }
     }
     /// The items the search keeps (every word in the label or help), in order.
     /// The groups in list order.
@@ -1894,16 +1921,14 @@ fn menu_button(u: &mut Ui<W>, w: W, x: i32, y: i32, width: i32, s: &str, enabled
     let tw = font.width(&lines);
     let tx = x - 4 + off + (width - tw) / 2;
     let ty = y + 1 + off + (27 - font.height) / 2;
-    for (k, ch) in lines.chars().enumerate() {
-        let one = ch.to_string();
-        let gx = tx + font.width(&lines.chars().take(k).collect::<String>());
+    for (bi, ch) in lines.char_indices() {
+        let gx = tx + font.width(&lines[..bi]);
         if let Some((page, g)) = font.font.glyph(ch) {
             if let Some(tex) = font.pages.get(page) {
                 let tex = tex.clone();
                 u.c.texture(gx, ty, g.w, g.h, g.u, g.v, &tex, Style::Translucent, col);
             }
         }
-        let _ = one;
     }
     let light = if st == 1 || st == 2 { "MenuMainLight_Focus" } else { "MenuMainLight_Normal" };
     u.draw(light, x, y, 7, 27, Style::Translucent, face);
@@ -2215,328 +2240,357 @@ fn action_enabled(win: &Win, action: u8, key: &str) -> bool {
     }
 }
 
+/// The window's client area by body: menu buttons, choices, the new-game screen, the lists, message text.
 fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, waiting_keys: bool) {
-    let ft = fonts.title.clone();
-    let fs = fonts.small.clone();
-    let fh = fonts.headers.clone();
     let focus = win.focus;
     match &mut win.body {
-        Body::Menu { buttons, x, w } => {
-            let font = u.hud.font(u.assets, "DXFonts.MainMenuTrueType").unwrap_or_else(|| fonts.title.clone());
-            for (i, b) in buttons.iter().enumerate() {
-                menu_button(u, W::MenuBtn(i as u8), cx + *x, cy + b.y, *w, &b.label, b.enabled, &font);
-            }
-        }
-        Body::Choices { choices } => {
-            for (i, c) in choices.iter().enumerate() {
-                let y = cy + 27 + i as i32 * 36 - c.voff;
-                action_button(u, W::ChoiceBtn(i as u8), cx + 7, y + c.voff, 243, &c.label, true);
-                match &c.kind {
-                    ChoiceKind::Enum(_) => {
-                        info_button(u, cx + 7 + c.info_x, y, c.info_w, &c.value_text(), m_btn(0));
-                        if c.dropdown {
-                            let st = if win.drop.map(|d| d.0) == Some(i as u8) { "Pressed" } else { "Normal" };
-                            u.draw(&format!("MenuVScrollDownButton_{st}"), cx + 7 + c.info_x + c.info_w - 17, y + 2, 15, 15, Style::Masked, m_col(3));
-                        }
-                        u.hit(W::ChoiceVal(i as u8), (cx + 7 + c.info_x, y, c.info_w, 19), true);
-                    }
-                    ChoiceKind::Slider { .. } => {
-                        let wide = c.key != "AdjustBrightness";
-                        slider(u, W::Slider(i as u8), cx + 7 + c.control_x, y, c, 177, wide);
-                    }
-                    ChoiceKind::Action { .. } => {}
-                }
-            }
-            // MenuScreenAdjustColors: the MenuScreenAdjustColorsExample window at (395, 25) in the client, a
-            // sample HUD window in the current HUD theme.
-            if win.f.class == "MenuScreenAdjustColors" {
-                draw_colors_example(u, cx + 395, cy + 25);
-            }
-            // An open drop-down: the list under (or, near the bottom, over) its value box.
-            if let Some((di, mut scroll)) = win.drop {
-                if let Some(c) = choices.get(di as usize) {
-                    if let ChoiceKind::Enum(items) = &c.kind {
-                        let (bx, by) = (cx + 7 + c.info_x, cy + 27 + di as i32 * 36 - c.voff);
-                        let rows: Vec<Vec<String>> = items.iter().map(|t| vec![t.clone()]).collect();
-                        let h = (rows.len() as i32 * ROW_H).min(10 * ROW_H) + 2;
-                        let bottom = cy + win.f.ch;
-                        let ly = if by + 19 + h <= bottom { by + 19 } else { (by - h).max(cy) };
-                        u.c.fill(bx, ly, c.info_w, h, Style::Normal, BLACK);
-                        u.c.fill(bx, ly, c.info_w, 1, Style::Normal, m_col(3));
-                        u.c.fill(bx, ly + h - 1, c.info_w, 1, Style::Normal, m_col(3));
-                        u.c.fill(bx, ly, 1, h, Style::Normal, m_col(3));
-                        u.c.fill(bx + c.info_w - 1, ly, 1, h, Style::Normal, m_col(3));
-                        let sel = Some(c.value.max(0.0) as usize);
-                        u.hit(W::Header(50), (bx, ly, c.info_w, h), true);
-                        list(u, 50, (bx + 1, ly + 1, c.info_w - 2, h - 2), &[c.info_w - 2], &rows, sel, &mut scroll, false);
-                    }
-                }
-                win.drop = Some((di, scroll));
-            }
-            if win.f.class == "MenuScreenBrightness" {
-                // Colour bars that should fade smoothly to black at the bottom.
-                for (k, col) in [[255u8, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255]].iter().enumerate() {
-                    u.draw("MenuBrightnessGradient", cx + 14 + k as i32 * 136, cy + 67, 130, 137, Style::Normal, *col);
-                }
-                u.c.fill(cx + 14, cy + 178, 520, 1, Style::Normal, m_col(3));
-            }
-        }
-        Body::NewGame(ng) => {
-            let d = u.assets.classes.defaults("MenuScreenNewGame");
-            let l = |k: &str| pstr(&d, k);
-            u.text(&ft, cx + 21, cy + 17, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderCodeNameLabel"));
-            u.text(&ft, cx + 21, cy + 73, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderNameLabel"));
-            u.text(&ft, cx + 21, cy + 133, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderAppearanceLabel"));
-            u.text(&ft, cx + 172, cy + 17, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderSkillsLabel"));
-            u.text(&fs, cx + 430, cy + 18, 80, fs.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderSkillLevelLabel"));
-            u.text(&fs, cx + 505, cy + 18, 80, fs.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderPointsNeededLabel"));
-            u.text(&ft, cx + 409, cy + 344, 80, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderSkillPointsLabel"));
-            // Code name (fixed) and real name.
-            let mut code = Edit::new(32);
-            code.text = "JC Denton".chars().collect();
-            menu_edit(u, W::Edit(9), cx + 18, cy + 36, 113, &mut code, false, false);
-            menu_edit(u, W::Edit(0), cx + 18, cy + 92, 113, &mut ng.name, focus == Some(W::Edit(0)), true);
-            // Portrait and arrows.
-            if crate::travel::lddp() {
-                let sex = if ng.portrait % 2 == 1 { "Female" } else { "Male" };
-                if let Some(t) = u.hud.tex(u.assets, &format!("FemJC.MenuPlayerSetupJCDenton{sex}_{}", ng.portrait / 2 + 1)) {
-                    u.c.texture(cx + 18, cy + 152, 114, 161, 0, 0, &t, Style::Masked, WHITE);
-                }
-                // MenuScreenNewGame.CreateLDDPCheckboxes (NewGameCheckBoxWindow at 3,342 and 3,362).
-                let boxes = [
-                    (20u8, 342, "Original Morpheus?", ng.retro_morpheus, true),
-                    (21, 362, "Original Interactions?", ng.male_interactions, ng.portrait % 2 == 1),
-                ];
-                for (id, y, label, on, shown) in boxes {
-                    if !shown {
-                        continue;
-                    }
-                    let tex = if on { "MenuCheckBox_On" } else { "MenuCheckBox_Off" };
-                    u.draw(tex, cx + 3, cy + y, 13, 13, Style::Masked, m_col(3));
-                    u.text(&fs, cx + 20, cy + y, 135, 13, HAlign::Left, VAlign::Center, m_col(8), label);
-                    u.hit(W::Header(id), (cx + 3, cy + y - 1, 150, 15), true);
-                }
-            } else {
-                u.draw(&format!("MenuNewGameJCDenton_{}", ng.portrait + 1), cx + 18, cy + 152, 114, 161, Style::Masked, WHITE);
-            }
-            u.hit(W::Portrait, (cx + 18, cy + 152, 114, 161), true);
-            let lp = if u.pressed == Some(W::PortraitPrev) { "Pressed" } else { "Normal" };
-            let rp = if u.pressed == Some(W::PortraitNext) { "Pressed" } else { "Normal" };
-            u.draw(&format!("MenuLeftArrow_{lp}"), cx + 102, cy + 316, 14, 15, Style::Masked, m_col(3));
-            u.draw(&format!("MenuRightArrow_{rp}"), cx + 117, cy + 316, 14, 15, Style::Masked, m_col(3));
-            u.hit(W::PortraitPrev, (cx + 102, cy + 316, 14, 15), true);
-            u.hit(W::PortraitNext, (cx + 117, cy + 316, 14, 15), true);
-            // Skills list (3 columns, name in FontMenuHeaders, cost right-aligned).
-            let rh = fh.height.max(fs.height) + 1;
-            for (row, &i) in ng.order.iter().enumerate() {
-                let s = &ng.skills.list[i];
-                let y = cy + 41 + row as i32 * rh;
-                if y + rh > cy + 41 + 150 {
-                    break;
-                }
-                let sel = ng.sel == Some(row);
-                if sel {
-                    u.c.fill(cx + 172, y, 397, rh, Style::Normal, m_col(10));
-                }
-                let col = if sel { m_col(9) } else { m_col(8) };
-                u.c.text(&fh, cx + 174, y, 262, rh, HAlign::Left, VAlign::Center, col, &s.def.name);
-                u.c.text(&fs, cx + 172 + 262, y, 66, rh, HAlign::Left, VAlign::Center, col, imsim_core::skills::LEVEL_NAMES[s.level.min(3)]);
-                let cost = if s.level >= 3 { "--".to_string() } else { s.def.cost[s.level].to_string() };
-                u.c.text(&fs, cx + 172 + 328, y, 58, rh, HAlign::Right, VAlign::Center, col, &cost);
-                u.hit(W::Row(0, row), (cx + 172, y, 397, rh), true);
-            }
-            // Skill info.
-            if let Some(&i) = ng.sel.and_then(|r| ng.order.get(r)) {
-                let s = ng.skills.list[i].def.clone();
-                if !s.icon.is_empty() {
-                    if let Some(t) = u.hud.tex(u.assets, &s.icon) {
-                        u.c.texture(cx + 165 + 3, cy + 208 + 20, 24, 24, 0, 0, &t, Style::Masked, WHITE);
-                    }
-                }
-                u.c.text(&fh, cx + 165 + 39, cy + 208 + 2, 300, 12, HAlign::Left, VAlign::Top, m_col(3), &s.name);
-                let (dx, dy, dw, dh) = (cx + 165 + 39, cy + 208 + 20, 362, 104);
-                let lines = wrap(&fs, &label(&s.description), dw - 15);
-                let content = lines.len() as i32 * fs.height;
-                let inner = scrollbar(u, 1, dx, dy, dw, dh, content, &mut ng.desc_scroll);
-                let lines = if inner == dw { wrap(&fs, &label(&s.description), dw) } else { lines };
-                u.c.set_clip(Some((dx, dy, inner, dh)));
-                for (k, l) in lines.iter().enumerate() {
-                    u.c.text(&fs, dx, dy + k as i32 * fs.height - ng.desc_scroll, inner, fs.height, HAlign::Left, VAlign::Top, m_col(3), l);
-                }
-                u.c.set_clip(None);
-                u.hit(W::ScrollTrack(101), (dx, dy, inner, dh), true);
-            }
-            let cls = ng.sel.and_then(|r| ng.order.get(r)).map(|&i| ng.skills.list[i].def.class.clone());
-            let can_up = cls.as_ref().is_some_and(|c| ng.skills.can_upgrade(c));
-            let can_down = cls.as_ref().is_some_and(|c| ng.skills.level(c) > 0);
-            action_button(u, W::Upgrade, cx + 164, cy + 341, 74, &l("ButtonUpgradeLabel"), can_up);
-            action_button(u, W::Downgrade, cx + 241, cy + 341, 90, &l("ButtonDowngradeLabel"), can_down);
-            info_button(u, cx + 487, cy + 341, 83, &ng.skills.points_avail.to_string(), m_btn(0));
-        }
-        Body::Keys(k) if k.pad => {
-            let d = u.assets.classes.defaults("MenuScreenCustomizeKeys");
-            header_button(u, W::Header(0), cx + 10, cy + 3, 162, &pstr(&d, "strHeaderActionLabel"));
-            header_button(u, W::Header(1), cx + 175, cy + 3, 157, &pstr(&d, "strHeaderAssignedLabel"));
-            let none = pstr(&d, "NoneText");
-            let kind = crate::gamepad::glyph_kind();
-            let rows: Vec<Vec<String>> = crate::gamepad::PAD_ACTIONS
-                .iter()
-                .enumerate()
-                .map(|(i, (n, _, _))| {
-                    let b = k.pad_map.get(i).copied().flatten().map(|b| crate::gamepad::pad_name(kind, b)).unwrap_or_else(|| none.clone());
-                    let b = if waiting_keys && k.sel == Some(i) { "???".into() } else { b };
-                    vec![n.to_string(), b]
-                })
-                .collect();
-            list(u, 0, (cx + 11, cy + 23, 369, 268), &[164, 205], &rows, k.sel, &mut k.scroll, false);
-            // The button's glyph after its name (compact plates to fit the 12-unit rows).
-            let f = u.f.small.clone();
-            u.c.set_clip(Some((cx + 11, cy + 23, 369 - 16, 268)));
-            for (i, row) in rows.iter().enumerate() {
-                let Some(b) = k.pad_map.get(i).copied().flatten() else { continue };
-                if waiting_keys && k.sel == Some(i) {
-                    continue;
-                }
-                let ry = cy + 23 + i as i32 * crate::menuui::ROW_H - k.scroll;
-                if ry + crate::menuui::ROW_H <= cy + 23 || ry >= cy + 23 + 268 {
-                    continue;
-                }
-                let gx = cx + 11 + 164 + 2 + f.width(&row[1]) + 5;
-                crate::glyphs::draw_small(&mut u.c, kind, b, gx, ry);
-            }
-            u.c.set_clip(None);
-        }
-        Body::Enhance(en) => {
-            header_button(u, W::Header(0), cx + 10, cy + 3, 62, "Search");
-            // The field sits over the Customize Keys frame's two header wells: black out the art under it, or the
-            // first well's bevelled end shows through midway along the field.
-            u.c.fill(cx + 73, cy + 3, 262, 18, Style::Normal, BLACK);
-            edit_field(u, W::Edit(2), cx + 75, cy + 3, 257, &mut en.search, true, true);
-            let shown = en.shown();
-            let rows: Vec<Vec<String>> = shown
-                .iter()
-                .map(|&r| {
-                    let (l, v) = en.row_text(r);
-                    vec![l, v]
-                })
-                .collect();
-            let sel = en.sel.and_then(|s| shown.iter().position(|&i| i == s));
-            if rows.is_empty() {
-                let f = u.f.small.clone();
-                u.c.text(&f, cx + 14, cy + 26, 360, ROW_H, HAlign::Left, VAlign::Center, m_col(8), "Nothing matches the search.");
-            }
-            list(u, 0, (cx + 11, cy + 23, 369, 268), &[240, 129], &rows, sel, &mut en.scroll, false);
-        }
+        Body::Menu { buttons, x, w } => draw_menu_buttons(u, buttons, *x, *w, fonts, cx, cy),
+        Body::Choices { choices } => draw_choices(u, choices, &win.f, &mut win.drop, cx, cy),
+        Body::NewGame(ng) => draw_new_game(u, ng, focus, fonts, cx, cy),
+        Body::Keys(k) if k.pad => draw_pad_keys(u, k, cx, cy, waiting_keys),
+        Body::Enhance(en) => draw_enhance(u, en, cx, cy),
         Body::Welcome(scroll) => {
             header_button(u, W::Header(0), cx + 10, cy + 3, 322, "What's new for Deus Ex players");
             text_area(u, 0, (cx + 11, cy + 23, 369, 268), crate::welcome::TEXT, false, scroll);
         }
-        Body::Achieve(av) => {
-            let total = crate::achievements::LIST.len();
-            let any = crate::achievements::LIST.iter().filter(|a| av.chars.iter().any(|c| c.unlocked.contains_key(a.0)) || av.global.contains_key(a.0)).count();
-            header_button(u, W::Header(0), cx + 10, cy + 3, 222, "Achievement");
-            header_button(u, W::Header(1), cx + 235, cy + 3, 97, &format!("{any} / {total}"));
-            let (lx, ly, lw, lh) = (cx + 11, cy + 23, 369, 268);
-            let content = total as i32 * crate::achievements::ROW;
-            let inner = scrollbar(u, 0, lx, ly, lw, lh, content, &mut av.scroll);
-            let head = fh.clone();
-            let small = u.f.small.clone();
-            crate::achievements::draw_all(&mut u.c, &head, &small, (lx, ly, inner, lh), av.scroll, &av.chars, &av.global);
-            if av.chars.is_empty() {
-                u.c.text(&small, lx + 4, ly + lh - 14, inner - 8, 12, HAlign::Center, VAlign::Center, m_col(8), "No character has unlocked any yet.");
-            }
-            // Rows for the mouse wheel and the pad's snap.
-            for i in 0..total {
-                let ry = ly + i as i32 * crate::achievements::ROW - av.scroll;
-                let (top, bot) = (ry.max(ly), (ry + crate::achievements::ROW).min(ly + lh));
-                if bot - top > 0 {
-                    u.hit(W::Row(0, i), (lx, top, inner, bot - top), true);
-                }
-            }
-        }
-        Body::Keys(k) => {
-            let d = u.assets.classes.defaults("MenuScreenCustomizeKeys");
-            header_button(u, W::Header(0), cx + 10, cy + 3, 162, &pstr(&d, "strHeaderActionLabel"));
-            header_button(u, W::Header(1), cx + 175, cy + 3, 157, &pstr(&d, "strHeaderAssignedLabel"));
-            let none = pstr(&d, "NoneText");
-            let rows: Vec<Vec<String>> = crate::keybinds::ACTIONS
-                .iter()
-                .enumerate()
-                .map(|(i, (n, _))| {
-                    let key = k.map.get(i).map(|x| crate::keybinds::input_name(*x)).unwrap_or_else(|| none.clone());
-                    let key = if waiting_keys && k.sel == Some(i) { "???".into() } else { key };
-                    vec![n.to_string(), key]
-                })
-                .collect();
-            list(u, 0, (cx + 11, cy + 23, 369, 268), &[164, 205], &rows, k.sel, &mut k.scroll, false);
-        }
-        Body::SaveLoad(sl) => {
-            let d = u.assets.classes.defaults("MenuScreenLoadGame");
-            let l = |k: &str| pstr(&d, k);
-            header_button(u, W::Header(0), cx + 10, cy + 3, 238, &l("strHeaderNameLabel"));
-            header_button(u, W::Header(1), cx + 251, cy + 3, 131, &l("strHeaderDateLabel"));
-            let new_label = l("NewSaveGameButtonText");
-            let mut rows: Vec<Vec<String>> = sl.list.iter().map(|r| sl.row_text(*r, &new_label).to_vec()).collect();
-            // The row being named shows the typed description.
-            let editing = sl.saving.then_some(sl.sel).flatten();
-            if let Some(r) = editing {
-                if let Some(row) = rows.get_mut(r) {
-                    row[0] = String::new();
-                }
-            }
-            let (lx, ly, lw, lh) = (cx + 11, cy + 22, 371, 270);
-            list(u, 0, (lx, ly, lw, lh), &[240, 131], &rows, sl.sel, &mut sl.scroll, false);
-            if let Some(r) = editing {
-                let ey = ly + r as i32 * ROW_H - sl.scroll;
-                if ey >= ly && ey + ROW_H <= ly + lh {
-                    u.c.set_clip(Some((lx, ly, lw, lh)));
-                    edit_field(u, W::Edit(1), lx + 1, ey - 3, 236, &mut sl.edit, true, true);
-                    u.c.set_clip(None);
-                }
-            }
-            // Snapshot (not kept yet: a dark frame), save info, delete confirmation.
-            u.c.fill(cx + 387, cy + 24, 160, 120, Style::Normal, BLACK);
-            let sel_path = sl.sel.and_then(|r| sl.game(r)).map(|g| g.path.clone());
-            if sl.snap.as_ref().map(|s| &s.0) != sel_path.as_ref() {
-                sl.snap = sel_path.map(|p| {
-                    let t = crate::save::snapshot(&p).map(|b| {
-                        crate::uicanvas::UiTex::from_rgba(crate::save::SNAP_W as u32, crate::save::SNAP_H as u32, &b)
-                    });
-                    (p, t)
-                });
-            }
-            if let Some((_, Some(t))) = &sl.snap {
-                u.c.texture(cx + 387, cy + 24, 160, 120, 0, 0, t, Style::Normal, WHITE);
-            }
-            for (x, y, w, h) in [(387, 24, 160, 1), (387, 143, 160, 1), (387, 24, 1, 120), (546, 24, 1, 120)] {
-                u.c.fill(cx + x, cy + y, w, h, Style::Normal, m_col(3));
-            }
-            let sel_game = sl.sel.and_then(|r| sl.game(r)).cloned();
-            if let Some(g) = sel_game {
-                let info = format!(
-                    "{}{}{}{}",
-                    l("LocationLabel").replace("%s", &g.location),
-                    l("SaveCountLabel").replace("%d", &g.save_count.to_string()),
-                    l("PlayTimeLabel").replace("%s", &crate::save::format_play_time(g.play_time)),
-                    format!("File Size: {}KB", g.bytes.div_ceil(1024))
-                );
-                u.wrapped(&fs, cx + 390, cy + 166, 155, 60, HAlign::Left, VAlign::Center, m_col(8), &info);
-            }
-            let tex = if sl.confirm_delete { "MenuCheckBox_On" } else { "MenuCheckBox_Off" };
-            u.draw(tex, cx + 389, cy + 256, 13, 13, Style::Masked, m_col(3));
-            u.text(&fs, cx + 406, cy + 256, 150, 13, HAlign::Left, VAlign::Center, m_col(8), &l("ConfirmDeleteLabel"));
-            u.hit(W::Header(2), (cx + 389, cy + 255, 160, 15), true);
-        }
+        Body::Achieve(av) => draw_achieve(u, av, fonts, cx, cy),
+        Body::Keys(k) => draw_keys(u, k, cx, cy, waiting_keys),
+        Body::SaveLoad(sl) => draw_save_load(u, sl, fonts, cx, cy),
         Body::Keypad(_) => {}
         Body::Msg(m) if m.purpose == MsgPurpose::PadMap => {
             crate::paddiagram::draw(u, cx, cy);
         }
         Body::Msg(m) => {
-            let fds = u.hud.font(u.assets, "FontMenuHeaders_DS").unwrap_or(fh.clone());
+            let fds = u.hud.font(u.assets, "FontMenuHeaders_DS").unwrap_or(fonts.headers.clone());
             let (tx, ty, tw, th) = (cx + 20, cy + 14, win.f.cw - 40, win.f.ch - 28);
             u.wrapped(&fds, tx, ty, tw, th, HAlign::Center, VAlign::Center, m_col(8), &m.text);
         }
     }
+}
+
+/// MenuUIMenuWindow: the big buttons in their column.
+#[allow(clippy::too_many_arguments)]
+fn draw_menu_buttons(u: &mut Ui<W>, buttons: &[MenuBtn], x: i32, w: i32, fonts: &Fonts, cx: i32, cy: i32) {
+    let font = u.hud.font(u.assets, "DXFonts.MainMenuTrueType").unwrap_or_else(|| fonts.title.clone());
+    for (i, b) in buttons.iter().enumerate() {
+        menu_button(u, W::MenuBtn(i as u8), cx + x, cy + b.y, w, &b.label, b.enabled, &font);
+    }
+}
+
+/// MenuUIScreenWindow: choice rows (enum value boxes, sliders), the colours example, an open drop-down, the
+/// brightness bars.
+fn draw_choices(u: &mut Ui<W>, choices: &[Choice], f: &Frame, open_drop: &mut Option<(u8, i32)>, cx: i32, cy: i32) {
+    for (i, c) in choices.iter().enumerate() {
+        let y = cy + 27 + i as i32 * 36 - c.voff;
+        action_button(u, W::ChoiceBtn(i as u8), cx + 7, y + c.voff, 243, &c.label, true);
+        match &c.kind {
+            ChoiceKind::Enum(_) => {
+                info_button(u, cx + 7 + c.info_x, y, c.info_w, &c.value_text(), m_btn(0));
+                if c.dropdown {
+                    let st = if open_drop.map(|d| d.0) == Some(i as u8) { "Pressed" } else { "Normal" };
+                    u.draw(&format!("MenuVScrollDownButton_{st}"), cx + 7 + c.info_x + c.info_w - 17, y + 2, 15, 15, Style::Masked, m_col(3));
+                }
+                u.hit(W::ChoiceVal(i as u8), (cx + 7 + c.info_x, y, c.info_w, 19), true);
+            }
+            ChoiceKind::Slider { .. } => {
+                let wide = c.key != "AdjustBrightness";
+                slider(u, W::Slider(i as u8), cx + 7 + c.control_x, y, c, 177, wide);
+            }
+            ChoiceKind::Action { .. } => {}
+        }
+    }
+    // MenuScreenAdjustColors: the MenuScreenAdjustColorsExample window at (395, 25) in the client, a
+    // sample HUD window in the current HUD theme.
+    if f.class == "MenuScreenAdjustColors" {
+        draw_colors_example(u, cx + 395, cy + 25);
+    }
+    // An open drop-down: the list under (or, near the bottom, over) its value box.
+    if let Some((di, mut scroll)) = *open_drop {
+        if let Some(c) = choices.get(di as usize) {
+            if let ChoiceKind::Enum(items) = &c.kind {
+                let (bx, by) = (cx + 7 + c.info_x, cy + 27 + di as i32 * 36 - c.voff);
+                let rows: Vec<Vec<String>> = items.iter().map(|t| vec![t.clone()]).collect();
+                let h = (rows.len() as i32 * ROW_H).min(10 * ROW_H) + 2;
+                let bottom = cy + f.ch;
+                let ly = if by + 19 + h <= bottom { by + 19 } else { (by - h).max(cy) };
+                u.c.fill(bx, ly, c.info_w, h, Style::Normal, BLACK);
+                u.c.fill(bx, ly, c.info_w, 1, Style::Normal, m_col(3));
+                u.c.fill(bx, ly + h - 1, c.info_w, 1, Style::Normal, m_col(3));
+                u.c.fill(bx, ly, 1, h, Style::Normal, m_col(3));
+                u.c.fill(bx + c.info_w - 1, ly, 1, h, Style::Normal, m_col(3));
+                let sel = Some(c.value.max(0.0) as usize);
+                u.hit(W::Header(50), (bx, ly, c.info_w, h), true);
+                list(u, 50, (bx + 1, ly + 1, c.info_w - 2, h - 2), &[c.info_w - 2], &rows, sel, &mut scroll, false);
+            }
+        }
+        *open_drop = Some((di, scroll));
+    }
+    if f.class == "MenuScreenBrightness" {
+        // Colour bars that should fade smoothly to black at the bottom.
+        for (k, col) in [[255u8, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255]].iter().enumerate() {
+            u.draw("MenuBrightnessGradient", cx + 14 + k as i32 * 136, cy + 67, 130, 137, Style::Normal, *col);
+        }
+        u.c.fill(cx + 14, cy + 178, 520, 1, Style::Normal, m_col(3));
+    }
+}
+
+/// MenuScreenNewGame: names, portrait (LDDP portraits and checkboxes), skills list and info, upgrade buttons.
+fn draw_new_game(u: &mut Ui<W>, ng: &mut NewGame, focus: Option<W>, fonts: &Fonts, cx: i32, cy: i32) {
+    let ft = fonts.title.clone();
+    let fs = fonts.small.clone();
+    let fh = fonts.headers.clone();
+    let d = u.assets.classes.defaults("MenuScreenNewGame");
+    let l = |k: &str| pstr(&d, k);
+    u.text(&ft, cx + 21, cy + 17, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderCodeNameLabel"));
+    u.text(&ft, cx + 21, cy + 73, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderNameLabel"));
+    u.text(&ft, cx + 21, cy + 133, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderAppearanceLabel"));
+    u.text(&ft, cx + 172, cy + 17, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderSkillsLabel"));
+    u.text(&fs, cx + 430, cy + 18, 80, fs.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderSkillLevelLabel"));
+    u.text(&fs, cx + 505, cy + 18, 80, fs.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderPointsNeededLabel"));
+    u.text(&ft, cx + 409, cy + 344, 80, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderSkillPointsLabel"));
+    // Code name (fixed) and real name.
+    let mut code = Edit::new(32);
+    code.text = "JC Denton".chars().collect();
+    menu_edit(u, W::Edit(9), cx + 18, cy + 36, 113, &mut code, false, false);
+    menu_edit(u, W::Edit(0), cx + 18, cy + 92, 113, &mut ng.name, focus == Some(W::Edit(0)), true);
+    // Portrait and arrows.
+    if crate::travel::lddp() {
+        let sex = if ng.portrait % 2 == 1 { "Female" } else { "Male" };
+        if let Some(t) = u.hud.tex(u.assets, &format!("FemJC.MenuPlayerSetupJCDenton{sex}_{}", ng.portrait / 2 + 1)) {
+            u.c.texture(cx + 18, cy + 152, 114, 161, 0, 0, &t, Style::Masked, WHITE);
+        }
+        // MenuScreenNewGame.CreateLDDPCheckboxes (NewGameCheckBoxWindow at 3,342 and 3,362).
+        let boxes = [
+            (20u8, 342, "Original Morpheus?", ng.retro_morpheus, true),
+            (21, 362, "Original Interactions?", ng.male_interactions, ng.portrait % 2 == 1),
+        ];
+        for (id, y, label, on, shown) in boxes {
+            if !shown {
+                continue;
+            }
+            let tex = if on { "MenuCheckBox_On" } else { "MenuCheckBox_Off" };
+            u.draw(tex, cx + 3, cy + y, 13, 13, Style::Masked, m_col(3));
+            u.text(&fs, cx + 20, cy + y, 135, 13, HAlign::Left, VAlign::Center, m_col(8), label);
+            u.hit(W::Header(id), (cx + 3, cy + y - 1, 150, 15), true);
+        }
+    } else {
+        u.draw(&format!("MenuNewGameJCDenton_{}", ng.portrait + 1), cx + 18, cy + 152, 114, 161, Style::Masked, WHITE);
+    }
+    u.hit(W::Portrait, (cx + 18, cy + 152, 114, 161), true);
+    let lp = if u.pressed == Some(W::PortraitPrev) { "Pressed" } else { "Normal" };
+    let rp = if u.pressed == Some(W::PortraitNext) { "Pressed" } else { "Normal" };
+    u.draw(&format!("MenuLeftArrow_{lp}"), cx + 102, cy + 316, 14, 15, Style::Masked, m_col(3));
+    u.draw(&format!("MenuRightArrow_{rp}"), cx + 117, cy + 316, 14, 15, Style::Masked, m_col(3));
+    u.hit(W::PortraitPrev, (cx + 102, cy + 316, 14, 15), true);
+    u.hit(W::PortraitNext, (cx + 117, cy + 316, 14, 15), true);
+    // Skills list (3 columns, name in FontMenuHeaders, cost right-aligned).
+    let rh = fh.height.max(fs.height) + 1;
+    for (row, &i) in ng.order.iter().enumerate() {
+        let s = &ng.skills.list[i];
+        let y = cy + 41 + row as i32 * rh;
+        if y + rh > cy + 41 + 150 {
+            break;
+        }
+        let sel = ng.sel == Some(row);
+        if sel {
+            u.c.fill(cx + 172, y, 397, rh, Style::Normal, m_col(10));
+        }
+        let col = if sel { m_col(9) } else { m_col(8) };
+        u.c.text(&fh, cx + 174, y, 262, rh, HAlign::Left, VAlign::Center, col, &s.def.name);
+        u.c.text(&fs, cx + 172 + 262, y, 66, rh, HAlign::Left, VAlign::Center, col, imsim_core::skills::LEVEL_NAMES[s.level.min(3)]);
+        let cost = if s.level >= 3 { "--".to_string() } else { s.def.cost[s.level].to_string() };
+        u.c.text(&fs, cx + 172 + 328, y, 58, rh, HAlign::Right, VAlign::Center, col, &cost);
+        u.hit(W::Row(0, row), (cx + 172, y, 397, rh), true);
+    }
+    // Skill info.
+    if let Some(&i) = ng.sel.and_then(|r| ng.order.get(r)) {
+        let s = ng.skills.list[i].def.clone();
+        if !s.icon.is_empty() {
+            if let Some(t) = u.hud.tex(u.assets, &s.icon) {
+                u.c.texture(cx + 165 + 3, cy + 208 + 20, 24, 24, 0, 0, &t, Style::Masked, WHITE);
+            }
+        }
+        u.c.text(&fh, cx + 165 + 39, cy + 208 + 2, 300, 12, HAlign::Left, VAlign::Top, m_col(3), &s.name);
+        let (dx, dy, dw, dh) = (cx + 165 + 39, cy + 208 + 20, 362, 104);
+        let lines = wrap(&fs, &label(&s.description), dw - 15);
+        let content = lines.len() as i32 * fs.height;
+        let inner = scrollbar(u, 1, dx, dy, dw, dh, content, &mut ng.desc_scroll);
+        let lines = if inner == dw { wrap(&fs, &label(&s.description), dw) } else { lines };
+        u.c.set_clip(Some((dx, dy, inner, dh)));
+        for (k, l) in lines.iter().enumerate() {
+            u.c.text(&fs, dx, dy + k as i32 * fs.height - ng.desc_scroll, inner, fs.height, HAlign::Left, VAlign::Top, m_col(3), l);
+        }
+        u.c.set_clip(None);
+        u.hit(W::ScrollTrack(101), (dx, dy, inner, dh), true);
+    }
+    let cls = ng.sel.and_then(|r| ng.order.get(r)).map(|&i| ng.skills.list[i].def.class.clone());
+    let can_up = cls.as_ref().is_some_and(|c| ng.skills.can_upgrade(c));
+    let can_down = cls.as_ref().is_some_and(|c| ng.skills.level(c) > 0);
+    action_button(u, W::Upgrade, cx + 164, cy + 341, 74, &l("ButtonUpgradeLabel"), can_up);
+    action_button(u, W::Downgrade, cx + 241, cy + 341, 90, &l("ButtonDowngradeLabel"), can_down);
+    info_button(u, cx + 487, cy + 341, 83, &ng.skills.points_avail.to_string(), m_btn(0));
+}
+
+/// Controller Bindings: actions and their pad buttons, with the button glyphs.
+fn draw_pad_keys(u: &mut Ui<W>, k: &mut Keys, cx: i32, cy: i32, waiting_keys: bool) {
+    let d = u.assets.classes.defaults("MenuScreenCustomizeKeys");
+    header_button(u, W::Header(0), cx + 10, cy + 3, 162, &pstr(&d, "strHeaderActionLabel"));
+    header_button(u, W::Header(1), cx + 175, cy + 3, 157, &pstr(&d, "strHeaderAssignedLabel"));
+    let none = pstr(&d, "NoneText");
+    let kind = crate::gamepad::glyph_kind();
+    let rows: Vec<Vec<String>> = crate::gamepad::PAD_ACTIONS
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _, _))| {
+            let b = k.pad_map.get(i).copied().flatten().map(|b| crate::gamepad::pad_name(kind, b)).unwrap_or_else(|| none.clone());
+            let b = if waiting_keys && k.sel == Some(i) { "???".into() } else { b };
+            vec![n.to_string(), b]
+        })
+        .collect();
+    list(u, 0, (cx + 11, cy + 23, 369, 268), &[164, 205], &rows, k.sel, &mut k.scroll, false);
+    // The button's glyph after its name (compact plates to fit the 12-unit rows).
+    let f = u.f.small.clone();
+    u.c.set_clip(Some((cx + 11, cy + 23, 369 - 16, 268)));
+    for (i, row) in rows.iter().enumerate() {
+        let Some(b) = k.pad_map.get(i).copied().flatten() else { continue };
+        if waiting_keys && k.sel == Some(i) {
+            continue;
+        }
+        let ry = cy + 23 + i as i32 * crate::menuui::ROW_H - k.scroll;
+        if ry + crate::menuui::ROW_H <= cy + 23 || ry >= cy + 23 + 268 {
+            continue;
+        }
+        let gx = cx + 11 + 164 + 2 + f.width(&row[1]) + 5;
+        crate::glyphs::draw_small(&mut u.c, kind, b, gx, ry);
+    }
+    u.c.set_clip(None);
+}
+
+/// Settings > Enhancements: the search field and the grouped list.
+fn draw_enhance(u: &mut Ui<W>, en: &mut Enhance, cx: i32, cy: i32) {
+    header_button(u, W::Header(0), cx + 10, cy + 3, 62, "Search");
+    // The field sits over the Customize Keys frame's two header wells: black out the art under it, or the
+    // first well's bevelled end shows through midway along the field.
+    u.c.fill(cx + 73, cy + 3, 262, 18, Style::Normal, BLACK);
+    edit_field(u, W::Edit(2), cx + 75, cy + 3, 257, &mut en.search, true, true);
+    let shown = en.shown();
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|&r| {
+            let (l, v) = en.row_text(r);
+            vec![l, v]
+        })
+        .collect();
+    let sel = en.sel.and_then(|s| shown.iter().position(|&i| i == s));
+    if rows.is_empty() {
+        let f = u.f.small.clone();
+        u.c.text(&f, cx + 14, cy + 26, 360, ROW_H, HAlign::Left, VAlign::Center, m_col(8), "Nothing matches the search.");
+    }
+    list(u, 0, (cx + 11, cy + 23, 369, 268), &[240, 129], &rows, sel, &mut en.scroll, false);
+}
+
+/// The main menu's Achievements screen: every achievement with who unlocked it.
+fn draw_achieve(u: &mut Ui<W>, av: &mut AchieveView, fonts: &Fonts, cx: i32, cy: i32) {
+    let fh = fonts.headers.clone();
+    let total = crate::achievements::LIST.len();
+    let any = crate::achievements::LIST.iter().filter(|a| av.chars.iter().any(|c| c.unlocked.contains_key(a.0)) || av.global.contains_key(a.0)).count();
+    header_button(u, W::Header(0), cx + 10, cy + 3, 222, "Achievement");
+    header_button(u, W::Header(1), cx + 235, cy + 3, 97, &format!("{any} / {total}"));
+    let (lx, ly, lw, lh) = (cx + 11, cy + 23, 369, 268);
+    let content = total as i32 * crate::achievements::ROW;
+    let inner = scrollbar(u, 0, lx, ly, lw, lh, content, &mut av.scroll);
+    let head = fh.clone();
+    let small = u.f.small.clone();
+    crate::achievements::draw_all(&mut u.c, &head, &small, (lx, ly, inner, lh), av.scroll, &av.chars, &av.global);
+    if av.chars.is_empty() {
+        u.c.text(&small, lx + 4, ly + lh - 14, inner - 8, 12, HAlign::Center, VAlign::Center, m_col(8), "No character has unlocked any yet.");
+    }
+    // Rows for the mouse wheel and the pad's snap.
+    for i in 0..total {
+        let ry = ly + i as i32 * crate::achievements::ROW - av.scroll;
+        let (top, bot) = (ry.max(ly), (ry + crate::achievements::ROW).min(ly + lh));
+        if bot - top > 0 {
+            u.hit(W::Row(0, i), (lx, top, inner, bot - top), true);
+        }
+    }
+}
+
+/// MenuScreenCustomizeKeys: actions and their keys.
+fn draw_keys(u: &mut Ui<W>, k: &mut Keys, cx: i32, cy: i32, waiting_keys: bool) {
+    let d = u.assets.classes.defaults("MenuScreenCustomizeKeys");
+    header_button(u, W::Header(0), cx + 10, cy + 3, 162, &pstr(&d, "strHeaderActionLabel"));
+    header_button(u, W::Header(1), cx + 175, cy + 3, 157, &pstr(&d, "strHeaderAssignedLabel"));
+    let none = pstr(&d, "NoneText");
+    let rows: Vec<Vec<String>> = crate::keybinds::ACTIONS
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _))| {
+            let key = k.map.get(i).map(|x| crate::keybinds::input_name(*x)).unwrap_or_else(|| none.clone());
+            let key = if waiting_keys && k.sel == Some(i) { "???".into() } else { key };
+            vec![n.to_string(), key]
+        })
+        .collect();
+    list(u, 0, (cx + 11, cy + 23, 369, 268), &[164, 205], &rows, k.sel, &mut k.scroll, false);
+}
+
+/// MenuScreenSaveGame / LoadGame: the games list (the row being named edits in place), snapshot, info, delete box.
+fn draw_save_load(u: &mut Ui<W>, sl: &mut SaveLoad, fonts: &Fonts, cx: i32, cy: i32) {
+    let fs = fonts.small.clone();
+    let d = u.assets.classes.defaults("MenuScreenLoadGame");
+    let l = |k: &str| pstr(&d, k);
+    header_button(u, W::Header(0), cx + 10, cy + 3, 238, &l("strHeaderNameLabel"));
+    header_button(u, W::Header(1), cx + 251, cy + 3, 131, &l("strHeaderDateLabel"));
+    let new_label = l("NewSaveGameButtonText");
+    let mut rows: Vec<Vec<String>> = sl.list.iter().map(|r| sl.row_text(*r, &new_label).to_vec()).collect();
+    // The row being named shows the typed description.
+    let editing = sl.saving.then_some(sl.sel).flatten();
+    if let Some(r) = editing {
+        if let Some(row) = rows.get_mut(r) {
+            row[0] = String::new();
+        }
+    }
+    let (lx, ly, lw, lh) = (cx + 11, cy + 22, 371, 270);
+    list(u, 0, (lx, ly, lw, lh), &[240, 131], &rows, sl.sel, &mut sl.scroll, false);
+    if let Some(r) = editing {
+        let ey = ly + r as i32 * ROW_H - sl.scroll;
+        if ey >= ly && ey + ROW_H <= ly + lh {
+            u.c.set_clip(Some((lx, ly, lw, lh)));
+            edit_field(u, W::Edit(1), lx + 1, ey - 3, 236, &mut sl.edit, true, true);
+            u.c.set_clip(None);
+        }
+    }
+    // Snapshot (not kept yet: a dark frame), save info, delete confirmation.
+    u.c.fill(cx + 387, cy + 24, 160, 120, Style::Normal, BLACK);
+    let sel_path = sl.sel.and_then(|r| sl.game(r)).map(|g| g.path.clone());
+    if sl.snap.as_ref().map(|s| &s.0) != sel_path.as_ref() {
+        sl.snap = sel_path.map(|p| {
+            let t = crate::save::snapshot(&p).map(|b| {
+                crate::uicanvas::UiTex::from_rgba(crate::save::SNAP_W as u32, crate::save::SNAP_H as u32, &b)
+            });
+            (p, t)
+        });
+    }
+    if let Some((_, Some(t))) = &sl.snap {
+        u.c.texture(cx + 387, cy + 24, 160, 120, 0, 0, t, Style::Normal, WHITE);
+    }
+    for (x, y, w, h) in [(387, 24, 160, 1), (387, 143, 160, 1), (387, 24, 1, 120), (546, 24, 1, 120)] {
+        u.c.fill(cx + x, cy + y, w, h, Style::Normal, m_col(3));
+    }
+    let sel_game = sl.sel.and_then(|r| sl.game(r)).cloned();
+    if let Some(g) = sel_game {
+        let info = format!(
+            "{}{}{}{}",
+            l("LocationLabel").replace("%s", &g.location),
+            l("SaveCountLabel").replace("%d", &g.save_count.to_string()),
+            l("PlayTimeLabel").replace("%s", &crate::save::format_play_time(g.play_time)),
+            format!("File Size: {}KB", g.bytes.div_ceil(1024))
+        );
+        u.wrapped(&fs, cx + 390, cy + 166, 155, 60, HAlign::Left, VAlign::Center, m_col(8), &info);
+    }
+    let tex = if sl.confirm_delete { "MenuCheckBox_On" } else { "MenuCheckBox_Off" };
+    u.draw(tex, cx + 389, cy + 256, 13, 13, Style::Masked, m_col(3));
+    u.text(&fs, cx + 406, cy + 256, 150, 13, HAlign::Left, VAlign::Center, m_col(8), &l("ConfirmDeleteLabel"));
+    u.hit(W::Header(2), (cx + 389, cy + 255, 160, 15), true);
 }
 
 /// HUDKeypadWindow.DrawWindow + HUDKeypadButton.DrawWindow, in the HUD theme.
@@ -2824,6 +2878,42 @@ fn live_preview(c: &Choice) {
 
 // ------------------------------------------------------------------------------------------------ system
 
+/// The frame's screen layout in menu units.
+#[derive(Clone, Copy)]
+struct View {
+    /// Canvases' whole-number scale.
+    s: i32,
+    /// The scale shown, fractional with HUD Scale Large.
+    d: f32,
+    sf: f32,
+    sw: i32,
+    sh: i32,
+    mouse: (i32, i32),
+}
+
+/// Where a window sits: dragged, or centred.
+fn win_pos(w: &Win, fonts: &Fonts, sw: i32, sh: i32) -> (i32, i32) {
+    let (ww, wh) = win_size(&w.f, fonts);
+    w.pos.unwrap_or((sw / 2 - ww / 2, sh / 2 - wh / 2))
+}
+
+/// One frame's input pass: the borrowed state, what the pointer is over, and the actions asked for.
+struct InCx<'a> {
+    st: &'a mut Menus,
+    binds: &'a mut Bindings,
+    hud: &'a mut ClassicHud,
+    assets: &'a mut RuntimeAssets,
+    fonts: &'a Fonts,
+    view: View,
+    acts: Vec<Act>,
+    top: usize,
+    hover: Option<(W, bool)>,
+    hover_w: Option<W>,
+    click_focus: bool,
+    shift: bool,
+    ctrl: bool,
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn menu_system(
     mut commands: Commands,
@@ -2861,118 +2951,11 @@ pub fn menu_system(
     let dt = time.delta_secs();
     st.clock += dt;
     if !st.built {
-        st.built = true;
-        let mission = level.0.level_info()
-            .map(|a| pint(&a.props, "missionNumber", 0))
-            .unwrap_or(0);
-        MISSION.store(mission, Ordering::Relaxed);
-        TRAINING.store(level.0.level_info().is_some() && mission == 0, Ordering::Relaxed);
-        if let Some(Value::Str(loc)) = level.0.level_info().and_then(|a| find(&a.props, "MissionLocation")) {
-            if let Ok(mut l) = LOCATION.lock() {
-                *l = loc.clone();
-            }
-        }
-        let e = commands
-            .spawn((
-                bevy::ui::Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(0.0),
-                    top: Val::Px(0.0),
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
-                Visibility::Hidden,
-                Pickable::IGNORE,
-                GlobalZIndex(60),
-                MenuBackdrop,
-            ))
-            .id();
-        st.backdrop = Some(e);
-        for z in 0..3 {
-            st.win_layers.push(layer(&mut commands, &mut images, &mut layers, 61 + z));
-        }
-        st.cursor = Some(layer(&mut commands, &mut images, &mut layers, 70));
-        // DX.dx: the camera flies the IntroCam path from Position 1 (TravelPostAccept).
-        if mission == -2 && !env_on!("DXVIEW_SHOT") {
-            let pts = crate::interp::path(&level.0, "IntroCam");
-            if let Some(first) = crate::interp::at_position(&pts, 1) {
-                let it = crate::interp::Interp::start(&pts, first);
-                st.intro = Some((pts, it));
-            }
-        }
+        build_once(st, &mut commands, &mut images, &mut layers, &level);
     }
-    if !st.themes_applied {
-        st.themes_applied = true;
-        apply_themes(&mut assets, setting!("MenuColor") as usize, setting!("HUDColor") as usize);
-    }
-    // Live settings: themes follow the setting.
-    let gen = crate::settings::generation();
-    if gen != st.applied_gen {
-        st.applied_gen = gen;
-        apply_themes(&mut assets, setting!("MenuColor") as usize, setting!("HUDColor") as usize);
-    }
-
-    // ---- the logo flyby (DeusExPlayer state Interpolating): the camera rides the path, Fire shows the menu
-    if let Some((pts, it)) = st.intro.as_mut() {
-        it.tick(pts, vtime.delta_secs_f64().max(dt as f64 * 0.0) + if vtime.is_paused() { 0.0 } else { 0.0 });
-        let to_rad = |u: f64| (u / 65536.0 * std::f64::consts::TAU) as f32;
-        let rot = Quat::from_rotation_y(-to_rad(it.rot[1]) - std::f32::consts::FRAC_PI_2)
-            * Quat::from_rotation_x(to_rad(it.rot[0]))
-            * Quat::from_rotation_z(-to_rad(it.rot[2]));
-        // PlayerCalcView: the camera is the player's location + EyeHeight (JCDentonMale BaseEyeHeight 40; only
-        // CameraPoint cut scenes zero it), so the logos sit lower in the frame than the path points alone.
-        let eye = Vec3::from(dx_level::ue_to_bevy([it.loc.x as f32, it.loc.y as f32, it.loc.z as f32 + 40.0]));
-        for mut t in &mut cam {
-            t.translation = eye;
-            t.rotation = rot;
-        }
-        for mut t in &mut sky {
-            t.rotation = rot;
-        }
-        player.body.location = it.loc;
-        player.body.velocity = glam::DVec3::ZERO;
-        player.noclip = true;
-        binds.capture = true;
-        if st.stack.is_empty() {
-            let at_rest = it.target.is_some_and(|t| pts[t].rate == 0.0 || pts[t].next.is_some_and(|n| pts[n].rate == 0.0)) && it.alpha > 0.9;
-            let clicked = binds.buttons.just_pressed(MouseButton::Left)
-                || binds.keys.just_pressed(KeyCode::Escape)
-                || binds.keys.just_pressed(KeyCode::Enter)
-                || binds.keys.just_pressed(KeyCode::Space);
-            if clicked || (at_rest && !st.intro_menu_shown) {
-                st.intro_menu_shown = true;
-                let w = open_window(&mut hud, &mut assets, "MenuMain");
-                st.push(w);
-                // Ours: the welcome window over it, until "Don't Show Again".
-                if crate::welcome::due() {
-                    let w = open_window(&mut hud, &mut assets, "MenuScreenWelcome");
-                    st.push(w);
-                }
-            }
-        }
-    }
-
-    // Developer aid: DXVIEW_MENU_OPEN="MenuMain,MenuSettings,MenuScreenDisplay" opens those windows in turn after
-    // two seconds (screenshots of the menus).
-    if let Ok(v) = std::env::var("DXVIEW_MENU_OPEN") {
-        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        st.dead_t += 0.0;
-        if !DONE.load(Ordering::Relaxed) && vtime.elapsed_secs() > 2.0 {
-            DONE.store(true, Ordering::Relaxed);
-            st.intro = None;
-            for c in v.split(',') {
-                // "MenuScreenNewGame#3": the new-game screen on portrait 3.
-                let (c, portrait) = c.split_once('#').map(|(a, b)| (a, b.parse().ok())).unwrap_or((c, None));
-                let mut w = open_window(&mut hud, &mut assets, c.trim());
-                if let (Some(Body::NewGame(ng)), Some(p)) = (w.as_mut().map(|w| &mut w.body), portrait) {
-                    ng.portrait = p;
-                }
-                st.push(w);
-            }
-        }
-    }
+    follow_themes(st, &mut assets);
+    intro_flyby(st, &vtime, &mut cam, &mut sky, &mut player, &mut binds, &mut hud, &mut assets);
+    dev_menu_open(st, &vtime, &mut hud, &mut assets);
     // ---- Escape in game opens the main menu (ShowMainMenu), unless another screen has the keys
     let others = crate::inventory_screen::SCREEN_OPEN.load(Ordering::Relaxed)
         || crate::computers::open()
@@ -2980,23 +2963,268 @@ pub fn menu_system(
         || crate::consys::third_person();
     // The Escape that closed another screen doesn't also open the menu.
     let others_before = std::mem::replace(&mut st.others_last, others);
+    open_from_game(st, &binds, &ph, dt, others || others_before, &mut hud, &mut assets);
+    keypad_tick(st, dt);
+    quick_save_load(st, &binds, &ph, others || others_before, &mut hud, &mut assets);
+    let was_open = OPEN.load(Ordering::Relaxed);
+    let is_open = !st.stack.is_empty();
+    // The key that opened the menu this frame (Escape) mustn't also close it.
+    let opened_now = is_open && !was_open;
+    pause_and_backdrop(st, &mut vtime, &mut cursor_opts, &mut backdrop, is_open, was_open);
+    if !is_open {
+        hide_closed(st, &mut nodes, &mut wheel);
+        return;
+    }
+    binds.capture = true;
+
+    // ---- layout
+    let Some(fonts) = menu_fonts(&mut hud, &mut assets) else {
+        return;
+    };
+    let (pw, phh) = (window.physical_width() as i32, window.physical_height() as i32);
+    // (s: canvases' whole-number scale; d: the scale shown, fractional with HUD Scale Large.)
+    let (s, d) = crate::hud::screen_scales(&window, 640, 480);
+    let (sw, sh) = ((pw as f32 / d) as i32, (phh as f32 / d) as i32);
+    let sf = window.scale_factor();
+    let mouse = window
+        .cursor_position()
+        .map(|c| ((c.x * sf / d).floor() as i32, (c.y * sf / d).floor() as i32))
+        .unwrap_or((-100, -100));
+    let view = View { s, d, sf, sw, sh, mouse };
+    let top = st.stack.len() - 1;
+
+    // ---- input
+    let hover = st.hits.iter().rev().find(|(_, r, _)| inside(mouse, *r)).map(|h| (h.0, h.2));
+    let hover_w = hover.map(|h| h.0);
+    if env_on!("DXVIEW_SNAPLOG") {
+        eprintln!("SNAP mouse {mouse:?} hover {hover:?} hits {:?}", st.hits.iter().map(|h| (h.0, h.1)).collect::<Vec<_>>());
+    }
+    let shift = binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight);
+    let ctrl = binds.keys.pressed(KeyCode::ControlLeft) || binds.keys.pressed(KeyCode::ControlRight);
+    let mut acts: Vec<Act> = Vec::new();
+    if CLOSE_ALL.swap(false, Ordering::Relaxed) && st.waiting_key.is_none() {
+        acts.push(Act::PopAll);
+    }
+    let click_focus = matches!(st.stack[top].body, Body::NewGame(_) | Body::Keypad(_));
+    let mut cx = InCx {
+        st: &mut *st,
+        binds: &mut binds,
+        hud: &mut hud,
+        assets: &mut assets,
+        fonts: &fonts,
+        view,
+        acts,
+        top,
+        hover,
+        hover_w,
+        click_focus,
+        shift,
+        ctrl,
+    };
+    hover_focus(&mut cx);
+    if cx.st.waiting_key.is_some() {
+        capture_binding(&mut cx, dt);
+    }
+    let waiting = cx.st.waiting_key.is_some();
+    let drop_click = !waiting && drop_down_click(&mut cx);
+    if !waiting && !drop_click && cx.binds.buttons.just_pressed(MouseButton::Left) {
+        if let Some(k) = left_press(&mut cx) {
+            save_load_action(&mut *cx.st, top, k, &mut *cx.hud, &mut *cx.assets, &mut cx.acts);
+        }
+    }
+    if cx.binds.buttons.pressed(MouseButton::Left) {
+        left_held(&mut cx);
+    }
+    release_and_wheel(&mut cx, &mut wheel);
+    // Keys.
+    if !waiting && !opened_now {
+        typed_keys(&mut cx);
+    }
+    let InCx { acts, .. } = cx;
+
+    // ---- apply
+    apply_acts(acts, st, &binds, &mut window, &root, &mut exit, &mut hud, &mut assets);
+    if st.stack.is_empty() {
+        return;
+    }
+
+    // ---- draw: the top window and the ones it doesn't hide
+    let lean = crate::perf::lean_updates();
+    draw_windows(st, &mut hud, &mut assets, &mut images, &mut layers, &mut nodes, &fonts, view, hover_w, waiting, lean);
+    draw_cursor(st, &mut hud, &mut assets, &mut images, &mut layers, &mut nodes, &window, view, lean);
+    let _: Rgb = WHITE;
+}
+
+/// The first frame on a map: mission number / location, the backdrop and window layers, the DX.dx flyby path.
+fn build_once(
+    st: &mut Menus,
+    commands: &mut Commands,
+    images: &mut ResMut<Assets<Image>>,
+    layers: &mut ResMut<Assets<HudLayer>>,
+    level: &LevelRes,
+) {
+    st.built = true;
+    let mission = level.0.level_info()
+        .map(|a| pint(&a.props, "missionNumber", 0))
+        .unwrap_or(0);
+    MISSION.store(mission, Ordering::Relaxed);
+    TRAINING.store(level.0.level_info().is_some() && mission == 0, Ordering::Relaxed);
+    if let Some(Value::Str(loc)) = level.0.level_info().and_then(|a| find(&a.props, "MissionLocation")) {
+        if let Ok(mut l) = LOCATION.lock() {
+            *l = loc.clone();
+        }
+    }
+    let e = commands
+        .spawn((
+            bevy::ui::Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+            GlobalZIndex(60),
+            MenuBackdrop,
+        ))
+        .id();
+    st.backdrop = Some(e);
+    for z in 0..3 {
+        st.win_layers.push(layer(commands, images, layers, 61 + z));
+    }
+    st.cursor = Some(layer(commands, images, layers, 70));
+    // DX.dx: the camera flies the IntroCam path from Position 1 (TravelPostAccept).
+    if mission == -2 && !env_on!("DXVIEW_SHOT") {
+        let pts = crate::interp::path(&level.0, "IntroCam");
+        if let Some(first) = crate::interp::at_position(&pts, 1) {
+            let it = crate::interp::Interp::start(&pts, first);
+            st.intro = Some((pts, it));
+        }
+    }
+}
+
+/// The menu / HUD colour themes follow the settings (once at first, then whenever they change).
+fn follow_themes(st: &mut Menus, assets: &mut ResMut<RuntimeAssets>) {
+    if !st.themes_applied {
+        st.themes_applied = true;
+        apply_themes(assets, setting!("MenuColor") as usize, setting!("HUDColor") as usize);
+    }
+    // Live settings: themes follow the setting.
+    let gen = crate::settings::generation();
+    if gen != st.applied_gen {
+        st.applied_gen = gen;
+        apply_themes(assets, setting!("MenuColor") as usize, setting!("HUDColor") as usize);
+    }
+}
+
+/// The logo flyby (DeusExPlayer state Interpolating): the camera rides the path, Fire shows the menu.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn intro_flyby(
+    st: &mut Menus,
+    vtime: &ResMut<Time<Virtual>>,
+    cam: &mut Query<&mut Transform, (With<FlyCam>, Without<SkyCam>)>,
+    sky: &mut Query<&mut Transform, (With<SkyCam>, Without<FlyCam>)>,
+    player: &mut ResMut<crate::Player>,
+    binds: &mut ResMut<Bindings>,
+    hud: &mut ResMut<ClassicHud>,
+    assets: &mut ResMut<RuntimeAssets>,
+) {
+    let Some((pts, it)) = st.intro.as_mut() else { return };
+    it.tick(pts, vtime.delta_secs_f64());
+    let to_rad = |u: f64| (u / 65536.0 * std::f64::consts::TAU) as f32;
+    let rot = Quat::from_rotation_y(-to_rad(it.rot[1]) - std::f32::consts::FRAC_PI_2)
+        * Quat::from_rotation_x(to_rad(it.rot[0]))
+        * Quat::from_rotation_z(-to_rad(it.rot[2]));
+    // PlayerCalcView: the camera is the player's location + EyeHeight (JCDentonMale BaseEyeHeight 40; only
+    // CameraPoint cut scenes zero it), so the logos sit lower in the frame than the path points alone.
+    let eye = Vec3::from(dx_level::ue_to_bevy([it.loc.x as f32, it.loc.y as f32, it.loc.z as f32 + 40.0]));
+    for mut t in cam.iter_mut() {
+        t.translation = eye;
+        t.rotation = rot;
+    }
+    for mut t in sky.iter_mut() {
+        t.rotation = rot;
+    }
+    player.body.location = it.loc;
+    player.body.velocity = glam::DVec3::ZERO;
+    player.noclip = true;
+    binds.capture = true;
+    if st.stack.is_empty() {
+        let at_rest = it.target.is_some_and(|t| pts[t].rate == 0.0 || pts[t].next.is_some_and(|n| pts[n].rate == 0.0)) && it.alpha > 0.9;
+        let clicked = binds.buttons.just_pressed(MouseButton::Left)
+            || binds.keys.just_pressed(KeyCode::Escape)
+            || binds.keys.just_pressed(KeyCode::Enter)
+            || binds.keys.just_pressed(KeyCode::Space);
+        if clicked || (at_rest && !st.intro_menu_shown) {
+            st.intro_menu_shown = true;
+            let w = open_window(hud, assets, "MenuMain");
+            st.push(w);
+            // Ours: the welcome window over it, until "Don't Show Again".
+            if crate::welcome::due() {
+                let w = open_window(hud, assets, "MenuScreenWelcome");
+                st.push(w);
+            }
+        }
+    }
+}
+
+/// Developer aid: DXVIEW_MENU_OPEN="MenuMain,MenuSettings,MenuScreenDisplay" opens those windows in turn after
+/// two seconds (screenshots of the menus).
+fn dev_menu_open(st: &mut Menus, vtime: &ResMut<Time<Virtual>>, hud: &mut ResMut<ClassicHud>, assets: &mut ResMut<RuntimeAssets>) {
+    if let Ok(v) = std::env::var("DXVIEW_MENU_OPEN") {
+        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !DONE.load(Ordering::Relaxed) && vtime.elapsed_secs() > 2.0 {
+            DONE.store(true, Ordering::Relaxed);
+            st.intro = None;
+            for c in v.split(',') {
+                // "MenuScreenNewGame#3": the new-game screen on portrait 3.
+                let (c, portrait) = c.split_once('#').map(|(a, b)| (a, b.parse().ok())).unwrap_or((c, None));
+                let mut w = open_window(hud, assets, c.trim());
+                if let (Some(Body::NewGame(ng)), Some(p)) = (w.as_mut().map(|w| &mut w.body), portrait) {
+                    ng.portrait = p;
+                }
+                st.push(w);
+            }
+        }
+    }
+}
+
+/// Windows asked for from the game: the main menu on Escape (or Fire when dead), the controller layout, a keypad's
+/// message box. `others`: another screen has (or just had) the keys.
+fn open_from_game(
+    st: &mut Menus,
+    binds: &ResMut<Bindings>,
+    ph: &crate::ai::PlayerHealth,
+    dt: f32,
+    others: bool,
+    hud: &mut ResMut<ClassicHud>,
+    assets: &mut ResMut<RuntimeAssets>,
+) {
     // Dead (DeusExPlayer state Dying): Escape or Fire brings up the menu to load a game.
     DEAD.store(ph.dead, Ordering::Relaxed);
     st.dead_t = if ph.dead { st.dead_t + dt } else { 0.0 };
     let dead_click = ph.dead && st.dead_t > 2.0 && binds.buttons.just_pressed(MouseButton::Left);
-    if st.stack.is_empty() && st.intro.is_none() && !others && !others_before && (binds.keys.just_pressed(KeyCode::Escape) || dead_click) {
-        let w = open_window(&mut hud, &mut assets, "MenuMain");
+    if st.stack.is_empty() && st.intro.is_none() && !others && (binds.keys.just_pressed(KeyCode::Escape) || dead_click) {
+        let w = open_window(hud, assets, "MenuMain");
         st.push(w);
     }
     if PADMAP_OPEN.swap(false, Ordering::Relaxed) {
-        let w = pad_map_box(&mut hud, &mut assets);
+        let w = pad_map_box(hud, assets);
         st.push(w);
     }
     // A keypad was used (Keypad.ActivateKeypadWindow).
     if let Some((title, text)) = EXTERNAL_BOX.lock().ok().and_then(|mut b| b.take()) {
-        let w = msg_box(&mut hud, &mut assets, &title, &text, true, MsgPurpose::External);
+        let w = msg_box(hud, assets, &title, &text, true, MsgPurpose::External);
         st.push(w);
     }
+}
+
+/// HUDKeypadWindow: open one asked for, the pad's notes code, buttons pressed in the world, the result delay, and
+/// what diegetic.rs reads of it.
+fn keypad_tick(st: &mut Menus, dt: f32) {
     if let Some((blocker, valid, instant)) = KEYPAD_OPEN.lock().ok().and_then(|mut k| k.take()) {
         let f = Frame { class: "HUDKeypadWindow".into(), cw: 103, ch: 162, ..default() };
         let noted = in_notes(&valid);
@@ -3045,24 +3273,40 @@ pub fn menu_system(
         let noted = matches!(st.stack.last().map(|w| &w.body), Some(Body::Keypad(k)) if k.noted && k.wait.is_none() && k.input != k.valid);
         KEYPAD_NOTED.store(noted, std::sync::atomic::Ordering::Relaxed);
     }
-    // DeusExPlayer.QuickSave / QuickLoad (ConfirmQuickLoad asks first).
-    if st.stack.is_empty() && st.intro.is_none() && !others && !others_before {
+}
+
+/// DeusExPlayer.QuickSave / QuickLoad (ConfirmQuickLoad asks first). `others`: another screen has (or just had)
+/// the keys.
+fn quick_save_load(
+    st: &mut Menus,
+    binds: &ResMut<Bindings>,
+    ph: &crate::ai::PlayerHealth,
+    others: bool,
+    hud: &mut ResMut<ClassicHud>,
+    assets: &mut ResMut<RuntimeAssets>,
+) {
+    if st.stack.is_empty() && st.intro.is_none() && !others {
         if binds.action_just_pressed("Quick Save") && crate::save::can_save(ph.dead) {
             let title = pstr(&assets.classes.defaults("DeusExPlayer"), "QuickSaveGameTitle");
             crate::save::request(crate::save::quick_path(), if title.is_empty() { "Quick Save" } else { &title });
         }
         if binds.action_just_pressed("Quick Load") && crate::save::quick_path().exists() {
             let d = assets.classes.defaults("DeusExRootWindow");
-            let w = msg_box(&mut hud, &mut assets, &pstr(&d, "QuickLoadTitle"), &pstr(&d, "QuickLoadMessage"), true, MsgPurpose::QuickLoad);
+            let w = msg_box(hud, assets, &pstr(&d, "QuickLoadTitle"), &pstr(&d, "QuickLoadMessage"), true, MsgPurpose::QuickLoad);
             st.push(w);
         }
     }
-    let was_open = OPEN.load(Ordering::Relaxed);
-    let is_open = !st.stack.is_empty();
-    // The key that opened the menu this frame (Escape) mustn't also close it.
-    let opened_now = is_open && !was_open;
+}
 
-    // ---- pause / unpause (UIPauseGame, except on the logo map)
+/// Pause / unpause (UIPauseGame, except on the logo map), the pointer, and the backdrop behind the menus.
+fn pause_and_backdrop(
+    st: &mut Menus,
+    vtime: &mut ResMut<Time<Virtual>>,
+    cursor_opts: &mut Single<&mut CursorOptions>,
+    backdrop: &mut Query<(&mut Visibility, &mut BackgroundColor), (With<MenuBackdrop>, Without<MaterialNode<HudLayer>>)>,
+    is_open: bool,
+    was_open: bool,
+) {
     if is_open && !was_open {
         if !intro_map() && !vtime.is_paused() {
             vtime.pause();
@@ -3093,156 +3337,139 @@ pub fn menu_system(
             v.set_if_neq(if is_open { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
-    if !is_open {
-        for l in &st.win_layers {
-            if let Ok((_, mut v, _)) = nodes.get_mut(l.e) {
-                if *v != Visibility::Hidden {
-                    v.set_if_neq(Visibility::Hidden);
-                }
-            }
-        }
-        if let Some(c) = &st.cursor {
-            if let Ok((_, mut v, _)) = nodes.get_mut(c.e) {
+}
+
+/// No menu up: hide the window layers and the cursor.
+fn hide_closed(st: &mut Menus, nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), Without<MenuBackdrop>>, wheel: &mut MessageReader<MouseWheel>) {
+    for l in &st.win_layers {
+        if let Ok((_, mut v, _)) = nodes.get_mut(l.e) {
+            if *v != Visibility::Hidden {
                 v.set_if_neq(Visibility::Hidden);
             }
         }
-        // (The kept canvases go: the next menu draws its windows afresh.)
-        st.drawn.clear();
-        if st.intro.is_none() {
-            wheel.clear();
+    }
+    if let Some(c) = &st.cursor {
+        if let Ok((_, mut v, _)) = nodes.get_mut(c.e) {
+            v.set_if_neq(Visibility::Hidden);
         }
-        return;
     }
-    binds.capture = true;
+    // (The kept canvases go: the next menu draws its windows afresh.)
+    st.drawn.clear();
+    if st.intro.is_none() {
+        wheel.clear();
+    }
+}
 
-    // ---- layout
-    let fonts = {
-        let mut get = |n: &str| hud.font(&mut assets, n);
-        let (Some(title), Some(small), Some(headers), Some(fixed)) =
-            (get("FontMenuTitle"), get("FontMenuSmall"), get("FontMenuHeaders"), get("FontFixedWidthSmall"))
-        else {
-            return;
-        };
-        Fonts { title, small, headers, fixed }
+/// The menu fonts; None (no menu this frame) until they all load.
+fn menu_fonts(hud: &mut ClassicHud, assets: &mut RuntimeAssets) -> Option<Fonts> {
+    let mut get = |n: &str| hud.font(assets, n);
+    let (Some(title), Some(small), Some(headers), Some(fixed)) =
+        (get("FontMenuTitle"), get("FontMenuSmall"), get("FontMenuHeaders"), get("FontFixedWidthSmall"))
+    else {
+        return None;
     };
-    let (pw, phh) = (window.physical_width() as i32, window.physical_height() as i32);
-    // (s: canvases' whole-number scale; d: the scale shown, fractional with HUD Scale Large.)
-    let (s, d) = crate::hud::screen_scales(&window, 640, 480);
-    let (sw, sh) = ((pw as f32 / d) as i32, (phh as f32 / d) as i32);
-    let sf = window.scale_factor();
-    let mouse = window
-        .cursor_position()
-        .map(|c| ((c.x * sf / d).floor() as i32, (c.y * sf / d).floor() as i32))
-        .unwrap_or((-100, -100));
-    let top = st.stack.len() - 1;
-    let pos_of = |w: &Win| -> (i32, i32) {
-        let (ww, wh) = win_size(&w.f, &fonts);
-        w.pos.unwrap_or((sw / 2 - ww / 2, sh / 2 - wh / 2))
-    };
+    Some(Fonts { title, small, headers, fixed })
+}
 
-    // ---- input
-    let hover = st.hits.iter().rev().find(|(_, r, _)| inside(mouse, *r)).map(|h| (h.0, h.2));
-    let hover_w = hover.map(|h| h.0);
-    if env_on!("DXVIEW_SNAPLOG") {
-        eprintln!("SNAP mouse {mouse:?} hover {hover:?} hits {:?}", st.hits.iter().map(|h| (h.0, h.1)).collect::<Vec<_>>());
-    }
-    let shift = binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight);
-    let ctrl = binds.keys.pressed(KeyCode::ControlLeft) || binds.keys.pressed(KeyCode::ControlRight);
-    let mut acts: Vec<Act> = Vec::new();
-    if CLOSE_ALL.swap(false, Ordering::Relaxed) && st.waiting_key.is_none() {
-        acts.push(Act::PopAll);
-    }
-    let click_focus = matches!(st.stack[top].body, Body::NewGame(_) | Body::Keypad(_));
-    // Hover moves the focus (MFOCUS_EnterLeave), except on the new-game screen (MFOCUS_Click).
-    if !click_focus {
-        if let Some((w, true)) = hover {
-            if matches!(w, W::MenuBtn(_) | W::Act(_) | W::ChoiceBtn(_)) && st.stack[top].focus != Some(w) {
-                st.stack[top].focus = Some(w);
+/// Hover moves the focus (MFOCUS_EnterLeave), except on the new-game screen (MFOCUS_Click).
+fn hover_focus(cx: &mut InCx) {
+    let top = cx.top;
+    if !cx.click_focus {
+        if let Some((w, true)) = cx.hover {
+            if matches!(w, W::MenuBtn(_) | W::Act(_) | W::ChoiceBtn(_)) && cx.st.stack[top].focus != Some(w) {
+                cx.st.stack[top].focus = Some(w);
                 crate::sound::play_player("DeusExSounds.UserInterface.Menu_Focus", 0.25, 0.0);
             }
         }
     }
-    // Waiting for a key on the keyboard screen: the next key or button is the binding.
-    if let Some(t) = st.waiting_key.as_mut() {
-        *t += dt;
-        let ready = *t > 0.2;
-        let mut got: Option<crate::keybinds::Input> = None;
-        let mut cancel = false;
-        // The Controller Bindings screen waits for a pad button instead (B and Start bind too; Escape cancels).
-        let pad_screen = matches!(&st.stack[top].body, Body::Keys(k) if k.pad);
-        if pad_screen {
-            if ready {
-                let pb = crate::gamepad::frame().just.first().copied();
-                if binds.keys.just_pressed(KeyCode::Escape) && pb.is_none() {
-                    cancel = true;
-                }
-                if pb.is_some() || cancel {
-                    st.waiting_key = None;
-                    if let Body::Keys(k) = &mut st.stack[top].body {
-                        k.waiting = false;
-                        if let (Some(i), Some(b)) = (k.sel, pb) {
-                            // The button leaves any other action it was on.
-                            let mut note = String::new();
-                            for (j, m) in k.pad_map.iter_mut().enumerate() {
-                                if j != i && *m == Some(b) {
-                                    note = format!("'{}' reassigned from '{}'", crate::gamepad::pad_name(crate::gamepad::glyph_kind(), b), crate::gamepad::PAD_ACTIONS[j].0);
-                                    *m = None;
-                                }
+}
+
+/// Waiting for a key on the keyboard screen: the next key or button is the binding (ProcessKeySelection); the
+/// Controller Bindings screen waits for a pad button.
+fn capture_binding(cx: &mut InCx, dt: f32) {
+    let (st, binds, top) = (&mut *cx.st, &mut *cx.binds, cx.top);
+    let Some(t) = st.waiting_key.as_mut() else { return };
+    *t += dt;
+    let ready = *t > 0.2;
+    let mut got: Option<crate::keybinds::Input> = None;
+    let mut cancel = false;
+    // The Controller Bindings screen waits for a pad button instead (B and Start bind too; Escape cancels).
+    let pad_screen = matches!(&st.stack[top].body, Body::Keys(k) if k.pad);
+    if pad_screen {
+        if ready {
+            let pb = crate::gamepad::frame().just.first().copied();
+            if binds.keys.just_pressed(KeyCode::Escape) && pb.is_none() {
+                cancel = true;
+            }
+            if pb.is_some() || cancel {
+                st.waiting_key = None;
+                if let Body::Keys(k) = &mut st.stack[top].body {
+                    k.waiting = false;
+                    if let (Some(i), Some(b)) = (k.sel, pb) {
+                        // The button leaves any other action it was on.
+                        let mut note = String::new();
+                        for (j, m) in k.pad_map.iter_mut().enumerate() {
+                            if j != i && *m == Some(b) {
+                                note = format!("'{}' reassigned from '{}'", crate::gamepad::pad_name(crate::gamepad::glyph_kind(), b), crate::gamepad::PAD_ACTIONS[j].0);
+                                *m = None;
                             }
-                            if let Some(m) = k.pad_map.get_mut(i) {
-                                *m = Some(b);
-                            }
-                            k.note = note;
                         }
+                        if let Some(m) = k.pad_map.get_mut(i) {
+                            *m = Some(b);
+                        }
+                        k.note = note;
                     }
                 }
             }
-        } else if ready {
-            for k in binds.keys.get_just_pressed() {
-                if *k == KeyCode::Escape {
-                    cancel = true;
-                } else {
-                    got = Some(crate::keybinds::Input::Key(*k));
-                }
-            }
-            for b in binds.buttons.get_just_pressed() {
-                got = Some(crate::keybinds::Input::Mouse(*b));
+        }
+    } else if ready {
+        for k in binds.keys.get_just_pressed() {
+            if *k == KeyCode::Escape {
+                cancel = true;
+            } else {
+                got = Some(crate::keybinds::Input::Key(*k));
             }
         }
-        if cancel || got.is_some() {
-            st.waiting_key = None;
-            if let Body::Keys(k) = &mut st.stack[top].body {
-                k.waiting = false;
-                if let (Some(i), Some(inp)) = (k.sel, got) {
-                    // ProcessKeySelection: the key leaves any other function it was on.
-                    let mut note = String::new();
+        for b in binds.buttons.get_just_pressed() {
+            got = Some(crate::keybinds::Input::Mouse(*b));
+        }
+    }
+    if cancel || got.is_some() {
+        st.waiting_key = None;
+        if let Body::Keys(k) = &mut st.stack[top].body {
+            k.waiting = false;
+            if let (Some(i), Some(inp)) = (k.sel, got) {
+                // ProcessKeySelection: the key leaves any other function it was on.
+                let mut note = String::new();
+                for (j, m) in k.map.iter_mut().enumerate() {
+                    if j != i && *m == inp {
+                        note = format!("'{}' reassigned from '{}'", crate::keybinds::input_name(inp), crate::keybinds::ACTIONS[j].0);
+                    }
+                }
+                if !note.is_empty() {
                     for (j, m) in k.map.iter_mut().enumerate() {
                         if j != i && *m == inp {
-                            note = format!("'{}' reassigned from '{}'", crate::keybinds::input_name(inp), crate::keybinds::ACTIONS[j].0);
+                            *m = crate::keybinds::ACTIONS[i].1;
                         }
                     }
-                    if !note.is_empty() {
-                        for (j, m) in k.map.iter_mut().enumerate() {
-                            if j != i && *m == inp {
-                                *m = crate::keybinds::ACTIONS[i].1;
-                                let _ = j;
-                            }
-                        }
-                    }
-                    if let Some(m) = k.map.get_mut(i) {
-                        *m = inp;
-                    }
-                    k.note = note;
                 }
+                if let Some(m) = k.map.get_mut(i) {
+                    *m = inp;
+                }
+                k.note = note;
             }
-            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
         }
-        binds.typed.clear();
+        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
     }
-    let waiting = st.waiting_key.is_some();
-    // An open drop-down takes the click: a row picks it, the list's scroll bar scrolls it, anywhere else closes it.
+    binds.typed.clear();
+}
+
+/// An open drop-down takes the click: a row picks it, the list's scroll bar scrolls it, anywhere else closes it.
+/// True when the click was the drop-down's.
+fn drop_down_click(cx: &mut InCx) -> bool {
+    let (st, acts, top, hover_w) = (&mut *cx.st, &mut cx.acts, cx.top, cx.hover_w);
     let mut drop_click = false;
-    if !waiting && binds.buttons.just_pressed(MouseButton::Left) && st.stack[top].drop.is_some() {
+    if cx.binds.buttons.just_pressed(MouseButton::Left) && st.stack[top].drop.is_some() {
         let in_list = matches!(hover_w, Some(W::Header(50) | W::ScrollUp(50) | W::ScrollDown(50) | W::ScrollTrack(50)));
         match hover_w {
             Some(W::Row(50, r)) => {
@@ -3264,138 +3491,148 @@ pub fn menu_system(
             }
         }
     }
+    drop_click
+}
+
+/// A left click on the top window: title drag, edit focus, list rows (double click activates), scroll arrows.
+/// Some(save / load key) when a save list row was double-clicked.
+fn left_press(cx: &mut InCx) -> Option<&'static str> {
+    let (st, acts, top, mouse) = (&mut *cx.st, &mut cx.acts, cx.top, cx.view.mouse);
     let mut sl_double: Option<&str> = None;
-    if !waiting && !drop_click && binds.buttons.just_pressed(MouseButton::Left) {
-        st.pressed = None;
-        if let Some((w, enabled)) = hover {
-            if enabled {
-                let win = &mut st.stack[top];
-                match w {
-                    W::Title => {
-                        let p = pos_of(win);
-                        st.drag = Some((mouse.0 - p.0, mouse.1 - p.1));
-                    }
-                    W::Edit(n) => {
-                        win.focus = Some(w);
-                        let _ = n;
-                    }
-                    W::Row(l, r) => {
-                        let double = st.last_click.1 == Some(w) && st.clock - st.last_click.0 < 0.4;
-                        st.last_click = (st.clock, Some(w));
-                        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
-                        match &mut win.body {
-                            Body::NewGame(ng) if l == 0 => {
-                                if ng.sel != Some(r) {
-                                    ng.desc_scroll = 0;
-                                }
-                                ng.sel = Some(r);
-                                if double {
-                                    // ListRowActivated: upgrade.
-                                    if let Some(&i) = ng.order.get(r) {
-                                        let c = ng.skills.list[i].def.class.clone();
-                                        ng.skills.upgrade(&c);
-                                    }
+    st.pressed = None;
+    if let Some((w, enabled)) = cx.hover {
+        if enabled {
+            let win = &mut st.stack[top];
+            match w {
+                W::Title => {
+                    let p = win_pos(win, cx.fonts, cx.view.sw, cx.view.sh);
+                    st.drag = Some((mouse.0 - p.0, mouse.1 - p.1));
+                }
+                W::Edit(_) => {
+                    win.focus = Some(w);
+                }
+                W::Row(l, r) => {
+                    let double = st.last_click.1 == Some(w) && st.clock - st.last_click.0 < 0.4;
+                    st.last_click = (st.clock, Some(w));
+                    crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+                    match &mut win.body {
+                        Body::NewGame(ng) if l == 0 => {
+                            if ng.sel != Some(r) {
+                                ng.desc_scroll = 0;
+                            }
+                            ng.sel = Some(r);
+                            if double {
+                                // ListRowActivated: upgrade.
+                                if let Some(&i) = ng.order.get(r) {
+                                    let c = ng.skills.list[i].def.class.clone();
+                                    ng.skills.upgrade(&c);
                                 }
                             }
-                            Body::Keys(k) => {
-                                k.sel = Some(r);
-                                if double {
-                                    k.waiting = true;
-                                    st.waiting_key = Some(0.0);
-                                }
+                        }
+                        Body::Keys(k) => {
+                            k.sel = Some(r);
+                            if double {
+                                k.waiting = true;
+                                st.waiting_key = Some(0.0);
                             }
-                            Body::Enhance(en) if l == 0 => {
-                                if let Some(&i) = en.shown().get(r) {
-                                    // A click on the selected row changes it; on another row it selects it.
-                                    // (A group header opens or closes at once.)
-                                    let header = matches!(i, Row::Group(_));
-                                    if en.sel == Some(i) || header {
-                                        en.sel = Some(i);
-                                        en.step(1, &mut acts);
-                                    }
+                        }
+                        Body::Enhance(en) if l == 0 => {
+                            if let Some(&i) = en.shown().get(r) {
+                                // A click on the selected row changes it; on another row it selects it.
+                                // (A group header opens or closes at once.)
+                                let header = matches!(i, Row::Group(_));
+                                if en.sel == Some(i) || header {
                                     en.sel = Some(i);
+                                    en.step(1, acts);
+                                }
+                                en.sel = Some(i);
+                            }
+                        }
+                        Body::SaveLoad(sl) if l == 0 => {
+                            if sl.sel != Some(r) {
+                                sl.sel = Some(r);
+                                if sl.saving {
+                                    // Name the save: the old description, or where the player is for a new one.
+                                    let t = sl.game(r).map(|g| g.description.clone()).unwrap_or_else(default_save_name);
+                                    sl.edit.text = t.chars().collect();
+                                    sl.edit.cur = sl.edit.text.len();
+                                    sl.edit.anchor = 0;
                                 }
                             }
-                            Body::SaveLoad(sl) if l == 0 => {
-                                if sl.sel != Some(r) {
-                                    sl.sel = Some(r);
-                                    if sl.saving {
-                                        // Name the save: the old description, or where the player is for a new one.
-                                        let t = sl.game(r).map(|g| g.description.clone()).unwrap_or_else(default_save_name);
-                                        sl.edit.text = t.chars().collect();
-                                        sl.edit.cur = sl.edit.text.len();
-                                        sl.edit.anchor = 0;
-                                    }
-                                }
-                                if !sl.saving && sl.toggle(r) {
-                                    // A character's heading opens / closes (one click, like the Enhancements groups).
-                                } else if double {
-                                    sl_double = Some(if sl.saving { "SAVE" } else { "LOAD" });
-                                }
+                            if !sl.saving && sl.toggle(r) {
+                                // A character's heading opens / closes (one click, like the Enhancements groups).
+                            } else if double {
+                                sl_double = Some(if sl.saving { "SAVE" } else { "LOAD" });
                             }
-                            _ => {}
                         }
-                    }
-                    W::ScrollUp(id) | W::ScrollDown(id) => {
-                        let d = if matches!(w, W::ScrollUp(_)) { -ROW_H } else { ROW_H };
-                        scroll_by(win, id, d);
-                    }
-                    W::Win => {}
-                    _ => {
-                        if click_focus {
-                            win.focus = Some(w);
-                        }
+                        _ => {}
                     }
                 }
-                st.pressed = Some(w);
-            }
-        }
-    }
-    if let Some(k) = sl_double {
-        save_load_action(st, top, k, &mut hud, &mut assets, &mut acts);
-    }
-    if binds.buttons.pressed(MouseButton::Left) {
-        if let Some((dx, dy)) = st.drag {
-            st.stack[top].pos = Some((mouse.0 - dx, mouse.1 - dy));
-        }
-        if let Some(W::Slider(i)) = st.pressed {
-            if let Some((_, r, _)) = st.hits.iter().find(|h| h.0 == W::Slider(i)) {
-                let r = *r;
-                if let Body::Choices { choices } = &mut st.stack[top].body {
-                    if let Some(c) = choices.get_mut(i as usize) {
-                        if let ChoiceKind::Slider { ticks, .. } = c.kind {
-                            let rel = (mouse.0 - r.0 - 8) as f32 / (r.2 - 16).max(1) as f32;
-                            let t = (rel * (ticks - 1) as f32).round() as i32;
-                            if t != c.slider_tick() {
-                                c.set_tick(t);
-                                crate::sound::play_player("DeusExSounds.UserInterface.Menu_Slider", 0.25, 0.0);
-                                live_preview(c);
-                            }
-                        }
+                W::ScrollUp(id) | W::ScrollDown(id) => {
+                    let d = if matches!(w, W::ScrollUp(_)) { -ROW_H } else { ROW_H };
+                    scroll_by(win, id, d);
+                }
+                W::Win => {}
+                _ => {
+                    if cx.click_focus {
+                        win.focus = Some(w);
                     }
                 }
             }
+            st.pressed = Some(w);
         }
-        if let Some(W::ScrollTrack(id)) = st.pressed {
-            if id < 100 {
-                if let Some((_, r, _)) = st.hits.iter().find(|h| h.0 == W::ScrollTrack(id)) {
-                    let frac = ((mouse.1 - r.1) as f32 / r.3.max(1) as f32).clamp(0.0, 1.0);
-                    set_scroll(&mut st.stack[top], id, (frac * 4000.0) as i32);
+    }
+    sl_double
+}
+
+/// The left button held: drag the window, move a pressed slider, drag a scroll track.
+fn left_held(cx: &mut InCx) {
+    let (st, top, mouse) = (&mut *cx.st, cx.top, cx.view.mouse);
+    if let Some((dx, dy)) = st.drag {
+        st.stack[top].pos = Some((mouse.0 - dx, mouse.1 - dy));
+    }
+    if let Some(W::Slider(i)) = st.pressed {
+        if let Some((_, r, _)) = st.hits.iter().find(|h| h.0 == W::Slider(i)) {
+            let r = *r;
+            if let Body::Choices { choices } = &mut st.stack[top].body {
+                if let Some(c) = choices.get_mut(i as usize) {
+                    if let ChoiceKind::Slider { ticks, .. } = c.kind {
+                        let rel = (mouse.0 - r.0 - 8) as f32 / (r.2 - 16).max(1) as f32;
+                        let t = (rel * (ticks - 1) as f32).round() as i32;
+                        if t != c.slider_tick() {
+                            c.set_tick(t);
+                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Slider", 0.25, 0.0);
+                            live_preview(c);
+                        }
+                    }
                 }
             }
         }
     }
-    if binds.buttons.just_released(MouseButton::Left) {
+    if let Some(W::ScrollTrack(id)) = st.pressed {
+        if id < 100 {
+            if let Some((_, r, _)) = st.hits.iter().find(|h| h.0 == W::ScrollTrack(id)) {
+                let frac = ((mouse.1 - r.1) as f32 / r.3.max(1) as f32).clamp(0.0, 1.0);
+                set_scroll(&mut st.stack[top], id, (frac * 4000.0) as i32);
+            }
+        }
+    }
+}
+
+/// Left release over the pressed widget activates it; right click steps a choice back; the wheel scrolls lists.
+fn release_and_wheel(cx: &mut InCx, wheel: &mut MessageReader<MouseWheel>) {
+    let (st, acts, top, hover_w) = (&mut *cx.st, &mut cx.acts, cx.top, cx.hover_w);
+    if cx.binds.buttons.just_released(MouseButton::Left) {
         st.drag = None;
         if let Some(w) = st.pressed.take() {
             if hover_w == Some(w) {
-                activate(st, top, w, false, &mut hud, &mut assets, &mut acts);
+                activate(st, top, w, false, &mut *cx.hud, &mut *cx.assets, acts);
             }
         }
     }
-    if binds.buttons.just_pressed(MouseButton::Right) {
-        if let Some((w @ (W::ChoiceBtn(_) | W::ChoiceVal(_)), true)) = hover {
-            activate(st, top, w, true, &mut hud, &mut assets, &mut acts);
+    if cx.binds.buttons.just_pressed(MouseButton::Right) {
+        if let Some((w @ (W::ChoiceBtn(_) | W::ChoiceVal(_)), true)) = cx.hover {
+            activate(st, top, w, true, &mut *cx.hud, &mut *cx.assets, acts);
         }
     }
     let lines: f32 = wheel.read().map(|w| if w.unit == bevy::input::mouse::MouseScrollUnit::Line { w.y } else { w.y / 40.0 }).sum();
@@ -3410,256 +3647,290 @@ pub fn menu_system(
             scroll_by(&mut st.stack[top], id, px);
         }
     }
-    // Keys.
-    if !waiting && !opened_now {
-        let typed = binds.typed.clone();
-        for (k, text) in &typed {
-            if acts.iter().any(|a| matches!(a, Act::Pop | Act::PopAll)) {
-                break;
-            }
-            let win = &mut st.stack[top];
-            // HUDKeypadWindow.VirtualKeyPressed: the number keys press the buttons.
-            if let Body::Keypad(kp) = &mut win.body {
-                let idx = match k {
-                    KeyCode::Digit0 | KeyCode::Numpad0 => Some(10),
-                    KeyCode::Digit1 | KeyCode::Numpad1 => Some(0),
-                    KeyCode::Digit2 | KeyCode::Numpad2 => Some(1),
-                    KeyCode::Digit3 | KeyCode::Numpad3 => Some(2),
-                    KeyCode::Digit4 | KeyCode::Numpad4 => Some(3),
-                    KeyCode::Digit5 | KeyCode::Numpad5 => Some(4),
-                    KeyCode::Digit6 | KeyCode::Numpad6 => Some(5),
-                    KeyCode::Digit7 | KeyCode::Numpad7 => Some(6),
-                    KeyCode::Digit8 | KeyCode::Numpad8 => Some(7),
-                    KeyCode::Digit9 | KeyCode::Numpad9 => Some(8),
-                    _ => None,
-                };
-                if let Some(i) = idx {
-                    keypad_press(kp, i);
-                    continue;
-                }
-                // Ours: Tab types the code found in the notes.
-                if *k == KeyCode::Tab && kp.noted && kp.wait.is_none() {
-                    keypad_from_notes(kp);
-                    continue;
-                }
-            }
-            // Enhancements: arrows move / change, Enter changes or opens, everything else types into the search.
-            if let Body::Enhance(en) = &mut win.body {
-                match k {
-                    KeyCode::ArrowUp => en.move_sel(-1),
-                    KeyCode::ArrowDown => en.move_sel(1),
-                    KeyCode::PageUp => en.move_sel(-20),
-                    KeyCode::PageDown => en.move_sel(20),
-                    KeyCode::ArrowLeft => en.step(-1, &mut acts),
-                    KeyCode::ArrowRight | KeyCode::Enter | KeyCode::NumpadEnter if en.sel.is_some() => en.step(1, &mut acts),
-                    KeyCode::Escape | KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter => {}
-                    _ => {
-                        en.search.key(*k, text.as_deref(), shift, ctrl);
-                        en.scroll = 0;
-                        // Keep a selection among what's left.
-                        let shown = en.shown();
-                        if !en.sel.is_some_and(|s| shown.contains(&s)) {
-                            en.sel = shown.first().copied();
-                        }
-                    }
-                }
-                if !matches!(k, KeyCode::Escape | KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter) || en.sel.is_some() && matches!(k, KeyCode::Enter | KeyCode::NumpadEnter) {
-                    continue;
-                }
-            }
-            // The save screen's description takes typing (Up / Down / Enter / Escape still work the list).
-            if let Body::SaveLoad(sl) = &mut win.body {
-                if sl.saving
-                    && sl.sel.is_some()
-                    && !matches!(
-                        k,
-                        KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::ArrowUp | KeyCode::ArrowDown
-                    )
-                {
-                    sl.edit.key(*k, text.as_deref(), shift, ctrl);
-                    continue;
-                }
-            }
-            // An edit with the focus takes typing (MenuUIEditWindow; the new-game name keeps to its filter).
-            if let (Some(W::Edit(0)), Body::NewGame(ng)) = (win.focus, &mut win.body) {
-                let filter = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890 ";
-                let t = text.as_deref().map(|t| t.chars().filter(|c| filter.contains(*c)).collect::<String>());
-                if !matches!(k, KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab) {
-                    ng.name.key(*k, t.as_deref().filter(|t| !t.is_empty()), shift, ctrl);
-                    continue;
-                }
-            }
-            match k {
-                KeyCode::Escape if win.drop.is_some() => {
-                    win.drop = None;
-                }
-                KeyCode::Escape => {
-                    if let Body::Msg(m) = &win.body {
-                        // MB_YesNo: No; MB_OK: OK.
-                        let yes = !m.yes_no;
-                        box_answer(st, top, yes, &mut hud, &mut assets, &mut acts);
-                    } else if win.f.escape_saves {
-                        save_choices(win);
-                        crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
-                        acts.push(Act::Pop);
-                    } else {
-                        cancel_choices(win);
-                        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Cancel", 0.25, 0.0);
-                        acts.push(Act::Pop);
-                    }
-                }
-                KeyCode::Enter | KeyCode::NumpadEnter => {
-                    match &win.body {
-                        Body::Msg(_) => box_answer(st, top, true, &mut hud, &mut assets, &mut acts),
-                        Body::Menu { .. } => {
-                            if let Some(f) = win.focus {
-                                activate(st, top, f, false, &mut hud, &mut assets, &mut acts);
-                            }
-                        }
-                        Body::Keys(kk) if kk.sel.is_some() => {
-                            if let Body::Keys(kk) = &mut win.body {
-                                kk.waiting = true;
-                            }
-                            st.waiting_key = Some(0.0);
-                        }
-                        Body::NewGame(_) | Body::Keypad(_) => {}
-                        Body::SaveLoad(sl) => {
-                            let saving = sl.saving;
-                            let heading = !saving
-                                && match &mut st.stack[top].body {
-                                    Body::SaveLoad(sl) => sl.sel.is_some_and(|r| sl.toggle(r)),
-                                    _ => false,
-                                };
-                            if !heading {
-                                let k = if saving { "SAVE" } else { "LOAD" };
-                                save_load_action(st, top, k, &mut hud, &mut assets, &mut acts);
-                            }
-                        }
-                        _ => {
-                            // Enter is OK.
-                            save_choices(win);
-                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
-                            acts.push(Act::Pop);
-                        }
-                    }
-                }
-                KeyCode::KeyY => {
-                    if matches!(&win.body, Body::Msg(m) if m.yes_no) {
-                        box_answer(st, top, true, &mut hud, &mut assets, &mut acts);
-                    }
-                }
-                KeyCode::KeyN => {
-                    if matches!(&win.body, Body::Msg(m) if m.yes_no) {
-                        box_answer(st, top, false, &mut hud, &mut assets, &mut acts);
-                    }
-                }
-                KeyCode::ArrowUp | KeyCode::ArrowDown => {
-                    let up = *k == KeyCode::ArrowUp;
-                    match &mut win.body {
-                        Body::Menu { buttons, .. } => {
-                            let n = buttons.len();
-                            let cur = match win.focus {
-                                Some(W::MenuBtn(i)) => i as i32,
-                                _ => if up { n as i32 } else { -1 },
-                            };
-                            let mut i = cur;
-                            for _ in 0..n {
-                                i = (i + if up { -1 } else { 1 }).rem_euclid(n as i32);
-                                if buttons[i as usize].enabled {
-                                    break;
-                                }
-                            }
-                            win.focus = Some(W::MenuBtn(i as u8));
-                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Focus", 0.25, 0.0);
-                        }
-                        Body::Choices { choices } => {
-                            let n = choices.len() as i32;
-                            let cur = match win.focus {
-                                Some(W::ChoiceBtn(i)) => i as i32,
-                                _ => if up { n } else { -1 },
-                            };
-                            win.focus = Some(W::ChoiceBtn((cur + if up { -1 } else { 1 }).rem_euclid(n) as u8));
-                        }
-                        Body::NewGame(ng) => {
-                            let n = ng.order.len();
-                            let cur = ng.sel.unwrap_or(0);
-                            ng.sel = Some(if up { cur.saturating_sub(1) } else { (cur + 1).min(n.saturating_sub(1)) });
-                            ng.desc_scroll = 0;
-                        }
-                        Body::SaveLoad(sl) => {
-                            let n = sl.rows();
-                            if n > 0 {
-                                let cur = sl.sel.unwrap_or(0);
-                                let next = if up { cur.saturating_sub(1) } else { (cur + 1).min(n - 1) };
-                                if Some(next) != sl.sel {
-                                    sl.sel = Some(next);
-                                    if sl.saving {
-                                        let t = sl.game(next).map(|g| g.description.clone()).unwrap_or_else(default_save_name);
-                                        sl.edit.text = t.chars().collect();
-                                        sl.edit.cur = sl.edit.text.len();
-                                        sl.edit.anchor = 0;
-                                    }
-                                }
-                                let y = next as i32 * ROW_H;
-                                if y < sl.scroll {
-                                    sl.scroll = y;
-                                }
-                                if y + ROW_H > sl.scroll + 270 {
-                                    sl.scroll = y + ROW_H - 270;
-                                }
-                            }
-                        }
-                        Body::Keys(kk) => {
-                            let n = kk.rows();
-                            let cur = kk.sel.unwrap_or(0);
-                            let next = if up { cur.saturating_sub(1) } else { (cur + 1).min(n - 1) };
-                            kk.sel = Some(next);
-                            let y = next as i32 * ROW_H;
-                            if y < kk.scroll {
-                                kk.scroll = y;
-                            }
-                            if y + ROW_H > kk.scroll + 268 {
-                                kk.scroll = y + ROW_H - 268;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                KeyCode::ArrowLeft | KeyCode::ArrowRight => {
-                    // MenuUIScreenWindow: left / right cycle the focused choice.
-                    if let (Some(W::ChoiceBtn(i)), Body::Choices { choices }) = (win.focus, &mut win.body) {
-                        if let Some(c) = choices.get_mut(i as usize) {
-                            c.cycle(if *k == KeyCode::ArrowLeft { -1 } else { 1 });
-                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
-                            live_preview(c);
-                        }
-                    }
-                }
-                KeyCode::Delete => {
-                    if let Body::Keys(kk) = &mut win.body {
-                        if let Some(i) = kk.sel {
-                            // ClearFunction: our actions always keep one input, so Delete puts the default back.
-                            if kk.pad {
-                                if let Some(m) = kk.pad_map.get_mut(i) {
-                                    *m = crate::gamepad::PAD_ACTIONS[i].2;
-                                }
-                            } else if let Some(m) = kk.map.get_mut(i) {
-                                *m = crate::keybinds::ACTIONS[i].1;
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
+}
+
+/// The keys typed this frame, until one closes the window.
+fn typed_keys(cx: &mut InCx) {
+    let typed = cx.binds.typed.clone();
+    for (k, text) in &typed {
+        if cx.acts.iter().any(|a| matches!(a, Act::Pop | Act::PopAll)) {
+            break;
+        }
+        if screen_typing(cx, k, text) {
+            continue;
+        }
+        menu_key(cx, k);
+    }
+}
+
+/// Screens that take a key themselves: keypad digits, the Enhancements list and search, the save description, the
+/// new-game name. True when the key was theirs.
+fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
+    let (shift, ctrl) = (cx.shift, cx.ctrl);
+    let acts = &mut cx.acts;
+    let win = &mut cx.st.stack[cx.top];
+    // HUDKeypadWindow.VirtualKeyPressed: the number keys press the buttons.
+    if let Body::Keypad(kp) = &mut win.body {
+        let idx = match k {
+            KeyCode::Digit0 | KeyCode::Numpad0 => Some(10),
+            KeyCode::Digit1 | KeyCode::Numpad1 => Some(0),
+            KeyCode::Digit2 | KeyCode::Numpad2 => Some(1),
+            KeyCode::Digit3 | KeyCode::Numpad3 => Some(2),
+            KeyCode::Digit4 | KeyCode::Numpad4 => Some(3),
+            KeyCode::Digit5 | KeyCode::Numpad5 => Some(4),
+            KeyCode::Digit6 | KeyCode::Numpad6 => Some(5),
+            KeyCode::Digit7 | KeyCode::Numpad7 => Some(6),
+            KeyCode::Digit8 | KeyCode::Numpad8 => Some(7),
+            KeyCode::Digit9 | KeyCode::Numpad9 => Some(8),
+            _ => None,
+        };
+        if let Some(i) = idx {
+            keypad_press(kp, i);
+            return true;
+        }
+        // Ours: Tab types the code found in the notes.
+        if *k == KeyCode::Tab && kp.noted && kp.wait.is_none() {
+            keypad_from_notes(kp);
+            return true;
         }
     }
+    // Enhancements: arrows move / change, Enter changes or opens, everything else types into the search.
+    if let Body::Enhance(en) = &mut win.body {
+        match k {
+            KeyCode::ArrowUp => en.move_sel(-1),
+            KeyCode::ArrowDown => en.move_sel(1),
+            KeyCode::PageUp => en.move_sel(-20),
+            KeyCode::PageDown => en.move_sel(20),
+            KeyCode::ArrowLeft => en.step(-1, acts),
+            KeyCode::ArrowRight | KeyCode::Enter | KeyCode::NumpadEnter if en.sel.is_some() => en.step(1, acts),
+            KeyCode::Escape | KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter => {}
+            _ => {
+                en.search.key(*k, text.as_deref(), shift, ctrl);
+                en.scroll = 0;
+                // Keep a selection among what's left.
+                let shown = en.shown();
+                if !en.sel.is_some_and(|s| shown.contains(&s)) {
+                    en.sel = shown.first().copied();
+                }
+            }
+        }
+        if !matches!(k, KeyCode::Escape | KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter) || en.sel.is_some() && matches!(k, KeyCode::Enter | KeyCode::NumpadEnter) {
+            return true;
+        }
+    }
+    // The save screen's description takes typing (Up / Down / Enter / Escape still work the list).
+    if let Body::SaveLoad(sl) = &mut win.body {
+        if sl.saving
+            && sl.sel.is_some()
+            && !matches!(
+                k,
+                KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::ArrowUp | KeyCode::ArrowDown
+            )
+        {
+            sl.edit.key(*k, text.as_deref(), shift, ctrl);
+            return true;
+        }
+    }
+    // An edit with the focus takes typing (MenuUIEditWindow; the new-game name keeps to its filter).
+    if let (Some(W::Edit(0)), Body::NewGame(ng)) = (win.focus, &mut win.body) {
+        let filter = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890 ";
+        let t = text.as_deref().map(|t| t.chars().filter(|c| filter.contains(*c)).collect::<String>());
+        if !matches!(k, KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab) {
+            ng.name.key(*k, t.as_deref().filter(|t| !t.is_empty()), shift, ctrl);
+            return true;
+        }
+    }
+    false
+}
 
-    // ---- apply
+/// The window keys: Escape (cancel / OK / No), Enter (OK / activate), Y / N on yes-no boxes, arrows, Delete.
+fn menu_key(cx: &mut InCx, k: &KeyCode) {
+    let (st, top, hud, assets) = (&mut *cx.st, cx.top, &mut *cx.hud, &mut *cx.assets);
+    let acts = &mut cx.acts;
+    let win = &mut st.stack[top];
+    match k {
+        KeyCode::Escape if win.drop.is_some() => {
+            win.drop = None;
+        }
+        KeyCode::Escape => {
+            if let Body::Msg(m) = &win.body {
+                // MB_YesNo: No; MB_OK: OK.
+                let yes = !m.yes_no;
+                box_answer(st, top, yes, hud, assets, acts);
+            } else if win.f.escape_saves {
+                save_choices(win);
+                crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
+                acts.push(Act::Pop);
+            } else {
+                cancel_choices(win);
+                crate::sound::play_player("DeusExSounds.UserInterface.Menu_Cancel", 0.25, 0.0);
+                acts.push(Act::Pop);
+            }
+        }
+        KeyCode::Enter | KeyCode::NumpadEnter => {
+            match &win.body {
+                Body::Msg(_) => box_answer(st, top, true, hud, assets, acts),
+                Body::Menu { .. } => {
+                    if let Some(f) = win.focus {
+                        activate(st, top, f, false, hud, assets, acts);
+                    }
+                }
+                Body::Keys(kk) if kk.sel.is_some() => {
+                    if let Body::Keys(kk) = &mut win.body {
+                        kk.waiting = true;
+                    }
+                    st.waiting_key = Some(0.0);
+                }
+                Body::NewGame(_) | Body::Keypad(_) => {}
+                Body::SaveLoad(sl) => {
+                    let saving = sl.saving;
+                    let heading = !saving
+                        && match &mut st.stack[top].body {
+                            Body::SaveLoad(sl) => sl.sel.is_some_and(|r| sl.toggle(r)),
+                            _ => false,
+                        };
+                    if !heading {
+                        let k = if saving { "SAVE" } else { "LOAD" };
+                        save_load_action(st, top, k, hud, assets, acts);
+                    }
+                }
+                _ => {
+                    // Enter is OK.
+                    save_choices(win);
+                    crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
+                    acts.push(Act::Pop);
+                }
+            }
+        }
+        KeyCode::KeyY => {
+            if matches!(&win.body, Body::Msg(m) if m.yes_no) {
+                box_answer(st, top, true, hud, assets, acts);
+            }
+        }
+        KeyCode::KeyN => {
+            if matches!(&win.body, Body::Msg(m) if m.yes_no) {
+                box_answer(st, top, false, hud, assets, acts);
+            }
+        }
+        KeyCode::ArrowUp | KeyCode::ArrowDown => arrow_key(win, *k == KeyCode::ArrowUp),
+        KeyCode::ArrowLeft | KeyCode::ArrowRight => {
+            // MenuUIScreenWindow: left / right cycle the focused choice.
+            if let (Some(W::ChoiceBtn(i)), Body::Choices { choices }) = (win.focus, &mut win.body) {
+                if let Some(c) = choices.get_mut(i as usize) {
+                    c.cycle(if *k == KeyCode::ArrowLeft { -1 } else { 1 });
+                    crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+                    live_preview(c);
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if let Body::Keys(kk) = &mut win.body {
+                if let Some(i) = kk.sel {
+                    // ClearFunction: our actions always keep one input, so Delete puts the default back.
+                    if kk.pad {
+                        if let Some(m) = kk.pad_map.get_mut(i) {
+                            *m = crate::gamepad::PAD_ACTIONS[i].2;
+                        }
+                    } else if let Some(m) = kk.map.get_mut(i) {
+                        *m = crate::keybinds::ACTIONS[i].1;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Up / Down: the next enabled menu button, choice, skill, save or key row (lists scroll to keep it in view).
+fn arrow_key(win: &mut Win, up: bool) {
+    match &mut win.body {
+        Body::Menu { buttons, .. } => {
+            let n = buttons.len();
+            let cur = match win.focus {
+                Some(W::MenuBtn(i)) => i as i32,
+                _ => if up { n as i32 } else { -1 },
+            };
+            let mut i = cur;
+            for _ in 0..n {
+                i = (i + if up { -1 } else { 1 }).rem_euclid(n as i32);
+                if buttons[i as usize].enabled {
+                    break;
+                }
+            }
+            win.focus = Some(W::MenuBtn(i as u8));
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Focus", 0.25, 0.0);
+        }
+        Body::Choices { choices } => {
+            let n = choices.len() as i32;
+            let cur = match win.focus {
+                Some(W::ChoiceBtn(i)) => i as i32,
+                _ => if up { n } else { -1 },
+            };
+            win.focus = Some(W::ChoiceBtn((cur + if up { -1 } else { 1 }).rem_euclid(n) as u8));
+        }
+        Body::NewGame(ng) => {
+            let n = ng.order.len();
+            let cur = ng.sel.unwrap_or(0);
+            ng.sel = Some(if up { cur.saturating_sub(1) } else { (cur + 1).min(n.saturating_sub(1)) });
+            ng.desc_scroll = 0;
+        }
+        Body::SaveLoad(sl) => {
+            let n = sl.rows();
+            if n > 0 {
+                let cur = sl.sel.unwrap_or(0);
+                let next = if up { cur.saturating_sub(1) } else { (cur + 1).min(n - 1) };
+                if Some(next) != sl.sel {
+                    sl.sel = Some(next);
+                    if sl.saving {
+                        let t = sl.game(next).map(|g| g.description.clone()).unwrap_or_else(default_save_name);
+                        sl.edit.text = t.chars().collect();
+                        sl.edit.cur = sl.edit.text.len();
+                        sl.edit.anchor = 0;
+                    }
+                }
+                let y = next as i32 * ROW_H;
+                if y < sl.scroll {
+                    sl.scroll = y;
+                }
+                if y + ROW_H > sl.scroll + 270 {
+                    sl.scroll = y + ROW_H - 270;
+                }
+            }
+        }
+        Body::Keys(kk) => {
+            let n = kk.rows();
+            let cur = kk.sel.unwrap_or(0);
+            let next = if up { cur.saturating_sub(1) } else { (cur + 1).min(n - 1) };
+            kk.sel = Some(next);
+            let y = next as i32 * ROW_H;
+            if y < kk.scroll {
+                kk.scroll = y;
+            }
+            if y + ROW_H > kk.scroll + 268 {
+                kk.scroll = y + ROW_H - 268;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply what the input pass asked for: open / close windows, start games, quit, window mode and size.
+#[allow(clippy::too_many_arguments)]
+fn apply_acts(
+    acts: Vec<Act>,
+    st: &mut Menus,
+    binds: &Bindings,
+    window: &mut Single<&mut Window>,
+    root: &crate::pickups::GameRoot,
+    exit: &mut MessageWriter<AppExit>,
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+) {
     for a in acts {
         match a {
             Act::Push(c) => {
                 let (class, arg) = c.split_once(':').map(|(a, b)| (a.to_string(), Some(b.to_string()))).unwrap_or((c.clone(), None));
-                let mut w = open_window(&mut hud, &mut assets, &class);
+                let mut w = open_window(hud, assets, &class);
                 if let (Some(w), Some(arg)) = (w.as_mut(), arg) {
                     if let Body::NewGame(ng) = &mut w.body {
                         ng.difficulty = arg.parse().unwrap_or(1.5);
@@ -3695,8 +3966,8 @@ pub fn menu_system(
                     crate::settings::set("LDDPGaveNewGameTips", 1.0);
                     crate::settings::save();
                     let w = msg_box(
-                        &mut hud,
-                        &mut assets,
+                        hud,
+                        assets,
                         "LDDP 1.1 Checkbox Options",
                         "'Original Morpheus' reverts to his old voiceover. 'Original interactions' reverts to the old dialogue for Mercedes, Camille, Mamasan, and CanalWhore.",
                         false,
@@ -3708,7 +3979,7 @@ pub fn menu_system(
             Act::Pop => st.pop(),
             Act::PopAll => st.stack.clear(),
             Act::Msg(title, text, yes_no, purpose) => {
-                let w = msg_box(&mut hud, &mut assets, &title, &text, yes_no, purpose);
+                let w = msg_box(hud, assets, &title, &text, yes_no, purpose);
                 st.push(w);
             }
             Act::Quit => {
@@ -3760,58 +4031,73 @@ pub fn menu_system(
                 window.present_mode = present_mode(v);
             }
             Act::Resolution(w, h) => {
-                set_window_size(&mut window, w, h);
+                set_window_size(window, w, h);
             }
         }
     }
-    if st.stack.is_empty() {
-        return;
-    }
+}
 
-    // ---- draw: the top window and the ones it doesn't hide
+/// The help line of the top window: the focused choice's help, the keys screen's state, the Enhancements row.
+fn help_text(top_w: &Win, assets: &mut RuntimeAssets) -> String {
+    match (&top_w.body, top_w.focus) {
+        (Body::Choices { choices }, Some(W::ChoiceBtn(i))) => choices.get(i as usize).map(|c| c.help.clone()).unwrap_or_default(),
+        (Body::Keys(k), _) => {
+            let d = assets.classes.defaults("MenuScreenCustomizeKeys");
+            if k.pad && k.waiting {
+                "Press the controller button to assign. [Escape] cancels.".to_string()
+            } else if k.pad && k.note.is_empty() {
+                "Select an action and press [Enter], Double-Click or the A / Cross button, then press a controller \
+                 button. [Delete] restores the default."
+                    .to_string()
+            } else if k.waiting {
+                pstr(&d, "InputHelpText")
+            } else if !k.note.is_empty() {
+                k.note.clone()
+            } else {
+                pstr(&d, "WaitingHelpText")
+            }
+        }
+        (Body::Enhance(en), _) => match en.sel {
+            Some(Row::Item(i)) => en.items[i].help.clone(),
+            Some(Row::Master) => "Every enhancement at once: Classic is the original game, Modern your own mix (all of them the first time). In play, Tab switches with a wipe.".into(),
+            Some(Row::Group(g)) => format!("Show or hide the {} settings (Enter / click; Left closes). Type to search every setting.", en.groups().get(g).cloned().unwrap_or_default()),
+            None => "Type to search the options.".into(),
+        },
+        (Body::Choices { .. }, _) if top_w.f.class == "MenuScreenBrightness" => {
+            pstr(&assets.classes.defaults("MenuScreenBrightness"), "HelpMessage")
+        }
+        _ => String::new(),
+    }
+}
+
+/// Draw the top window and the ones it doesn't hide into the window layers (Lean Updates keeps unchanged ones),
+/// keep the top window's hit rectangles, and offer them to the pad's snap-to.
+#[allow(clippy::too_many_arguments)]
+fn draw_windows(
+    st: &mut Menus,
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    images: &mut Assets<Image>,
+    layers: &mut Assets<HudLayer>,
+    nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), Without<MenuBackdrop>>,
+    fonts: &Fonts,
+    view: View,
+    hover_w: Option<W>,
+    waiting: bool,
+    lean: bool,
+) {
+    let View { s, d, sf, sw, sh, .. } = view;
     let mut first = st.stack.len() - 1;
     while first > 0 && !st.stack[first].hides_below {
         first -= 1;
     }
-    let help = {
-        let top_w = &st.stack[st.stack.len() - 1];
-        match (&top_w.body, top_w.focus) {
-            (Body::Choices { choices }, Some(W::ChoiceBtn(i))) => choices.get(i as usize).map(|c| c.help.clone()).unwrap_or_default(),
-            (Body::Keys(k), _) => {
-                let d = assets.classes.defaults("MenuScreenCustomizeKeys");
-                if k.pad && k.waiting {
-                    "Press the controller button to assign. [Escape] cancels.".to_string()
-                } else if k.pad && k.note.is_empty() {
-                    "Select an action and press [Enter], Double-Click or the A / Cross button, then press a controller \
-                     button. [Delete] restores the default."
-                        .to_string()
-                } else if k.waiting {
-                    pstr(&d, "InputHelpText")
-                } else if !k.note.is_empty() {
-                    k.note.clone()
-                } else {
-                    pstr(&d, "WaitingHelpText")
-                }
-            }
-            (Body::Enhance(en), _) => match en.sel {
-                Some(Row::Item(i)) => en.items[i].help.clone(),
-                Some(Row::Master) => "Every enhancement at once: Classic is the original game, Modern your own mix (all of them the first time). In play, Tab switches with a wipe.".into(),
-                Some(Row::Group(g)) => format!("Show or hide the {} settings (Enter / click; Left closes). Type to search every setting.", en.groups().get(g).cloned().unwrap_or_default()),
-                None => "Type to search the options.".into(),
-            },
-            (Body::Choices { .. }, _) if top_w.f.class == "MenuScreenBrightness" => {
-                pstr(&assets.classes.defaults("MenuScreenBrightness"), "HelpMessage")
-            }
-            _ => String::new(),
-        }
-    };
+    let help = help_text(&st.stack[st.stack.len() - 1], assets);
     let mut hits: Vec<(W, Rect, bool)> = Vec::new();
     let n_layers = st.win_layers.len();
     let top_i = st.stack.len() - 1;
     let pressed = st.pressed;
     // Lean Updates (perf.rs): a window is drawn and uploaded again only when something its drawing reads has
     // changed - the window (win_key) or these.
-    let lean = crate::perf::lean_updates();
     let frame_key = lean.then(|| {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (s, crate::settings::generation(), palette(), waiting).hash(&mut h);
@@ -3828,8 +4114,8 @@ pub fn menu_system(
         if li >= n_layers {
             break;
         }
-        let pos = pos_of(&st.stack[wi]);
-        let (ww, wh) = win_size(&st.stack[wi].f, &fonts);
+        let pos = win_pos(&st.stack[wi], fonts, sw, sh);
+        let (ww, wh) = win_size(&st.stack[wi].f, fonts);
         let is_top = wi == top_i;
         let (w_pressed, w_hover) = if is_top { (pressed, hover_w) } else { (None, None) };
         let w_help = if is_top { help.as_str() } else { "" };
@@ -3846,8 +4132,8 @@ pub fn menu_system(
         if let Some(dr) = st.drawn.get(li).filter(|dr| before.is_some() && dr.key == before) {
             // Nothing it reads has changed: the layer keeps its image and the hit rectangles that drawing made.
             let l = &st.win_layers[li];
-            crate::hud::set_filter(&mut images, &l.img, s.max(1), d);
-            show(l, pos, (ww, wh), d, sf, &mut nodes);
+            crate::hud::set_filter(images, &l.img, s.max(1), d);
+            show(l, pos, (ww, wh), d, sf, nodes);
             if is_top {
                 hits = dr.hits.clone();
             }
@@ -3864,18 +4150,18 @@ pub fn menu_system(
         };
         let mut ui = Ui {
             c: canvas,
-            hud: &mut hud,
-            assets: &mut assets,
-            f: &fonts,
+            hud: &mut *hud,
+            assets: &mut *assets,
+            f: fonts,
             o: pos,
             hits: &mut layer_hits,
             pressed: w_pressed,
             hover: w_hover,
             focus,
         };
-        draw_win(&mut ui, &mut st.stack[wi], &fonts, w_help, waiting);
+        draw_win(&mut ui, &mut st.stack[wi], fonts, w_help, waiting);
         let Ui { c, .. } = ui;
-        place(&mut st.win_layers[li], &c, pos, d, sf, &mut images, &mut layers, &mut nodes);
+        place(&mut st.win_layers[li], &c, pos, d, sf, images, layers, nodes);
         if let Some(dr) = st.drawn.get_mut(li) {
             // A drawing that changed the window (a scroll clamped, a snapshot loaded) isn't kept: the next frame
             // draws again from what it left.
@@ -3900,7 +4186,22 @@ pub fn menu_system(
         crate::snap::Map { s: d, ox: 0, oy: 0, sf },
         st.hits.iter().filter(|h| h.2 && !matches!(h.0, W::Win | W::Title | W::ScrollTrack(_))).map(|h| h.1),
     );
-    // Cursor: the same DeusExCursor2 as the in-game screens (ours: the original menus used Cursor1).
+}
+
+/// Cursor: the same DeusExCursor2 as the in-game screens (ours: the original menus used Cursor1).
+#[allow(clippy::too_many_arguments)]
+fn draw_cursor(
+    st: &mut Menus,
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    images: &mut Assets<Image>,
+    layers: &mut Assets<HudLayer>,
+    nodes: &mut Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), Without<MenuBackdrop>>,
+    window: &Window,
+    view: View,
+    lean: bool,
+) {
+    let View { s, d, sf, mouse, .. } = view;
     if let Some(cl) = st.cursor.as_mut() {
         let at = (mouse.0 - 32, mouse.1 - 32);
         let shown = window.cursor_position().is_some();
@@ -3914,15 +4215,15 @@ pub fn menu_system(
                 }
             }
         } else if lean && st.cursor_drawn == Some(cursor_key) {
-            crate::hud::set_filter(&mut images, &cl.img, s.max(1), d);
-            show(cl, at, (64, 64), d, sf, &mut nodes);
+            crate::hud::set_filter(images, &cl.img, s.max(1), d);
+            show(cl, at, (64, 64), d, sf, nodes);
         } else {
             let mut cc = Canvas::new(64, 64, s);
-            if let Some(tx) = hud.ui(&mut assets, "DeusExCursor2") {
+            if let Some(tx) = hud.ui(assets, "DeusExCursor2") {
                 cc.drop_shadow(0, 0, &tx, (2.0, 2.5), 2.5, 0.6);
                 cc.texture(0, 0, 64, 64, 0, 0, &tx, Style::Masked, m_col(12));
             }
-            place(cl, &cc, at, d, sf, &mut images, &mut layers, &mut nodes);
+            place(cl, &cc, at, d, sf, images, layers, nodes);
             if lean {
                 st.cursor_drawn = Some(cursor_key);
             }
@@ -3933,7 +4234,6 @@ pub fn menu_system(
             }
         }
     }
-    let _: Rgb = WHITE;
 }
 
 fn scroll_by(win: &mut Win, id: u8, d: i32) {

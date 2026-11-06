@@ -441,15 +441,20 @@ impl Echo {
             }
         }
         let n = self.buf.len();
-        let taps: Vec<(usize, f32)> = (0..6)
-            .filter(|&k| self.cur.delays_ms[k] > 0.0 && self.cur.gains[k] > 0.0)
-            .map(|k| (((self.cur.delays_ms[k] * 0.001 * rate as f32) as usize).clamp(1, n - 1), self.cur.gains[k]))
-            .collect();
+        let mut tap_buf = [(0usize, 0.0f32); 6];
+        let mut nt = 0;
+        for k in 0..6 {
+            if self.cur.delays_ms[k] > 0.0 && self.cur.gains[k] > 0.0 {
+                tap_buf[nt] = (((self.cur.delays_ms[k] * 0.001 * rate as f32) as usize).clamp(1, n - 1), self.cur.gains[k]);
+                nt += 1;
+            }
+        }
+        let taps = &tap_buf[..nt];
         let a = 1.0 - (-std::f32::consts::TAU * self.cur.cutoff_hz.clamp(200.0, 20000.0) / rate as f32).exp();
         let master = self.cur.master * self.level;
         for f in 0..frames {
             let mut e = [0.0f32; 2];
-            for &(d, g) in &taps {
+            for &(d, g) in taps {
                 let s = self.buf[(self.i + n - d) % n];
                 e[0] += s[0] * g;
                 e[1] += s[1] * g;
@@ -509,6 +514,9 @@ struct State {
     /// The listener's zone echo (None: not a reverb zone).
     echo: Option<Echo>,
     echo_want: Option<EchoParams>,
+    /// Mix and reverb-send buffers, kept between callbacks (no allocation on the audio thread).
+    mixbuf: Vec<f32>,
+    sendbuf: Vec<f32>,
 }
 
 /// 4-point, 3rd-order Hermite interpolation between y1 and y2 (x 0..1).
@@ -522,10 +530,16 @@ fn hermite(x: f32, y0: f32, y1: f32, y2: f32, y3: f32) -> f32 {
 impl State {
     fn mix(&mut self, out: &mut [f32], channels: usize) {
         let frames = out.len() / channels;
-        let mut buf = vec![0.0f32; frames * 2];
+        let mut buf = std::mem::take(&mut self.mixbuf);
+        buf.clear();
+        buf.resize(frames * 2, 0.0);
         let echo_on = self.echo_want.is_some() || self.echo.as_ref().is_some_and(|e| e.level > 0.0);
         let reverb_on = self.reverb_want.2 > 0.0 || self.reverb.as_ref().is_some_and(|r| r.wet > 1e-4) || echo_on;
-        let mut send = if reverb_on { vec![0.0f32; frames * 2] } else { Vec::new() };
+        let mut send = std::mem::take(&mut self.sendbuf);
+        send.clear();
+        if reverb_on {
+            send.resize(frames * 2, 0.0);
+        }
         let rate = self.rate as f64;
         let smooth = 1.0 - (-1.0 / (0.004 * self.rate as f32)).exp();
         let hq = self.hq;
@@ -679,6 +693,70 @@ impl State {
                 }
             }
         }
+        self.mixbuf = buf;
+        self.sendbuf = send;
+    }
+
+    /// The game thread's queued commands, in the order they were sent.
+    fn apply(&mut self, cmds: &mut Vec<Cmd>, seen: &mut VoiceId) {
+        for c in cmds.drain(..) {
+            match c {
+                Cmd::Volumes(sfx, music) => {
+                    self.sfx_volume = sfx;
+                    self.music_volume = music;
+                }
+                Cmd::Play(v) => {
+                    *seen = (*seen).max(v.id);
+                    if self.voices.len() >= self.max_voices {
+                        // All voices busy: the quietest non-looping one is dropped (or this one, if they all loop).
+                        match self
+                            .voices
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, v)| !v.p.looping)
+                            .min_by(|a, b| a.1.p.volume.total_cmp(&b.1.p.volume))
+                            .map(|(k, _)| k)
+                        {
+                            Some(k) => {
+                                self.voices.swap_remove(k);
+                            }
+                            None => continue,
+                        }
+                    }
+                    self.voices.push(*v);
+                }
+                Cmd::Quality(hq) => self.hq = hq,
+                Cmd::Reverb(r) => self.reverb_want = r,
+                Cmd::Echo(e) => self.echo_want = e,
+                Cmd::Fx(id, filter, reverb) => {
+                    if let Some(v) = self.voices.iter_mut().find(|v| v.id == id) {
+                        v.p.filter = filter;
+                        v.p.reverb = reverb;
+                    }
+                }
+                Cmd::Set(id, vol, pan, pitch) => {
+                    if let Some(v) = self.voices.iter_mut().find(|v| v.id == id) {
+                        v.p.volume = vol;
+                        v.p.pan = pan;
+                        v.p.pitch = pitch;
+                    }
+                }
+                Cmd::Stop(id) => self.voices.retain(|v| v.id != id),
+                Cmd::Music(t, step) => {
+                    for o in self.tracks.iter_mut() {
+                        o.target = 0.0;
+                        o.step = step;
+                    }
+                    self.tracks.push(*t);
+                }
+                Cmd::StopMusic(step) => {
+                    for t in self.tracks.iter_mut() {
+                        t.target = 0.0;
+                        t.step = step;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -692,10 +770,41 @@ fn soft_clip(x: f32) -> f32 {
     }
 }
 
+/// A change the game thread asks of the mixer. Queued and applied by the audio thread at the start of its next
+/// buffer, so the game never waits for a mix in progress (the mixer used to be locked for every call, and a call
+/// made while it mixed - music, reverb, every voice - waited for the whole buffer).
+enum Cmd {
+    Volumes(f32, f32),
+    Play(Box<Voice>),
+    Quality(bool),
+    Reverb((f32, f32, f32)),
+    Echo(Option<EchoParams>),
+    Fx(VoiceId, f32, f32),
+    Set(VoiceId, f32, f32, f32),
+    Stop(VoiceId),
+    Music(Box<Track>, f32),
+    StopMusic(f32),
+}
+
+/// What the game thread and the audio thread share. Both locks are only ever held for a copy or a push.
+struct Shared {
+    /// Commands not yet applied.
+    cmds: Mutex<Vec<Cmd>>,
+    /// The voices the mixer has, as of its last buffer.
+    live: Mutex<Vec<VoiceId>>,
+    /// The highest voice id the mixer has taken in (published after `live`).
+    seen: std::sync::atomic::AtomicU64,
+}
+
+/// Updates queued past this many while the mixer isn't taking them (a stalled device) are dropped; plays and stops
+/// never are.
+const MAX_QUEUED_UPDATES: usize = 20_000;
+
 /// Handle to the mixer. Cheap to share; all methods take `&self`.
 pub struct Audio {
-    state: Arc<Mutex<State>>,
-    next_id: Mutex<VoiceId>,
+    shared: Arc<Shared>,
+    next_id: std::sync::atomic::AtomicU64,
+    rate: std::sync::atomic::AtomicU32,
     /// Whether an output device is running.
     pub live: bool,
 }
@@ -703,7 +812,7 @@ pub struct Audio {
 impl Audio {
     /// Open the default output device. Falls back to a silent mixer if there is none.
     pub fn new() -> Audio {
-        let state = Arc::new(Mutex::new(State {
+        let state = State {
             rate: 48000,
             voices: Vec::new(),
             tracks: Vec::new(),
@@ -715,12 +824,19 @@ impl Audio {
             reverb_want: (0.5, 0.5, 0.0),
             echo: None,
             echo_want: None,
-        }));
+            mixbuf: Vec::new(),
+            sendbuf: Vec::new(),
+        };
+        let shared = Arc::new(Shared {
+            cmds: Mutex::new(Vec::new()),
+            live: Mutex::new(Vec::new()),
+            seen: std::sync::atomic::AtomicU64::new(0),
+        });
         let (tx, rx) = std::sync::mpsc::channel::<Option<u32>>();
-        let st = state.clone();
+        let sh = shared.clone();
         let _ = std::thread::Builder::new()
             .name("imsim-audio".into())
-            .spawn(move || match device::open(st) {
+            .spawn(move || match device::open(state, sh) {
                 Ok((stream, rate)) => {
                     let _ = tx.send(Some(rate));
                     let _keep = stream;
@@ -733,57 +849,54 @@ impl Audio {
                     let _ = tx.send(None);
                 }
             });
-        let live = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        let (live, rate) = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Some(rate)) => {
-                state.lock().unwrap().rate = rate;
                 println!("audio: output at {rate} Hz");
-                true
+                (true, rate)
             }
-            _ => false,
+            _ => (false, 48000),
         };
         Audio {
-            state,
-            next_id: Mutex::new(1),
+            shared,
+            next_id: std::sync::atomic::AtomicU64::new(1),
+            rate: std::sync::atomic::AtomicU32::new(rate),
             live,
         }
     }
 
+    fn send(&self, c: Cmd) {
+        if !self.live {
+            return;
+        }
+        if let Ok(mut q) = self.shared.cmds.lock() {
+            q.push(c);
+        }
+    }
+
+    /// Queue many updates under one lock (dropped when the mixer has stopped taking them).
+    fn send_updates(&self, list: impl Iterator<Item = Cmd>) {
+        if !self.live {
+            return;
+        }
+        if let Ok(mut q) = self.shared.cmds.lock() {
+            if q.len() < MAX_QUEUED_UPDATES {
+                q.extend(list);
+            }
+        }
+    }
+
     pub fn sample_rate(&self) -> u32 {
-        self.state.lock().unwrap().rate
+        self.rate.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn set_volumes(&self, sfx: f32, music: f32) {
-        let mut s = self.state.lock().unwrap();
-        s.sfx_volume = sfx;
-        s.music_volume = music;
+        self.send_updates(std::iter::once(Cmd::Volumes(sfx, music)));
     }
 
     /// Start a voice. When all voices are busy the quietest non-looping one is dropped.
     pub fn play(&self, clip: Arc<Clip>, p: VoiceParams) -> VoiceId {
-        let id = {
-            let mut n = self.next_id.lock().unwrap();
-            *n += 1;
-            *n
-        };
-        if !self.live {
-            return id;
-        }
-        let mut s = self.state.lock().unwrap();
-        if s.voices.len() >= s.max_voices {
-            if let Some(k) = s
-                .voices
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| !v.p.looping)
-                .min_by(|a, b| a.1.p.volume.total_cmp(&b.1.p.volume))
-                .map(|(k, _)| k)
-            {
-                s.voices.swap_remove(k);
-            } else {
-                return id;
-            }
-        }
-        s.voices.push(Voice {
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.send(Cmd::Play(Box::new(Voice {
             id,
             clip,
             pos: 0.0,
@@ -794,69 +907,63 @@ impl Audio {
             lpk: 1.0,
             started: false,
             done: false,
-        });
+        })));
         id
     }
 
     /// Better playback (4-point interpolation, constant-power pan) on or off.
     pub fn set_quality(&self, hq: bool) {
-        self.state.lock().unwrap().hq = hq;
+        self.send(Cmd::Quality(hq));
     }
 
     /// The room reverb: room size 0..1, damping 0..1, wet level (0 = off). Eased toward.
     pub fn set_reverb(&self, room: f32, damp: f32, wet: f32) {
-        self.state.lock().unwrap().reverb_want = (room.clamp(0.0, 1.0), damp.clamp(0.0, 1.0), wet.max(0.0));
+        self.send_updates(std::iter::once(Cmd::Reverb((room.clamp(0.0, 1.0), damp.clamp(0.0, 1.0), wet.max(0.0)))));
     }
 
     /// The listener's zone echo (Unreal's reverb zones), or None. Voices feed it through their reverb send.
     pub fn set_echo(&self, e: Option<EchoParams>) {
-        self.state.lock().unwrap().echo_want = e;
+        self.send(Cmd::Echo(e));
     }
 
-    /// Update many voices' filter and reverb send under one lock: (id, filter, reverb).
+    /// Update many voices' filter and reverb send: (id, filter, reverb).
     pub fn set_fx_many(&self, list: &[(VoiceId, f32, f32)]) {
-        let mut s = self.state.lock().unwrap();
-        for &(id, filter, reverb) in list {
-            if let Some(v) = s.voices.iter_mut().find(|v| v.id == id) {
-                v.p.filter = filter;
-                v.p.reverb = reverb;
-            }
-        }
+        self.send_updates(list.iter().map(|&(id, f, r)| Cmd::Fx(id, f, r)));
     }
 
     pub fn set(&self, id: VoiceId, volume: f32, pan: f32, pitch: f32) {
-        if let Some(v) = self
-            .state
-            .lock()
-            .unwrap()
-            .voices
-            .iter_mut()
-            .find(|v| v.id == id)
-        {
-            v.p.volume = volume;
-            v.p.pan = pan;
-            v.p.pitch = pitch;
-        }
+        self.send_updates(std::iter::once(Cmd::Set(id, volume, pan, pitch)));
     }
 
     pub fn stop(&self, id: VoiceId) {
-        self.state.lock().unwrap().voices.retain(|v| v.id != id);
+        self.send(Cmd::Stop(id));
     }
 
+    /// Whether a voice is still playing: as of the mixer's last buffer, with commands sent since counted (a voice
+    /// just started plays, one just stopped doesn't).
     pub fn is_playing(&self, id: VoiceId) -> bool {
-        self.live && self.state.lock().unwrap().voices.iter().any(|v| v.id == id)
-    }
-
-    /// Update many voices under one lock: (id, volume, pan, pitch).
-    pub fn set_many(&self, list: &[(VoiceId, f32, f32, f32)]) {
-        let mut s = self.state.lock().unwrap();
-        for &(id, vol, pan, pitch) in list {
-            if let Some(v) = s.voices.iter_mut().find(|v| v.id == id) {
-                v.p.volume = vol;
-                v.p.pan = pan;
-                v.p.pitch = pitch;
+        if !self.live {
+            return false;
+        }
+        if let Ok(q) = self.shared.cmds.lock() {
+            for c in q.iter().rev() {
+                match c {
+                    Cmd::Stop(s) if *s == id => return false,
+                    Cmd::Play(v) if v.id == id => return true,
+                    _ => {}
+                }
             }
         }
+        // Taken in by the mixer (or in the batch it is applying right now: counted as playing).
+        if id > self.shared.seen.load(std::sync::atomic::Ordering::Acquire) {
+            return true;
+        }
+        self.shared.live.lock().map(|l| l.contains(&id)).unwrap_or(false)
+    }
+
+    /// Update many voices: (id, volume, pan, pitch).
+    pub fn set_many(&self, list: &[(VoiceId, f32, f32, f32)]) {
+        self.send_updates(list.iter().map(|&(id, v, p, pi)| Cmd::Set(id, v, p, pi)));
     }
 
     /// Play `module` from its start, fading out whatever was playing. The module must live for the rest of the
@@ -869,37 +976,15 @@ impl Audio {
         let mut player = xmrsplayer::prelude::XmrsPlayer::new(module, rate, 0);
         player.set_max_loop_count(0);
         let secs = transition.seconds();
-        let step = if secs <= 0.0 {
-            1.0
-        } else {
-            1.0 / (secs * rate as f32)
-        };
-        let mut s = self.state.lock().unwrap();
-        for t in s.tracks.iter_mut() {
-            t.target = 0.0;
-            t.step = step;
-        }
+        let step = if secs <= 0.0 { 1.0 } else { 1.0 / (secs * rate as f32) };
         let start = if secs <= 0.0 { 1.0 } else { 0.0 };
-        s.tracks.push(Track {
-            player,
-            gain: start,
-            target: 1.0,
-            step,
-        });
+        self.send(Cmd::Music(Box::new(Track { player, gain: start, target: 1.0, step }), step));
     }
 
     pub fn stop_music(&self, transition: Transition) {
         let secs = transition.seconds();
         let rate = self.sample_rate() as f32;
-        let mut s = self.state.lock().unwrap();
-        for t in s.tracks.iter_mut() {
-            t.target = 0.0;
-            t.step = if secs <= 0.0 {
-                1.0
-            } else {
-                1.0 / (secs * rate)
-            };
-        }
+        self.send(Cmd::StopMusic(if secs <= 0.0 { 1.0 } else { 1.0 / (secs * rate) }));
     }
 }
 
@@ -1038,34 +1123,54 @@ pub fn load_module(bytes: &[u8]) -> Option<&'static Module> {
 }
 
 mod device {
-    use super::State;
+    use super::{Cmd, Shared, State, VoiceId};
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    pub fn open(state: Arc<Mutex<State>>) -> Result<(cpal::Stream, u32), String> {
+    /// The audio thread's side: the mixer state (only this thread touches it) and the queue it takes commands from.
+    pub(super) struct Mixer {
+        state: State,
+        shared: Arc<Shared>,
+        spare: Vec<Cmd>,
+        seen: VoiceId,
+    }
+
+    impl Mixer {
+        fn render(&mut self, out: &mut [f32], channels: usize) {
+            // Take the queued commands (swapped for the empty buffer: no allocation once both have grown).
+            if let Ok(mut q) = self.shared.cmds.lock() {
+                std::mem::swap(&mut *q, &mut self.spare);
+            }
+            self.state.apply(&mut self.spare, &mut self.seen);
+            self.state.mix(out, channels);
+            if let Ok(mut l) = self.shared.live.lock() {
+                l.clear();
+                l.extend(self.state.voices.iter().map(|v| v.id));
+            }
+            self.shared.seen.store(self.seen, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    pub(super) fn open(mut state: State, shared: Arc<Shared>) -> Result<(cpal::Stream, u32), String> {
         let host = cpal::default_host();
         let dev = host
             .default_output_device()
             .ok_or("no default output device")?;
         let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
         let rate = cfg.sample_rate().0;
+        state.rate = rate;
         let channels = cfg.channels() as usize;
         let sc: cpal::StreamConfig = cfg.config();
+        let mut mixer = Mixer { state, shared, spare: Vec::new(), seen: 0 };
         let err = |e| eprintln!("audio stream error: {e}");
         let stream = match cfg.sample_format() {
             cpal::SampleFormat::F32 => dev.build_output_stream(
                 &sc,
-                move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    if let Ok(mut s) = state.lock() {
-                        s.mix(out, channels);
-                    } else {
-                        out.fill(0.0);
-                    }
-                },
+                move |out: &mut [f32], _: &cpal::OutputCallbackInfo| mixer.render(out, channels),
                 err,
                 None,
             ),
-            fmt => build_converted(&dev, &sc, fmt, state, channels),
+            fmt => build_converted(&dev, &sc, fmt, mixer, channels),
         }
         .map_err(|e| e.to_string())?;
         stream.play().map_err(|e| e.to_string())?;
@@ -1076,13 +1181,13 @@ mod device {
         dev: &cpal::Device,
         sc: &cpal::StreamConfig,
         fmt: cpal::SampleFormat,
-        state: Arc<Mutex<State>>,
+        mixer: Mixer,
         channels: usize,
     ) -> Result<cpal::Stream, cpal::BuildStreamError> {
         fn go<T: cpal::SizedSample + cpal::FromSample<f32>>(
             dev: &cpal::Device,
             sc: &cpal::StreamConfig,
-            state: Arc<Mutex<State>>,
+            mut mixer: Mixer,
             channels: usize,
         ) -> Result<cpal::Stream, cpal::BuildStreamError> {
             let mut tmp: Vec<f32> = Vec::new();
@@ -1090,11 +1195,7 @@ mod device {
                 sc,
                 move |out: &mut [T], _: &cpal::OutputCallbackInfo| {
                     tmp.resize(out.len(), 0.0);
-                    if let Ok(mut s) = state.lock() {
-                        s.mix(&mut tmp, channels);
-                    } else {
-                        tmp.fill(0.0);
-                    }
+                    mixer.render(&mut tmp, channels);
                     for (o, &x) in out.iter_mut().zip(tmp.iter()) {
                         *o = T::from_sample(x);
                     }
@@ -1104,10 +1205,10 @@ mod device {
             )
         }
         match fmt {
-            cpal::SampleFormat::I16 => go::<i16>(dev, sc, state, channels),
-            cpal::SampleFormat::U16 => go::<u16>(dev, sc, state, channels),
-            cpal::SampleFormat::I32 => go::<i32>(dev, sc, state, channels),
-            cpal::SampleFormat::F64 => go::<f64>(dev, sc, state, channels),
+            cpal::SampleFormat::I16 => go::<i16>(dev, sc, mixer, channels),
+            cpal::SampleFormat::U16 => go::<u16>(dev, sc, mixer, channels),
+            cpal::SampleFormat::I32 => go::<i32>(dev, sc, mixer, channels),
+            cpal::SampleFormat::F64 => go::<f64>(dev, sc, mixer, channels),
             _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
         }
     }
@@ -1172,6 +1273,8 @@ mod tests {
             reverb_want: (0.5, 0.5, 0.0),
             echo: None,
             echo_want: None,
+            mixbuf: Vec::new(),
+            sendbuf: Vec::new(),
         };
         let clip = Arc::new(Clip {
             data: vec![0.5; 100],
@@ -1196,6 +1299,52 @@ mod tests {
         assert!((out[0] - 0.5).abs() < 1e-3 && (out[1] - 0.5).abs() < 1e-3);
         assert_eq!(out[250], 0.0);
         assert!(s.voices.is_empty());
+    }
+
+    #[test]
+    fn commands_apply_in_order() {
+        let mut s = State {
+            rate: 22050,
+            voices: Vec::new(),
+            tracks: Vec::new(),
+            sfx_volume: 1.0,
+            music_volume: 1.0,
+            max_voices: 2,
+            hq: false,
+            reverb: None,
+            reverb_want: (0.5, 0.5, 0.0),
+            echo: None,
+            echo_want: None,
+            mixbuf: Vec::new(),
+            sendbuf: Vec::new(),
+        };
+        let clip = Arc::new(Clip { data: vec![0.5; 100], channels: 1, rate: 22050, loop_range: None });
+        let voice = |id: VoiceId, looping: bool, volume: f32| {
+            Box::new(Voice {
+                id,
+                clip: clip.clone(),
+                pos: 0.0,
+                p: VoiceParams { volume, pan: 0.0, pitch: 1.0, looping, filter: 1.0, reverb: 0.0 },
+                gl: 0.0,
+                gr: 0.0,
+                lp: [0.0; 2],
+                lpk: 1.0,
+                started: false,
+                done: false,
+            })
+        };
+        let mut seen = 0;
+        let mut q = vec![Cmd::Play(voice(1, true, 1.0)), Cmd::Set(1, 0.3, 0.0, 1.0), Cmd::Play(voice(2, false, 0.2))];
+        s.apply(&mut q, &mut seen);
+        assert!(q.is_empty());
+        assert_eq!(seen, 2);
+        assert_eq!(s.voices.iter().find(|v| v.id == 1).unwrap().p.volume, 0.3);
+        // Full: the quietest one-shot gives way.
+        let mut q = vec![Cmd::Play(voice(3, false, 0.9)), Cmd::Stop(1)];
+        s.apply(&mut q, &mut seen);
+        let ids: Vec<VoiceId> = s.voices.iter().map(|v| v.id).collect();
+        assert_eq!(ids, vec![3]);
+        assert_eq!(seen, 3);
     }
 
     #[test]

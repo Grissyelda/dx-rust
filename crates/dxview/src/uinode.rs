@@ -28,11 +28,3 @@ pub fn set_rect(node: &mut Mut<Node>, left: f32, top: f32, width: f32, height: f
     }
 }
 
-/// Sets a node's left / top in pixels only when they differ.
-pub fn set_pos(node: &mut Mut<Node>, left: f32, top: f32) {
-    let (l, t) = (Val::Px(left), Val::Px(top));
-    if node.left != l || node.top != t {
-        node.left = l;
-        node.top = t;
-    }
-}

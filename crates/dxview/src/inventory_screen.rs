@@ -1103,6 +1103,64 @@ fn layout_rows(rows: &[Row], f: &Fonts) -> Vec<(i32, i32, Row)> {
     out
 }
 
+/// What the inventory screen's steps borrow: the system's resources, reborrowed (a `Mut` only marks its resource
+/// changed where a step writes through it, as the system's own `ResMut` did).
+struct InvCx<'a> {
+    real: &'a Time<Real>,
+    vtime: Mut<'a, Time<Virtual>>,
+    window: &'a Window,
+    cursor_opts: Mut<'a, CursorOptions>,
+    st: &'a mut InvScreen,
+    binds: Mut<'a, Bindings>,
+    hud: Mut<'a, ClassicHud>,
+    assets: Mut<'a, RuntimeAssets>,
+    images: Mut<'a, Assets<Image>>,
+    layers: Mut<'a, Assets<HudLayer>>,
+    inv: Mut<'a, PlayerInventory>,
+    weapons: Mut<'a, Weapons>,
+    clips: Mut<'a, Clips>,
+    charged: &'a crate::charged::ActiveCharged,
+    player: &'a Player,
+    cam: &'a Transform,
+    drops: Mut<'a, crate::destruct::ItemThrows>,
+    msg: Mut<'a, crate::movers::HudMessage>,
+    ph: Mut<'a, crate::ai::PlayerHealth>,
+}
+
+/// This frame's placement of the 640 x 480 screen, the mouse on it, fonts, layout and the two canvas nodes.
+struct InvFrame {
+    dt: f32,
+    /// The canvas's whole-number scale.
+    s: i32,
+    /// The scale shown (fractional with HUD Scale Large).
+    d: f32,
+    ox: i32,
+    oy: i32,
+    sf: f32,
+    mouse: (i32, i32),
+    fonts: Fonts,
+    lay: Layout,
+    canvas_img: Handle<Image>,
+    canvas_e: Entity,
+    cursor_img: Handle<Image>,
+    cursor_e: Entity,
+}
+
+/// The inventory info pane: title, laid-out rows and heights.
+struct InfoPane {
+    title: String,
+    rows: Vec<(i32, i32, Row)>,
+    view_h: i32,
+    content_h: i32,
+}
+
+/// The info pane's PersonaScrollAreaWindow bar: its rectangle, scroll range and the part under the mouse.
+struct InfoBar {
+    r: (i32, i32, i32, i32),
+    max: i32,
+    on: Option<u8>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn inventory_screen_system(
     mut commands: Commands,
@@ -1137,47 +1195,129 @@ pub fn inventory_screen_system(
 ) {
     let _prof = crate::prof::scope("inventory_screen::inventory_screen_system");
     let dt = real.delta_secs();
-    let st = &mut *st;
+    let mut cx = InvCx {
+        real: &real,
+        vtime: vtime.reborrow(),
+        window: *window,
+        cursor_opts: cursor_opts.reborrow(),
+        st: &mut *st,
+        binds: binds.reborrow(),
+        hud: hud.reborrow(),
+        assets: assets.reborrow(),
+        images: images.reborrow(),
+        layers: layers.reborrow(),
+        inv: inv.reborrow(),
+        weapons: weapons.reborrow(),
+        clips: clips.reborrow(),
+        charged: &charged,
+        player: &player,
+        cam: *cam,
+        drops: drops.reborrow(),
+        msg: msg.reborrow(),
+        ph: ph.reborrow(),
+    };
+    let cx = &mut cx;
     let rot = rotate_on();
-    if inv.0.allow_rotate != rot {
-        inv.0.allow_rotate = rot;
+    if cx.inv.0.allow_rotate != rot {
+        cx.inv.0.allow_rotate = rot;
     }
-    if !st.built {
-        st.built = true;
-        for which in 0..2 {
-            let img = images.add(blank(1, 1));
-            let e = commands
-                .spawn((
-                    MaterialNode(layers.add(HudLayer::new(img.clone()))),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        ..default()
-                    },
-                    Visibility::Hidden,
-                    Pickable::IGNORE,
-                    // (the outfits screen's view and its overlay sit at 41 / 42, under the cursor)
-                    GlobalZIndex(40 + which * 3),
-                ))
-                .id();
-            if which == 0 {
-                st.canvas = Some((img, e, 0));
-            } else {
-                st.cursor = Some((img, e, 0));
+    if !cx.st.built {
+        build_nodes(cx, &mut commands);
+    }
+    open_bot_screen(cx, &mut npcs);
+    dev_open_persona(cx);
+    if !toggle_screen(cx, &mut npcs) {
+        return;
+    }
+    let st = &mut *cx.st;
+    cx.binds.capture = st.open || crate::computers::open() || crate::menus::open() || crate::credits::open();
+    SCREEN_OPEN.store(st.open, Ordering::Relaxed);
+    let (canvas_img, canvas_e, _) = st.canvas.clone().unwrap();
+    let (cursor_img, cursor_e, _) = st.cursor.clone().unwrap();
+    if !st.open {
+        for e in [canvas_e, cursor_e] {
+            if let Ok((_, mut v, _)) = nodes.get_mut(e) {
+                if *v != Visibility::Hidden {
+                    v.set_if_neq(Visibility::Hidden);
+                }
             }
         }
+        wheel.clear();
+        return;
     }
-    // F1 opens the inventory, F2 the goals screen (ShowInventoryWindow / ShowGoalsWindow); pressing the key of the
-    // screen that's up, or Esc, closes it.
+    let Some(fr) = screen_frame(cx, dt, (canvas_img, canvas_e), (cursor_img, cursor_e)) else {
+        return;
+    };
+
+    // The other persona screens.
+    if cx.st.screen != 0 {
+        persona_screen(cx, &fr, &mut wheel, &mut npcs, &mut nodes);
+        return;
+    }
+
+    // Keep the selection pointing at something that still exists.
+    if let Some(Sel::Item(c)) = &cx.st.sel {
+        if !cx.inv.0.items.iter().any(|i| &i.key() == c) {
+            cx.st.sel = None;
+        }
+    }
+
+    // ---------------------------------------------------------------- input
+    let pane = info_pane(cx, &fr, &mut wheel);
+    let hit = page_hit(cx, &fr, &pane);
+    let mut action = nav_key_action(cx);
+    let bar = info_bar_input(cx, &fr, &pane);
+    drag_input(cx, &fr, &hit, bar.on);
+    release_input(cx, &fr, &hit, &mut action);
+    let sel_class = key_input(cx, &hit, &mut action);
+    if !run_action(cx, action, &sel_class) {
+        return;
+    }
+
+    // ---------------------------------------------------------------- draw
+    draw_page(cx, &fr, &pane, &bar, &hit, &mut nodes);
+}
+
+/// The screen canvas and the cursor canvas nodes, made once (z 40 and 43).
+fn build_nodes(cx: &mut InvCx, commands: &mut Commands) {
+    let InvCx { st, images, layers, .. } = cx;
+    st.built = true;
+    for which in 0..2 {
+        let img = images.add(blank(1, 1));
+        let e = commands
+            .spawn((
+                MaterialNode(layers.add(HudLayer::new(img.clone()))),
+                Node {
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+                Visibility::Hidden,
+                Pickable::IGNORE,
+                // (the outfits screen's view and its overlay sit at 41 / 42, under the cursor)
+                GlobalZIndex(40 + which * 3),
+            ))
+            .id();
+        if which == 0 {
+            st.canvas = Some((img, e, 0));
+        } else {
+            st.cursor = Some((img, e, 0));
+        }
+    }
+}
+
+/// A medical or repair bot's screen asked for by its Frob (open_bot): opened unless something else is up.
+fn open_bot_screen(cx: &mut InvCx, npcs: &mut Query<&mut crate::ai::Npc>) {
+    let InvCx { st, binds, inv, ph, cursor_opts, .. } = cx;
     // A medical or repair bot's screen (the game keeps running behind it, so its charge counts down).
     if let Some((e, medic)) = OPEN_BOT.lock().ok().and_then(|mut o| o.take()) {
         if st.open || ph.dead || binds.open || crate::computers::open() || crate::menus::open() || crate::menus::intro_map() {
-            release_bot(&mut npcs, e);
+            release_bot(npcs, e);
         } else {
             st.open = true;
             st.bot = Some((e, medic));
             st.screen = if !medic {
                 crate::persona::SCREEN_RECHARGE
-            } else if !crate::augcan::list(&inv).is_empty() {
+            } else if !crate::augcan::list(inv).is_empty() {
                 crate::persona::SCREEN_AUGS
             } else {
                 crate::persona::SCREEN_HEALTH
@@ -1192,9 +1332,11 @@ pub fn inventory_screen_system(
             st.scroll = 0;
         }
     }
-    // While a note is being typed into, its keys aren't screen hotkeys (PersonaEditWindow keeps all but Tab
-    // and Escape); with a message box up, Escape answers it.
-    // Dev aid: DXVIEW_PERSONA=<screen> opens that persona screen once the map has run 2 s (8 = outfits).
+}
+
+/// Dev aid: DXVIEW_PERSONA=<screen> opens that persona screen once the map has run 2 s (8 = outfits).
+fn dev_open_persona(cx: &mut InvCx) {
+    let InvCx { st, real, vtime, cursor_opts, .. } = cx;
     if let Ok(v) = std::env::var("DXVIEW_PERSONA") {
         static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !DONE.load(Ordering::Relaxed) && real.elapsed_secs() > 2.0 && !crate::menus::open() {
@@ -1208,6 +1350,17 @@ pub fn inventory_screen_system(
             cursor_opts.grab_mode = bevy::window::CursorGrabMode::None;
         }
     }
+}
+
+/// ShowInventoryWindow / ShowGoalsWindow and Escape: open, switch or close the screen (pausing the game while it's
+/// up); a closed screen ends any note edit and lets its bot go. False = the system stops here this frame (asked to
+/// open while dead or at a computer).
+fn toggle_screen(cx: &mut InvCx, npcs: &mut Query<&mut crate::ai::Npc>) -> bool {
+    let InvCx { st, binds, ph, vtime, cursor_opts, .. } = cx;
+    // F1 opens the inventory, F2 the goals screen (ShowInventoryWindow / ShowGoalsWindow); pressing the key of the
+    // screen that's up, or Esc, closes it.
+    // While a note is being typed into, its keys aren't screen hotkeys (PersonaEditWindow keeps all but Tab
+    // and Escape); with a message box up, Escape answers it.
     let editing = st.open && st.persona.editing();
     let f1 = binds.action_just_pressed("Inventory screen") && st.bot.is_none() && !editing;
     let f2 = binds.action_just_pressed("Goals / notes screen") && st.bot.is_none() && !editing;
@@ -1235,7 +1388,7 @@ pub fn inventory_screen_system(
     }
     if toggle && !binds.open {
         if !st.open && (ph.dead || crate::computers::open()) {
-            return;
+            return false;
         }
         st.open = !st.open;
         crate::sound::play_player(
@@ -1266,24 +1419,17 @@ pub fn inventory_screen_system(
     if !st.open {
         st.persona.end_edit();
         if let Some((e, _)) = st.bot.take() {
-            release_bot(&mut npcs, e);
+            release_bot(npcs, e);
         }
     }
-    binds.capture = st.open || crate::computers::open() || crate::menus::open() || crate::credits::open();
-    SCREEN_OPEN.store(st.open, Ordering::Relaxed);
-    let (canvas_img, canvas_e, _) = st.canvas.clone().unwrap();
-    let (cursor_img, cursor_e, _) = st.cursor.clone().unwrap();
-    if !st.open {
-        for e in [canvas_e, cursor_e] {
-            if let Ok((_, mut v, _)) = nodes.get_mut(e) {
-                if *v != Visibility::Hidden {
-                    v.set_if_neq(Visibility::Hidden);
-                }
-            }
-        }
-        wheel.clear();
-        return;
-    }
+    true
+}
+
+/// The status line's timeout, the screen's scale / offset in the window, the mouse in screen units, the fonts and
+/// layout. None = a font is missing (nothing more this frame).
+fn screen_frame(cx: &mut InvCx, dt: f32, canvas: (Handle<Image>, Entity), cursor: (Handle<Image>, Entity)) -> Option<InvFrame> {
+    let InvCx { st, window, images, hud, assets, .. } = cx;
+    let window: &Window = window;
     st.status_t += dt;
     if st.status_t > 5.0 {
         st.status.clear();
@@ -1295,8 +1441,8 @@ pub fn inventory_screen_system(
     );
     // The largest whole-number scale at which the 640 x 480 screen fits the window (crisp pixels).
     // (s: the canvas's whole-number scale; d: the scale shown, fractional with HUD Scale Large.)
-    let (s, d) = crate::hud::screen_scales(&window, SCREEN_W, SCREEN_H);
-    crate::hud::set_filter(&mut images, &canvas_img, s, d);
+    let (s, d) = crate::hud::screen_scales(window, SCREEN_W, SCREEN_H);
+    crate::hud::set_filter(images, &canvas.0, s, d);
     let ox = (pw - (SCREEN_W as f32 * d) as i32) / 2;
     let oy = (phh - (SCREEN_H as f32 * d) as i32) / 2;
     let sf = window.scale_factor();
@@ -1313,12 +1459,12 @@ pub fn inventory_screen_system(
     let fonts = {
         let get = |hud: &mut ClassicHud, assets: &mut RuntimeAssets, n: &str| hud.font(assets, n);
         let (Some(headers), Some(small), Some(small_ds), Some(tiny)) = (
-            get(&mut hud, &mut assets, "FontMenuHeaders"),
-            get(&mut hud, &mut assets, "FontMenuSmall"),
-            get(&mut hud, &mut assets, "FontMenuSmall_DS"),
-            get(&mut hud, &mut assets, "FontTiny"),
+            get(hud, assets, "FontMenuHeaders"),
+            get(hud, assets, "FontMenuSmall"),
+            get(hud, assets, "FontMenuSmall_DS"),
+            get(hud, assets, "FontTiny"),
         ) else {
-            return;
+            return None;
         };
         Fonts {
             headers,
@@ -1329,200 +1475,272 @@ pub fn inventory_screen_system(
     };
     nav_current(st.screen);
     let lay = layout(&fonts);
+    Some(InvFrame {
+        dt,
+        s,
+        d,
+        ox,
+        oy,
+        sf,
+        mouse,
+        fonts,
+        lay,
+        canvas_img: canvas.0,
+        canvas_e: canvas.1,
+        cursor_img: cursor.0,
+        cursor_e: cursor.1,
+    })
+}
 
-    // The other persona screens.
-    if st.screen != 0 {
-        let wheel_lines: f32 = wheel
-            .read()
-            .map(|w| {
-                if w.unit == bevy::input::mouse::MouseScrollUnit::Line {
-                    w.y * 3.0
-                } else {
-                    w.y / 4.0
-                }
-            })
-            .sum();
-        let fkey = crate::abilities::AUG_KEYS
-            .iter()
-            .position(|k| binds.keys.just_pressed(*k));
-        let input = crate::persona::Input {
-            mouse,
-            down: binds.buttons.just_pressed(MouseButton::Left),
-            up: binds.buttons.just_released(MouseButton::Left),
-            wheel: wheel_lines,
-            dt,
-            up_key: binds.keys.just_pressed(KeyCode::ArrowUp),
-            down_key: binds.keys.just_pressed(KeyCode::ArrowDown),
-            left_key: binds.keys.just_pressed(KeyCode::ArrowLeft),
-            right_key: binds.keys.just_pressed(KeyCode::ArrowRight),
-            enter: binds.keys.just_pressed(KeyCode::Enter),
-            fkey,
-            typed: binds.typed.clone(),
-            ctrl: binds.keys.pressed(KeyCode::ControlLeft) || binds.keys.pressed(KeyCode::ControlRight),
-            shift: binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight),
+/// Closes the screen from its Exit button (the game runs again, the pointer goes back as it was).
+fn close_screen(cx: &mut InvCx) {
+    let InvCx { st, vtime, binds, cursor_opts, .. } = cx;
+    st.open = false;
+    vtime.unpause();
+    binds.capture = false;
+    SCREEN_OPEN.store(false, Ordering::Relaxed);
+    cursor_opts.visible = !st.grabbed_before;
+    if st.grabbed_before {
+        cursor_opts.grab_mode = bevy::window::CursorGrabMode::Locked;
+    }
+}
+
+/// The other persona screens (persona.rs pages, the bot screens too): input, the page, what it asked for, then the
+/// canvas and the cursor.
+fn persona_screen(
+    cx: &mut InvCx,
+    fr: &InvFrame,
+    wheel: &mut MessageReader<MouseWheel>,
+    npcs: &mut Query<&mut crate::ai::Npc>,
+    nodes: &mut Query<(&mut Node, &mut Visibility, &MaterialNode<HudLayer>)>,
+) {
+    let InvFrame { s, d, ox, oy, sf, .. } = *fr;
+    let input = persona_input(cx, fr, wheel);
+    let screen = cx.st.screen;
+    let bot = bot_view(cx, npcs);
+    let (c, act) = {
+        let InvCx { st, hud, assets, inv, ph, .. } = &mut *cx;
+        let mut ctx = crate::persona::Ctx {
+            hud,
+            assets,
+            fonts: &fr.fonts,
+            lay: &fr.lay,
+            inv,
+            ph,
+            bot: bot.clone(),
         };
-        let screen = st.screen;
-        let bot = st.bot.and_then(|(e, medic)| {
-                let n = npcs.get(e).ok()?;
-                let (cls, amt_key, ref_key, amt) = if medic {
-                    ("MedicalBot", "healAmount", "healRefreshTime", 300.0)
-                } else {
-                    ("RepairBot", "chargeAmount", "chargeRefreshTime", 75.0)
-                };
-                let d = assets.classes.defaults(cls);
-                Some(crate::persona::BotView {
-                    med: medic,
-                    remaining: n.service_cooldown,
-                    refresh: int_p(&d, ref_key, 60) as f32,
-                    // GMDX Misfeature Exploit: bots give 1.5 x (MedicalBot.Frob 375 for 250, RepairBot 90 for 60).
-                    amount: int_p(&d, amt_key, amt as i32) as f32
-                        * if crate::perks::has("PerkMisfeatureExploit") { 1.5 } else { 1.0 },
-                })
-            });
-        let (c, act) = {
-            let mut ctx = crate::persona::Ctx {
-                hud: &mut hud,
-                assets: &mut assets,
-                fonts: &fonts,
-                lay: &lay,
-                inv: &mut inv,
-                ph: &mut ph,
-                bot: bot.clone(),
+        crate::snap::set_page_map(Some(crate::snap::Map { s: d, ox, oy, sf }));
+        let _pp = crate::prof::scope("inv::persona_page");
+        let r = crate::persona::page(screen, &mut st.persona, &mut ctx, &input, s);
+        drop(_pp);
+        crate::snap::set_page_map(None);
+        r
+    };
+    // Augmentique's outfits screen: its 3D view of JC and the widgets on it (outfit_view.rs).
+    crate::outfit_view::request(cx.st.persona.view.map(|rect| crate::outfit_view::Request {
+        rect,
+        ox,
+        oy,
+        d,
+        sf,
+        low_camera: cx.st.persona.outfit_cam,
+        overlay: cx.st.persona.overlay.take(),
+    }));
+    if !persona_act(cx, act, bot.as_ref(), npcs) {
+        return;
+    }
+    let InvCx { st, images, layers, hud, assets, .. } = &mut *cx;
+    present(
+        images,
+        layers,
+        nodes,
+        st,
+        &c,
+        fr.canvas_e,
+        &fr.canvas_img,
+        ox,
+        oy,
+        d,
+        sf,
+    );
+    let mut cc = Canvas::new(64, 64, s);
+    cursor_with_shadow(hud, assets, &mut cc);
+    show_cursor(cx, fr, nodes, &cc, (32, 32));
+}
+
+/// A persona page's input this frame (mouse, wheel lines, keys, typed text).
+fn persona_input(cx: &mut InvCx, fr: &InvFrame, wheel: &mut MessageReader<MouseWheel>) -> crate::persona::Input {
+    let binds = &cx.binds;
+    let wheel_lines: f32 = wheel
+        .read()
+        .map(|w| {
+            if w.unit == bevy::input::mouse::MouseScrollUnit::Line {
+                w.y * 3.0
+            } else {
+                w.y / 4.0
+            }
+        })
+        .sum();
+    let fkey = crate::abilities::AUG_KEYS
+        .iter()
+        .position(|k| binds.keys.just_pressed(*k));
+    crate::persona::Input {
+        mouse: fr.mouse,
+        down: binds.buttons.just_pressed(MouseButton::Left),
+        up: binds.buttons.just_released(MouseButton::Left),
+        wheel: wheel_lines,
+        dt: fr.dt,
+        up_key: binds.keys.just_pressed(KeyCode::ArrowUp),
+        down_key: binds.keys.just_pressed(KeyCode::ArrowDown),
+        left_key: binds.keys.just_pressed(KeyCode::ArrowLeft),
+        right_key: binds.keys.just_pressed(KeyCode::ArrowRight),
+        enter: binds.keys.just_pressed(KeyCode::Enter),
+        fkey,
+        typed: binds.typed.clone(),
+        ctrl: binds.keys.pressed(KeyCode::ControlLeft) || binds.keys.pressed(KeyCode::ControlRight),
+        shift: binds.keys.pressed(KeyCode::ShiftLeft) || binds.keys.pressed(KeyCode::ShiftRight),
+    }
+}
+
+/// The bot whose screen this is, as the bot pages see it (charge, refresh time, amount).
+fn bot_view(cx: &mut InvCx, npcs: &mut Query<&mut crate::ai::Npc>) -> Option<crate::persona::BotView> {
+    let InvCx { st, assets, .. } = cx;
+    st.bot.and_then(|(e, medic)| {
+            let n = npcs.get(e).ok()?;
+            let (cls, amt_key, ref_key, amt) = if medic {
+                ("MedicalBot", "healAmount", "healRefreshTime", 300.0)
+            } else {
+                ("RepairBot", "chargeAmount", "chargeRefreshTime", 75.0)
             };
-            crate::snap::set_page_map(Some(crate::snap::Map { s: d, ox, oy, sf }));
-            let _pp = crate::prof::scope("inv::persona_page");
-            let r = crate::persona::page(screen, &mut st.persona, &mut ctx, &input, s);
-            drop(_pp);
-            crate::snap::set_page_map(None);
-            r
-        };
-        // Augmentique's outfits screen: its 3D view of JC and the widgets on it (outfit_view.rs).
-        crate::outfit_view::request(st.persona.view.map(|rect| crate::outfit_view::Request {
-            rect,
-            ox,
-            oy,
-            d,
-            sf,
-            low_camera: st.persona.outfit_cam,
-            overlay: st.persona.overlay.take(),
-        }));
-        match act {
-            Some(crate::persona::Act::Exit) => {
-                if let Some((e, _)) = st.bot.take() {
-                    release_bot(&mut npcs, e);
-                }
-                st.open = false;
-                vtime.unpause();
-                binds.capture = false;
-                SCREEN_OPEN.store(false, Ordering::Relaxed);
-                cursor_opts.visible = !st.grabbed_before;
-                if st.grabbed_before {
-                    cursor_opts.grab_mode = bevy::window::CursorGrabMode::Locked;
-                }
-                return;
+            let d = assets.classes.defaults(cls);
+            Some(crate::persona::BotView {
+                med: medic,
+                remaining: n.service_cooldown,
+                refresh: int_p(&d, ref_key, 60) as f32,
+                // GMDX Misfeature Exploit: bots give 1.5 x (MedicalBot.Frob 375 for 250, RepairBot 90 for 60).
+                amount: int_p(&d, amt_key, amt as i32) as f32
+                    * if crate::perks::has("PerkMisfeatureExploit") { 1.5 } else { 1.0 },
+            })
+        })
+}
+
+/// What a persona page asked for: exit, another screen, use an item, the bot's heal / charge, install an aug.
+/// False = the screen closed (nothing more this frame).
+fn persona_act(
+    cx: &mut InvCx,
+    act: Option<crate::persona::Act>,
+    bot: Option<&crate::persona::BotView>,
+    npcs: &mut Query<&mut crate::ai::Npc>,
+) -> bool {
+    match act {
+        Some(crate::persona::Act::Exit) => {
+            if let Some((e, _)) = cx.st.bot.take() {
+                release_bot(npcs, e);
             }
-            Some(crate::persona::Act::Nav(i)) => {
-                st.screen = i;
-                st.persona = Default::default();
-            }
-            Some(crate::persona::Act::UseItem(class)) => weapons.use_request = Some(class),
-            Some(crate::persona::Act::BotHeal) | Some(crate::persona::Act::BotCharge) => {
-                if let (Some((e, medic)), Some(b)) = (st.bot, bot.as_ref()) {
-                    if let Ok(mut n) = npcs.get_mut(e) {
-                        if n.service_cooldown <= 0.0 {
-                            n.service_cooldown = b.refresh;
-                            if medic {
-                                // MedicalBot.HealPlayer -> DeusExPlayer.HealPlayer(healAmount).
-                                let healed = ph.heal(b.amount);
-                                crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
-                                let lab = crate::persona::s_default_pub(&mut assets, "PersonaScreenHealth", "PointsHealedLabel", "%d points healed");
-                                st.persona.set_status(lab.replacen("%d", &(healed as i32).to_string(), 1));
-                            } else {
-                                // RepairBot.ChargePlayer -> DeusExPlayer.ChargePlayer(chargeAmount).
-                                ph.energy = (ph.energy + b.amount).min(100.0);
-                            }
+            close_screen(cx);
+            return false;
+        }
+        Some(crate::persona::Act::Nav(i)) => {
+            cx.st.screen = i;
+            cx.st.persona = Default::default();
+        }
+        Some(crate::persona::Act::UseItem(class)) => cx.weapons.use_request = Some(class),
+        Some(crate::persona::Act::BotHeal) | Some(crate::persona::Act::BotCharge) => {
+            let InvCx { st, ph, assets, .. } = cx;
+            if let (Some((e, medic)), Some(b)) = (st.bot, bot) {
+                if let Ok(mut n) = npcs.get_mut(e) {
+                    if n.service_cooldown <= 0.0 {
+                        n.service_cooldown = b.refresh;
+                        if medic {
+                            // MedicalBot.HealPlayer -> DeusExPlayer.HealPlayer(healAmount).
+                            let healed = ph.heal(b.amount);
+                            crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
+                            let lab = crate::persona::s_default_pub(assets, "PersonaScreenHealth", "PointsHealedLabel", "%d points healed");
+                            st.persona.set_status(lab.replacen("%d", &(healed as i32).to_string(), 1));
+                        } else {
+                            // RepairBot.ChargePlayer -> DeusExPlayer.ChargePlayer(chargeAmount).
+                            ph.energy = (ph.energy + b.amount).min(100.0);
                         }
                     }
                 }
             }
-            Some(crate::persona::Act::Install(i, class)) => {
-                // InstallAugmentation: GivePlayerAugmentation, the canister is used up.
-                if let Some(m) = crate::abilities::give_aug(&mut assets.classes, &class, false) {
-                    if !m.is_empty() {
-                        msg.text = m.clone();
-                        msg.time_left = 3.0;
-                        st.persona.set_status(m);
-                    }
-                }
-                crate::augcan::remove(&mut inv, i);
-                crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
-            }
-            None => {}
         }
-        present(
-            &mut images,
-            &mut layers,
-            &mut nodes,
-            st,
-            &c,
-            canvas_e,
-            &canvas_img,
-            ox,
-            oy,
-            d,
-            sf,
-        );
-        let mut cc = Canvas::new(64, 64, s);
-        cursor_with_shadow(&mut hud, &mut assets, &mut cc);
-        if upload(&mut images, &cursor_img, &mut st.last_cursor, &cc) {
-            if let Ok((_, _, m)) = nodes.get(cursor_e) {
-                if let Some(m) = layers.get_mut(&m.0) {
-                    m.into_inner();
+        Some(crate::persona::Act::Install(i, class)) => {
+            let InvCx { st, assets, msg, inv, .. } = cx;
+            // InstallAugmentation: GivePlayerAugmentation, the canister is used up.
+            if let Some(m) = crate::abilities::give_aug(&mut assets.classes, &class, false) {
+                if !m.is_empty() {
+                    msg.text = m.clone();
+                    msg.time_left = 3.0;
+                    st.persona.set_status(m);
                 }
             }
+            crate::augcan::remove(inv, i);
+            crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
         }
-        if let Ok((mut n, mut v, _)) = nodes.get_mut(cursor_e) {
-            *v = if window.cursor_position().is_some() {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            };
-            n.left = Val::Px((ox as f32 + (mouse.0 - 32) as f32 * d) / sf);
-            n.top = Val::Px((oy as f32 + (mouse.1 - 32) as f32 * d) / sf);
-            n.width = Val::Px(64.0 * d / sf);
-            n.height = Val::Px(64.0 * d / sf);
-        }
-        return;
+        None => {}
     }
+    true
+}
 
-    // Keep the selection pointing at something that still exists.
-    if let Some(Sel::Item(c)) = &st.sel {
-        if !inv.0.items.iter().any(|i| &i.key() == c) {
-            st.sel = None;
+/// Uploads the cursor canvas and puts its node at the mouse (`hot` = the canvas point under it); hidden while
+/// the pointer is outside the window.
+fn show_cursor(
+    cx: &mut InvCx,
+    fr: &InvFrame,
+    nodes: &mut Query<(&mut Node, &mut Visibility, &MaterialNode<HudLayer>)>,
+    cc: &Canvas,
+    hot: (i32, i32),
+) {
+    let InvFrame { d, ox, oy, sf, mouse, cursor_e, .. } = *fr;
+    let InvCx { st, images, layers, window, .. } = cx;
+    if upload(images, &fr.cursor_img, &mut st.last_cursor, cc) {
+        if let Ok((_, _, m)) = nodes.get(cursor_e) {
+            if let Some(m) = layers.get_mut(&m.0) {
+                m.into_inner();
+            }
         }
     }
+    if let Ok((mut n, mut v, _)) = nodes.get_mut(cursor_e) {
+        *v = if window.cursor_position().is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        let mx = ox as f32 + (mouse.0 - hot.0) as f32 * d;
+        let my = oy as f32 + (mouse.1 - hot.1) as f32 * d;
+        n.left = Val::Px(mx / sf);
+        n.top = Val::Px(my / sf);
+        n.width = Val::Px(cc.w as f32 * d / sf);
+        n.height = Val::Px(cc.h as f32 * d / sf);
+    }
+}
 
-    // ---------------------------------------------------------------- input
+/// The info pane for the selection (item info / ammo list / key ring), laid out (narrowed when its scroll bar is
+/// up), and the wheel scrolling it.
+fn info_pane(cx: &mut InvCx, fr: &InvFrame, wheel: &mut MessageReader<MouseWheel>) -> InfoPane {
+    let InvCx { st, inv, weapons, clips, charged, assets, .. } = cx;
+    let fonts = &fr.fonts;
     let (info_title, info_rows) = {
         let view = View {
             inv: &inv.0,
-            weapons: &weapons,
-            clips: &clips,
-            charged: &charged,
+            weapons,
+            clips,
+            charged,
         };
         match &st.sel {
-            Some(Sel::Item(c)) => item_info(c, &view, &mut assets),
-            Some(Sel::Ammo) => ammo_list(&view, st.show_ammo_desc, &mut assets),
-            Some(Sel::KeyRing) => keyring_info(&mut assets),
+            Some(Sel::Item(c)) => item_info(c, &view, assets),
+            Some(Sel::Ammo) => ammo_list(&view, st.show_ammo_desc, assets),
+            Some(Sel::KeyRing) => keyring_info(assets),
             None => (String::new(), Vec::new()),
         }
     };
     let view_h = INFO.3 - INFO_TEXT_Y;
     INFO_NARROW.store(false, std::sync::atomic::Ordering::Relaxed);
-    let mut rows = layout_rows(&info_rows, &fonts);
+    let mut rows = layout_rows(&info_rows, fonts);
     if rows.last().map_or(0, |r| r.0 + r.1) + 1 > view_h {
         INFO_NARROW.store(true, std::sync::atomic::Ordering::Relaxed);
-        rows = layout_rows(&info_rows, &fonts);
+        rows = layout_rows(&info_rows, fonts);
     }
     let content_h = rows.last().map_or(0, |r| r.0 + r.1) + 1;
     for w in wheel.read() {
@@ -1534,21 +1752,28 @@ pub fn inventory_screen_system(
         st.scroll -= (lines * fonts.small.height as f32) as i32;
     }
     st.scroll = st.scroll.clamp(0, (content_h - view_h).max(0));
+    InfoPane { title: info_title, rows, view_h, content_h }
+}
 
-    let hit = {
-        let view = View {
-            inv: &inv.0,
-            weapons: &weapons,
-            clips: &clips,
-            charged: &charged,
-        };
-        {
-            crate::snap::offer(crate::snap::LAYER_PERSONA, crate::snap::Map { s: d, ox, oy, sf }, snap_rects(&view, &lay));
-            hit_test(mouse, &view, &lay, &rows, st.scroll)
-        }
+/// What the mouse is over (and the snap-to targets offered for the D-pad).
+fn page_hit(cx: &mut InvCx, fr: &InvFrame, pane: &InfoPane) -> Hit {
+    let InvFrame { d, ox, oy, sf, mouse, .. } = *fr;
+    let InvCx { st, inv, weapons, clips, charged, .. } = cx;
+    let view = View {
+        inv: &inv.0,
+        weapons,
+        clips,
+        charged,
     };
-    let left_down = binds.buttons.just_pressed(MouseButton::Left);
-    let left_up = binds.buttons.just_released(MouseButton::Left);
+    {
+        crate::snap::offer(crate::snap::LAYER_PERSONA, crate::snap::Map { s: d, ox, oy, sf }, snap_rects(&view, &fr.lay));
+        hit_test(mouse, &view, &fr.lay, &pane.rows, st.scroll)
+    }
+}
+
+/// Right / Left: the next / previous persona screen (nav bar order).
+fn nav_key_action(cx: &mut InvCx) -> Option<Btn> {
+    let binds = &cx.binds;
     let mut action: Option<Btn> = None;
     // Right / Left: the next / previous persona screen (nav bar order).
     if binds.keys.just_pressed(KeyCode::ArrowRight) || binds.keys.just_pressed(KeyCode::ArrowLeft) {
@@ -1557,10 +1782,19 @@ pub fn inventory_screen_system(
             action = Some(Btn::Nav(n));
         }
     }
+    action
+}
+
+/// The info pane's PersonaScrollAreaWindow bar: the buttons step a line (repeating while held), the scale drags
+/// the thumb.
+fn info_bar_input(cx: &mut InvCx, fr: &InvFrame, pane: &InfoPane) -> InfoBar {
+    let InvCx { st, binds, .. } = cx;
+    let mouse = fr.mouse;
+    let left_down = binds.buttons.just_pressed(MouseButton::Left);
     // The info pane's PersonaScrollAreaWindow bar: the buttons step a line (repeating while held), the scale
     // drags the thumb.
-    let bar_r = (INFO.0, INFO.1 + INFO_TEXT_Y, INFO.2, view_h);
-    let bar_max = (content_h - view_h).max(0);
+    let bar_r = (INFO.0, INFO.1 + INFO_TEXT_Y, INFO.2, pane.view_h);
+    let bar_max = (pane.content_h - pane.view_h).max(0);
     let on_bar = (bar_max > 0).then(|| crate::persona::bar_part(bar_r, mouse)).flatten();
     if left_down {
         if let Some(part) = on_bar {
@@ -1572,7 +1806,7 @@ pub fn inventory_screen_system(
         st.bar = None;
     }
     if let Some((part, held)) = st.bar.as_mut() {
-        let line = fonts.small.height;
+        let line = fr.fonts.small.height;
         let before = *held;
         // (Virtual time stops while the screen is up: the wall clock paces the repeat.)
         thread_local! { static LAST: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) }; }
@@ -1589,8 +1823,16 @@ pub fn inventory_screen_system(
         }
         st.scroll = st.scroll.clamp(0, bar_max);
     }
+    InfoBar { r: bar_r, max: bar_max, on: on_bar }
+}
+
+/// A left press on a button, item or belt slot (the drag starts once the mouse moves 3 units), and item rotation.
+fn drag_input(cx: &mut InvCx, fr: &InvFrame, hit: &Hit, on_bar: Option<u8>) {
+    let InvCx { st, binds, inv, .. } = cx;
+    let mouse = fr.mouse;
+    let left_down = binds.buttons.just_pressed(MouseButton::Left);
     if left_down && on_bar.is_none() {
-        match &hit {
+        match hit {
             Hit::Button(b) => st.pressed = Some(*b),
             Hit::Item(c) => {
                 let rot = inv.0.items.iter().find(|i| &i.key() == c).is_some_and(|i| i.rotated);
@@ -1649,15 +1891,23 @@ pub fn inventory_screen_system(
             }
         }
     }
+}
+
+/// A left release: the pressed button's action, the end of a drag (finish_drag), or a click (select, Shift-click to
+/// the belt, key ring / ammo / checkbox / skin / ammo buttons).
+fn release_input(cx: &mut InvCx, fr: &InvFrame, hit: &Hit, action: &mut Option<Btn>) {
+    let InvCx { st, binds, inv, weapons, clips, assets, .. } = cx;
+    let mouse = fr.mouse;
+    let left_up = binds.buttons.just_released(MouseButton::Left);
     if left_up {
         if let Some(b) = st.pressed.take() {
-            if hit == Hit::Button(b) {
-                action = Some(b);
+            if *hit == Hit::Button(b) {
+                *action = Some(b);
             }
         }
         match st.drag.take() {
             Some(d) if d.active => {
-                finish_drag(st, &d, &hit, mouse, &mut inv, &mut weapons, &mut assets)
+                finish_drag(st, &d, hit, mouse, inv, weapons, assets)
             }
             Some(Drag {
                 src: DragSrc::Item(c),
@@ -1679,7 +1929,7 @@ pub fn inventory_screen_system(
                         }
                     }
                 }
-                select(st, Sel::Item(c), &inv)
+                select(st, Sel::Item(c), inv)
             }
             Some(Drag {
                 src: DragSrc::Belt(slot),
@@ -1687,16 +1937,16 @@ pub fn inventory_screen_system(
             }) => {
                 if let Some(i) = inv.0.belt[slot] {
                     let c = inv.0.items[i].key();
-                    select(st, Sel::Item(c), &inv);
+                    select(st, Sel::Item(c), inv);
                 }
             }
-            None => match &hit {
-                Hit::KeyRing => select(st, Sel::KeyRing, &inv),
-                Hit::Ammo => select(st, Sel::Ammo, &inv),
+            None => match hit {
+                Hit::KeyRing => select(st, Sel::KeyRing, inv),
+                Hit::Ammo => select(st, Sel::Ammo, inv),
                 Hit::Checkbox => st.show_ammo_desc = !st.show_ammo_desc,
                 Hit::SkinPrev | Hit::SkinNext => {
                     if let Some(Sel::Item(c)) = st.sel.clone() {
-                        crate::augmentique::cycle_skin(class_of(&c), if hit == Hit::SkinNext { 1 } else { -1 });
+                        crate::augmentique::cycle_skin(class_of(&c), if *hit == Hit::SkinNext { 1 } else { -1 });
                         crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
                     }
                 }
@@ -1706,10 +1956,10 @@ pub fn inventory_screen_system(
                             st,
                             class_of(&c),
                             Some(a.clone()),
-                            &mut inv,
-                            &mut weapons,
-                            &mut clips,
-                            &mut assets,
+                            inv,
+                            weapons,
+                            clips,
+                            assets,
                         );
                     }
                 }
@@ -1717,6 +1967,12 @@ pub fn inventory_screen_system(
             },
         }
     }
+}
+
+/// Keys (VirtualKeyPressed): 1-9 put the selection on the belt, Backspace drops, the pad's Y / LT use / drop the
+/// item under the cursor, Enter uses, Delete clears the selected belt slot. Returns the selected item's key.
+fn key_input(cx: &mut InvCx, hit: &Hit, action: &mut Option<Btn>) -> Option<String> {
+    let InvCx { st, binds, inv, .. } = cx;
     // Keys (VirtualKeyPressed).
     let mut sel_class = match &st.sel {
         Some(Sel::Item(c)) => Some(c.clone()),
@@ -1744,21 +2000,21 @@ pub fn inventory_screen_system(
         }
     }
     if binds.keys.just_pressed(KeyCode::Backspace) {
-        action = Some(Btn::Drop);
+        *action = Some(Btn::Drop);
     }
     // Ours (controller): Y uses / equips the item under the cursor, LT drops it.
     let pad_y = crate::gamepad::PAD_NOTES.load(Ordering::Relaxed);
     let pad_lt = crate::gamepad::PAD_LT.load(Ordering::Relaxed);
     if pad_y || pad_lt {
-        if let Hit::Item(c) = &hit {
-            select(st, Sel::Item(c.clone()), &inv);
+        if let Hit::Item(c) = hit {
+            select(st, Sel::Item(c.clone()), inv);
             sel_class = Some(c.clone());
             let weapon = inv.0.items.iter().any(|i| &i.key() == c && i.def.kind == ItemKind::Weapon);
-            action = Some(if pad_lt { Btn::Drop } else if weapon { Btn::Equip } else { Btn::Use });
+            *action = Some(if pad_lt { Btn::Drop } else if weapon { Btn::Equip } else { Btn::Use });
         }
     }
     if binds.keys.just_pressed(KeyCode::Enter) {
-        action = Some(Btn::Use);
+        *action = Some(Btn::Use);
     }
     if binds.keys.just_pressed(KeyCode::Delete) {
         if let Some(slot) = st.belt_sel.filter(|s| *s != 0) {
@@ -1766,74 +2022,70 @@ pub fn inventory_screen_system(
             st.belt_sel = None;
         }
     }
+    sel_class
+}
 
-    // Button enabling (EnableButtons).
-    let enabled = |b: Btn,
-                   st: &InvScreen,
-                   assets: &mut RuntimeAssets,
-                   inv: &imsim_core::inventory::Inventory|
-     -> bool {
-        if b == Btn::Sort || b == Btn::Pack {
-            return true;
-        }
-        let Some(Sel::Item(c)) = &st.sel else {
-            return matches!(b, Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_));
-        };
-        let d = assets.classes.defaults(class_of(c));
-        let weapon = inv
-            .items
-            .iter()
-            .any(|i| &i.key() == c && i.def.kind == ItemKind::Weapon);
-        match b {
-            Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_) | Btn::Sort | Btn::Pack => true,
-            Btn::Drop => true,
-            Btn::Equip => {
-                !c.starts_with("WeaponMod")
-                    && !c.starts_with("Augmentation")
-                    && (weapon || find_ci(&d, "PlayerViewMesh").is_some())
-            }
-            Btn::Use => !weapon && !c.starts_with("WeaponMod") && !c.starts_with("Augmentation"),
-            Btn::ChangeAmmo => {
-                weapon
-                    && ammo_names(&d)
-                        .iter()
-                        .filter(|a| inv.ammo.iter().any(|x| &x.0 == *a && x.1 > 0))
-                        .count()
-                        >= 2
-            }
-        }
+/// Button enabling (EnableButtons).
+fn btn_enabled(b: Btn, st: &InvScreen, assets: &mut RuntimeAssets, inv: &imsim_core::inventory::Inventory) -> bool {
+    if b == Btn::Sort || b == Btn::Pack {
+        return true;
+    }
+    let Some(Sel::Item(c)) = &st.sel else {
+        return matches!(b, Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_));
     };
+    let d = assets.classes.defaults(class_of(c));
+    let weapon = inv
+        .items
+        .iter()
+        .any(|i| &i.key() == c && i.def.kind == ItemKind::Weapon);
+    match b {
+        Btn::Exit | Btn::Nav(_) | Btn::NavArrow(_) | Btn::Sort | Btn::Pack => true,
+        Btn::Drop => true,
+        Btn::Equip => {
+            !c.starts_with("WeaponMod")
+                && !c.starts_with("Augmentation")
+                && (weapon || find_ci(&d, "PlayerViewMesh").is_some())
+        }
+        Btn::Use => !weapon && !c.starts_with("WeaponMod") && !c.starts_with("Augmentation"),
+        Btn::ChangeAmmo => {
+            weapon
+                && ammo_names(&d)
+                    .iter()
+                    .filter(|a| inv.ammo.iter().any(|x| &x.0 == *a && x.1 > 0))
+                    .count()
+                    >= 2
+        }
+    }
+}
+
+/// The chosen button's action when it's enabled (Exit, nav, Equip, Use, Drop, Sort, Pack, Change Ammo).
+/// False = the screen closed (nothing more this frame).
+fn run_action(cx: &mut InvCx, action: Option<Btn>, sel_class: &Option<String>) -> bool {
     if let Some(b) = action {
-        if enabled(b, st, &mut assets, &inv.0) {
+        if btn_enabled(b, cx.st, &mut cx.assets, &cx.inv.0) {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
             match b {
                 Btn::Exit => {
-                    st.open = false;
-                    vtime.unpause();
-                    binds.capture = false;
-                    SCREEN_OPEN.store(false, Ordering::Relaxed);
-                    cursor_opts.visible = !st.grabbed_before;
-                    if st.grabbed_before {
-                        cursor_opts.grab_mode = bevy::window::CursorGrabMode::Locked;
-                    }
-                    return;
+                    close_screen(cx);
+                    return false;
                 }
                 Btn::Nav(i) => {
-                    st.screen = i;
-                    st.persona = Default::default();
+                    cx.st.screen = i;
+                    cx.st.persona = Default::default();
                 }
                 Btn::NavArrow(k) => nav_scroll(if k == 0 { -1 } else { 1 }),
                 Btn::Equip => {
                     if let Some(c) = sel_class.clone() {
-                        equip(st, class_of(&c), &mut weapons);
+                        equip(cx.st, class_of(&c), &mut cx.weapons);
                     }
                 }
                 Btn::Use => {
                     if let Some(c) = sel_class.clone() {
-                        weapons.use_request = Some(class_of(&c).to_string());
+                        cx.weapons.use_request = Some(class_of(&c).to_string());
                     }
                 }
                 Btn::Drop => {
+                    let InvCx { st, binds, inv, weapons, assets, player, cam, drops, msg, .. } = cx;
                     // GMDX HUD: Allow Dropping Item Stacks (setting DropStacks): Shift + Drop drops the whole stack.
                     DROP_STACK.store(
                         setting!("DropStacks") > 0.5
@@ -1844,189 +2096,200 @@ pub fn inventory_screen_system(
                         drop_item(
                             st,
                             &c,
-                            &mut inv,
-                            &mut weapons,
-                            &mut assets,
-                            &player,
-                            &cam,
-                            &mut drops,
-                            &mut msg,
+                            inv,
+                            weapons,
+                            assets,
+                            player,
+                            cam,
+                            drops,
+                            msg,
                         );
                     }
                 }
-                Btn::Sort => inv.0.auto_sort(),
+                Btn::Sort => cx.inv.0.auto_sort(),
                 Btn::Pack => {
-                    if !inv.0.pack() {
-                        st.set_status("Already packed".into());
+                    if !cx.inv.0.pack() {
+                        cx.st.set_status("Already packed".into());
                     }
                 }
                 Btn::ChangeAmmo => {
+                    let InvCx { st, inv, weapons, clips, assets, .. } = cx;
                     if let Some(c) = sel_class.clone() {
                         load_ammo(
                             st,
                             class_of(&c),
                             None,
-                            &mut inv,
-                            &mut weapons,
-                            &mut clips,
-                            &mut assets,
+                            inv,
+                            weapons,
+                            clips,
+                            assets,
                         );
                     }
                 }
             }
         }
     }
+    true
+}
 
-    // ---------------------------------------------------------------- draw
-    let en: Vec<(Btn, bool)> = [Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo, Btn::Sort, Btn::Pack]
-        .iter()
-        .map(|b| (*b, enabled(*b, st, &mut assets, &inv.0)))
-        .collect();
-    let view = View {
-        inv: &inv.0,
-        weapons: &weapons,
-        clips: &clips,
-        charged: &charged,
-    };
-    let unequip = view
-        .inv
-        .items
-        .iter()
-        .find(|i| view.in_hand(&i.def.class))
-        .map(|i| i.def.class.clone());
-    let _pb = crate::prof::scope("inv::draw");
-    let mut c = Canvas::new(SCREEN_W, SCREEN_H, s);
-    let frame = FrameInfo {
-        credits: view.inv.credits,
-        unequip,
-        enabled: en,
-    };
-    draw_frame(
-        &mut c,
-        &mut hud,
-        &mut assets,
-        &fonts,
-        &lay,
-        st,
-        &hit,
-        &frame,
-    );
-    draw_items(
-        &mut c,
-        &mut hud,
-        &mut assets,
-        &fonts,
-        st,
-        &view,
-        &hit,
-        mouse,
-    );
-    draw_info(
-        &mut c,
-        &mut hud,
-        &mut assets,
-        &fonts,
-        st,
-        &info_title,
-        &rows,
-        &view,
-    );
-    if bar_max > 0 {
-        let (up, down) = match st.bar {
-            Some((0, _)) => (2, 0),
-            Some((2, _)) => (0, 2),
-            _ => (u8::from(on_bar == Some(0)), u8::from(on_bar == Some(2))),
+/// Draws the inventory page (frame, items, info pane and its bar, details, belt, status line), uploads it, and
+/// the cursor.
+fn draw_page(
+    cx: &mut InvCx,
+    fr: &InvFrame,
+    pane: &InfoPane,
+    bar: &InfoBar,
+    hit: &Hit,
+    nodes: &mut Query<(&mut Node, &mut Visibility, &MaterialNode<HudLayer>)>,
+) {
+    let InvFrame { s, d, ox, oy, sf, mouse, .. } = *fr;
+    let fonts = &fr.fonts;
+    let c = {
+        let InvCx { st, hud, assets, inv, weapons, clips, charged, .. } = &mut *cx;
+        let st: &mut InvScreen = st;
+        let en: Vec<(Btn, bool)> = [Btn::Equip, Btn::Use, Btn::Drop, Btn::ChangeAmmo, Btn::Sort, Btn::Pack]
+            .iter()
+            .map(|b| (*b, btn_enabled(*b, st, assets, &inv.0)))
+            .collect();
+        let view = View {
+            inv: &inv.0,
+            weapons,
+            clips,
+            charged,
         };
-        crate::persona::draw_scroll_bar(&mut c, &mut hud, &mut assets, bar_r, bar_max, st.scroll, up, down);
-    }
-    draw_details(&mut c, &mut hud, &mut assets, &fonts, st);
-    draw_belt(&mut c, &mut hud, &mut assets, &fonts, st, &view, &hit);
-    // Status line.
-    if !st.status.is_empty() {
-        c.text(
-            &fonts.small,
-            STATUS.0 + 2,
-            STATUS.1 + 1,
-            STATUS.2,
-            fonts.small.height,
-            HAlign::Left,
-            VAlign::Top,
-            crate::menuui::h_col(9),
-            &st.status,
+        let unequip = view
+            .inv
+            .items
+            .iter()
+            .find(|i| view.in_hand(&i.def.class))
+            .map(|i| i.def.class.clone());
+        let _pb = crate::prof::scope("inv::draw");
+        let mut c = Canvas::new(SCREEN_W, SCREEN_H, s);
+        let frame = FrameInfo {
+            credits: view.inv.credits,
+            unequip,
+            enabled: en,
+        };
+        draw_frame(
+            &mut c,
+            hud,
+            assets,
+            fonts,
+            &fr.lay,
+            st,
+            hit,
+            &frame,
         );
-    }
-    drop(_pb);
-    let _pc = crate::prof::scope("inv::upload");
-    if upload(&mut images, &canvas_img, &mut st.last, &c) {
-        if let Ok((_, _, m)) = nodes.get(canvas_e) {
-            if let Some(m) = layers.get_mut(&m.0) {
-                m.into_inner();
-            }
+        draw_items(
+            &mut c,
+            hud,
+            assets,
+            fonts,
+            st,
+            &view,
+            hit,
+            mouse,
+        );
+        draw_info(
+            &mut c,
+            hud,
+            assets,
+            fonts,
+            st,
+            &pane.title,
+            &pane.rows,
+            &view,
+        );
+        if bar.max > 0 {
+            let (up, down) = match st.bar {
+                Some((0, _)) => (2, 0),
+                Some((2, _)) => (0, 2),
+                _ => (u8::from(bar.on == Some(0)), u8::from(bar.on == Some(2))),
+            };
+            crate::persona::draw_scroll_bar(&mut c, hud, assets, bar.r, bar.max, st.scroll, up, down);
         }
-    }
-    if let Ok((mut n, mut v, _)) = nodes.get_mut(canvas_e) {
-        v.set_if_neq(Visibility::Inherited);
-        n.left = Val::Px(ox as f32 / sf);
-        n.top = Val::Px(oy as f32 / sf);
-        n.width = Val::Px(SCREEN_W as f32 * d / sf);
-        n.height = Val::Px(SCREEN_H as f32 * d / sf);
-    }
-
-    // The cursor: DeusExCursor2 (hot spot 32, 32) with its shadow, or the dragged item's icon (dimmed where it
-    // can't go).
-    let mut cc = Canvas::new(64, 64, s);
-    let mut hot = (32, 32);
-    let dragging = st.drag.as_ref().filter(|d| d.active).cloned();
-    let drag_icon = dragging.as_ref().and_then(|d| match &d.src {
-        DragSrc::Item(c) => view.item(c).map(|(_, it)| {
-            let s = it.def.large_size;
-            (it.def.large_icon.clone().or(it.def.icon.clone()), if d.rot { (s.1, s.0) } else { s }, d.rot, (s.0 as i32, s.1 as i32))
-        }),
-        DragSrc::Belt(slot) => view.inv.belt[*slot]
-            .and_then(|i| view.inv.items.get(i))
-            .map(|it| (it.def.icon.clone(), (42, 37), false, (42, 37))),
-    });
-    if let Some((Some(icon), size, turned, picture)) = drag_icon {
-        let valid = drag_valid(dragging.as_ref().unwrap(), &hit, mouse, &view, &mut assets);
-        if let Some(t) = item_icon(&mut hud, &mut assets, &icon, picture, turned) {
-            let (w, h) = (size.0.max(1) as i32, size.1.max(1) as i32);
-            cc = Canvas::new(w, h, s);
-            cc.texture(
-                0,
-                0,
-                w,
-                h,
-                0,
-                0,
-                &t,
-                Style::Masked,
-                if valid { WHITE } else { [64, 64, 64] },
+        draw_details(&mut c, hud, assets, fonts, st);
+        draw_belt(&mut c, hud, assets, fonts, st, &view, hit);
+        // Status line.
+        if !st.status.is_empty() {
+            c.text(
+                &fonts.small,
+                STATUS.0 + 2,
+                STATUS.1 + 1,
+                STATUS.2,
+                fonts.small.height,
+                HAlign::Left,
+                VAlign::Top,
+                crate::menuui::h_col(9),
+                &st.status,
             );
-            hot = (w / 2, h / 2);
         }
-    } else {
-        cursor_with_shadow(&mut hud, &mut assets, &mut cc);
+        drop(_pb);
+        c
+    };
+    let _pc = crate::prof::scope("inv::upload");
+    {
+        let InvCx { st, images, layers, .. } = &mut *cx;
+        present(images, layers, nodes, st, &c, fr.canvas_e, &fr.canvas_img, ox, oy, d, sf);
     }
-    if upload(&mut images, &cursor_img, &mut st.last_cursor, &cc) {
-        if let Ok((_, _, m)) = nodes.get(cursor_e) {
-            if let Some(m) = layers.get_mut(&m.0) {
-                m.into_inner();
-            }
-        }
-    }
-    if let Ok((mut n, mut v, _)) = nodes.get_mut(cursor_e) {
-        *v = if window.cursor_position().is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
+    drag_cursor(cx, fr, nodes, hit);
+}
+
+/// The cursor: DeusExCursor2 (hot spot 32, 32) with its shadow, or the dragged item's icon (dimmed where it can't
+/// go).
+fn drag_cursor(
+    cx: &mut InvCx,
+    fr: &InvFrame,
+    nodes: &mut Query<(&mut Node, &mut Visibility, &MaterialNode<HudLayer>)>,
+    hit: &Hit,
+) {
+    let InvFrame { s, mouse, .. } = *fr;
+    let (cc, hot) = {
+        let InvCx { st, hud, assets, inv, weapons, clips, charged, .. } = &mut *cx;
+        let view = View {
+            inv: &inv.0,
+            weapons,
+            clips,
+            charged,
         };
-        let mx = ox as f32 + (mouse.0 - hot.0) as f32 * d;
-        let my = oy as f32 + (mouse.1 - hot.1) as f32 * d;
-        n.left = Val::Px(mx / sf);
-        n.top = Val::Px(my / sf);
-        n.width = Val::Px(cc.w as f32 * d / sf);
-        n.height = Val::Px(cc.h as f32 * d / sf);
-    }
+        // The cursor: DeusExCursor2 (hot spot 32, 32) with its shadow, or the dragged item's icon (dimmed where it
+        // can't go).
+        let mut cc = Canvas::new(64, 64, s);
+        let mut hot = (32, 32);
+        let dragging = st.drag.as_ref().filter(|d| d.active).cloned();
+        let drag_icon = dragging.as_ref().and_then(|d| match &d.src {
+            DragSrc::Item(c) => view.item(c).map(|(_, it)| {
+                let s = it.def.large_size;
+                (it.def.large_icon.clone().or(it.def.icon.clone()), if d.rot { (s.1, s.0) } else { s }, d.rot, (s.0 as i32, s.1 as i32))
+            }),
+            DragSrc::Belt(slot) => view.inv.belt[*slot]
+                .and_then(|i| view.inv.items.get(i))
+                .map(|it| (it.def.icon.clone(), (42, 37), false, (42, 37))),
+        });
+        if let Some((Some(icon), size, turned, picture)) = drag_icon {
+            let valid = drag_valid(dragging.as_ref().unwrap(), hit, mouse, &view, assets);
+            if let Some(t) = item_icon(hud, assets, &icon, picture, turned) {
+                let (w, h) = (size.0.max(1) as i32, size.1.max(1) as i32);
+                cc = Canvas::new(w, h, s);
+                cc.texture(
+                    0,
+                    0,
+                    w,
+                    h,
+                    0,
+                    0,
+                    &t,
+                    Style::Masked,
+                    if valid { WHITE } else { [64, 64, 64] },
+                );
+                hot = (w / 2, h / 2);
+            }
+        } else {
+            cursor_with_shadow(hud, assets, &mut cc);
+        }
+        (cc, hot)
+    };
+    show_cursor(cx, fr, nodes, &cc, hot);
 }
 
 /// Upload the screen canvas and place its node (centred, whole-number scale).

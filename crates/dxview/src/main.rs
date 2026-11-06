@@ -585,14 +585,9 @@ pub fn make_player(level: &Level, (params, eye_height, bob): (MoveParams, f64, f
     }
 }
 
-fn main() {
-    prof::init();
-    // DXT1 textures go to the GPU compressed (desktop GPUs and the Steam Deck take BC formats; checked again once
-    // the render device exists). DXVIEW_NO_BC1 decodes them as before.
-    dx_level::set_bc1_supported(!env_on!("DXVIEW_NO_BC1"));
-    let args: Vec<String> = std::env::args().collect();
-    // The game folder: the first argument, else the launcher's choice (launcher.txt beside the exe), else the default.
-    let root = args
+/// The game folder: the first argument, else the launcher's choice (launcher.txt beside the exe), else the default.
+fn game_root(args: &[String]) -> String {
+    args
         .get(1)
         .filter(|a| !a.starts_with("--"))
         .cloned()
@@ -605,7 +600,12 @@ fn main() {
         })
         // Else the usual Steam / GOG / Heroic places (Steam Deck included).
         .or_else(|| unreal_pkg::gamedir::detect().map(|p| p.display().to_string()))
-        .unwrap_or_else(|| r"C:\Games\Deus Ex".to_string());
+        .unwrap_or_else(|| r"C:\Games\Deus Ex".to_string())
+}
+
+/// The mods to use (launcher.txt, test overrides, Helios in the game's Textures folder): overlays laid over the
+/// game folder, the rest activated.
+fn setup_mods(root: &String) {
     // Mods (unreal_pkg::mods): the launcher's Mods page writes Mod.<id>= / ModOn.<id>= lines in launcher.txt (Lay D
     // Denton's older LDDPPath= still counts). Overlays (Lay D Denton) are laid over the game folder, addons searched
     // after it, HD texture packs used texture by texture. DXVIEW_MOD (';'-separated folders) adds overlays for tests.
@@ -644,7 +644,7 @@ fn main() {
     // folder: used without setting anything up in the launcher.
     if !enabled.iter().any(|(m, _)| m.id == "helios") {
         if let Some(m) = unreal_pkg::mods::def("helios") {
-            if let Some(p) = unreal_pkg::mods::locate(m, &PathBuf::from(&root).join("Textures")) {
+            if let Some(p) = unreal_pkg::mods::locate(m, &PathBuf::from(root).join("Textures")) {
                 enabled.push((m, p));
             }
         }
@@ -652,61 +652,69 @@ fn main() {
     if !enabled.is_empty() || !mods.is_empty() {
         println!("dxview: mods {:?}", enabled.iter().map(|(m, p)| format!("{}={}", m.id, p.display())).collect::<Vec<_>>());
     }
-    unreal_pkg::paths::set(&PathBuf::from(&root), mods);
+    unreal_pkg::paths::set(&PathBuf::from(root), mods);
     unreal_pkg::mods::activate(&enabled);
-    remaster::fill_new_modern_keys();
+}
+
+/// Where relief maps and SecondRevision's height maps are looked for.
+fn setup_relief_dirs(root: &String) {
     // Relief maps (remastered lighting): the Parallax Maps mod's folder, the copy shipped beside the exe
     // (relief/), and packs installed in the game's Textures folder the DX11 renderer's way.
-    {
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        if let Some(p) = unreal_pkg::mods::active("relief") {
-            dirs.push(p);
-        }
-        if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("relief"))) {
-            if exe.is_dir() {
-                dirs.push(exe);
-            }
-        }
-        let tex = PathBuf::from(&root).join("Textures");
-        if tex.is_dir() {
-            dirs.push(tex);
-        }
-        let n = dx_level::relief::set_dirs(&dirs);
-        if n > 0 {
-            println!("dxview: relief maps for {n} textures");
-        }
-        // SecondRevision's height maps for New Vision's textures: only while New Vision's textures are on (they are
-        // made from them; SecondRevision's terms). Looked for where SecondRevision installs them and beside the exe.
-        if let Some(nv) = unreal_pkg::mods::active("newvision").filter(|_| setting!("HDTextures") > 0.5) {
-            let game = PathBuf::from(&root);
-            let mut hdirs = vec![
-                game.join("Revision").join("NewVision").join("Textures"),
-                game.join("SecondRevision").join("heightmaps").join("NewVision"),
-                nv.join("Textures"),
-                nv.clone(),
-            ];
-            if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("heightmaps").join("NewVision"))) {
-                hdirs.push(exe);
-            }
-            let n = dx_level::relief::set_heightmap_archives(&hdirs);
-            if n > 0 {
-                println!("dxview: SecondRevision height maps for {n} New Vision textures");
-            }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(p) = unreal_pkg::mods::active("relief") {
+        dirs.push(p);
+    }
+    if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("relief"))) {
+        if exe.is_dir() {
+            dirs.push(exe);
         }
     }
-    unreal_pkg::paths::set_hd_textures_on(setting!("HDTextures") > 0.5);
-    consys::warm_db(PathBuf::from(&root).join("System"));
+    let tex = PathBuf::from(root).join("Textures");
+    if tex.is_dir() {
+        dirs.push(tex);
+    }
+    let n = dx_level::relief::set_dirs(&dirs);
+    if n > 0 {
+        println!("dxview: relief maps for {n} textures");
+    }
+    // SecondRevision's height maps for New Vision's textures: only while New Vision's textures are on (they are
+    // made from them; SecondRevision's terms). Looked for where SecondRevision installs them and beside the exe.
+    if let Some(nv) = unreal_pkg::mods::active("newvision").filter(|_| setting!("HDTextures") > 0.5) {
+        let game = PathBuf::from(root);
+        let mut hdirs = vec![
+            game.join("Revision").join("NewVision").join("Textures"),
+            game.join("SecondRevision").join("heightmaps").join("NewVision"),
+            nv.join("Textures"),
+            nv.clone(),
+        ];
+        if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("heightmaps").join("NewVision"))) {
+            hdirs.push(exe);
+        }
+        let n = dx_level::relief::set_heightmap_archives(&hdirs);
+        if n > 0 {
+            println!("dxview: SecondRevision height maps for {n} New Vision textures");
+        }
+    }
+}
+
+/// Start-up data from the game folder and the mods: conversations warmed, fix tables, override layers, perks.
+fn init_game_data(root: &String) {
+    consys::warm_db(PathBuf::from(root).join("System"));
     dx_level::skincolor::OPT_FIXES.store(crate::optfixes::fixes(), std::sync::atomic::Ordering::Relaxed);
     hdtp::apply_dds_filter();
     travel::init_lddp();
-    hdtp::init(&PathBuf::from(&root));
+    hdtp::init(&PathBuf::from(root));
     hdtp::build_layer();
-    augmentique::init(&PathBuf::from(&root));
-    perks::init(&PathBuf::from(&root));
-    visattach::build_layer(&mut unreal_pkg::classes::ClassDb::open(&PathBuf::from(&root).join("System")));
+    augmentique::init(&PathBuf::from(root));
+    perks::init(&PathBuf::from(root));
+    visattach::build_layer(&mut unreal_pkg::classes::ClassDb::open(&PathBuf::from(root).join("System")));
+}
+
+/// The first map: a saved game's (`--load <save>`), the second argument, else the logo map (or Liberty Island).
+fn startup_map(args: &[String]) -> String {
     // `--load <save>`: the saved game's map, put back once it's built (save.rs).
-    let loaded_map = save::startup(&args);
-    let map = loaded_map.or_else(|| args.get(2).filter(|a| !a.starts_with("--")).cloned())
+    let loaded_map = save::startup(args);
+    loaded_map.or_else(|| args.get(2).filter(|a| !a.starts_with("--")).cloned())
         .unwrap_or_else(|| {
             // No map named: boot to the logo map and its main menu, like the original (DXVIEW_SKIP_MENU=1 goes
             // straight to Liberty Island as before).
@@ -715,15 +723,14 @@ fn main() {
             } else {
                 "DX.dx".to_string()
             }
-        });
-    // The chosen face on Paul and JC's stand-ins (DeusExPlayer.UpdatePlayerSkin).
-    dx_level::actors::set_overrides(travel::skin_overrides(&map));
-    hdtp::build_layer();
-    visattach::apply();
-    augmentique::build_layer();
+        })
+}
+
+/// Loads the first map (a failure is reported and waits for Enter before closing).
+fn load_first_level(root: &String, map: &String) -> Level {
     println!("dxview: loading {map} from {root} ...");
     let t0 = std::time::Instant::now();
-    let level = match dx_level::load_level(&PathBuf::from(&root), &map) {
+    let level = match dx_level::load_level(&PathBuf::from(root), map) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("ERROR: {e}\nUsage: dxview [\"path to Deus Ex\"] [map.dx]");
@@ -742,7 +749,51 @@ fn main() {
         level.stats.skipped_backdrop,
         level.stats.skipped_invisible
     );
-    App::new()
+    level
+}
+
+fn main() {
+    prof::init();
+    // DXT1 textures go to the GPU compressed (desktop GPUs and the Steam Deck take BC formats; checked again once
+    // the render device exists). DXVIEW_NO_BC1 decodes them as before.
+    dx_level::set_bc1_supported(!env_on!("DXVIEW_NO_BC1"));
+    let args: Vec<String> = std::env::args().collect();
+    let root = game_root(&args);
+    setup_mods(&root);
+    remaster::fill_new_modern_keys();
+    setup_relief_dirs(&root);
+    unreal_pkg::paths::set_hd_textures_on(setting!("HDTextures") > 0.5);
+    init_game_data(&root);
+    let map = startup_map(&args);
+    // The chosen face on Paul and JC's stand-ins (DeusExPlayer.UpdatePlayerSkin).
+    dx_level::actors::set_overrides(travel::skin_overrides(&map));
+    hdtp::build_layer();
+    visattach::apply();
+    augmentique::build_layer();
+    let level = load_first_level(&root, &map);
+    // The App, one group of plugins / resources / systems at a time, in the order they were always added (plugin
+    // build order and the schedules' .before / .after depend on it).
+    let mut app = App::new();
+    add_core_plugins(&mut app, level, &root);
+    add_startup_systems(&mut app);
+    add_player_systems(&mut app);
+    add_combat_systems(&mut app);
+    add_input_systems(&mut app);
+    add_mission_systems(&mut app);
+    add_render_systems(&mut app);
+    add_diegetic_systems(&mut app);
+    add_conversation_systems(&mut app);
+    add_material_plugins(&mut app);
+    add_hud_light_systems(&mut app);
+    add_world_systems(&mut app);
+    add_menu_systems(&mut app);
+    app.run();
+}
+
+/// Bevy's plugins (the window from the settings), engine settings, our schedule / profiling plugins, and the
+/// player, game folder and first level as resources.
+fn add_core_plugins(app: &mut App, level: Level, root: &String) {
+    app
         .add_plugins(DefaultPlugins.set(bevy::log::LogPlugin {
             custom_layer: prof::span_layer,
             ..default()
@@ -788,7 +839,12 @@ fn main() {
         .insert_resource({
             dx_level::actors::set_zone_ambient(level.collision.zone_tree(), level.zone_ambient.clone());
             LevelRes(level)
-        })
+        });
+}
+
+/// Test configurations, level setup, the loader, the cursor watchdog and the loading screen.
+fn add_startup_systems(app: &mut App) {
+    app
         .add_systems(PreStartup, |mut c: Commands| {
             if let Some(cfg) = shot_cfg() {
                 c.insert_resource(cfg);
@@ -811,7 +867,12 @@ fn main() {
         .add_systems(PostUpdate, cursor_record_system)
         .add_systems(Update, (loader::settle_system, loader::loading_screen_system).chain())
         .add_systems(Update, movers::mover_riders_system.after(movers::tick_movers).before(actors::deco_physics))
-        .add_systems(Update, fps::fps_system)
+        .add_systems(Update, fps::fps_system);
+}
+
+/// Player movement, movers, actor animation, the test harnesses and the player's weapons.
+fn add_player_systems(app: &mut App) {
+    app
         .add_systems(
             Update,
             (
@@ -836,7 +897,12 @@ fn main() {
                 weapons::fov_system,
                 weapons::fire_test.before(weapons::select_system),
             ),
-        )
+        );
+}
+
+/// NPC AI, damage, projectiles, effects, explosions, grenades and the spawn menu.
+fn add_combat_systems(app: &mut App) {
+    app
         .add_systems(
             Update,
             (
@@ -927,7 +993,13 @@ fn main() {
                     .before(destruct::weapon_drop_system),
                 spawnmenu::spawn_menu_scroll_system.after(spawnmenu::spawn_menu_system),
             ),
-        )
+        );
+}
+
+/// Sound start-up, keybinds, gamepad / DualSense, the inventory screen, abilities, the input remap and the
+/// profiling reports.
+fn add_input_systems(app: &mut App) {
+    app
         .add_systems(Startup, sound::setup_sound)
         .init_resource::<keybinds::Bindings>()
         .add_systems(Startup, (gamepad::setup, || dualsense::setup(), || haptics::setup()))
@@ -956,7 +1028,12 @@ fn main() {
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
         .add_plugins(PlatformPlugin)
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system, prof::transform_census_system))
+        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system, prof::transform_census_system));
+}
+
+/// Conversation / trigger / logic resources and the mission-script side systems.
+fn add_mission_systems(app: &mut App) {
+    app
         .init_resource::<consys::ConSetup>()
         .init_resource::<triggers::Triggers>()
         .init_resource::<logic::LogicActors>()
@@ -968,7 +1045,13 @@ fn main() {
         .add_systems(Update, zones::npc_pain_system)
         .add_systems(Update, questrun::quest_system)
         .add_systems(Update, hanging::hanging_system.after(fly).before(actors::deco_physics))
-        .add_systems(Update, fogball::fogball_system)
+        .add_systems(Update, fogball::fogball_system);
+}
+
+/// Water, glow, light shafts, vision, particles, weather, shadows, atmosphere, upscaling and the PostUpdate camera
+/// chain (third person, terminals, mirrors, scope, sky follow, batches).
+fn add_render_systems(app: &mut App) {
+    app
         // Shadow map sizes: the real-time shadows' cube maps (4 lights x 6 faces) and the spot / moon maps.
         .insert_resource(bevy::light::PointLightShadowMap { size: 512 })
         .insert_resource(bevy::light::DirectionalLightShadowMap { size: 1024 })
@@ -1009,13 +1092,23 @@ fn main() {
         // after the transforms (a part that moved leaves its batch the same frame) and before this frame's asset
         // events go out (a rebuilt batch reaches the render world with the part it lost).
         .add_systems(PostUpdate, batches::batch_system.after(bevy::transform::TransformSystems::Propagate).before(bevy::asset::AssetEventSystems).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
-        .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
+        .add_systems(PostUpdate, skyfollow::follow_system.after(mirror::mirror_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems));
+}
+
+/// Diegetic screens, elements, Modern Aiming and the credits' easter eggs.
+fn add_diegetic_systems(app: &mut App) {
+    app
         .add_systems(Update, diegetic::diegetic_system.after(computers::computer_system).after(menus::menu_system))
         .add_systems(Update, diegetic::hide_glass_system.after(diegetic::diegetic_system))
         .add_systems(Update, diegetic::standby_system.after(diegetic::diegetic_system))
         .add_systems(Update, (elements::shock_system.before(ai::npc_system), elements::fire_system.after(ai::npc_system)))
         .add_systems(Update, aimmode::aim_mode_system.after(hud::aim_system).before(weapons::weapon_system).before(hud::crosshair_system))
-        .add_systems(Update, (eggs::matrix_system, eggs::warren_system))
+        .add_systems(Update, (eggs::matrix_system, eggs::warren_system));
+}
+
+/// Conversation and cut-scene input, the cinematic camera, triggers, consys, mission scripts and world requests.
+fn add_conversation_systems(app: &mut App) {
+    app
         .add_systems(
             PreUpdate,
             (
@@ -1051,7 +1144,13 @@ fn main() {
                     .after(consys::consys_system)
                     .before(classic_hud::classic_hud_system),
             ),
-        )
+        );
+}
+
+/// The HUD, remaster and ragdoll plugins, body effects, the custom materials and their shaders, skeletal posing
+/// and gore.
+fn add_material_plugins(app: &mut App) {
+    app
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<classic_hud::HudLayer>::default())
         .add_plugins(remaster::RemasterPlugin)
         .add_plugins(ragdoll::RagdollPlugin)
@@ -1088,7 +1187,12 @@ fn main() {
                 bodyfx::bleed_system.after(bodyfx::wounds_system).before(gore::gore_system),
                 viewblood::view_blood_system.after(gore::gore_system).after(weapons::weapon_system),
             ),
-        )
+        );
+}
+
+/// The classic HUD, the gamma pass and dynamic lights.
+fn add_hud_light_systems(app: &mut App) {
+    app
         .add_systems(Startup, classic_hud::setup_hud_shader)
         .add_systems(loader::LevelSetup, classic_hud::setup_classic_hud)
         .add_systems(
@@ -1125,7 +1229,12 @@ fn main() {
                     .after(actors::deco_physics),
                 lmlights::lmlights_system.after(dynlight::dynlight_system),
             ),
-        )
+        );
+}
+
+/// Swimming, alarms, critters, spawning, mover damage, fixtures, trash, security, save / load and the frame cap.
+fn add_world_systems(app: &mut App) {
+    app
         .insert_resource(swim::Swim::default())
         .insert_resource(alarms::Alarms::default())
         .add_systems(
@@ -1193,7 +1302,12 @@ fn main() {
         .add_systems(First, save::save_first_system)
         .add_systems(Last, save::save_last_system)
         // The frame rate cap waits last of all (framecap.rs).
-        .add_systems(Last, framecap::frame_cap_system.after(save::save_last_system))
+        .add_systems(Last, framecap::frame_cap_system.after(save::save_last_system));
+}
+
+/// Menus, computers, splashes, fish, birds, info displays, sound, drugs and devices.
+fn add_menu_systems(app: &mut App) {
+    app
         .init_resource::<menus::Menus>()
         .add_systems(
             Update,
@@ -1258,8 +1372,7 @@ fn main() {
                     .after(pickups::frob_system)
                     .after(frobui::frob_target_system),
             ),
-        )
-        .run();
+        );
 }
 
 /// The render device takes BC (DXT) compressed textures.
@@ -1346,30 +1459,125 @@ pub fn make_image(t: &dx_level::TextureImage) -> Image {
     img
 }
 
+/// The asset stores setup builds the level into.
+struct SetupAssets<'w> {
+    meshes: ResMut<'w, Assets<Mesh>>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+    images: ResMut<'w, Assets<Image>>,
+    mirror_mats: ResMut<'w, Assets<mirror::MirrorMaterial>>,
+    water_mats: ResMut<'w, Assets<water::WaterMaterial>>,
+    bsp_mats: ResMut<'w, Assets<shadowlight::BspMaterial>>,
+}
+
+/// What setup's steps make and hand on to the next ones.
+struct LevelBuild {
+    water_list: water::WaterMats,
+    backing_mat: Option<Handle<StandardMaterial>>,
+    /// The tessellated water sheets' vertices (the open sea's first band meets them vertex to vertex).
+    sheet_pts: Vec<[f32; 3]>,
+    mirrors: mirror::Mirrors,
+    /// The baked lightmap, and Lean Rendering's lit copy of it (lmlights.rs).
+    lightmap: Option<Handle<Image>>,
+    lit_lightmap: Option<Handle<Image>>,
+    /// The level textures' GPU images, by texture index.
+    handles: Vec<Handle<Image>>,
+    scrollers: UvScroll,
+    /// Modern Glass's frosted copies of the glass textures, by texture index.
+    glass_imgs: std::collections::HashMap<usize, Handle<Image>>,
+}
+
+/// The surface batches' shared tables and materials (spawn_batch).
+struct BatchShared {
+    modern_water: bool,
+    mask_ph: Handle<Image>,
+    relight_imgs: Option<(Handle<Image>, Handle<Image>)>,
+    relief_maps: std::collections::HashMap<usize, dx_level::relief::Relief>,
+    relief_mats: std::collections::HashSet<AssetId<StandardMaterial>>,
+    relief_t0: std::time::Instant,
+    cache: std::collections::HashMap<
+        (Option<usize>, SurfaceClass, bool, [i32; 2], bool),
+        Handle<StandardMaterial>,
+    >,
+    bsp_cache: std::collections::HashMap<(AssetId<StandardMaterial>, bool), Handle<shadowlight::BspMaterial>>,
+    glass_mats: std::collections::HashMap<usize, Handle<StandardMaterial>>,
+}
+
+/// Builds the loaded level's entities: surfaces, water, mirrors, mesh actors and movers, the start kit and HUD
+/// parts, the level's animated / procedural textures, and the cameras.
 fn setup(
     mut commands: Commands,
     level: Res<LevelRes>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<StandardMaterial>>,
+    images: ResMut<Assets<Image>>,
     shot: Option<Res<ShotCfg>>,
     root_dir: Res<pickups::GameRoot>,
-    mut mirror_mats: ResMut<Assets<mirror::MirrorMaterial>>,
-    mut water_mats: ResMut<Assets<water::WaterMaterial>>,
-    mut bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
+    mirror_mats: ResMut<Assets<mirror::MirrorMaterial>>,
+    water_mats: ResMut<Assets<water::WaterMaterial>>,
+    bsp_mats: ResMut<Assets<shadowlight::BspMaterial>>,
 ) {
     let _prof = crate::prof::scope("main::setup");
-    let mut water_list = water::WaterMats::default();
-    let mut backing_mat: Option<Handle<StandardMaterial>> = None;
     prof::load_mark("start");
-    // The tessellated water sheets' vertices (the open sea's first band meets them vertex to vertex).
-    let mut sheet_pts: Vec<[f32; 3]> = Vec::new();
     // Lean Rendering (perf.rs): Modern Water's dark backings are built only when Modern Water is on as the map loads
     // (now, or in the Modern mix Classic / Modern remembers); they show only with it.
     let modern_water = !perf::lean_rendering() || water::modern() || settings::get("Modern.ModernWater") > 0.5;
-    let mut bsp_cache: std::collections::HashMap<(AssetId<StandardMaterial>, bool), Handle<shadowlight::BspMaterial>> = Default::default();
     let level = &level.0;
-    let mut mirrors = mirror::Mirrors::default();
+    // The asset stores travel together (as ResMut: each is touched only where the steps use it).
+    let mut ast = SetupAssets { meshes, materials, images, mirror_mats, water_mats, bsp_mats };
+    let (lightmap, lit_lightmap, handles) = level_images(&mut commands, &mut ast, level);
+    let mut lb = LevelBuild {
+        water_list: water::WaterMats::default(),
+        backing_mat: None,
+        sheet_pts: Vec::new(),
+        mirrors: mirror::Mirrors::default(),
+        lightmap,
+        lit_lightmap,
+        handles,
+        scrollers: UvScroll::default(),
+        glass_imgs: Default::default(),
+    };
+    prof::load_mark("water list");
+    let mut bs = batch_tables(&mut commands, &mut ast, level, &mut lb, modern_water);
+    for b in &level.batches {
+        spawn_batch(&mut commands, &mut ast, level, b, &mut lb, &mut bs);
+    }
+    if relight::relief_level() > 0 {
+        println!("relight: {} textures with relief maps ({} ms)", bs.relief_mats.len(), bs.relief_t0.elapsed().as_millis());
+    }
+    prof::load_mark("batches + relief + water");
+    let (ocean_geom, ring_mat) = spawn_open_sea(&mut commands, &mut ast, level, &mut lb);
+    spawn_wave_grid(&mut commands, &mut ast, level, &mut lb, ocean_geom.as_ref(), ring_mat.as_ref());
+    mirror::spawn_camera(&mut commands, &lb.mirrors);
+    commands.insert_resource(lb.mirrors);
+    commands.insert_resource(mirror::MirrorBodyRes::default());
+    commands.insert_resource(lb.water_list);
+    prof::load_mark("edge walls / grass");
+    spawn_level_actors(&mut commands, &mut ast, level, &lb.handles, &lb.glass_imgs);
+    prof::load_mark("mesh actors");
+    let mut runtime_assets = start_kit_and_hud(&mut commands, &mut ast, level, &root_dir.0);
+    prof::load_mark("start kit");
+    register_anim_textures(level, &lb.handles, &mut runtime_assets);
+    prof::load_mark("anim textures");
+    register_fire_textures(&mut ast.images, level, &lb.handles, &mut runtime_assets);
+    insert_play_resources(&mut commands, &mut ast, runtime_assets, lb.scrollers);
+    prof::load_mark("fire textures / HUD");
+    // Lighting comes entirely from the rebuilt original lightmaps.
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::WHITE,
+        brightness: 0.0,
+        ..default()
+    });
+    spawn_cameras(&mut commands, level, shot.as_deref());
+    prof::load_mark("cameras");
+    prof::load_report();
+}
+
+/// The lightmap image (and Lean Rendering's lit copy), and the level textures' GPU images.
+fn level_images(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+) -> (Option<Handle<Image>>, Option<Handle<Image>>, Vec<Handle<Image>>) {
     let lightmap_handle: Option<Handle<Image>> = level.lightmap.as_ref().map(|a| {
         let mut img = Image::new(
             Extent3d {
@@ -1387,14 +1595,14 @@ fn setup(
             min_filter: ImageFilterMode::Linear,
             ..default()
         });
-        images.add(img)
+        ast.images.add(img)
     });
     // Lean Rendering's lightmap lights (lmlights.rs): the level's own surfaces read a lit copy of the lightmap that
     // the dynamic lights are drawn into; grass, water, glass, mirrors and the open sea keep the bake.
     let lit_lightmap: Option<Handle<Image>> = match (level.lightmap.as_ref(), lightmap_handle.as_ref()) {
-        (Some(atlas), Some(base)) if !env_on!("DXVIEW_NO_LIGHTMAP") => lmlights::setup(&mut commands, &mut images, atlas, base),
+        (Some(atlas), Some(base)) if !env_on!("DXVIEW_NO_LIGHTMAP") => lmlights::setup(commands, &mut ast.images, atlas, base),
         _ => {
-            lmlights::clear(&mut commands);
+            lmlights::clear(commands);
             None
         }
     };
@@ -1408,29 +1616,34 @@ fn setup(
             jobs.into_iter().flat_map(|j| j.join().unwrap_or_default()).collect()
         })
     };
-    let handles: Vec<Handle<Image>> = made.into_iter().map(|i| images.add(i)).collect();
-    prof::load_mark("water list");
+    let handles: Vec<Handle<Image>> = made.into_iter().map(|i| ast.images.add(i)).collect();
+    (lightmap_handle, lit_lightmap, handles)
+}
+
+/// The tables the surface batches share: remastered lighting's light images, grass, relief maps, Modern Glass's
+/// frosted textures (into `lb.glass_imgs`).
+fn batch_tables(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+    lb: &mut LevelBuild,
+    modern_water: bool,
+) -> BatchShared {
     // Remastered lighting (relight.rs): the bake's per-texel reach of each surface's three strongest lights, and
     // the light table.
     let relight_imgs: Option<(Handle<Image>, Handle<Image>)> = level
         .lightmap
         .as_ref()
         .filter(|a| !a.mask.is_empty())
-        .map(|a| (images.add(relight::mask_image(a)), images.add(relight::light_image(&a.lights))));
-    grass::build(&mut commands, level, lightmap_handle.clone());
-    let mut relief_mats: std::collections::HashSet<AssetId<StandardMaterial>> = Default::default();
+        .map(|a| (ast.images.add(relight::mask_image(a)), ast.images.add(relight::light_image(&a.lights))));
+    grass::build(commands, level, lb.lightmap.clone());
+    let relief_mats: std::collections::HashSet<AssetId<StandardMaterial>> = Default::default();
     let relief_t0 = std::time::Instant::now();
-    let mut cache: std::collections::HashMap<
-        (Option<usize>, SurfaceClass, bool, [i32; 2], bool),
-        Handle<StandardMaterial>,
-    > = Default::default();
-    let mut scrollers = UvScroll::default();
 
     prof::load_mark("relight bake tables");
-    // The water sheets, split fine enough to move with the swell (Modern Water's waves), with T-junctions mended
-    // across all of them (water::tessellate_sheets).
-    // (Flat: Modern Water's swell is carried by the wave grid, water::grid_mesh.)
-    let mask_ph = water::mask_placeholder(&mut images);
+    // The water sheets stay flat (Modern Water's swell is carried by the wave grid, water::grid_mesh); until the
+    // grid's mask is built they sample this placeholder.
+    let mask_ph = water::mask_placeholder(&mut ast.images);
     // Relief maps for every texture that can get one, made on all cores before the batches use them.
     let relief_maps = {
         let mut want: Vec<usize> = level
@@ -1444,7 +1657,7 @@ fn setup(
         relight::relief_maps_parallel(&level.textures, &want)
     };
     // Modern Glass (glass.rs): frosted copies of the glass textures on translucent level and mover faces.
-    let glass_imgs = glass::images(
+    lb.glass_imgs = glass::images(
         level,
         level
             .batches
@@ -1452,213 +1665,274 @@ fn setup(
             .filter(|b| b.class == SurfaceClass::Translucent && !b.sky && b.mirror.is_none())
             .filter_map(|b| b.texture)
             .chain(level.movers.iter().flat_map(|m| m.parts.iter()).filter(|p| p.class == SurfaceClass::Translucent).filter_map(|p| p.texture)),
-        &mut images,
-        &handles,
+        &mut ast.images,
+        &lb.handles,
     );
-    let mut glass_mats: std::collections::HashMap<usize, Handle<StandardMaterial>> = Default::default();
-    for b in &level.batches {
-        let mat = cache
-            .entry((
-                b.texture,
-                b.class,
-                b.sky,
-                [(b.uv_scroll[0] * 1e4) as i32, (b.uv_scroll[1] * 1e4) as i32],
-                b.one_sided,
-            ))
-            .or_insert_with(|| {
-                let h = materials.add(StandardMaterial {
-                    base_color_texture: b.texture.map(|i| handles[i].clone()),
-                    base_color: match (b.texture.is_some(), b.class) {
-                        (false, _) => Color::srgb(0.8, 0.2, 0.8),
-                        (true, SurfaceClass::Water) => Color::srgba(0.75, 0.9, 1.0, 0.6),
-                        _ => Color::WHITE,
-                    },
-                    lightmap_exposure: 1.0,
-                    double_sided: !b.one_sided,
-                    cull_mode: if b.one_sided { Some(bevy::render::render_resource::Face::Back) } else { None },
-                    perceptual_roughness: 1.0,
-                    reflectance: 0.05,
-                    metallic: 0.0,
-                    alpha_mode: match b.class {
-                        SurfaceClass::Opaque => AlphaMode::Opaque,
-                        SurfaceClass::Masked => AlphaMode::Mask(0.5),
-                        SurfaceClass::Translucent => AlphaMode::Add,
-                        SurfaceClass::Water => AlphaMode::Blend,
-                        SurfaceClass::Modulated => AlphaMode::Multiply,
-                    },
-                    ..default()
-                });
-                // Relief maps for the solid world (remastered lighting). Not on masked faces (ladders, grates, chain
-                // link): parallax slid the picture off its holes - the ladder no longer lined up with itself - and the
-                // depth prepass filled the holes in.
-                if !b.sky && b.mirror.is_none() && b.class == SurfaceClass::Opaque {
-                    if let Some(t) = b.texture.map(|i| &level.textures[i]) {
-                        if let Some(mut m) = materials.get_mut(&h) {
-                            let r = b.texture.and_then(|i| relief_maps.get(&i).cloned());
-                            if relight::apply_relief_maps(&mut m, t, r, &mut images) {
-                                relief_mats.insert(h.id());
-                            }
+    BatchShared {
+        modern_water,
+        mask_ph,
+        relight_imgs,
+        relief_maps,
+        relief_mats,
+        relief_t0,
+        cache: Default::default(),
+        bsp_cache: Default::default(),
+        glass_mats: Default::default(),
+    }
+}
+
+/// One surface batch: its material, its mesh and its entity (frosted glass, water, mirror or the lit world), with
+/// fixed bounds, the sky room's place and the lightmap.
+fn spawn_batch(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+    b: &dx_level::Batch,
+    lb: &mut LevelBuild,
+    bs: &mut BatchShared,
+) {
+    let mat = batch_material(ast, level, b, lb, bs);
+    let mut mesh = batch_mesh(b, lb, bs, &mat);
+    // The level's surfaces never change shape, but Bevy re-bounds a mesh whenever its material changes (it marks
+    // the mesh changed): water's materials and the scrolling textures' change every frame, so it walked every
+    // vertex of those meshes every frame (1.6 million with the open sea - 3 ms of the main thread). Their
+    // bounds are worked out once here instead (water with room for its waves).
+    let fixed_bounds = static_bounds(&mesh, if b.class == SurfaceClass::Water { 2.5 } else { 0.0 });
+    let glass_img = (b.class == SurfaceClass::Translucent && !b.sky && b.mirror.is_none())
+        .then(|| b.texture.and_then(|i| lb.glass_imgs.get(&i).map(|h| (i, h.clone()))))
+        .flatten();
+    if glass_img.is_some() {
+        // A plain StandardMaterial multiplies the vertex colour in: the light ids made the pane blinding white.
+        mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+    }
+    let (mut e, lit_world) = spawn_batch_entity(commands, ast, level, b, mesh, &mat, glass_img, lb, bs);
+    if let Some(a) = fixed_bounds {
+        e.insert(a);
+    }
+    if !b.sky && b.texture.is_some_and(|t| level.textures[t].name.eq_ignore_ascii_case("CoreTexMisc.Marker_sky")) {
+        // The map's edge walls (sky marker faces at the water line): hidden while the open sea runs past them.
+        e.insert(water::EdgeWall);
+    }
+    if b.sky {
+        let off = Vec3::from(level.sky_origin.unwrap_or([0.0; 3]));
+        e.insert((Transform::from_translation(-off), RenderLayers::layer(1), skyfollow::SkyBatch));
+        if b.class == SurfaceClass::Masked {
+            e.insert(skyline::SkyPanel);
+        }
+    }
+    let lm_img = if lit_world { lb.lit_lightmap.as_ref().or(lb.lightmap.as_ref()) } else { lb.lightmap.as_ref() };
+    if let Some(h) = lm_img.filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
+        e.insert(Lightmap {
+            image: h.clone(),
+            uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+            bicubic_sampling: false,
+        });
+    }
+}
+
+/// A batch's StandardMaterial, shared by batches with the same texture, class, sky, scroll and sidedness (relief
+/// maps put on the solid world's, scrolling ones noted in the UvScroll list).
+fn batch_material(
+    ast: &mut SetupAssets,
+    level: &Level,
+    b: &dx_level::Batch,
+    lb: &mut LevelBuild,
+    bs: &mut BatchShared,
+) -> Handle<StandardMaterial> {
+    bs.cache
+        .entry((
+            b.texture,
+            b.class,
+            b.sky,
+            [(b.uv_scroll[0] * 1e4) as i32, (b.uv_scroll[1] * 1e4) as i32],
+            b.one_sided,
+        ))
+        .or_insert_with(|| {
+            let h = ast.materials.add(StandardMaterial {
+                base_color_texture: b.texture.map(|i| lb.handles[i].clone()),
+                base_color: match (b.texture.is_some(), b.class) {
+                    (false, _) => Color::srgb(0.8, 0.2, 0.8),
+                    (true, SurfaceClass::Water) => Color::srgba(0.75, 0.9, 1.0, 0.6),
+                    _ => Color::WHITE,
+                },
+                lightmap_exposure: 1.0,
+                double_sided: !b.one_sided,
+                cull_mode: if b.one_sided { Some(bevy::render::render_resource::Face::Back) } else { None },
+                perceptual_roughness: 1.0,
+                reflectance: 0.05,
+                metallic: 0.0,
+                alpha_mode: match b.class {
+                    SurfaceClass::Opaque => AlphaMode::Opaque,
+                    SurfaceClass::Masked => AlphaMode::Mask(0.5),
+                    SurfaceClass::Translucent => AlphaMode::Add,
+                    SurfaceClass::Water => AlphaMode::Blend,
+                    SurfaceClass::Modulated => AlphaMode::Multiply,
+                },
+                ..default()
+            });
+            // Relief maps for the solid world (remastered lighting). Not on masked faces (ladders, grates, chain
+            // link): parallax slid the picture off its holes - the ladder no longer lined up with itself - and the
+            // depth prepass filled the holes in.
+            if !b.sky && b.mirror.is_none() && b.class == SurfaceClass::Opaque {
+                if let Some(t) = b.texture.map(|i| &level.textures[i]) {
+                    if let Some(mut m) = ast.materials.get_mut(&h) {
+                        let r = b.texture.and_then(|i| bs.relief_maps.get(&i).cloned());
+                        if relight::apply_relief_maps(&mut m, t, r, &mut ast.images) {
+                            bs.relief_mats.insert(h.id());
                         }
                     }
                 }
-                let water = b.class == SurfaceClass::Water;
-                if water || b.uv_scroll != [0.0, 0.0] {
-                    scrollers
-                        .0
-                        .push((h.clone(), Vec2::from(b.uv_scroll), water));
-                }
-                h
-            })
-            .clone();
-        // The level's surfaces live on the GPU only: nothing reads their Bevy meshes back (the game works from the
-        // level's own batches), so the main world's copy of every vertex is dropped once uploaded.
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
-        if b.class == SurfaceClass::Water && !b.sky {
-            sheet_pts.extend_from_slice(&b.positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
-            mesh.insert_indices(Indices::U32(b.indices.clone()));
-        } else {
-            // The open sea meets a Classic sheet at its own vertices (Open Sea, water.rs).
-            if b.class == SurfaceClass::Water && !b.sky {
-                sheet_pts.extend_from_slice(&b.positions);
             }
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
-            mesh.insert_indices(Indices::U32(b.indices.clone()));
-            // The lit world's light ids for remastered lighting (bsp_shadow.wgsl divides them back out of the
-            // colour), and tangents where a relief map needs them.
-            if b.mirror.is_none() && b.light_ids.len() == b.positions.len() {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, b.light_ids.clone());
+            let water = b.class == SurfaceClass::Water;
+            if water || b.uv_scroll != [0.0, 0.0] {
+                lb.scrollers
+                    .0
+                    .push((h.clone(), Vec2::from(b.uv_scroll), water));
             }
-            if relief_mats.contains(&mat.id()) && b.mirror.is_none() {
-                let _ = mesh.generate_tangents();
-            }
-        }
-        // The level's surfaces never change shape, but Bevy re-bounds a mesh whenever its material changes (it marks
-        // the mesh changed): water's materials and the scrolling textures' change every frame, so it walked every
-        // vertex of those meshes every frame (1.6 million with the open sea - 3 ms of the main thread). Their
-        // bounds are worked out once here instead (water with room for its waves).
-        let fixed_bounds = static_bounds(&mesh, if b.class == SurfaceClass::Water { 2.5 } else { 0.0 });
-        let glass_img = (b.class == SurfaceClass::Translucent && !b.sky && b.mirror.is_none())
-            .then(|| b.texture.and_then(|i| glass_imgs.get(&i).map(|h| (i, h.clone()))))
-            .flatten();
-        if glass_img.is_some() {
-            // A plain StandardMaterial multiplies the vertex colour in: the light ids made the pane blinding white.
-            mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
-        }
-        let mut lit_world = false;
-        let mut e = match b.mirror {
-            // Modern Glass: a frosted pane.
-            _ if glass_img.is_some() => {
-                let (i, img) = glass_img.unwrap();
-                let gm = glass_mats.entry(i).or_insert_with(|| glass::material(&mut materials, img)).clone();
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(gm), bevy::light::NotShadowCaster))
-            }
-            // Water: the WetTexture source picture rippled by the water shader (water.rs).
-            _ if b.class == SurfaceClass::Water && !b.sky => {
-                let base = materials.get(&mat).cloned().unwrap_or_default();
-                let ph = mirror::placeholder(&mut mirrors, &mut images);
-                let wm = water_mats.add(water::material(base, b.water_opaque, ph, mask_ph.clone()));
-                water_list.mats.push(wm.clone());
-                water_list.opaque.push(b.water_opaque);
-                mirror::add_water(&mut mirrors, &wm, &b.positions);
-                // Flat sheets get a dark backing under their moving surface (see water::WaterBacking).
-                let (lo, hi) = b.positions.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[1]), a.1.max(p[1])));
-                if hi - lo < 0.05 && modern_water {
-                    let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
-                    commands.spawn((
-                        Mesh3d(meshes.add(water::backing_mesh(&b.positions, &b.indices))),
-                        MeshMaterial3d(back),
-                        Visibility::Hidden,
-                        water::WaterBacking { y: hi },
-                        RenderLayers::layer(mirror::LAYER),
-                        bevy::light::NotShadowCaster,
-                        bevy::light::NotShadowReceiver,
-                    ));
-                }
-                // Water isn't lightmapped: the shadow pairs (shadowlight.rs) would black it out under a shadow.
-                // On the mirror faces' layer: only the world camera draws water (the reflection cameras would only clip
-                // it away again).
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(wm), bevy::light::NotShadowReceiver, bevy::light::NotShadowCaster, RenderLayers::layer(mirror::LAYER)))
-            }
-            // PF_Mirrored: the same surface with the reflection added (mirror.rs).
-            Some(plane) => {
-                let base = materials.get(&mat).cloned().unwrap_or_default();
-                let mm = mirror::material(&mut mirrors, &mut images, &mut mirror_mats, base, plane, &b.positions, &b.indices);
-                // On their own layer: the main camera draws them, the reflection camera must not (it would see
-                // the mirror from behind).
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mm), RenderLayers::layer(mirror::LAYER)))
-            }
-            // The lit world: StandardMaterial plus the real-time shadow pass over its lightmap (shadowlight.rs).
-            None => {
-                lit_world = true;
-                let bm = bsp_cache
-                    .entry((mat.id(), b.sky))
-                    .or_insert_with(|| {
-                        let mut bm = shadowlight::bsp_material(materials.get(&mat).cloned().unwrap_or_default());
-                        // The sky room is drawn far out past the map by the world camera (skyfollow.rs): the
-                        // distance fog would swallow it, and no dynamic light reaches it.
-                        if b.sky {
-                            bm.base.fog_enabled = false;
-                            bm.extension.sky = true;
-                        }
-                        relight::params(b.texture.map(|i| level.textures[i].name.as_str()), &mut bm.extension.params);
-                        // DetailTexture (the Detail Textures setting switches it in the shader, q.z).
-                        if let Some(Some((d, scale))) = b.texture.and_then(|i| level.texture_detail.get(i)) {
-                            bm.extension.detail = Some(handles[*d].clone());
-                            bm.extension.params.q.y = *scale;
-                            bm.extension.params.q.z = if setting!("DetailTextures") > 0.5 { 1.0 } else { 0.0 };
-                        }
-                        if let Some((mask, lights)) = relight_imgs.as_ref() {
-                            bm.extension.mask = Some(mask.clone());
-                            bm.extension.lights = Some(lights.clone());
-                        }
-                        // Panning surfaces scroll in the shader (BspShadowParams.u), so the material never changes.
-                        if let Some((_, speed, _)) = scrollers.0.iter().find(|(m, _, w)| m.id() == mat.id() && !*w) {
-                            bm.extension.params.u = Vec4::new(speed.x, speed.y, 0.0, 0.0);
-                        }
-                        bsp_mats.add(bm)
-                    })
-                    .clone();
-                commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm), RenderLayers::from_layers(&[0, mirror::WORLD_LAYER])))
-            }
-        };
-        if let Some(a) = fixed_bounds {
-            e.insert(a);
-        }
-        if !b.sky && b.texture.is_some_and(|t| level.textures[t].name.eq_ignore_ascii_case("CoreTexMisc.Marker_sky")) {
-            // The map's edge walls (sky marker faces at the water line): hidden while the open sea runs past them.
-            e.insert(water::EdgeWall);
-        }
-        if b.sky {
-            let off = Vec3::from(level.sky_origin.unwrap_or([0.0; 3]));
-            e.insert((Transform::from_translation(-off), RenderLayers::layer(1), skyfollow::SkyBatch));
-            if b.class == SurfaceClass::Masked {
-                e.insert(skyline::SkyPanel);
-            }
-        }
-        let lm_img = if lit_world { lit_lightmap.as_ref().or(lightmap_handle.as_ref()) } else { lightmap_handle.as_ref() };
-        if let Some(h) = lm_img.filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
-            e.insert(Lightmap {
-                image: h.clone(),
-                uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
-                bicubic_sampling: false,
-            });
-        }
-    }
+            h
+        })
+        .clone()
+}
 
-    if relight::relief_level() > 0 {
-        println!("relight: {} textures with relief maps ({} ms)", relief_mats.len(), relief_t0.elapsed().as_millis());
+/// A batch's mesh (water sheets' vertices noted for the open sea; the lit world's light ids and relief tangents).
+fn batch_mesh(b: &dx_level::Batch, lb: &mut LevelBuild, bs: &BatchShared, mat: &Handle<StandardMaterial>) -> Mesh {
+    // The level's surfaces live on the GPU only: nothing reads their Bevy meshes back (the game works from the
+    // level's own batches), so the main world's copy of every vertex is dropped once uploaded.
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    if b.class == SurfaceClass::Water && !b.sky {
+        lb.sheet_pts.extend_from_slice(&b.positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
+        mesh.insert_indices(Indices::U32(b.indices.clone()));
+    } else {
+        // The open sea meets a Classic sheet at its own vertices (Open Sea, water.rs).
+        if b.class == SurfaceClass::Water && !b.sky {
+            lb.sheet_pts.extend_from_slice(&b.positions);
+        }
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, b.positions.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, b.normals.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.uvs.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, b.uvs1.clone());
+        mesh.insert_indices(Indices::U32(b.indices.clone()));
+        // The lit world's light ids for remastered lighting (bsp_shadow.wgsl divides them back out of the
+        // colour), and tangents where a relief map needs them.
+        if b.mirror.is_none() && b.light_ids.len() == b.positions.len() {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, b.light_ids.clone());
+        }
+        if bs.relief_mats.contains(&mat.id()) && b.mirror.is_none() {
+            let _ = mesh.generate_tangents();
+        }
     }
-    prof::load_mark("batches + relief + water");
+    mesh
+}
+
+/// Spawns a batch's entity by kind: a Modern Glass pane, water (with its backing), a mirror, or the lit world.
+/// Returns it and whether it's the lit world.
+fn spawn_batch_entity<'c>(
+    commands: &'c mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+    b: &dx_level::Batch,
+    mesh: Mesh,
+    mat: &Handle<StandardMaterial>,
+    glass_img: Option<(usize, Handle<Image>)>,
+    lb: &mut LevelBuild,
+    bs: &mut BatchShared,
+) -> (EntityCommands<'c>, bool) {
+    let mut lit_world = false;
+    let e = match b.mirror {
+        // Modern Glass: a frosted pane.
+        _ if glass_img.is_some() => {
+            let (i, img) = glass_img.unwrap();
+            let gm = bs.glass_mats.entry(i).or_insert_with(|| glass::material(&mut ast.materials, img)).clone();
+            commands.spawn((Mesh3d(ast.meshes.add(mesh)), MeshMaterial3d(gm), bevy::light::NotShadowCaster))
+        }
+        // Water: the WetTexture source picture rippled by the water shader (water.rs).
+        _ if b.class == SurfaceClass::Water && !b.sky => {
+            let base = ast.materials.get(mat).cloned().unwrap_or_default();
+            let ph = mirror::placeholder(&mut lb.mirrors, &mut ast.images);
+            let wm = ast.water_mats.add(water::material(base, b.water_opaque, ph, bs.mask_ph.clone()));
+            lb.water_list.mats.push(wm.clone());
+            lb.water_list.opaque.push(b.water_opaque);
+            mirror::add_water(&mut lb.mirrors, &wm, &b.positions);
+            // Flat sheets get a dark backing under their moving surface (see water::WaterBacking).
+            let (lo, hi) = b.positions.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p[1]), a.1.max(p[1])));
+            if hi - lo < 0.05 && bs.modern_water {
+                let back = lb.backing_mat.get_or_insert_with(|| ast.materials.add(water::backing_material())).clone();
+                commands.spawn((
+                    Mesh3d(ast.meshes.add(water::backing_mesh(&b.positions, &b.indices))),
+                    MeshMaterial3d(back),
+                    Visibility::Hidden,
+                    water::WaterBacking { y: hi },
+                    RenderLayers::layer(mirror::LAYER),
+                    bevy::light::NotShadowCaster,
+                    bevy::light::NotShadowReceiver,
+                ));
+            }
+            // Water isn't lightmapped: the shadow pairs (shadowlight.rs) would black it out under a shadow.
+            // On the mirror faces' layer: only the world camera draws water (the reflection cameras would only clip
+            // it away again).
+            commands.spawn((Mesh3d(ast.meshes.add(mesh)), MeshMaterial3d(wm), bevy::light::NotShadowReceiver, bevy::light::NotShadowCaster, RenderLayers::layer(mirror::LAYER)))
+        }
+        // PF_Mirrored: the same surface with the reflection added (mirror.rs).
+        Some(plane) => {
+            let base = ast.materials.get(mat).cloned().unwrap_or_default();
+            let mm = mirror::material(&mut lb.mirrors, &mut ast.images, &mut ast.mirror_mats, base, plane, &b.positions, &b.indices);
+            // On their own layer: the main camera draws them, the reflection camera must not (it would see
+            // the mirror from behind).
+            commands.spawn((Mesh3d(ast.meshes.add(mesh)), MeshMaterial3d(mm), RenderLayers::layer(mirror::LAYER)))
+        }
+        // The lit world: StandardMaterial plus the real-time shadow pass over its lightmap (shadowlight.rs).
+        None => {
+            lit_world = true;
+            let bm = bs
+                .bsp_cache
+                .entry((mat.id(), b.sky))
+                .or_insert_with(|| {
+                    let mut bm = shadowlight::bsp_material(ast.materials.get(mat).cloned().unwrap_or_default());
+                    // The sky room is drawn far out past the map by the world camera (skyfollow.rs): the
+                    // distance fog would swallow it, and no dynamic light reaches it.
+                    if b.sky {
+                        bm.base.fog_enabled = false;
+                        bm.extension.sky = true;
+                    }
+                    relight::params(b.texture.map(|i| level.textures[i].name.as_str()), &mut bm.extension.params);
+                    // DetailTexture (the Detail Textures setting switches it in the shader, q.z).
+                    if let Some(Some((d, scale))) = b.texture.and_then(|i| level.texture_detail.get(i)) {
+                        bm.extension.detail = Some(lb.handles[*d].clone());
+                        bm.extension.params.q.y = *scale;
+                        bm.extension.params.q.z = if setting!("DetailTextures") > 0.5 { 1.0 } else { 0.0 };
+                    }
+                    if let Some((mask, lights)) = bs.relight_imgs.as_ref() {
+                        bm.extension.mask = Some(mask.clone());
+                        bm.extension.lights = Some(lights.clone());
+                    }
+                    // Panning surfaces scroll in the shader (BspShadowParams.u), so the material never changes.
+                    if let Some((_, speed, _)) = lb.scrollers.0.iter().find(|(m, _, w)| m.id() == mat.id() && !*w) {
+                        bm.extension.params.u = Vec4::new(speed.x, speed.y, 0.0, 0.0);
+                    }
+                    ast.bsp_mats.add(bm)
+                })
+                .clone();
+            commands.spawn((Mesh3d(ast.meshes.add(mesh)), MeshMaterial3d(bm), RenderLayers::from_layers(&[0, mirror::WORLD_LAYER])))
+        }
+    };
+    (e, lit_world)
+}
+
+/// The open sea round the map's water (water::ocean_ring) and its dark backing. Returns the ring's geometry and
+/// material for the wave grid.
+fn spawn_open_sea(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+    lb: &mut LevelBuild,
+) -> (Option<(Vec<[f32; 3]>, Vec<u32>)>, Option<Handle<water::WaterMaterial>>) {
     // The map's edge walls in Bevy space: where the open sea may run on.
     let edge_walls: Vec<[Vec3; 3]> = level
         .batches
@@ -1668,16 +1942,16 @@ fn setup(
         .collect();
     let mut ocean_geom: Option<(Vec<[f32; 3]>, Vec<u32>)> = None;
     let mut ring_mat: Option<Handle<water::WaterMaterial>> = None;
-    if let Some((mesh, mat)) = water::ocean_ring(&mirrors, &level.batches, &sheet_pts, &edge_walls) {
+    if let Some((mesh, mat)) = water::ocean_ring(&lb.mirrors, &level.batches, &lb.sheet_pts, &edge_walls) {
         ring_mat = Some(mat.clone());
         if let (Some(bevy::mesh::VertexAttributeValues::Float32x3(p)), Some(Indices::U32(i))) = (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices()) {
             ocean_geom = Some((p.clone(), i.clone()));
             let y = p.first().map_or(0.0, |v| v[1]);
-            let back = backing_mat.get_or_insert_with(|| materials.add(water::backing_material())).clone();
+            let back = lb.backing_mat.get_or_insert_with(|| ast.materials.add(water::backing_material())).clone();
             let back_mesh = water::backing_mesh(p, i);
             let back_bounds = static_bounds(&back_mesh, 0.5);
             let mut be = commands.spawn((
-                Mesh3d(meshes.add(back_mesh)),
+                Mesh3d(ast.meshes.add(back_mesh)),
                 MeshMaterial3d(back),
                 Visibility::Hidden,
                 water::WaterBacking { y },
@@ -1691,7 +1965,7 @@ fn setup(
         }
         let ocean_bounds = static_bounds(&mesh, 2.5);
         let mut e = commands.spawn((
-            Mesh3d(meshes.add(mesh)),
+            Mesh3d(ast.meshes.add(mesh)),
             MeshMaterial3d(mat),
             Visibility::Hidden,
             water::OceanRing,
@@ -1699,113 +1973,137 @@ fn setup(
             bevy::light::NotShadowReceiver,
             bevy::light::NotShadowCaster,
         ));
-        if let Some(h) = lightmap_handle.as_ref().filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
+        if let Some(h) = lb.lightmap.as_ref().filter(|_| !env_on!("DXVIEW_NO_LIGHTMAP")) {
             e.insert(Lightmap { image: h.clone(), uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0), bicubic_sampling: false });
         }
         if let Some(a) = ocean_bounds {
             e.insert(a);
         }
     }
-    // Modern Water's wave grid over the map's water (water::grid_mesh), cut to it by the mask.
-    {
-        // Only water under the open sky gets the waves: indoor water (the pool under Castle Clinton, the subway's)
-        // stays a flat sheet, which the water shader draws with its own lit picture (water::is_indoor) - under the
-        // grid there it came out black (a dark room's reflection over an unlit body).
-        let outdoor: Vec<(Vec<[f32; 3]>, Vec<u32>)> = level
-            .batches
-            .iter()
-            .filter(|b| b.class == SurfaceClass::Water && !b.sky)
-            .map(|b| {
-                let idx: Vec<u32> = b
-                    .indices
-                    .chunks_exact(3)
-                    .filter(|t| {
-                        let c = t.iter().fold([0.0f32; 3], |a, &i| {
-                            let p = b.positions[i as usize];
-                            [a[0] + p[0] / 3.0, a[1] + p[1] / 3.0, a[2] + p[2] / 3.0]
-                        });
-                        let u = dx_level::bevy_to_ue(c);
-                        let z = level.collision.zone_at(glam::DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64 + 8.0));
-                        z <= 0 || level.zone_sky.get(z as usize).copied().unwrap_or(false)
-                    })
-                    .flatten()
-                    .copied()
-                    .collect();
-                (b.positions.clone(), idx)
-            })
-            .filter(|(_, i)| !i.is_empty())
-            .collect();
-        let sheets: Vec<(&[[f32; 3]], &[u32])> = outdoor.iter().map(|(p, i)| (&p[..], &i[..])).collect();
-        let ring = ocean_geom.as_ref().map(|(p, i)| (&p[..], &i[..]));
-        if let Some((img, rect, heights)) = water::build_mask(&sheets, ring) {
-            let mask = images.add(img);
-            // The biggest flat water plane's material is the grid's (its reflection slot, its settings).
-            let plane = mirrors
-                .planes
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.water && !p.water_mats.is_empty())
-                .max_by(|a, b| {
-                    let ar = |p: &mirror::Plane| (p.max.x - p.min.x) * (p.max.z - p.min.z);
-                    ar(a.1).total_cmp(&ar(b.1))
+    (ocean_geom, ring_mat)
+}
+
+/// Modern Water's wave grid over the map's water (water::grid_mesh), cut to it by the mask.
+fn spawn_wave_grid(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+    lb: &mut LevelBuild,
+    ocean_geom: Option<&(Vec<[f32; 3]>, Vec<u32>)>,
+    ring_mat: Option<&Handle<water::WaterMaterial>>,
+) {
+    // Only water under the open sky gets the waves: indoor water (the pool under Castle Clinton, the subway's)
+    // stays a flat sheet, which the water shader draws with its own lit picture (water::is_indoor) - under the
+    // grid there it came out black (a dark room's reflection over an unlit body).
+    let outdoor: Vec<(Vec<[f32; 3]>, Vec<u32>)> = level
+        .batches
+        .iter()
+        .filter(|b| b.class == SurfaceClass::Water && !b.sky)
+        .map(|b| {
+            let idx: Vec<u32> = b
+                .indices
+                .chunks_exact(3)
+                .filter(|t| {
+                    let c = t.iter().fold([0.0f32; 3], |a, &i| {
+                        let p = b.positions[i as usize];
+                        [a[0] + p[0] / 3.0, a[1] + p[1] / 3.0, a[2] + p[2] / 3.0]
+                    });
+                    let u = dx_level::bevy_to_ue(c);
+                    let z = level.collision.zone_at(glam::DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64 + 8.0));
+                    z <= 0 || level.zone_sky.get(z as usize).copied().unwrap_or(false)
                 })
-                .map(|(i, _)| i);
-            let grid = Vec4::new(1.0, water::GRID_R, water::GRID_STEP, 0.0);
-            // The open sea too: left with its own vertex swell it opened pale triangles against the flat sheets
-            // (the "triangles at the crests").
-            for h in water_list.mats.iter().chain(ring_mat.iter()) {
-                if let Some(mut m) = water_mats.get_mut(h) {
-                    m.extension.mask = mask.clone();
-                    m.extension.params.grid = grid;
-                    m.extension.params.mask = rect;
-                    m.extension.params.heights = heights;
-                }
+                .flatten()
+                .copied()
+                .collect();
+            (b.positions.clone(), idx)
+        })
+        .filter(|(_, i)| !i.is_empty())
+        .collect();
+    let sheets: Vec<(&[[f32; 3]], &[u32])> = outdoor.iter().map(|(p, i)| (&p[..], &i[..])).collect();
+    let ring = ocean_geom.map(|(p, i)| (&p[..], &i[..]));
+    if let Some((img, rect, heights)) = water::build_mask(&sheets, ring) {
+        let mask = ast.images.add(img);
+        // The biggest flat water plane's material is the grid's (its reflection slot, its settings).
+        let plane = lb
+            .mirrors
+            .planes
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.water && !p.water_mats.is_empty())
+            .max_by(|a, b| {
+                let ar = |p: &mirror::Plane| (p.max.x - p.min.x) * (p.max.z - p.min.z);
+                ar(a.1).total_cmp(&ar(b.1))
+            })
+            .map(|(i, _)| i);
+        let grid = Vec4::new(1.0, water::GRID_R, water::GRID_STEP, 0.0);
+        // The open sea too: left with its own vertex swell it opened pale triangles against the flat sheets
+        // (the "triangles at the crests").
+        for h in lb.water_list.mats.iter().chain(ring_mat) {
+            if let Some(mut m) = ast.water_mats.get_mut(h) {
+                m.extension.mask = mask.clone();
+                m.extension.params.grid = grid;
+                m.extension.params.mask = rect;
+                m.extension.params.heights = heights;
             }
-            if let Some(pi) = plane {
-                let src = mirrors.planes[pi].water_mats[0].clone();
-                if let Some(mut gm) = water_mats.get(&src).cloned() {
-                    gm.extension.params.grid.x = 2.0;
-                    // Never solid: it's the moving surface over every water face, translucent ones included.
-                    let gh = water_mats.add(gm);
-                    water_list.mats.push(gh.clone());
-                    water_list.opaque.push(false);
-                    mirrors.planes[pi].water_mats.push(gh.clone());
-                    commands.spawn((
-                        Mesh3d(meshes.add(water::grid_mesh())),
-                        MeshMaterial3d(gh),
-                        Transform::IDENTITY,
-                        Visibility::Hidden,
-                        water::WaterGrid,
-                        RenderLayers::layer(mirror::LAYER),
-                        bevy::light::NotShadowReceiver,
-                        bevy::light::NotShadowCaster,
-                        // The shader puts it round each camera: never culled.
-                        bevy::camera::visibility::NoFrustumCulling,
-                        bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
-                        bevy::camera::visibility::NoAutoAabb,
-                    ));
-                }
+        }
+        if let Some(pi) = plane {
+            let src = lb.mirrors.planes[pi].water_mats[0].clone();
+            if let Some(mut gm) = ast.water_mats.get(&src).cloned() {
+                gm.extension.params.grid.x = 2.0;
+                // Never solid: it's the moving surface over every water face, translucent ones included.
+                let gh = ast.water_mats.add(gm);
+                lb.water_list.mats.push(gh.clone());
+                lb.water_list.opaque.push(false);
+                lb.mirrors.planes[pi].water_mats.push(gh.clone());
+                commands.spawn((
+                    Mesh3d(ast.meshes.add(water::grid_mesh())),
+                    MeshMaterial3d(gh),
+                    Transform::IDENTITY,
+                    Visibility::Hidden,
+                    water::WaterGrid,
+                    RenderLayers::layer(mirror::LAYER),
+                    bevy::light::NotShadowReceiver,
+                    bevy::light::NotShadowCaster,
+                    // The shader puts it round each camera: never culled.
+                    bevy::camera::visibility::NoFrustumCulling,
+                    bevy::camera::primitives::Aabb::from_min_max(Vec3::splat(-1.0e5), Vec3::splat(1.0e5)),
+                    bevy::camera::visibility::NoAutoAabb,
+                ));
             }
         }
     }
-    mirror::spawn_camera(&mut commands, &mirrors);
-    commands.insert_resource(mirrors);
-    commands.insert_resource(mirror::MirrorBodyRes::default());
-    commands.insert_resource(water_list);
-    prof::load_mark("edge walls / grass");
+}
+
+/// Mesh actors (decorations, pickups, characters) with live decoration physics, and the movers.
+fn spawn_level_actors(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+    handles: &[Handle<Image>],
+    glass_imgs: &std::collections::HashMap<usize, Handle<Image>>,
+) {
     // Mesh actors (decorations, pickups, characters) with live decoration physics.
     let blockers =
-        actors::spawn_mesh_actors(&mut commands, level, &mut meshes, &mut materials, &handles);
+        actors::spawn_mesh_actors(commands, level, &mut ast.meshes, &mut ast.materials, handles);
     commands.insert_resource(blockers);
-    let mv = movers::spawn_movers(&mut commands, level, &mut meshes, &mut materials, &handles, &glass_imgs);
+    let mv = movers::spawn_movers(commands, level, &mut ast.meshes, &mut ast.materials, handles, glass_imgs);
     commands.insert_resource(mv);
     commands.insert_resource(movers::HudMessage::default());
     commands.insert_resource(pickups::FrobRequest::default());
-    prof::load_mark("mesh actors");
+}
+
+/// The start kit, the play resources the HUD and weapons need, and the HUD's level parts (crosshair, scope overlay,
+/// coronas, electricity, drug overlay). Returns the runtime asset store they started.
+fn start_kit_and_hud(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    level: &Level,
+    root: &std::path::Path,
+) -> weapons::RuntimeAssets {
     // DeusExPlayer.ResetPlayer: a new game starts with a pistol, a riot prod and a medkit on the belt.
-    commands.insert_resource(pickups::starting_inventory(&root_dir.0));
-    pickups::spawn_belt_ui(&mut commands);
-    weapons::spawn_view_camera(&mut commands);
+    commands.insert_resource(pickups::starting_inventory(root));
+    pickups::spawn_belt_ui(commands);
+    weapons::spawn_view_camera(commands);
     commands.insert_resource(weapons::Weapons::default());
     commands.insert_resource(ai::WeaponDrops::default());
     commands.insert_resource(ai::FlareThrows::default());
@@ -1822,29 +2120,33 @@ fn setup(
     commands.insert_resource(ai::PlayerHealth::default());
     commands.insert_resource(weapons::LastAttacker::default());
     commands.insert_resource(destruct::DecoHits::default());
-    ai::spawn_health_ui(&mut commands);
+    ai::spawn_health_ui(commands);
     let mut runtime_assets = weapons::RuntimeAssets {
-        classes: unreal_pkg::classes::ClassDb::open(&root_dir.0.join("System")),
-        lib: dx_level::TexLib::new(&root_dir.0),
+        classes: unreal_pkg::classes::ClassDb::open(&root.join("System")),
+        lib: dx_level::TexLib::new(root),
         images: Default::default(),
         materials: Default::default(),
         fire: Vec::new(),
         sprites: Default::default(),
         shared_parts: Default::default(),
     };
-    hud::spawn_crosshair(&mut commands, &mut runtime_assets, &mut images);
-    hud::spawn_scope_overlay(&mut commands, &mut runtime_assets, &mut images);
-    coronas::spawn_coronas(&mut commands, level, &mut runtime_assets, &mut images);
+    hud::spawn_crosshair(commands, &mut runtime_assets, &mut ast.images);
+    hud::spawn_scope_overlay(commands, &mut runtime_assets, &mut ast.images);
+    coronas::spawn_coronas(commands, level, &mut runtime_assets, &mut ast.images);
     electricity::spawn_emitters(
-        &mut commands,
+        commands,
         level,
         &mut runtime_assets,
-        &mut images,
-        &mut meshes,
-        &mut materials,
+        &mut ast.images,
+        &mut ast.meshes,
+        &mut ast.materials,
     );
-    drug::spawn_drug_overlay(&mut commands, &mut runtime_assets, &mut images);
-    prof::load_mark("start kit");
+    drug::spawn_drug_overlay(commands, &mut runtime_assets, &mut ast.images);
+    runtime_assets
+}
+
+/// AnimNext loops (screens, monitors, TV noise) on the level's surfaces and meshes, and the glow list.
+fn register_anim_textures(level: &Level, handles: &[Handle<Image>], runtime_assets: &mut weapons::RuntimeAssets) {
     // AnimNext loops (screens, monitors, TV noise) on the level's surfaces and meshes.
     anim_tex::reset();
     for (i, t) in level.textures.iter().enumerate() {
@@ -1852,9 +2154,16 @@ fn setup(
         let masked = t.has_alpha_holes();
         anim_tex::register(&mut runtime_assets.lib, &t.name, &handles[i], masked, true);
     }
-    prof::load_mark("anim textures");
-    // Procedural textures on the level's meshes and surfaces (the augmentation canister's blue Nano_SFX_A glow):
-    // the level loader only has their static first frame, so they animate through the fire texture system.
+}
+
+/// Procedural textures on the level's meshes and surfaces (the augmentation canister's blue Nano_SFX_A glow):
+/// the level loader only has their static first frame, so they animate through the fire texture system.
+fn register_fire_textures(
+    images: &mut Assets<Image>,
+    level: &Level,
+    handles: &[Handle<Image>],
+    runtime_assets: &mut weapons::RuntimeAssets,
+) {
     for (i, t) in level.textures.iter().enumerate() {
         if let Some(mut f) = runtime_assets.lib.load_fire(&t.name) {
             for _ in 0..40 {
@@ -1890,6 +2199,16 @@ fn setup(
             runtime_assets.fire.push((f, handles[i].clone()));
         }
     }
+}
+
+/// The runtime asset store, the scrolling-texture list and the rest of the play resources; the frob display,
+/// goggles and flash overlays.
+fn insert_play_resources(
+    commands: &mut Commands,
+    ast: &mut SetupAssets,
+    runtime_assets: weapons::RuntimeAssets,
+    scrollers: UvScroll,
+) {
     commands.insert_resource(runtime_assets);
     commands.insert_resource(damage::PawnHits::default());
     commands.insert_resource(hud::Aim::default());
@@ -1905,10 +2224,10 @@ fn setup(
     commands.insert_resource(movers::Picking::default());
     commands.insert_resource(devices::Hacking::default());
     commands.insert_resource(devices::GameEvents::default());
-    frobui::spawn_frob_ui(&mut commands);
-    charged::spawn_goggles(&mut commands, &mut meshes, &mut materials);
+    frobui::spawn_frob_ui(commands);
+    charged::spawn_goggles(commands, &mut ast.meshes, &mut ast.materials);
     commands.insert_resource(info::InfoDisplay::default());
-    explosion::spawn_flash_overlay(&mut commands);
+    explosion::spawn_flash_overlay(commands);
     commands.insert_resource(explosion::Explosions::default());
     commands.insert_resource(explosion::BlastsThisFrame::default());
     commands.insert_resource(explosion::ScreenFlash::default());
@@ -1916,15 +2235,10 @@ fn setup(
     commands.insert_resource(projectiles::GasClouds::default());
     commands.insert_resource(effects::Gibs::default());
     commands.insert_resource(scrollers);
+}
 
-    prof::load_mark("fire textures / HUD");
-    // Lighting comes entirely from the rebuilt original lightmaps.
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 0.0,
-        ..default()
-    });
-
+/// The sky room's camera and the world camera (FlyCam) at the PlayerStart (or the screenshot test's first view).
+fn spawn_cameras(commands: &mut Commands, level: &Level, shot: Option<&ShotCfg>) {
     let (pos, yaw) = match &level.player_start {
         Some(p) => (Vec3::from(p.position) + Vec3::Y * 1.7, p.yaw),
         None => (Vec3::from(level.bounds_max) + Vec3::Y * 5.0, 0.0),
@@ -1956,7 +2270,7 @@ fn setup(
         bevy::light::cluster::ClusterConfig::Single,
         SkyCam,
     ));
-    let (pos, cam_yaw, cam_pitch) = match &shot {
+    let (pos, cam_yaw, cam_pitch) = match shot {
         Some(c) => (c.views[0].1, c.views[0].2, c.views[0].3),
         None => (pos, cam_yaw, 0.0),
     };
@@ -1987,10 +2301,6 @@ fn setup(
         // The world, plus mirror faces (mirror.rs).
         RenderLayers::from_layers(&[0, mirror::LAYER, skyfollow::LAYER]),
     ));
-
-
-    prof::load_mark("cameras");
-    prof::load_report();
 }
 
 /// Bounds for a mesh that never changes shape, worked out once (`grow` metres of slack up and down for a surface the
@@ -2131,6 +2441,56 @@ fn release_cursor_without_focus(
     }
 }
 
+/// What fly's steps read each frame: the input and the world as it stands (none of it is written).
+struct FlyCx<'a> {
+    time: &'a Time,
+    keys: &'a ButtonInput<KeyCode>,
+    mouse: &'a ButtonInput<MouseButton>,
+    level: &'a Level,
+    blockers: &'a Blockers,
+    movers: &'a movers::Movers,
+    carrying: &'a carry::Carrying,
+    weapons: &'a weapons::Weapons,
+}
+
+impl<'a> FlyCx<'a> {
+    /// The player's collision world: the level BSP, the live cylinders (with the pushable masses) and the movers.
+    fn world(&self) -> World<'a> {
+        World {
+            level: self.level,
+            blockers: &self.blockers.list,
+            ignore: None,
+            pushable: Some(&self.blockers.pushable_mass),
+            movers: Some(&self.movers.rt),
+        }
+    }
+}
+
+/// The scripted walk test's input this frame (walk_test_step).
+#[derive(Clone, Copy)]
+struct TestIn {
+    forward: bool,
+    dt: Option<f64>,
+    frob: bool,
+    crouch: bool,
+}
+
+/// The walking branch's view axes and wanted move, built up step by step (walk_move).
+struct Walk {
+    /// The view's forward / right in Bevy space (the free third-person camera's when it's on).
+    f: Vec3,
+    r: Vec3,
+    /// The same on the Unreal ground plane.
+    fu: DVec3,
+    ru: DVec3,
+    wish: DVec3,
+    /// The pad's stick decided walk (Some(true)) or run (Some(false)).
+    stick_walk: Option<bool>,
+    /// AugDrone is flying: the keys move the drone, not the player.
+    drone: bool,
+}
+
+/// Player input and movement: look, then walking / swimming / climbing (or Debug Mode's fly mode), the eye.
 fn fly(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -2159,7 +2519,48 @@ fn fly(
         return; // death.rs / cinematic.rs own the camera
     }
     let (tf, cam) = &mut *q;
+    let cx = FlyCx {
+        time: &time,
+        keys: &keys,
+        mouse: &mouse,
+        level: &level.0,
+        blockers: &blockers,
+        movers: &movers_res,
+        carrying: &carrying,
+        weapons: &weapons_res,
+    };
     // Scripted walk test: fixed timestep, W held.
+    let test = walk_test_step(&cx, &mut walk_test, &mut player, cam, &mut scripted);
+    let free_cam = look_step(&cx, &motion, &scroll, &cursor, cam, &player);
+    // Leaning rolls the view: ViewRotation.Roll = curLeanDist * 20 (Unreal units).
+    // ViewShake adds its own roll and eye bob (PlayerPawn.ViewShake).
+    let (shake_roll, shake_vert) = crate::shake::tick(time.delta_secs());
+    let roll = (((player.lean + player.peek) * 20.0 + shake_roll) / 65536.0 * std::f64::consts::TAU) as f32;
+    tf.rotation = Quat::from_rotation_y(cam.yaw)
+        * Quat::from_rotation_x(cam.pitch)
+        * Quat::from_rotation_z(-roll);
+    if test.frob {
+        frob_req.0 = true;
+    }
+    toggle_noclip(&cx, &mut player, tf);
+    if !player.noclip {
+        walk_move(&cx, test, &mut player, tf, cam, &mut ph, &mut decos, free_cam, roll, shake_vert);
+        sky.rotation = tf.rotation;
+        return;
+    }
+    noclip_fly(&cx, tf, cam);
+    sky.rotation = tf.rotation;
+}
+
+/// The scripted walk test (DXVIEW_WALKTEST): its first frame puts the body at the start, then fixed 60 Hz steps
+/// with W held, then the frob it asks for.
+fn walk_test_step(
+    cx: &FlyCx,
+    walk_test: &mut Option<ResMut<WalkTest>>,
+    player: &mut ResMut<Player>,
+    cam: &mut Mut<FlyCam>,
+    scripted: &mut ResMut<weapons::ScriptedInput>,
+) -> TestIn {
     let mut test_forward = false;
     let mut test_dt = None;
     let mut test_frob = false;
@@ -2169,16 +2570,7 @@ fn fly(
             player.noclip = false;
             let params = player.params.clone();
             player.body = Character::new(wt.start);
-            player.body.settle(
-                &World {
-                    level: &level.0,
-                    blockers: &blockers.list,
-                    ignore: None,
-                    pushable: Some(&blockers.pushable_mass),
-                    movers: Some(&movers_res.rt),
-                },
-                &params,
-            );
+            player.body.settle(&cx.world(), &params);
             cam.yaw = (-wt.yaw_deg - 90.0).to_radians();
             cam.pitch = wt.pitch_deg.to_radians();
             // DXVIEW_WALKTEST_SELECT=<belt slot>: hold that belt item during the test.
@@ -2199,6 +2591,20 @@ fn fly(
             }
         }
     }
+    TestIn { forward: test_forward, dt: test_dt, frob: test_frob, crouch: test_crouch }
+}
+
+/// Mouse / right-stick look (or the free third-person camera's orbit), the input note for idle fidgets, and the
+/// fly-mode speed wheel. Returns whether the free third-person camera is on.
+fn look_step(
+    cx: &FlyCx,
+    motion: &AccumulatedMouseMotion,
+    scroll: &AccumulatedMouseScroll,
+    cursor: &CursorOptions,
+    cam: &mut Mut<FlyCam>,
+    player: &Player,
+) -> bool {
+    let (time, keys, mouse) = (cx.time, cx.keys, cx.mouse);
     // Third person's free camera: the look turns the camera round JC, not JC (thirdperson.rs).
     if let Some((y, p)) = thirdperson::sync(cam.yaw, cam.pitch) {
         cam.yaw = y;
@@ -2233,17 +2639,12 @@ fn fly(
     if scroll.delta.y != 0.0 && player.noclip && !crate::spawnmenu::open() {
         cam.speed = (cam.speed * (1.0 + 0.15 * scroll.delta.y.signum())).clamp(0.5, 200.0);
     }
-    // Leaning rolls the view: ViewRotation.Roll = curLeanDist * 20 (Unreal units).
-    // ViewShake adds its own roll and eye bob (PlayerPawn.ViewShake).
-    let (shake_roll, shake_vert) = crate::shake::tick(time.delta_secs());
-    let roll = (((player.lean + player.peek) * 20.0 + shake_roll) / 65536.0 * std::f64::consts::TAU) as f32;
-    tf.rotation = Quat::from_rotation_y(cam.yaw)
-        * Quat::from_rotation_x(cam.pitch)
-        * Quat::from_rotation_z(-roll);
-    if test_frob {
-        frob_req.0 = true;
-    }
-    if keys.just_pressed(KeyCode::KeyV) && crate::settings::debug_mode() {
+    free_cam
+}
+
+/// Debug Mode's V: fly mode on / off; leaving it drops the body where the camera is.
+fn toggle_noclip(cx: &FlyCx, player: &mut ResMut<Player>, tf: &Transform) {
+    if cx.keys.just_pressed(KeyCode::KeyV) && crate::settings::debug_mode() {
         player.noclip = !player.noclip;
         if !player.noclip {
             // Drop the body where the camera is.
@@ -2252,669 +2653,798 @@ fn fly(
             let params = player.params.clone();
             player.body =
                 Character::new(DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64 - eye));
-            player.body.settle(
-                &World {
-                    level: &level.0,
-                    blockers: &blockers.list,
-                    ignore: None,
-                    pushable: Some(&blockers.pushable_mass),
-                    movers: Some(&movers_res.rt),
-                },
-                &params,
-            );
+            player.body.settle(&cx.world(), &params);
         }
     }
-    if !player.noclip {
-        // Walk: WASD on the ground plane in Unreal space, Space jumps, Shift walks slowly.
-        // (Free third-person camera: relative to the camera.)
-        let (f, r) = if free_cam {
-            let (oy, op) = thirdperson::orbit();
-            let q = Quat::from_rotation_y(oy) * Quat::from_rotation_x(op);
-            (q * Vec3::NEG_Z, q * Vec3::X)
-        } else {
-            (tf.forward().as_vec3(), tf.right().as_vec3())
-        };
-        let (fu, ru) = (
-            DVec3::new(f.x as f64, f.z as f64, 0.0),
-            DVec3::new(r.x as f64, r.z as f64, 0.0),
-        );
-        let mut wish = DVec3::ZERO;
-        if keys.pressed(KeyCode::KeyW) || test_forward {
-            wish += fu;
+}
+
+/// The walking branch (PlayerWalking / PlayerSwimming / ladders): the wanted move, crouch, lean, the physics
+/// steps, jump and landing, then the eye.
+fn walk_move(
+    cx: &FlyCx,
+    test: TestIn,
+    player: &mut ResMut<Player>,
+    tf: &mut Mut<Transform>,
+    cam: &mut Mut<FlyCam>,
+    ph: &mut ResMut<ai::PlayerHealth>,
+    decos: &mut Query<&mut Deco>,
+    free_cam: bool,
+    roll: f32,
+    shake_vert: f64,
+) {
+    let mut w = walk_wish(cx, test, tf, free_cam);
+    if free_cam {
+        face_free_cam(cx, &w, tf, cam, roll);
+    }
+    drone_step(cx, &mut w, player);
+    swim_wish(cx, test, &mut w, player);
+    // Ladders (faces in a "Ladder" texture group): touching one there's no gravity, and pushing into it climbs
+    // - up, or down when looking down; walking away or off the side lets go.
+    if !player.noclip && player.body.physics != Physics::Swimming {
+        ladder_step(cx, &mut w, player, tf, cam.pitch);
+    }
+    let carried_mass = cx.carrying.held.as_ref().map(|h| h.mass).unwrap_or(0.0);
+    // Can't jump with anything heavier than 20 in your arms; carrying slows you by Mass * 2.
+    // DoJump: nothing heavier than 20 in your arms. GMDX fix (setting FixCarryJump): the Muscle aug, which the
+    // original read only after giving up, lets you jump with up to (CurrentLevel + 3) x 50 (150-300).
+    let carry_limit = match crate::abilities::aug_level("AugMuscle") {
+        Some(l) if setting!("FixCarryJump") > 0.5 && crate::abilities::aug_active("AugMuscle") => {
+            (l as f64 + 3.0) * 50.0
+        }
+        _ => 20.0,
+    };
+    let jump = cx.keys.just_pressed(KeyCode::Space) && carried_mass <= carry_limit && !player.swimming && !w.drone;
+    let world = actors::SwimWorld(cx.world());
+    let z_before = player.body.location.z;
+    // Crouch (DeusExPlayer.HandleWalking / SetBasedPawnSize): hold C. Ducking shrinks the cylinder to 16 with the
+    // feet kept on the floor, the eye drops with it, and you move at walking pace. You stay down while there
+    // isn't room to stand (bForceDuck).
+    let (leg_speed, legless) = ph.speed_factor();
+    let (stand_h, delta_eye) = crouch_step(cx, test, &world, w.drone, legless, player);
+    lean_step(cx, test, &world, &w, stand_h, delta_eye, player);
+    let params = move_params(cx, &w, player, carried_mass, leg_speed);
+    player.body.bumped.clear();
+    let dt = test.dt.unwrap_or((cx.time.delta_secs_f64()).min(0.1));
+    let (landed, jump, was_walking) = move_body(cx, &world, &w, player, &params, dt, jump, carried_mass, carry_limit);
+    swim_state(player, &world, &params, w.wish, cam.pitch, dt);
+    jump_and_land(cx.level, player, ph, &params, jump, was_walking, landed);
+    place_view(cx, player, tf, decos, &params, &w, dt, z_before, shake_vert);
+}
+
+/// WASD and the pad's left stick on the ground plane in Unreal space (the free third-person camera's axes when on).
+fn walk_wish(cx: &FlyCx, test: TestIn, tf: &Transform, free_cam: bool) -> Walk {
+    let keys = cx.keys;
+    // Walk: WASD on the ground plane in Unreal space, Space jumps, Shift walks slowly.
+    // (Free third-person camera: relative to the camera.)
+    let (f, r) = if free_cam {
+        let (oy, op) = thirdperson::orbit();
+        let q = Quat::from_rotation_y(oy) * Quat::from_rotation_x(op);
+        (q * Vec3::NEG_Z, q * Vec3::X)
+    } else {
+        (tf.forward().as_vec3(), tf.right().as_vec3())
+    };
+    let (fu, ru) = (
+        DVec3::new(f.x as f64, f.z as f64, 0.0),
+        DVec3::new(r.x as f64, r.z as f64, 0.0),
+    );
+    let mut wish = DVec3::ZERO;
+    if keys.pressed(KeyCode::KeyW) || test.forward {
+        wish += fu;
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        wish -= fu;
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        wish += ru;
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        wish -= ru;
+    }
+    let mut wish = wish.normalize_or_zero();
+    // The gamepad's left stick: analog direction. A light push walks and a full push runs, whatever Always
+    // Run says (gamepad.rs WALK_PUSH); the stick doesn't press the Walk key.
+    let mut stick_walk = None;
+    if let Some(a) = gamepad::move_axes() {
+        if !crate::inventory_screen::screen_open() && !crate::consys::third_person() {
+            wish = (fu * a.y as f64 + ru * a.x as f64).normalize_or_zero();
+            stick_walk = Some(a.length() < gamepad::WALK_PUSH);
+        }
+    }
+    Walk { f, r, fu, ru, wish, stick_walk, drone: false }
+}
+
+/// Free third-person camera: JC turns to face the way he moves, or where the camera looks while aiming or
+/// shooting (quickly, so the shot leaves the way he faces); his view pitch is the camera's.
+fn face_free_cam(cx: &FlyCx, w: &Walk, tf: &mut Mut<Transform>, cam: &mut Mut<FlyCam>, roll: f32) {
+    let (keys, mouse) = (cx.keys, cx.mouse);
+    let wish = w.wish;
+    let dt = cx.time.delta_secs().min(0.1);
+    let (oy, op) = thirdperson::orbit();
+    let aim_keys = keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || crate::aimmode::ads() > 0.3;
+    let fired = mouse.pressed(MouseButton::Left)
+        && cx.weapons.held.as_ref().is_some_and(|h| !h.stats.item);
+    let carrying_now = carry::carrying();
+    let face_cam = thirdperson::facing_camera(aim_keys, fired && !carrying_now, dt);
+    let target = if face_cam {
+        Some((oy, 22.0))
+    } else if wish.length_squared() > 1e-6 {
+        // FlyCam yaw: forward = (-sin yaw, -cos yaw) in Unreal x / y.
+        Some(((-wish.x).atan2(-wish.y) as f32, 9.0))
+    } else {
+        None
+    };
+    if let Some((ty, rate)) = target {
+        let d = (ty - cam.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        cam.yaw += d * (dt * rate).min(1.0);
+    }
+    cam.pitch = op.clamp(-1.3, 1.2);
+    tf.rotation = Quat::from_rotation_y(cam.yaw) * Quat::from_rotation_x(cam.pitch) * Quat::from_rotation_z(-roll);
+}
+
+/// AugDrone: the keys fly the drone (forward / strafe along the view, Jump / Duck up and down) and the player
+/// stands frozen (PlayerWalking.ProcessMove: Velocity = 0).
+fn drone_step(cx: &FlyCx, w: &mut Walk, player: &mut ResMut<Player>) {
+    let keys = cx.keys;
+    let drone = augdisplay::drone_flying();
+    if drone {
+        let (f, r) = (w.f, w.r);
+        let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64);
+        let rt = DVec3::new(r.x as f64, r.z as f64, r.y as f64);
+        let ax = |a: KeyCode, b: KeyCode| (keys.pressed(a) as i32 - keys.pressed(b) as i32) as f64;
+        let v = fw * ax(KeyCode::KeyW, KeyCode::KeyS) + rt * ax(KeyCode::KeyD, KeyCode::KeyA)
+            + DVec3::Z * ax(KeyCode::Space, KeyCode::KeyC);
+        augdisplay::drone_input(v.normalize_or_zero());
+        w.wish = DVec3::ZERO;
+        player.body.velocity.x = 0.0;
+        player.body.velocity.y = 0.0;
+    }
+    w.drone = drone;
+}
+
+/// PlayerSwimming.PlayerMove: aForward along the full view direction, strafe, and Jump/Duck as aUp, at
+/// 0.2 / 0.1 / 0.1 of the raw axes (forward tops the 0.3 x AccelRate clamp, the others nearly reach it).
+fn swim_wish(cx: &FlyCx, test: TestIn, w: &mut Walk, player: &Player) {
+    let keys = cx.keys;
+    let swim_up =
+        (keys.pressed(KeyCode::Space) as i32 - keys.pressed(KeyCode::KeyC) as i32) as f64;
+    if player.swimming && !w.drone {
+        let f = w.f;
+        let x = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero();
+        let mut fwd_in = 0.0;
+        if keys.pressed(KeyCode::KeyW) || test.forward {
+            fwd_in += 1.0;
         }
         if keys.pressed(KeyCode::KeyS) {
-            wish -= fu;
+            fwd_in -= 1.0;
         }
+        let mut side = 0.0;
         if keys.pressed(KeyCode::KeyD) {
-            wish += ru;
+            side += 1.0;
         }
         if keys.pressed(KeyCode::KeyA) {
-            wish -= ru;
+            side -= 1.0;
         }
-        let mut wish = wish.normalize_or_zero();
-        // The gamepad's left stick: analog direction. A light push walks and a full push runs, whatever Always
-        // Run says (gamepad.rs WALK_PUSH); the stick doesn't press the Walk key.
-        let mut stick_walk = None;
-        if let Some(a) = gamepad::move_axes() {
-            if !crate::inventory_screen::screen_open() && !crate::consys::third_person() {
-                wish = (fu * a.y as f64 + ru * a.x as f64).normalize_or_zero();
-                stick_walk = Some(a.length() < gamepad::WALK_PUSH);
-            }
-        }
-        // Free third-person camera: JC turns to face the way he moves, or where the camera looks while aiming or
-        // shooting (quickly, so the shot leaves the way he faces); his view pitch is the camera's.
-        if free_cam {
-            let dt = time.delta_secs().min(0.1);
-            let (oy, op) = thirdperson::orbit();
-            let aim_keys = keys.pressed(KeyCode::KeyZ) || keys.pressed(KeyCode::BracketLeft) || crate::aimmode::ads() > 0.3;
-            let fired = mouse.pressed(MouseButton::Left)
-                && weapons_res.held.as_ref().is_some_and(|h| !h.stats.item);
-            let carrying_now = carry::carrying();
-            let face_cam = thirdperson::facing_camera(aim_keys, fired && !carrying_now, dt);
-            let target = if face_cam {
-                Some((oy, 22.0))
-            } else if wish.length_squared() > 1e-6 {
-                // FlyCam yaw: forward = (-sin yaw, -cos yaw) in Unreal x / y.
-                Some(((-wish.x).atan2(-wish.y) as f32, 9.0))
-            } else {
-                None
-            };
-            if let Some((ty, rate)) = target {
-                let d = (ty - cam.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-                cam.yaw += d * (dt * rate).min(1.0);
-            }
-            cam.pitch = op.clamp(-1.3, 1.2);
-            tf.rotation = Quat::from_rotation_y(cam.yaw) * Quat::from_rotation_x(cam.pitch) * Quat::from_rotation_z(-roll);
-        }
-        // AugDrone: the keys fly the drone (forward / strafe along the view, Jump / Duck up and down) and the
-        // player stands frozen (PlayerWalking.ProcessMove: Velocity = 0).
-        let drone = augdisplay::drone_flying();
-        if drone {
-            let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64);
-            let rt = DVec3::new(r.x as f64, r.z as f64, r.y as f64);
-            let ax = |a: KeyCode, b: KeyCode| (keys.pressed(a) as i32 - keys.pressed(b) as i32) as f64;
-            let v = fw * ax(KeyCode::KeyW, KeyCode::KeyS) + rt * ax(KeyCode::KeyD, KeyCode::KeyA)
-                + DVec3::Z * ax(KeyCode::Space, KeyCode::KeyC);
-            augdisplay::drone_input(v.normalize_or_zero());
-            wish = DVec3::ZERO;
-            player.body.velocity.x = 0.0;
-            player.body.velocity.y = 0.0;
-        }
-        // PlayerSwimming.PlayerMove: aForward along the full view direction, strafe, and Jump/Duck as aUp, at
-        // 0.2 / 0.1 / 0.1 of the raw axes (forward tops the 0.3 x AccelRate clamp, the others nearly reach it).
-        let swim_up =
-            (keys.pressed(KeyCode::Space) as i32 - keys.pressed(KeyCode::KeyC) as i32) as f64;
-        if player.swimming && !drone {
-            let x = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero();
-            let mut fwd_in = 0.0;
-            if keys.pressed(KeyCode::KeyW) || test_forward {
-                fwd_in += 1.0;
-            }
-            if keys.pressed(KeyCode::KeyS) {
-                fwd_in -= 1.0;
-            }
-            let mut side = 0.0;
-            if keys.pressed(KeyCode::KeyD) {
-                side += 1.0;
-            }
-            if keys.pressed(KeyCode::KeyA) {
-                side -= 1.0;
-            }
-            let w3 = x * fwd_in + ru.normalize_or_zero() * side * 0.83 + DVec3::Z * swim_up * 0.83;
-            wish = if w3.length() > 1.0 {
-                w3.normalize()
-            } else {
-                w3
-            };
-        }
-        // Ladders (faces in a "Ladder" texture group): touching one there's no gravity, and pushing into it climbs
-        // - up, or down when looking down; walking away or off the side lets go.
-        if !player.noclip && player.body.physics != Physics::Swimming {
-            let c = player.body.location;
-            let (r, hh) = (player.params.radius, player.params.height);
-            let ladder = level
-                .0
-                .ladders
-                .iter()
-                .filter(|l| l.touches([c.x, c.y, c.z], r, hh, 4.0))
-                .max_by(|a, b| {
-                    let da =
-                        (c.x * a.normal[0] + c.y * a.normal[1] + c.z * a.normal[2] - a.dist).abs();
-                    let db =
-                        (c.x * b.normal[0] + c.y * b.normal[1] + c.z * b.normal[2] - b.dist).abs();
-                    db.partial_cmp(&da).unwrap()
-                });
-            if env_on!("DXVIEW_LADDERLOG") {
-                println!(
-                    "LADDER touch={} phys={:?} loc={:.1?} wish={:.2?}",
-                    ladder.is_some(),
-                    player.body.physics,
-                    c,
-                    wish
-                );
-            }
-            match ladder {
-                Some(l) => {
-                    // The face's normal points out of the ladder; toward the player side.
-                    let mut n = DVec3::new(l.normal[0], l.normal[1], 0.0).normalize_or_zero();
-                    if (c.x * l.normal[0] + c.y * l.normal[1] + c.z * l.normal[2] - l.dist) < 0.0 {
-                        n = -n;
-                    }
-                    let into = wish.dot(-n);
-                    let climbing = player.body.physics == Physics::Climbing;
-                    // Enhancement "Grab Ladders": Use takes hold, Jump lets go (pushing off), and on the ladder
-                    // forward / back climb up / down; otherwise walking into one does nothing special.
-                    let grab = setting!("LadderGrab") > 0.5;
-                    frobui::LADDER_GRAB.store(grab && !climbing, std::sync::atomic::Ordering::Relaxed);
-                    if grab && !climbing {
-                        if mouse.just_pressed(MouseButton::Right) {
-                            player.body.physics = Physics::Climbing;
-                            player.body.velocity = DVec3::ZERO;
-                        }
-                    } else if grab && keys.just_pressed(KeyCode::Space) {
-                        player.body.physics = Physics::Falling;
-                        player.body.velocity = n * 180.0 + DVec3::Z * 160.0;
-                        wish = DVec3::ZERO;
-                    } else if grab {
-                        let looking_down = cam.pitch < -0.35;
-                        let vertical = into * if looking_down { -1.0 } else { 1.0 };
-                        // Keep some of the push into it so you step off at the top; pulling back doesn't leave.
-                        let flat = wish - (-n) * if into > 0.0 { into * 0.7 } else { into };
-                        wish = flat + DVec3::Z * vertical;
-                    } else if into > 0.3 || (climbing && wish.length_squared() > 0.0) {
-                        let looking_down = cam.pitch < -0.35;
-                        let vertical = if into > 0.3 {
-                            into * if looking_down { -1.0 } else { 1.0 }
-                        } else {
-                            0.0
-                        };
-                        // Sideways/back movement stays as it is; pushing into the ladder turns into climbing.
-                        // Keep a little of the push toward the ladder so you step off onto the ledge at the top.
-                        let flat = wish - (-n) * into.max(0.0) * 0.7;
-                        wish = flat + DVec3::Z * vertical;
-                        player.body.physics = Physics::Climbing;
-                    } else if climbing && wish.length_squared() == 0.0 {
-                        // Hold still on the ladder.
-                    }
-                }
-                None => {
-                    frobui::LADDER_GRAB.store(false, std::sync::atomic::Ordering::Relaxed);
-                    if player.body.physics == Physics::Climbing {
-                        player.body.physics = Physics::Falling;
-                    }
-                    // Grab Ladders: "Climb Ladder" is highlighted (in reach along the view, not yet touching): Use
-                    // steps up to it and takes hold.
-                    if setting!("LadderGrab") > 0.5
-                        && frobui::LADDER_AIM.load(std::sync::atomic::Ordering::Relaxed)
-                        && mouse.just_pressed(MouseButton::Right)
-                    {
-                        let fv = tf.forward().as_vec3();
-                        let dir = DVec3::new(fv.x as f64, fv.z as f64, fv.y as f64).normalize_or_zero();
-                        let eye_ue = dx_level::bevy_to_ue(tf.translation.to_array());
-                        let eye = DVec3::new(eye_ue[0] as f64, eye_ue[1] as f64, eye_ue[2] as f64);
-                        let hit = level.0.ladders.iter().filter_map(|l| {
-                            let n = DVec3::from_array(l.normal);
-                            let den = n.dot(dir);
-                            if den.abs() < 1e-4 {
-                                return None;
-                            }
-                            let t = (l.dist - n.dot(eye)) / den;
-                            (t > 0.0 && t < 112.0 && l.touches((eye + dir * t).to_array(), 0.0, 0.0, 1.0)).then_some((t, n, l))
-                        }).min_by(|a, b| a.0.total_cmp(&b.0));
-                        if let Some((t, n, l)) = hit {
-                            let p = eye + dir * t;
-                            let n = if n.dot(c - p) < 0.0 { -n } else { n };
-                            let nf = DVec3::new(n.x, n.y, 0.0).normalize_or_zero();
-                            let mut to = DVec3::new(p.x, p.y, c.z) + nf * (r + 1.0);
-                            // Not below the ladder's foot or above its top.
-                            let (zlo, zhi) = l.points.iter().fold((f64::MAX, f64::MIN), |a, q| (a.0.min(q[2]), a.1.max(q[2])));
-                            to.z = to.z.clamp(zlo + hh, (zhi + hh).max(zlo + hh));
-                            let world = World {
-                                level: &level.0,
-                                blockers: &blockers.list,
-                                ignore: None,
-                                pushable: Some(&blockers.pushable_mass),
-                                movers: Some(&movers_res.rt),
-                            };
-                            if imsim_core::movement::CollisionWorld::trace(&world, c, to, DVec3::new(r, r, hh)).fraction >= 1.0 {
-                                player.body.location = to;
-                                player.body.physics = Physics::Climbing;
-                                player.body.velocity = DVec3::ZERO;
-                            }
-                        }
-                    }
-                }
-            }
-            frobui::LADDER_HELD.store(player.body.physics == Physics::Climbing, std::sync::atomic::Ordering::Relaxed);
-        }
-        let carried_mass = carrying.held.as_ref().map(|h| h.mass).unwrap_or(0.0);
-        // Can't jump with anything heavier than 20 in your arms; carrying slows you by Mass * 2.
-        // DoJump: nothing heavier than 20 in your arms. GMDX fix (setting FixCarryJump): the Muscle aug, which the
-        // original read only after giving up, lets you jump with up to (CurrentLevel + 3) x 50 (150-300).
-        let carry_limit = match crate::abilities::aug_level("AugMuscle") {
-            Some(l) if setting!("FixCarryJump") > 0.5 && crate::abilities::aug_active("AugMuscle") => {
-                (l as f64 + 3.0) * 50.0
-            }
-            _ => 20.0,
-        };
-        let jump = keys.just_pressed(KeyCode::Space) && carried_mass <= carry_limit && !player.swimming && !drone;
-        let world = actors::SwimWorld(World {
-            level: &level.0,
-            blockers: &blockers.list,
-            ignore: None,
-            pushable: Some(&blockers.pushable_mass),
-            movers: Some(&movers_res.rt),
-        });
-        let z_before = player.body.location.z;
-        // Crouch (DeusExPlayer.HandleWalking / SetBasedPawnSize): hold C. Ducking shrinks the cylinder to 16 with the
-        // feet kept on the floor, the eye drops with it, and you move at walking pace. You stay down while there
-        // isn't room to stand (bForceDuck).
-        let (leg_speed, legless) = ph.speed_factor();
-        // PlayerSwimming.BeginState: SetBasedPawnSize(radius, 16) - swimming is the crouched size.
-        let mut duck_key = (keys.pressed(KeyCode::KeyC) && !drone) || test_crouch;
-        // DeusExPlayer.HandleWalking with bToggleCrouch: a press latches crouching on, the next press-and-release
-        // turns it off. Swimming clears it (PlayerSwimming.BeginState).
-        if player.swimming {
-            player.crouch_on = false;
-            player.was_crouch_on = false;
-            player.last_duck = false;
-        } else if crate::settings::toggle_crouch() {
-            // Key events drive bDuck; between them it keeps its value (including the forced 1 below).
-            if keys.just_pressed(KeyCode::KeyC) && !drone {
-                player.duck_btn = true;
-            }
-            if keys.just_released(KeyCode::KeyC) {
-                player.duck_btn = false;
-            }
-            let mut b_duck = player.duck_btn || test_crouch;
-            if !player.crouch_on && !player.was_crouch_on && b_duck {
-                player.crouch_on = true;
-            } else if player.crouch_on && !player.was_crouch_on && !b_duck {
-                player.was_crouch_on = true;
-            } else if player.crouch_on && player.was_crouch_on && !b_duck && player.last_duck {
-                player.crouch_on = false;
-                player.was_crouch_on = false;
-            }
-            if player.crouch_on {
-                b_duck = true;
-                player.duck_btn = true;
-            }
-            player.last_duck = b_duck;
-            duck_key = b_duck;
+        let w3 = x * fwd_in + w.ru.normalize_or_zero() * side * 0.83 + DVec3::Z * swim_up * 0.83;
+        w.wish = if w3.length() > 1.0 {
+            w3.normalize()
         } else {
-            player.crouch_on = false;
-            player.was_crouch_on = false;
-        }
-        let want_duck = duck_key || legless || player.swimming;
-        let duck_h = 16.0;
-        let (stand_h, stand_eye) = (player.stand_height, player.stand_eye);
-        let delta_eye = stand_h - stand_eye;
-        if (want_duck || player.force_duck) && !player.crouched {
-            player.crouched = true;
-            player.body.location.z -= stand_h - duck_h;
-            player.params.height = duck_h;
-            player.eye_height = duck_h - delta_eye;
-        }
-        if player.crouched {
-            // Is there room to stand up? Trace up to twice the standing height from the feet.
-            let loc = player.body.location;
-            let top = DVec3::new(loc.x, loc.y, loc.z - duck_h + 2.0 * stand_h);
-            let r = player.params.radius;
-            player.force_duck = imsim_core::movement::CollisionWorld::trace(
-                &world,
-                loc,
-                top,
-                DVec3::new(r, r, 1.0),
-            )
-            .fraction
-                < 1.0;
-            if !want_duck && !player.force_duck {
-                player.crouched = false;
-                player.body.location.z += stand_h - duck_h;
-                player.params.height = stand_h;
-                player.eye_height = stand_eye;
+            w3
+        };
+    }
+}
+
+/// Ladders: touching one, pushing into it climbs (Grab Ladders: Use takes hold, Jump pushes off); walking away
+/// or off the side lets go.
+fn ladder_step(cx: &FlyCx, w: &mut Walk, player: &mut ResMut<Player>, tf: &Transform, pitch: f32) {
+    let (keys, mouse) = (cx.keys, cx.mouse);
+    let mut wish = w.wish;
+    let c = player.body.location;
+    let (r, hh) = (player.params.radius, player.params.height);
+    let ladder = cx
+        .level
+        .ladders
+        .iter()
+        .filter(|l| l.touches([c.x, c.y, c.z], r, hh, 4.0))
+        .max_by(|a, b| {
+            let da =
+                (c.x * a.normal[0] + c.y * a.normal[1] + c.z * a.normal[2] - a.dist).abs();
+            let db =
+                (c.x * b.normal[0] + c.y * b.normal[1] + c.z * b.normal[2] - b.dist).abs();
+            db.partial_cmp(&da).unwrap()
+        });
+    if env_on!("DXVIEW_LADDERLOG") {
+        println!(
+            "LADDER touch={} phys={:?} loc={:.1?} wish={:.2?}",
+            ladder.is_some(),
+            player.body.physics,
+            c,
+            wish
+        );
+    }
+    match ladder {
+        Some(l) => {
+            // The face's normal points out of the ladder; toward the player side.
+            let mut n = DVec3::new(l.normal[0], l.normal[1], 0.0).normalize_or_zero();
+            if (c.x * l.normal[0] + c.y * l.normal[1] + c.z * l.normal[2] - l.dist) < 0.0 {
+                n = -n;
             }
-        }
-        // Leaning (DeusExPlayer.PlayerWalking.ProcessMove): Q/E while standing still slides the body sideways up
-        // to 40 units (if there's room and floor), lowers it a little, and rolls the view; letting go eases back.
-        {
-            let input =
-                (keys.pressed(KeyCode::KeyE) as i32 - keys.pressed(KeyCode::KeyQ) as i32) as f64;
-            let forward_held =
-                keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::KeyS) || test_forward;
-            let can_lean = player.body.velocity.truncate().length() < 10.0
-                && !forward_held
-                && player.body.physics == Physics::Walking;
-            let right = DVec3::new(ru.x, ru.y, 0.0).normalize_or_zero();
-            let dtl = test_dt.unwrap_or(time.delta_secs_f64().min(0.1));
-            let r = player.params.radius;
-            let h = player.params.height;
-            let try_move = |from: DVec3, by: f64| -> Option<DVec3> {
-                let to = from + right * by;
-                let ext = DVec3::new(r, r, h);
-                let blocked = imsim_core::movement::CollisionWorld::trace(&world, from, to, ext)
-                    .fraction
-                    < 1.0;
-                let floor = imsim_core::movement::CollisionWorld::trace(
-                    &world,
-                    to,
-                    to - DVec3::new(0.0, 0.0, h),
-                    ext,
-                )
-                .fraction
-                    < 1.0;
-                (!blocked && floor).then_some(to)
-            };
-            if setting!("SmoothLean") > 0.5 {
-                // Enhancement (Smooth Leaning): eases in and out instead of the fixed 80 units/s slide, works while
-                // crouch-walking, and where the body can't slide any further (a wall at the corner) the eyes go on
-                // as far as there's room for them, so you can peek past it.
-                let crouch_ok = player.crouched
-                    && player.body.velocity.truncate().length() < 130.0
-                    && player.body.physics == Physics::Walking;
-                let target = if can_lean || crouch_ok { input * 40.0 } else { 0.0 };
-                let total = player.lean + player.peek;
-                let mut want = total + (target - total) * (1.0 - (-9.0 * dtl).exp());
-                if (target - want).abs() < 0.3 {
-                    want = target;
+            let into = wish.dot(-n);
+            let climbing = player.body.physics == Physics::Climbing;
+            // Enhancement "Grab Ladders": Use takes hold, Jump lets go (pushing off), and on the ladder
+            // forward / back climb up / down; otherwise walking into one does nothing special.
+            let grab = setting!("LadderGrab") > 0.5;
+            frobui::LADDER_GRAB.store(grab && !climbing, std::sync::atomic::Ordering::Relaxed);
+            if grab && !climbing {
+                if mouse.just_pressed(MouseButton::Right) {
+                    player.body.physics = Physics::Climbing;
+                    player.body.velocity = DVec3::ZERO;
                 }
-                let step = want.clamp(-40.0, 40.0) - player.lean;
-                if step.abs() > 1e-6 {
-                    let loc = player.body.location;
-                    let moved = try_move(loc, step).map(|to| (to, step)).or_else(|| try_move(loc, step * 0.5).map(|to| (to, step * 0.5)));
-                    if let Some((to, by)) = moved {
-                        player.body.location = to;
-                        player.lean += by;
-                    }
-                }
-                let rest = want - player.lean;
-                player.peek = if rest.abs() > 0.1 && target != 0.0 {
-                    let eye = player.body.location + DVec3::new(0.0, 0.0, player.eye_height);
-                    let f = imsim_core::movement::CollisionWorld::trace(&world, eye, eye + right * rest, DVec3::splat(5.0)).fraction;
-                    rest * (f - 0.05).max(0.0)
-                } else if target == 0.0 {
-                    rest * (-9.0 * dtl).exp()
+            } else if grab && keys.just_pressed(KeyCode::Space) {
+                player.body.physics = Physics::Falling;
+                player.body.velocity = n * 180.0 + DVec3::Z * 160.0;
+                wish = DVec3::ZERO;
+            } else if grab {
+                let looking_down = pitch < -0.35;
+                let vertical = into * if looking_down { -1.0 } else { 1.0 };
+                // Keep some of the push into it so you step off at the top; pulling back doesn't leave.
+                let flat = wish - (-n) * if into > 0.0 { into * 0.7 } else { into };
+                wish = flat + DVec3::Z * vertical;
+            } else if into > 0.3 || (climbing && wish.length_squared() > 0.0) {
+                let looking_down = pitch < -0.35;
+                let vertical = if into > 0.3 {
+                    into * if looking_down { -1.0 } else { 1.0 }
                 } else {
                     0.0
                 };
-                if player.peek.abs() < 0.1 {
-                    player.peek = 0.0;
-                }
-                if player.lean.abs() < 0.1 && target == 0.0 {
-                    player.lean = 0.0;
-                }
-            } else if can_lean && input != 0.0 {
-                player.peek = 0.0;
-                let alpha = 40.0 * input * 2.0 * dtl;
-                if (player.lean + alpha).abs() < 40.0 {
-                    if let Some(to) = try_move(player.body.location, alpha) {
-                        player.body.location = to;
-                        player.lean += alpha;
-                    }
-                } else {
-                    player.lean = input * 40.0;
-                }
-            } else if player.lean != 0.0 {
-                let prev = player.lean;
-                let a = (7.0 * dtl).clamp(0.001, 0.9);
-                player.lean *= 1.0 - a;
-                if player.lean.abs() < 1.0 {
-                    player.lean = 0.0;
-                }
-                if let Some(to) = try_move(player.body.location, -(prev - player.lean)) {
-                    player.body.location = to;
-                }
-            }
-            // SetBasedPawnSize(radius, default height - |lean| / 3), feet kept on the floor.
-            if !player.crouched {
-                let want = stand_h - player.lean.abs() / 3.0;
-                let d = player.params.height - want;
-                if d.abs() > 1e-6 {
-                    player.body.location.z -= d;
-                    player.params.height = want;
-                    player.eye_height = want - delta_eye;
-                }
+                // Sideways/back movement stays as it is; pushing into the ladder turns into climbing.
+                // Keep a little of the push toward the ladder so you step off onto the ledge at the top.
+                let flat = wish - (-n) * into.max(0.0) * 0.7;
+                wish = flat + DVec3::Z * vertical;
+                player.body.physics = Physics::Climbing;
+            } else if climbing && wish.length_squared() == 0.0 {
+                // Hold still on the ladder.
             }
         }
-        let mut params = player.params.clone();
-        // GMDX Sprinter (GetCurrentGroundSpeed): x PerkValue with empty hands and nothing carried, before AugSpeed.
-        if let Some(v) = crate::perks::value_if("PerkSprinter") {
-            if weapons_res.held.is_none() && carried_mass <= 0.0 && weapons_res.corpse.is_none() {
-                params.ground_speed *= v as f64;
+        None => {
+            frobui::LADDER_GRAB.store(false, std::sync::atomic::Ordering::Relaxed);
+            if player.body.physics == Physics::Climbing {
+                player.body.physics = Physics::Falling;
             }
+            ladder_grab_aimed(cx, player, tf, c, r, hh);
         }
-        // AugSpeed: GroundSpeed and JumpZ x LevelValue while active.
-        if let Some(v) = crate::abilities::aug("AugSpeed") {
-            params.ground_speed *= v as f64;
-            params.jump_z *= v as f64;
-        }
-        params.ground_speed = (params.ground_speed - carried_mass * 2.0).max(40.0);
-        // Carrying a body (POVCorpse, Mass 40) costs Mass * 3 of speed.
-        if weapons_res.corpse.is_some() {
-            params.ground_speed = (params.ground_speed - 40.0 * 3.0).max(100.0);
-        }
-        // Wounded legs and torso slow you down; with no legs you crawl.
-        params.ground_speed *= leg_speed;
-        // Modern Aiming: walking pace down the sights.
-        params.ground_speed *= crate::aimmode::speed_mult();
-        if crate::stamina::enabled() {
-            // Sprint (stamina.rs): the run pace is the normal pace; Walk held (or the pad's stick click) sprints.
-            let can = !player.crouched
-                && !player.swimming
-                && player.body.physics == Physics::Walking
-                && wish.length() > 0.1
-                && carrying.held.is_none()
-                && weapons_res.corpse.is_none();
-            let sprint = crate::stamina::tick(time.delta_secs(), keys.pressed(KeyCode::ShiftLeft), can);
-            // A light push of the pad's stick walks.
-            if player.crouched || stick_walk == Some(true) {
-                params.ground_speed *= 0.3;
-            } else if sprint {
-                params.ground_speed *= crate::stamina::SPRINT_MULT;
+    }
+    frobui::LADDER_HELD.store(player.body.physics == Physics::Climbing, std::sync::atomic::Ordering::Relaxed);
+    w.wish = wish;
+}
+
+/// Grab Ladders: "Climb Ladder" is highlighted (in reach along the view, not yet touching): Use steps up to it and
+/// takes hold.
+fn ladder_grab_aimed(cx: &FlyCx, player: &mut ResMut<Player>, tf: &Transform, c: DVec3, r: f64, hh: f64) {
+    if setting!("LadderGrab") > 0.5
+        && frobui::LADDER_AIM.load(std::sync::atomic::Ordering::Relaxed)
+        && cx.mouse.just_pressed(MouseButton::Right)
+    {
+        let fv = tf.forward().as_vec3();
+        let dir = DVec3::new(fv.x as f64, fv.z as f64, fv.y as f64).normalize_or_zero();
+        let eye_ue = dx_level::bevy_to_ue(tf.translation.to_array());
+        let eye = DVec3::new(eye_ue[0] as f64, eye_ue[1] as f64, eye_ue[2] as f64);
+        let hit = cx.level.ladders.iter().filter_map(|l| {
+            let n = DVec3::from_array(l.normal);
+            let den = n.dot(dir);
+            if den.abs() < 1e-4 {
+                return None;
             }
-        } else {
-            // A stick push decides. Otherwise Always Run: Shift walks; off, you walk unless Shift is held.
-            let walk_key = stick_walk.unwrap_or_else(|| keys.pressed(KeyCode::ShiftLeft) != !crate::settings::always_run());
-            if walk_key || player.crouched {
-                params.ground_speed *= 0.3;
-            }
-        }
-        // WaterSpeed = Default.WaterSpeed x SkillSwimming (untrained 1.0), at the walking pace: PlayerSwimming's
-        // PlayerTick sets bIsWalking = True every frame ("don't let the player run if swimming"), and walking is
-        // 0.3 of the speed as on land - at the full 300 JC swam about three times faster than in the original (#39).
-        params.water_speed =
-            player.params.water_speed * crate::abilities::skill("SkillSwimming") as f64 * 0.3;
-        player.body.bumped.clear();
-        let dt = test_dt.unwrap_or((time.delta_secs_f64()).min(0.1));
-        let steps = (dt / (1.0 / 120.0)).ceil().max(1.0) as usize;
-        let mut landed = None;
-        // A carried object can't be shoved into people: it's held in front at chest height, and we stop where it
-        // would run into a pawn.
-        let held = carrying.held.as_ref().map(|h| (h.radius, h.height));
-        let pawns: Vec<dx_level::collision::Cylinder> = if held.is_some() {
-            blockers
-                .list
-                .iter()
-                .filter(|c| {
-                    c.radius > 0.0
-                        && unreal_pkg::props::find(&level.0.actors[c.actor].props, "GroundSpeed")
-                            .is_some()
-                })
-                .copied()
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let was_walking = player.body.physics == Physics::Walking;
-        // Enhancement (Mantling, mantle.rs): Jump at a ledge climbs it; while climbing nothing else moves you.
-        let mut climbing = false;
-        if crate::mantle::active() {
-            if player.swimming || player.noclip {
-                crate::mantle::cancel();
-            } else if let Some((pos, done)) = crate::mantle::step(dt) {
-                player.body.location = pos;
+            let t = (l.dist - n.dot(eye)) / den;
+            (t > 0.0 && t < 112.0 && l.touches((eye + dir * t).to_array(), 0.0, 0.0, 1.0)).then_some((t, n, l))
+        }).min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((t, n, l)) = hit {
+            let p = eye + dir * t;
+            let n = if n.dot(c - p) < 0.0 { -n } else { n };
+            let nf = DVec3::new(n.x, n.y, 0.0).normalize_or_zero();
+            let mut to = DVec3::new(p.x, p.y, c.z) + nf * (r + 1.0);
+            // Not below the ladder's foot or above its top.
+            let (zlo, zhi) = l.points.iter().fold((f64::MAX, f64::MIN), |a, q| (a.0.min(q[2]), a.1.max(q[2])));
+            to.z = to.z.clamp(zlo + hh, (zhi + hh).max(zlo + hh));
+            let world = cx.world();
+            if imsim_core::movement::CollisionWorld::trace(&world, c, to, DVec3::new(r, r, hh)).fraction >= 1.0 {
+                player.body.location = to;
+                player.body.physics = Physics::Climbing;
                 player.body.velocity = DVec3::ZERO;
-                player.body.physics = if done { Physics::Walking } else { Physics::Falling };
-                climbing = true;
             }
-        } else if crate::mantle::on()
-            && !player.crouched
+        }
+    }
+}
+
+/// Crouching (HandleWalking, Toggle Crouch, SetBasedPawnSize to 16 and back when there's room to stand).
+/// Returns the standing height and its height-to-eye gap.
+fn crouch_step(
+    cx: &FlyCx,
+    test: TestIn,
+    world: &actors::SwimWorld,
+    drone: bool,
+    legless: bool,
+    player: &mut ResMut<Player>,
+) -> (f64, f64) {
+    let keys = cx.keys;
+    let test_crouch = test.crouch;
+    // PlayerSwimming.BeginState: SetBasedPawnSize(radius, 16) - swimming is the crouched size.
+    let mut duck_key = (keys.pressed(KeyCode::KeyC) && !drone) || test_crouch;
+    // DeusExPlayer.HandleWalking with bToggleCrouch: a press latches crouching on, the next press-and-release
+    // turns it off. Swimming clears it (PlayerSwimming.BeginState).
+    if player.swimming {
+        player.crouch_on = false;
+        player.was_crouch_on = false;
+        player.last_duck = false;
+    } else if crate::settings::toggle_crouch() {
+        // Key events drive bDuck; between them it keeps its value (including the forced 1 below).
+        if keys.just_pressed(KeyCode::KeyC) && !drone {
+            player.duck_btn = true;
+        }
+        if keys.just_released(KeyCode::KeyC) {
+            player.duck_btn = false;
+        }
+        let mut b_duck = player.duck_btn || test_crouch;
+        if !player.crouch_on && !player.was_crouch_on && b_duck {
+            player.crouch_on = true;
+        } else if player.crouch_on && !player.was_crouch_on && !b_duck {
+            player.was_crouch_on = true;
+        } else if player.crouch_on && player.was_crouch_on && !b_duck && player.last_duck {
+            player.crouch_on = false;
+            player.was_crouch_on = false;
+        }
+        if player.crouch_on {
+            b_duck = true;
+            player.duck_btn = true;
+        }
+        player.last_duck = b_duck;
+        duck_key = b_duck;
+    } else {
+        player.crouch_on = false;
+        player.was_crouch_on = false;
+    }
+    let want_duck = duck_key || legless || player.swimming;
+    let duck_h = 16.0;
+    let (stand_h, stand_eye) = (player.stand_height, player.stand_eye);
+    let delta_eye = stand_h - stand_eye;
+    if (want_duck || player.force_duck) && !player.crouched {
+        player.crouched = true;
+        player.body.location.z -= stand_h - duck_h;
+        player.params.height = duck_h;
+        player.eye_height = duck_h - delta_eye;
+    }
+    if player.crouched {
+        // Is there room to stand up? Trace up to twice the standing height from the feet.
+        let loc = player.body.location;
+        let top = DVec3::new(loc.x, loc.y, loc.z - duck_h + 2.0 * stand_h);
+        let r = player.params.radius;
+        player.force_duck = imsim_core::movement::CollisionWorld::trace(
+            world,
+            loc,
+            top,
+            DVec3::new(r, r, 1.0),
+        )
+        .fraction
+            < 1.0;
+        if !want_duck && !player.force_duck {
+            player.crouched = false;
+            player.body.location.z += stand_h - duck_h;
+            player.params.height = stand_h;
+            player.eye_height = stand_eye;
+        }
+    }
+    (stand_h, delta_eye)
+}
+
+/// Leaning (DeusExPlayer.PlayerWalking.ProcessMove): Q/E while standing still slides the body sideways up to 40
+/// units (if there's room and floor), lowers it a little, and rolls the view; letting go eases back.
+fn lean_step(
+    cx: &FlyCx,
+    test: TestIn,
+    world: &actors::SwimWorld,
+    w: &Walk,
+    stand_h: f64,
+    delta_eye: f64,
+    player: &mut ResMut<Player>,
+) {
+    let (keys, time, ru) = (cx.keys, cx.time, w.ru);
+    let input =
+        (keys.pressed(KeyCode::KeyE) as i32 - keys.pressed(KeyCode::KeyQ) as i32) as f64;
+    let forward_held =
+        keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::KeyS) || test.forward;
+    let can_lean = player.body.velocity.truncate().length() < 10.0
+        && !forward_held
+        && player.body.physics == Physics::Walking;
+    let right = DVec3::new(ru.x, ru.y, 0.0).normalize_or_zero();
+    let dtl = test.dt.unwrap_or(time.delta_secs_f64().min(0.1));
+    let r = player.params.radius;
+    let h = player.params.height;
+    let try_move = |from: DVec3, by: f64| -> Option<DVec3> {
+        let to = from + right * by;
+        let ext = DVec3::new(r, r, h);
+        let blocked = imsim_core::movement::CollisionWorld::trace(world, from, to, ext)
+            .fraction
+            < 1.0;
+        let floor = imsim_core::movement::CollisionWorld::trace(
+            world,
+            to,
+            to - DVec3::new(0.0, 0.0, h),
+            ext,
+        )
+        .fraction
+            < 1.0;
+        (!blocked && floor).then_some(to)
+    };
+    if setting!("SmoothLean") > 0.5 {
+        // Enhancement (Smooth Leaning): eases in and out instead of the fixed 80 units/s slide, works while
+        // crouch-walking, and where the body can't slide any further (a wall at the corner) the eyes go on
+        // as far as there's room for them, so you can peek past it.
+        let crouch_ok = player.crouched
+            && player.body.velocity.truncate().length() < 130.0
+            && player.body.physics == Physics::Walking;
+        let target = if can_lean || crouch_ok { input * 40.0 } else { 0.0 };
+        let total = player.lean + player.peek;
+        let mut want = total + (target - total) * (1.0 - (-9.0 * dtl).exp());
+        if (target - want).abs() < 0.3 {
+            want = target;
+        }
+        let step = want.clamp(-40.0, 40.0) - player.lean;
+        if step.abs() > 1e-6 {
+            let loc = player.body.location;
+            let moved = try_move(loc, step).map(|to| (to, step)).or_else(|| try_move(loc, step * 0.5).map(|to| (to, step * 0.5)));
+            if let Some((to, by)) = moved {
+                player.body.location = to;
+                player.lean += by;
+            }
+        }
+        let rest = want - player.lean;
+        player.peek = if rest.abs() > 0.1 && target != 0.0 {
+            let eye = player.body.location + DVec3::new(0.0, 0.0, player.eye_height);
+            let f = imsim_core::movement::CollisionWorld::trace(world, eye, eye + right * rest, DVec3::splat(5.0)).fraction;
+            rest * (f - 0.05).max(0.0)
+        } else if target == 0.0 {
+            rest * (-9.0 * dtl).exp()
+        } else {
+            0.0
+        };
+        if player.peek.abs() < 0.1 {
+            player.peek = 0.0;
+        }
+        if player.lean.abs() < 0.1 && target == 0.0 {
+            player.lean = 0.0;
+        }
+    } else if can_lean && input != 0.0 {
+        player.peek = 0.0;
+        let alpha = 40.0 * input * 2.0 * dtl;
+        if (player.lean + alpha).abs() < 40.0 {
+            if let Some(to) = try_move(player.body.location, alpha) {
+                player.body.location = to;
+                player.lean += alpha;
+            }
+        } else {
+            player.lean = input * 40.0;
+        }
+    } else if player.lean != 0.0 {
+        let prev = player.lean;
+        let a = (7.0 * dtl).clamp(0.001, 0.9);
+        player.lean *= 1.0 - a;
+        if player.lean.abs() < 1.0 {
+            player.lean = 0.0;
+        }
+        if let Some(to) = try_move(player.body.location, -(prev - player.lean)) {
+            player.body.location = to;
+        }
+    }
+    // SetBasedPawnSize(radius, default height - |lean| / 3), feet kept on the floor.
+    if !player.crouched {
+        let want = stand_h - player.lean.abs() / 3.0;
+        let d = player.params.height - want;
+        if d.abs() > 1e-6 {
+            player.body.location.z -= d;
+            player.params.height = want;
+            player.eye_height = want - delta_eye;
+        }
+    }
+}
+
+/// This frame's movement parameters: perks, augs, carried weight, wounds, aiming, sprint / walk and swim speed.
+fn move_params(cx: &FlyCx, w: &Walk, player: &Player, carried_mass: f64, leg_speed: f64) -> MoveParams {
+    let (keys, time, weapons_res, carrying) = (cx.keys, cx.time, cx.weapons, cx.carrying);
+    let (wish, stick_walk) = (w.wish, w.stick_walk);
+    let mut params = player.params.clone();
+    // GMDX Sprinter (GetCurrentGroundSpeed): x PerkValue with empty hands and nothing carried, before AugSpeed.
+    if let Some(v) = crate::perks::value_if("PerkSprinter") {
+        if weapons_res.held.is_none() && carried_mass <= 0.0 && weapons_res.corpse.is_none() {
+            params.ground_speed *= v as f64;
+        }
+    }
+    // AugSpeed: GroundSpeed and JumpZ x LevelValue while active.
+    if let Some(v) = crate::abilities::aug("AugSpeed") {
+        params.ground_speed *= v as f64;
+        params.jump_z *= v as f64;
+    }
+    params.ground_speed = (params.ground_speed - carried_mass * 2.0).max(40.0);
+    // Carrying a body (POVCorpse, Mass 40) costs Mass * 3 of speed.
+    if weapons_res.corpse.is_some() {
+        params.ground_speed = (params.ground_speed - 40.0 * 3.0).max(100.0);
+    }
+    // Wounded legs and torso slow you down; with no legs you crawl.
+    params.ground_speed *= leg_speed;
+    // Modern Aiming: walking pace down the sights.
+    params.ground_speed *= crate::aimmode::speed_mult();
+    if crate::stamina::enabled() {
+        // Sprint (stamina.rs): the run pace is the normal pace; Walk held (or the pad's stick click) sprints.
+        let can = !player.crouched
             && !player.swimming
-            && !drone
-            && carried_mass <= carry_limit
-            && (jump
-                || (keys.pressed(KeyCode::Space)
-                    && player.body.physics == Physics::Falling
-                    && player.body.velocity.z < 250.0))
-        {
-            let fwd = if wish.length_squared() > 0.1 { wish } else { fu.normalize_or_zero() };
-            if crate::mantle::try_start(&world, player.body.location, &params, fwd) {
-                climbing = true;
-            }
+            && player.body.physics == Physics::Walking
+            && wish.length() > 0.1
+            && carrying.held.is_none()
+            && weapons_res.corpse.is_none();
+        let sprint = crate::stamina::tick(time.delta_secs(), keys.pressed(KeyCode::ShiftLeft), can);
+        // A light push of the pad's stick walks.
+        if player.crouched || stick_walk == Some(true) {
+            params.ground_speed *= 0.3;
+        } else if sprint {
+            params.ground_speed *= crate::stamina::SPRINT_MULT;
         }
-        let jump = jump && !climbing;
-        for i in 0..if climbing { 0 } else { steps } {
-            let vz = player.body.velocity.z;
-            player
-                .body
-                .tick(&world, &params, wish, jump && i == 0, dt / steps as f64);
-            if player.body.landed_speed.is_some() {
-                landed = Some(vz);
-            }
-            if let Some((hr, hh)) = held {
-                // Push back out of any pawn the carried object would be inside (walking, turning, or a pawn
-                // stepping into it).
-                let fwd = DVec3::new(fu.x, fu.y, 0.0).normalize_or_zero();
-                let box_at = player.body.location
-                    + DVec3::new(0.0, 0.0, params.height / 2.0)
-                    + fwd * (0.5 * params.radius + hr);
-                let mut push = DVec3::ZERO;
-                for c in &pawns {
-                    if (box_at.z - c.center.z).abs() >= c.height + hh {
-                        continue;
-                    }
-                    let d = DVec3::new(box_at.x - c.center.x, box_at.y - c.center.y, 0.0);
-                    let overlap = c.radius + hr - d.length();
-                    if overlap > 0.0 {
-                        let dir = if d.length_squared() > 1e-6 {
-                            d.normalize()
-                        } else {
-                            -fwd
-                        };
-                        push += dir * (overlap + 0.5);
-                    }
-                }
-                if push.length_squared() > 0.0 {
-                    let loc = player.body.location;
-                    let r = params.radius;
-                    let h = imsim_core::movement::CollisionWorld::trace(
-                        &world,
-                        loc,
-                        loc + push,
-                        DVec3::new(r, r, params.height),
-                    );
-                    player.body.location = loc + push * h.fraction;
-                    let into = player.body.velocity.dot(push.normalize());
-                    if into < 0.0 {
-                        player.body.velocity -= push.normalize() * into;
-                    }
-                }
-            }
+    } else {
+        // A stick push decides. Otherwise Always Run: Shift walks; off, you walk unless Shift is held.
+        let walk_key = stick_walk.unwrap_or_else(|| keys.pressed(KeyCode::ShiftLeft) != !crate::settings::always_run());
+        if walk_key || player.crouched {
+            params.ground_speed *= 0.3;
         }
-        swim_state(&mut player, &world, &params, wish, cam.pitch, dt);
-        // DeusExPlayer.DoJump: JumpSound (volume 1.5, bNoOverride, radius 1200, pitch 0.8..1).
-        if jump && was_walking && player.body.physics == Physics::Falling && !player.noclip {
-            sound::play_req(sound::Req {
-                sound: travel::voice("DeusExSounds.Player.MaleJump"),
-                pos: None,
-                volume: 1.5,
-                radius: 1200.0,
-                pitch: 1.0 - 0.2 * sound::frand(),
-                owner: sound::PLAYER,
-                slot: sound::slot::MISC,
-                no_override: true,
-                min_gap: 0.0,
-            });
+    }
+    // WaterSpeed = Default.WaterSpeed x SkillSwimming (untrained 1.0), at the walking pace: PlayerSwimming's
+    // PlayerTick sets bIsWalking = True every frame ("don't let the player run if swimming"), and walking is
+    // 0.3 of the speed as on land - at the full 300 JC swam about three times faster than in the original (#39).
+    params.water_speed =
+        player.params.water_speed * crate::abilities::skill("SkillSwimming") as f64 * 0.3;
+    params
+}
+
+/// Mantling, then the physics steps at up to 120 Hz, pushing back out of pawns a carried object would be inside.
+/// Returns (the falling speed on landing, whether the jump was made, walking before the steps).
+fn move_body(
+    cx: &FlyCx,
+    world: &actors::SwimWorld,
+    w: &Walk,
+    player: &mut ResMut<Player>,
+    params: &MoveParams,
+    dt: f64,
+    jump: bool,
+    carried_mass: f64,
+    carry_limit: f64,
+) -> (Option<f64>, bool, bool) {
+    let (keys, blockers, level, carrying) = (cx.keys, cx.blockers, cx.level, cx.carrying);
+    let (wish, fu) = (w.wish, w.fu);
+    let steps = (dt / (1.0 / 120.0)).ceil().max(1.0) as usize;
+    let mut landed = None;
+    // A carried object can't be shoved into people: it's held in front at chest height, and we stop where it
+    // would run into a pawn.
+    let held = carrying.held.as_ref().map(|h| (h.radius, h.height));
+    let pawns: Vec<dx_level::collision::Cylinder> = if held.is_some() {
+        blockers
+            .list
+            .iter()
+            .filter(|c| {
+                c.radius > 0.0
+                    && unreal_pkg::props::find(&level.actors[c.actor].props, "GroundSpeed")
+                        .is_some()
+            })
+            .copied()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let was_walking = player.body.physics == Physics::Walking;
+    // Enhancement (Mantling, mantle.rs): Jump at a ledge climbs it; while climbing nothing else moves you.
+    let mut climbing = false;
+    if crate::mantle::active() {
+        if player.swimming || player.noclip {
+            crate::mantle::cancel();
+        } else if let Some((pos, done)) = crate::mantle::step(dt) {
+            player.body.location = pos;
+            player.body.velocity = DVec3::ZERO;
+            player.body.physics = if done { Physics::Walking } else { Physics::Falling };
+            climbing = true;
         }
-        if let Some(vz) = landed {
-            player.view.landed(vz);
-            // Human.PlayLanded plays a footstep.
-            if !player.noclip && vz < -150.0 {
-                dualsense::event(dualsense::Haptic::Land(((-vz as f32) - 150.0) / 600.0));
-                let lvl = &level.0;
-                let feet = player.body.location - DVec3::new(0.0, 0.0, params.height - 2.0);
-                let water = matches!(
-                    lvl.zone_water
-                        .get(lvl.collision.zone_at(feet).max(0) as usize),
-                    Some(Some(_))
-                );
-                let (snd, _) = sound::footstep_sound(
-                    lvl.floor_group(player.body.location.to_array(), params.height * 2.0),
-                    water,
-                );
-                let vol = ((-vz as f32) / 180.0 + 0.2).clamp(0.0, 1.0) * 0.5;
-                sound::play_owned(
-                    sound::PLAYER,
-                    sound::slot::INTERACT,
-                    &snd,
-                    None,
-                    vol,
-                    1500.0,
-                    1.0,
-                );
-            }
-            // DeusExPlayer.Landed: falling faster than 700 hurts both legs (0.16 per unit/s over) and the torso (0.06).
-            if vz < -700.0 && !player.noclip {
-                // AugSpeed takes 15 x (level + 1) off each hit.
-                let aug_reduce = crate::abilities::aug_level("AugSpeed")
-                    .map_or(0.0, |l| 15.0 * (l as f64 + 1.0));
-                let leg = (-0.16 * (vz + 700.0) - aug_reduce).max(0.0) as f32;
-                let torso = (-0.06 * (vz + 700.0) - aug_reduce).max(0.0) as f32;
-                ph.damage(leg, "fell", DVec3::new(0.0, -1.0, -1.0));
-                ph.damage(leg, "fell", DVec3::new(0.0, 1.0, -1.0));
-                ph.damage(torso, "fell", DVec3::new(0.0, 0.0, 1.0));
-            }
+    } else if crate::mantle::on()
+        && !player.crouched
+        && !player.swimming
+        && !w.drone
+        && carried_mass <= carry_limit
+        && (jump
+            || (keys.pressed(KeyCode::Space)
+                && player.body.physics == Physics::Falling
+                && player.body.velocity.z < 250.0))
+    {
+        let fwd = if wish.length_squared() > 0.1 { wish } else { fu.normalize_or_zero() };
+        if crate::mantle::try_start(world, player.body.location, params, fwd) {
+            climbing = true;
         }
-        if !player.body.bumped.is_empty() {
-            let b = &player.body;
-            hanging::bumped(&b.bumped, b.location, b.intended_velocity, params.mass);
-            actors::apply_pushes(
-                &b.bumped,
-                b.location,
-                params.height,
-                b.intended_velocity,
-                &blockers,
-                &mut decos,
+    }
+    let jump = jump && !climbing;
+    for i in 0..if climbing { 0 } else { steps } {
+        let vz = player.body.velocity.z;
+        player
+            .body
+            .tick(world, params, wish, jump && i == 0, dt / steps as f64);
+        if player.body.landed_speed.is_some() {
+            landed = Some(vz);
+        }
+        if let Some((hr, hh)) = held {
+            carry_push_out(world, player, params, fu, hr, hh, &pawns);
+        }
+    }
+    (landed, jump, was_walking)
+}
+
+/// Push back out of any pawn the carried object would be inside (walking, turning, or a pawn stepping into it).
+fn carry_push_out(
+    world: &actors::SwimWorld,
+    player: &mut ResMut<Player>,
+    params: &MoveParams,
+    fu: DVec3,
+    hr: f64,
+    hh: f64,
+    pawns: &[dx_level::collision::Cylinder],
+) {
+    let fwd = DVec3::new(fu.x, fu.y, 0.0).normalize_or_zero();
+    let box_at = player.body.location
+        + DVec3::new(0.0, 0.0, params.height / 2.0)
+        + fwd * (0.5 * params.radius + hr);
+    let mut push = DVec3::ZERO;
+    for c in pawns {
+        if (box_at.z - c.center.z).abs() >= c.height + hh {
+            continue;
+        }
+        let d = DVec3::new(box_at.x - c.center.x, box_at.y - c.center.y, 0.0);
+        let overlap = c.radius + hr - d.length();
+        if overlap > 0.0 {
+            let dir = if d.length_squared() > 1e-6 {
+                d.normalize()
+            } else {
+                -fwd
+            };
+            push += dir * (overlap + 0.5);
+        }
+    }
+    if push.length_squared() > 0.0 {
+        let loc = player.body.location;
+        let r = params.radius;
+        let h = imsim_core::movement::CollisionWorld::trace(
+            world,
+            loc,
+            loc + push,
+            DVec3::new(r, r, params.height),
+        );
+        player.body.location = loc + push * h.fraction;
+        let into = player.body.velocity.dot(push.normalize());
+        if into < 0.0 {
+            player.body.velocity -= push.normalize() * into;
+        }
+    }
+}
+
+/// The jump sound, and landing: the view's landing dip, the landing footstep and fall damage.
+fn jump_and_land(
+    level: &Level,
+    player: &mut ResMut<Player>,
+    ph: &mut ResMut<ai::PlayerHealth>,
+    params: &MoveParams,
+    jump: bool,
+    was_walking: bool,
+    landed: Option<f64>,
+) {
+    // DeusExPlayer.DoJump: JumpSound (volume 1.5, bNoOverride, radius 1200, pitch 0.8..1).
+    if jump && was_walking && player.body.physics == Physics::Falling && !player.noclip {
+        sound::play_req(sound::Req {
+            sound: travel::voice("DeusExSounds.Player.MaleJump"),
+            pos: None,
+            volume: 1.5,
+            radius: 1200.0,
+            pitch: 1.0 - 0.2 * sound::frand(),
+            owner: sound::PLAYER,
+            slot: sound::slot::MISC,
+            no_override: true,
+            min_gap: 0.0,
+        });
+    }
+    if let Some(vz) = landed {
+        player.view.landed(vz);
+        // Human.PlayLanded plays a footstep.
+        if !player.noclip && vz < -150.0 {
+            dualsense::event(dualsense::Haptic::Land(((-vz as f32) - 150.0) / 600.0));
+            let lvl = level;
+            let feet = player.body.location - DVec3::new(0.0, 0.0, params.height - 2.0);
+            let water = matches!(
+                lvl.zone_water
+                    .get(lvl.collision.zone_at(feet).max(0) as usize),
+                Some(Some(_))
+            );
+            let (snd, _) = sound::footstep_sound(
+                lvl.floor_group(player.body.location.to_array(), params.height * 2.0),
+                water,
+            );
+            let vol = ((-vz as f32) / 180.0 + 0.2).clamp(0.0, 1.0) * 0.5;
+            sound::play_owned(
+                sound::PLAYER,
+                sound::slot::INTERACT,
+                &snd,
+                None,
+                vol,
+                1500.0,
+                1.0,
             );
         }
-        let z_moved = player.body.location.z - z_before;
-        let walking = player.body.physics == Physics::Walking;
-        let (vel, eye_h) = (player.body.velocity, player.eye_height + shake_vert);
-        player.view.update(
-            dt,
-            walking,
-            vel,
-            params.ground_speed,
-            ru.normalize_or_zero(),
-            eye_h,
-            z_moved,
-        );
-        if !crate::settings::head_bob() {
-            player.view.walk_bob = DVec3::ZERO;
+        // DeusExPlayer.Landed: falling faster than 700 hurts both legs (0.16 per unit/s over) and the torso (0.06).
+        if vz < -700.0 && !player.noclip {
+            // AugSpeed takes 15 x (level + 1) off each hit.
+            let aug_reduce = crate::abilities::aug_level("AugSpeed")
+                .map_or(0.0, |l| 15.0 * (l as f64 + 1.0));
+            let leg = (-0.16 * (vz + 700.0) - aug_reduce).max(0.0) as f32;
+            let torso = (-0.06 * (vz + 700.0) - aug_reduce).max(0.0) as f32;
+            ph.damage(leg, "fell", DVec3::new(0.0, -1.0, -1.0));
+            ph.damage(leg, "fell", DVec3::new(0.0, 1.0, -1.0));
+            ph.damage(torso, "fell", DVec3::new(0.0, 0.0, 1.0));
         }
-        if player.swimming {
-            player
-                .view
-                .swim_bob(time.elapsed_secs_f64(), vel, ru.normalize_or_zero());
-        }
-        let l = player.body.location
-            + player.view.camera_offset()
-            + DVec3::new(ru.x, ru.y, 0.0).normalize_or_zero() * player.peek;
-        let eye = ue_to_bevy([l.x as f32, l.y as f32, l.z as f32]);
-        tf.translation = Vec3::from(eye);
-        sky.rotation = tf.rotation;
-        return;
     }
+}
+
+/// Bumped decorations get pushed, then the view bob (CheckBob / UpdateEyeHeight, swim bob) and the eye's place.
+fn place_view(
+    cx: &FlyCx,
+    player: &mut ResMut<Player>,
+    tf: &mut Mut<Transform>,
+    decos: &mut Query<&mut Deco>,
+    params: &MoveParams,
+    w: &Walk,
+    dt: f64,
+    z_before: f64,
+    shake_vert: f64,
+) {
+    let ru = w.ru;
+    if !player.body.bumped.is_empty() {
+        let b = &player.body;
+        hanging::bumped(&b.bumped, b.location, b.intended_velocity, params.mass);
+        actors::apply_pushes(
+            &b.bumped,
+            b.location,
+            params.height,
+            b.intended_velocity,
+            cx.blockers,
+            decos,
+        );
+    }
+    let z_moved = player.body.location.z - z_before;
+    let walking = player.body.physics == Physics::Walking;
+    let (vel, eye_h) = (player.body.velocity, player.eye_height + shake_vert);
+    player.view.update(
+        dt,
+        walking,
+        vel,
+        params.ground_speed,
+        ru.normalize_or_zero(),
+        eye_h,
+        z_moved,
+    );
+    if !crate::settings::head_bob() {
+        player.view.walk_bob = DVec3::ZERO;
+    }
+    if player.swimming {
+        player
+            .view
+            .swim_bob(cx.time.elapsed_secs_f64(), vel, ru.normalize_or_zero());
+    }
+    let l = player.body.location
+        + player.view.camera_offset()
+        + DVec3::new(ru.x, ru.y, 0.0).normalize_or_zero() * player.peek;
+    let eye = ue_to_bevy([l.x as f32, l.y as f32, l.z as f32]);
+    tf.translation = Vec3::from(eye);
+}
+
+/// Debug Mode's fly mode: WASD along the view, Space / Ctrl up and down, Shift x4.
+fn noclip_fly(cx: &FlyCx, tf: &mut Mut<Transform>, cam: &FlyCam) {
+    let keys = cx.keys;
     let fwd = tf.forward().as_vec3();
     let right = tf.right().as_vec3();
     let mut d = Vec3::ZERO;
@@ -2941,8 +3471,7 @@ fn fly(
     } else {
         1.0
     };
-    tf.translation += d.normalize_or_zero() * cam.speed * mult * time.delta_secs();
-    sky.rotation = tf.rotation;
+    tf.translation += d.normalize_or_zero() * cam.speed * mult * cx.time.delta_secs();
 }
 
 /// PlayerSwimming's way in and out: start when the physics starts swimming; on surfacing (ZoneChange to a dry

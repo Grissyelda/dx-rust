@@ -499,6 +499,65 @@ pub struct LaserFx;
 
 // ------------------------------------------------------------------------------------------------ system
 
+/// Per-frame values every device kind reads: the time step, the eye and the player as the devices see him.
+struct Frame {
+    dt: f32,
+    dtd: f64,
+    eye: DVec3,
+    me: DVec3,
+    me_h: f64,
+    detectable: bool,
+    radar_trans: bool,
+    player_cyl: Cylinder,
+    player_yaw: f64,
+}
+
+/// set_skin's commands and asset stores, for the phases that swap lens / muzzle skins.
+struct SkinCx<'a, 'w, 's> {
+    commands: &'a mut Commands<'w, 's>,
+    assets: &'a mut RuntimeAssets,
+    images: &'a mut Assets<Image>,
+    materials: &'a mut Assets<StandardMaterial>,
+}
+
+impl SkinCx<'_, '_, '_> {
+    /// set_skin with this frame's commands and asset stores.
+    fn set(&mut self, skin: &mut Skin, tex: Option<&'static str>) {
+        set_skin(skin, tex, self.commands, self.assets, self.images, self.materials);
+    }
+}
+
+/// What the per-device phases share: the frame, the level and collision world, the alarms and the skin stores.
+struct DevCx<'a, 'w, 's> {
+    f: Frame,
+    lvl: &'a dx_level::Level,
+    world: World<'a>,
+    blockers: &'a Blockers,
+    movers: &'a [crate::movers::MoverRt],
+    alarms: &'a mut Alarms,
+    sk: SkinCx<'a, 'w, 's>,
+}
+
+/// The queues a turret's shots feed (AutoTurret.Fire) and the player they can hurt.
+struct ShotCx<'a> {
+    ph: &'a mut PlayerHealth,
+    pawn_hits: &'a mut crate::damage::PawnHits,
+    deco_hits: &'a mut crate::destruct::DecoHits,
+    shells: &'a mut crate::destruct::Shells,
+    noises: &'a mut crate::stealth::Noises,
+    blood: &'a mut crate::effects::BloodFx,
+}
+
+/// The laser beam / spot meshes and materials (red LaserTrigger, blue BeamTrigger).
+struct LaserGfx {
+    beam_mesh: Handle<Mesh>,
+    red_beam: Handle<StandardMaterial>,
+    spot_mesh: Handle<Mesh>,
+    red_spot: Handle<StandardMaterial>,
+    blue_beam: Handle<StandardMaterial>,
+    blue_spot: Handle<StandardMaterial>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn security_system(
     mut commands: Commands,
@@ -555,6 +614,67 @@ pub fn security_system(
         BLASTS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     let mission = MISSION.lock().map(|mut m| std::mem::take(&mut *m)).unwrap_or(false);
 
+    apply_hacks(st, hacked, lvl);
+    apply_events(st, &events);
+    apply_blasts(st, &blasts);
+    if mission {
+        mission_cleanup(st, &mut commands, &mut blockers);
+    }
+    let mut sk = SkinCx { commands: &mut commands, assets: &mut assets, images: &mut images, materials: &mut materials };
+    alarm_lights(lvl, &refs, &decos, &children, &part_mats, &mut sk);
+
+    // ---------------------------------------------------------------- shared
+    let f = frame(dt, dtd, *cam, &player, &ph);
+    let world = World {
+        level: lvl,
+        blockers: &blockers.list,
+        ignore: None,
+        pushable: None,
+        movers: Some(&movers.rt),
+    };
+    let pawns = turret_pawns(&npcs, lvl, &blockers);
+    let mut cx = DevCx { f, lvl, world, blockers: &blockers, movers: &movers.rt, alarms: &mut alarms, sk };
+
+    // ---------------------------------------------------------------- cameras
+    for c in st.cams.iter_mut() {
+        camera_tick(c, &mut cx, &mut decos, &children, &part_mats);
+    }
+
+    // ---------------------------------------------------------------- turrets
+    let mut shot = ShotCx {
+        ph: &mut ph,
+        pawn_hits: &mut pawn_hits,
+        deco_hits: &mut deco_hits,
+        shells: &mut shells,
+        noises: &mut noises,
+        blood: &mut blood,
+    };
+    let mut dead_turrets: Vec<usize> = Vec::new();
+    for (i, t) in st.turrets.iter_mut().enumerate() {
+        if turret_tick(t, &mut cx, &pawns, &mut decos, &children, &part_mats, &mut meshes, &mut shot) {
+            dead_turrets.push(i);
+        }
+    }
+
+    // ---------------------------------------------------------------- lasers
+    let gfx = LaserGfx {
+        beam_mesh: st.beam_mesh.clone().unwrap(),
+        red_beam: st.beam_mat.clone().unwrap(),
+        spot_mesh: st.spot_mesh.clone().unwrap(),
+        red_spot: st.spot_mat.clone().unwrap(),
+        blue_beam: st.beam2_mat.clone().unwrap(),
+        blue_spot: st.spot2_mat.clone().unwrap(),
+    };
+    for l in st.lasers.iter_mut() {
+        laser_tick(l, &mut cx, &gfx, &shot.ph, &refs, &children, &part_mats, &mut fx);
+    }
+    for i in dead_turrets {
+        remove_turret(&mut st.turrets[i], &mut commands, &mut blockers);
+    }
+}
+
+/// SecurityCamera / AutoTurretGun.HackAction for the devices bypassed this frame.
+fn apply_hacks(st: &mut Security, hacked: Vec<usize>, lvl: &dx_level::Level) {
     for b in hacked {
         if let Some(c) = st.cams.iter_mut().find(|c| c.blocker == Some(b) && !c.gone) {
             // SecurityCamera.HackAction: toggle (not while EMP'd).
@@ -578,7 +698,11 @@ pub fn security_system(
             println!("SECURITY turret {} {}", lvl.actors[t.actor].name, if t.disabled { "disabled" } else { "enabled" });
         }
     }
-    for (tag, on) in &events {
+}
+
+/// Trigger / UnTrigger by event tag for cameras, turrets and lasers ("*" = every camera and turret).
+fn apply_events(st: &mut Security, events: &[(String, bool)]) {
+    for (tag, on) in events {
         for c in st.cams.iter_mut().filter(|c| !c.gone && (tag == "*" || c.tag.eq_ignore_ascii_case(tag))) {
             if *on {
                 cam_trigger(c, false);
@@ -608,7 +732,11 @@ pub fn security_system(
             }
         }
     }
-    for (c, r, dmg, ty) in &blasts {
+}
+
+/// TakeDamage from this frame's blasts: EMP confusion, Warren's EMP field, explosions breaking lasers.
+fn apply_blasts(st: &mut Security, blasts: &[(DVec3, f64, f32, &'static str)]) {
+    for (c, r, dmg, ty) in blasts {
         if *ty == "EMP" {
             let extra = (*dmg - 15.0).max(0.0) / 5.0;
             for cm in st.cams.iter_mut().filter(|x| !x.gone && x.pos.distance(*c) < *r) {
@@ -676,34 +804,46 @@ pub fn security_system(
             }
         }
     }
-    if mission {
-        // Mission01: the NSF turrets and the statue laser trap go; the NSF cameras stop raising alarms.
-        for t in st.turrets.iter_mut() {
-            if t.tag.eq_ignore_ascii_case("NSFTurret01") || t.tag.eq_ignore_ascii_case("NSFTurret02") {
-                remove_turret(t, &mut commands, &mut blockers);
-            } else if !t.gone {
-                // Ours: any other turret on the island (the cell block's, if someone switched it on) stands down
-                // with the mission over, instead of shooting at the agent who just cleared the statue.
-                turret_untrigger(t);
-                t.disabled = true;
-                t.target = None;
-            }
-        }
-        for l in st.lasers.iter_mut().filter(|l| l.tag.eq_ignore_ascii_case("statue_lasertrap")) {
-            l.hp = 0.0;
-        }
-        for c in st.cams.iter_mut() {
-            if ["NSFCam01", "NSFCam02", "NSFCam03"].iter().any(|t| c.tag.eq_ignore_ascii_case(t)) {
-                c.no_alarm = true;
-            }
-        }
-        println!("SECURITY mission complete: NSF turrets and laser trap removed, NSF cameras quiet");
-    }
+}
 
+/// Mission01.Timer once the statue is cleared.
+fn mission_cleanup(st: &mut Security, commands: &mut Commands, blockers: &mut Blockers) {
+    // Mission01: the NSF turrets and the statue laser trap go; the NSF cameras stop raising alarms.
+    for t in st.turrets.iter_mut() {
+        if t.tag.eq_ignore_ascii_case("NSFTurret01") || t.tag.eq_ignore_ascii_case("NSFTurret02") {
+            remove_turret(t, commands, blockers);
+        } else if !t.gone {
+            // Ours: any other turret on the island (the cell block's, if someone switched it on) stands down
+            // with the mission over, instead of shooting at the agent who just cleared the statue.
+            turret_untrigger(t);
+            t.disabled = true;
+            t.target = None;
+        }
+    }
+    for l in st.lasers.iter_mut().filter(|l| l.tag.eq_ignore_ascii_case("statue_lasertrap")) {
+        l.hp = 0.0;
+    }
+    for c in st.cams.iter_mut() {
+        if ["NSFCam01", "NSFCam02", "NSFCam03"].iter().any(|t| c.tag.eq_ignore_ascii_case(t)) {
+            c.no_alarm = true;
+        }
+    }
+    println!("SECURITY mission complete: NSF turrets and laser trap removed, NSF cameras quiet");
+}
+
+/// AlarmLight Trigger / UnTrigger queued this frame: the lens skin swaps.
+fn alarm_lights(
+    lvl: &dx_level::Level,
+    refs: &Query<(Entity, &MeshActorRef)>,
+    decos: &Query<(&mut Deco, &mut Transform), Without<LaserFx>>,
+    children: &Query<&Children>,
+    part_mats: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    sk: &mut SkinCx,
+) {
     // AlarmLight: lit lens (SetLightColor's MultiSkins[1]) or BlackMaskTex.
     for (ai, on) in ALARM_LIGHTS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         let tex: &'static str = if on {
-            match find(&level.0.actors[ai].props, "AlarmOnSkin") {
+            match find(&lvl.actors[ai].props, "AlarmOnSkin") {
                 Some(Value::Path(p)) => Box::leak(p.clone().into_boxed_str()),
                 _ => continue,
             }
@@ -711,22 +851,25 @@ pub fn security_system(
             BLACK
         };
         for (e, r) in refs.iter() {
-            if level.0.mesh_actors[r.0].actor != ai {
+            if lvl.mesh_actors[r.0].actor != ai {
                 continue;
             }
             if let Ok((d, _)) = decos.get(e) {
-                let ma = &level.0.mesh_actors[d.mesh_actor];
+                let ma = &lvl.mesh_actors[d.mesh_actor];
                 let hs: Vec<Handle<Mesh>> = ma_handles(&d.parts, ma.parts.len());
-                if let Some(mut sk) = find_skin(e, &hs, &ma.parts, 1, &children, &part_mats) {
+                if let Some(mut sk2) = find_skin(e, &hs, &ma.parts, 1, children, part_mats) {
                     if !on {
-                        sk.shown = None;
+                        sk2.shown = None;
                     }
-                    set_skin(&mut sk, Some(tex), &mut commands, &mut assets, &mut images, &mut materials);
+                    sk.set(&mut sk2, Some(tex));
                 }
             }
         }
     }
-    // ---------------------------------------------------------------- shared
+}
+
+/// The eye, the player's body and whether the devices can sense him this frame.
+fn frame(dt: f32, dtd: f64, cam: &Transform, player: &Player, ph: &PlayerHealth) -> Frame {
     let eye = ue(cam.translation) / dx_level::METERS_PER_UNIT as f64;
     let me = player.body.location;
     let me_h = player.params.height;
@@ -738,21 +881,18 @@ pub fn security_system(
         let f = cam.forward().as_vec3();
         (f.z as f64).atan2(f.x as f64)
     };
-    let mut world = World {
-        level: lvl,
-        blockers: &blockers.list,
-        ignore: None,
-        pushable: None,
-        movers: Some(&movers.rt),
-    };
-    // Can `from` see the player (the first thing on the line is the player)?
-    let sees_player = |world: &World, from: DVec3| -> bool {
-        let Some(p) = trace_cylinder(&player_cyl, from, me, DVec3::ZERO) else { return false };
-        world.trace(from, me, DVec3::ZERO).fraction > p.fraction
-    };
-    // Pawns: (blocker, centre, alive, hostile to the player, robot).
-    let pawns: Vec<(usize, DVec3, bool)> = npcs
-        .iter()
+    Frame { dt, dtd, eye, me, me_h, detectable, radar_trans, player_cyl, player_yaw }
+}
+
+/// Can `from` see the player (the first thing on the line is the player)?
+fn sees_player(world: &World, f: &Frame, from: DVec3) -> bool {
+    let Some(p) = trace_cylinder(&f.player_cyl, from, f.me, DVec3::ZERO) else { return false };
+    world.trace(from, f.me, DVec3::ZERO).fraction > p.fraction
+}
+
+/// Pawns a turret can target: (blocker, centre, hostile to the player).
+fn turret_pawns(npcs: &Query<&Npc>, lvl: &dx_level::Level, blockers: &Blockers) -> Vec<(usize, DVec3, bool)> {
+    npcs.iter()
         .filter(|n| {
             n.state != NpcState::Dead
                 && n.body.is_some()
@@ -763,566 +903,664 @@ pub fn security_system(
                     && crate::classtree::is_a(&lvl.actors[n.actor].class, "Animal"))
         })
         .map(|n| (n.blocker, n.body.as_ref().unwrap().location, n.hates("Player")))
-        .collect();
+        .collect()
+}
 
-    // ---------------------------------------------------------------- cameras
-    for i in 0..st.cams.len() {
-        let c = &mut st.cams[i];
-        if c.gone {
-            continue;
-        }
-        // Destroyed (blown up)?
-        let alive = c.blocker.is_none_or(|b| blockers.list[b].radius > 0.0)
-            && c.entity.is_none_or(|e| decos.get(e).is_ok());
-        if !alive {
-            c.gone = true;
-            alarms.set_external(c.alarm, false, c.pos, None);
-            continue;
-        }
-        if c.lens.is_none() {
-            if let Some(e) = c.entity {
-                if let Ok((d, _)) = decos.get(e) {
-                    let ma = &lvl.mesh_actors[d.mesh_actor];
-                    let hs: Vec<Handle<Mesh>> = ma_handles(&d.parts, ma.parts.len());
-                    c.lens = find_skin(e, &hs, &ma.parts, 2, &children, &part_mats);
-                }
-            }
-        }
-        world.ignore = c.blocker;
-        let mut lens: &'static str = GREEN;
-        let mut light: Option<u8> = None;
-        let mut sound: Option<(&'static str, f32, f32, f32)> = None;
-        if !c.active {
-            lens = BLACK;
-            if c.hum {
-                sound = Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 1.0));
-            }
-        } else if c.confused {
-            c.confusion_t += dt;
-            if c.confusion_t % 0.25 > 0.2 {
-                let a = c.swing_angle;
-                c.want = (
-                    c.orig.0 + 0.5 * a - rnd(&mut c.seed) * a,
-                    c.orig.1 + 0.5 * a - rnd(&mut c.seed) * a,
-                );
-            }
-            lens = YELLOW;
-            light = Some(40);
-            sound = Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 2.0));
-            if c.confusion_t > c.confusion_dur {
-                c.confused = false;
-                c.confusion_t = 0.0;
-                c.confusion_dur = 10.0;
-                c.want = c.orig;
-            }
-        } else {
-            light = Some(80);
-            sound = Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 1.0));
-            if !c.no_alarm {
-                c.check_t += dt;
-                if c.check_t > 0.1 {
-                    c.check_t = 0.0;
-                    // CheckPlayerVisibility.
-                    let d = me.distance(c.pos);
-                    if detectable && !radar_trans && d <= crate::smartai::camera_range(c.range) && sees_player(&world, c.pos) {
-                        let (rp, ry) = rotator(me - c.pos);
-                        let yaw = wrap(c.rot.1 - ry).abs();
-                        let pitch = wrap(c.rot.0 - rp).abs();
-                        if yaw < c.fov && pitch < c.fov {
-                            if c.track {
-                                c.want = (rp, ry);
-                            }
-                            c.last_seen = 0.0;
-                            c.seen = true;
-                            c.track = true;
-                            c.player_loc = me - DVec3::Z * (me_h - 5.0);
-                            if !c.triggered && c.trigger_t >= crate::smartai::camera_delay(c.trigger_delay) {
-                                cam_event(c, true);
-                                println!("SECURITY camera {} raises the alarm", lvl.actors[c.actor].name);
-                            }
-                        }
-                    }
-                }
-            }
-            if c.seen {
-                if !c.triggered {
-                    c.trigger_t += dt;
-                    // Smarter AI (GMDX bHardcoreAI1): every beep tells the guards near the player where they are.
-                    if c.trigger_t % 0.5 > 0.4 && (c.trigger_t - dt) % 0.5 <= 0.4 {
-                        crate::smartai::camera_spotted(c.player_loc + DVec3::Z * 40.0);
-                    }
-                    if c.trigger_t % 0.5 > 0.4 {
-                        lens = RED;
-                        light = Some(0);
-                        crate::sound::play_owned(
-                            0xC_0000_0000 | c.actor as u64,
-                            crate::sound::slot::MISC,
-                            "DeusExSounds.Generic.Beep6",
-                            Some(c.pos),
-                            1.0,
-                            1280.0,
-                            1.0,
-                        );
-                    }
-                } else {
-                    lens = RED;
-                    light = Some(0);
-                }
-                if c.last_seen < c.memory {
-                    c.last_seen += dt;
-                } else {
-                    c.last_seen = 0.0;
-                    c.seen = false;
-                    cam_event(c, false);
-                }
-            } else {
-                c.swing_t += dt;
-                if c.swing && !c.track {
-                    let ang = std::f64::consts::TAU * c.swing_t as f64 / c.swing_period;
-                    c.want = (c.orig.0, c.orig.1 + ang.sin() * c.swing_angle);
-                }
-            }
-            if c.triggered {
-                sound = Some(("Ambient.Ambient.Klaxon2", 128.0 / 255.0, 25.0 * 65.0, 1.0));
-            }
-        }
-        // Physics Rotating toward DesiredRotation (RotationRate 65535 both ways).
-        turn(&mut c.rot.0, c.want.0, 65535.0, dtd);
-        turn(&mut c.rot.1, c.want.1, 65535.0, dtd);
-        if let Some(e) = c.entity {
-            if let Ok((mut d, _)) = decos.get_mut(e) {
-                let r = [c.rot.0.round() as i32, c.rot.1.round() as i32, 0];
-                if d.rotation != r {
-                    d.rotation = r;
-                    d.spun = true;
-                }
-            }
-        }
-        if let Some(l) = c.lens.as_mut() {
-            set_skin(l, Some(lens), &mut commands, &mut assets, &mut images, &mut materials);
-        }
-        if let Some(h) = light {
-            if c.pos.distance(eye) < 4000.0 {
-                crate::dynlight::hold(
-                    0xC_0000_0000 | c.actor as u64,
-                    c.pos,
-                    crate::dynlight::Spec::new(h, 100, 120, 1.0),
-                    0.0,
-                );
-            }
-        }
-        if let Some((snd, vol, radius, pitch)) = sound {
-            if c.pos.distance(eye) < radius as f64 {
-                crate::sound::hold(0xC_1000_0000 | c.actor as u64, snd, Some(c.pos), vol, radius, pitch);
-            }
-        }
-        let seek = c.player_loc;
-        alarms.set_external(c.alarm, c.triggered, seek, Some(Target::Player));
+/// SecurityCamera.Tick: destroyed check, state (off / EMP'd / watching), turning, lens, light, hum, alarm.
+fn camera_tick(
+    c: &mut Cam,
+    cx: &mut DevCx,
+    decos: &mut Query<(&mut Deco, &mut Transform), Without<LaserFx>>,
+    children: &Query<&Children>,
+    part_mats: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+) {
+    if c.gone {
+        return;
     }
-
-    // ---------------------------------------------------------------- turrets
-    let mut dead_turrets: Vec<usize> = Vec::new();
-    for i in 0..st.turrets.len() {
-        let t = &mut st.turrets[i];
-        if t.gone {
-            continue;
-        }
-        // The base and the gun go together (AutoTurret.Destroyed / AutoTurretGun.Destroyed).
-        let base_ok = t.base_blocker.is_none_or(|b| blockers.list[b].radius > 0.0)
-            && t.base_entity.is_none_or(|e| decos.get(e).is_ok());
-        let gun_ok = blockers.list[t.gun_blocker].radius > 0.0 && decos.get(t.gun_entity).is_ok();
-        if !base_ok || !gun_ok {
-            println!("TURRET {} destroyed (base {} gun {})", lvl.actors[t.actor].name, base_ok, gun_ok);
-            dead_turrets.push(i);
-            continue;
-        }
-        if t.lens.is_none() || t.muzzle.is_none() {
-            t.lens = find_skin(t.gun_entity, &t.handles, &t.parts, 1, &children, &part_mats);
-            t.muzzle = find_skin(t.gun_entity, &t.handles, &t.parts, 2, &children, &part_mats);
-        }
-        // AlarmHeard: an alarm going off nearby wakes it up until the alarm ends.
-        let heard = alarms.heard_at(t.gun_pos);
-        if heard && !t.heard && !t.active {
-            t.pre_alarm = t.active;
-            t.active = true;
-            t.hum = true;
-        } else if !heard && t.heard && t.active {
-            t.active = t.pre_alarm;
-        }
-        t.heard = heard;
-        if t.confused {
-            t.confusion_t += dt;
-            if t.confusion_t % 0.25 > 0.2 {
-                t.want = (
-                    t.orig.0 + (t.pitch_limit / 2.0 - rnd(&mut t.seed) * t.pitch_limit),
-                    rnd(&mut t.seed) * URU,
-                );
-            }
-            if t.confusion_t > t.confusion_dur {
-                t.confused = false;
-                t.confusion_t = 0.0;
-                t.confusion_dur = 10.0;
+    let (dt, dtd) = (cx.f.dt, cx.f.dtd);
+    // Destroyed (blown up)?
+    let alive = c.blocker.is_none_or(|b| cx.blockers.list[b].radius > 0.0)
+        && c.entity.is_none_or(|e| decos.get(e).is_ok());
+    if !alive {
+        c.gone = true;
+        cx.alarms.set_external(c.alarm, false, c.pos, None);
+        return;
+    }
+    if c.lens.is_none() {
+        if let Some(e) = c.entity {
+            if let Ok((d, _)) = decos.get(e) {
+                let ma = &cx.lvl.mesh_actors[d.mesh_actor];
+                let hs: Vec<Handle<Mesh>> = ma_handles(&d.parts, ma.parts.len());
+                c.lens = find_skin(e, &hs, &ma.parts, 2, children, part_mats);
             }
         }
-        let on = t.active && !t.disabled;
-        if env_on!("DXVIEW_TURRETLOG") && t.gun_pos.distance(me) < 2000.0 {
-            let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(&movers.rt) };
-            let tr = w.trace(t.gun_pos, me, DVec3::ZERO);
-            println!(
-                "TURRET {} active={} disabled={} heard={} gun={:.0?} rot={:.0?} want={:.0?} dist={:.0} clear={:.3} target={}",
-                lvl.actors[t.actor].name, t.active, t.disabled, heard, t.gun_pos, t.rot, t.want,
-                t.gun_pos.distance(me), tr.fraction, t.target.is_some()
+    }
+    cx.world.ignore = c.blocker;
+    let lens: &'static str;
+    let mut light: Option<u8> = None;
+    let mut sound: Option<(&'static str, f32, f32, f32)> = None;
+    if !c.active {
+        lens = BLACK;
+        if c.hum {
+            sound = Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 1.0));
+        }
+    } else if c.confused {
+        c.confusion_t += dt;
+        if c.confusion_t % 0.25 > 0.2 {
+            let a = c.swing_angle;
+            c.want = (
+                c.orig.0 + 0.5 * a - rnd(&mut c.seed) * a,
+                c.orig.1 + 0.5 * a - rnd(&mut c.seed) * a,
             );
         }
-        let mut dest = t.want;
-        if on {
-            t.target = None;
-            if !t.confused {
-                world.ignore = Some(t.gun_blocker);
-                let clear = |to: DVec3| {
-                    let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(&movers.rt) };
-                    w.trace(t.gun_pos, to, DVec3::ZERO).fraction >= 0.999
-                };
-                let in_range = |p: DVec3| p.distance(t.gun_pos) < t.max_range;
-                // bTrackPlayersOnly (or neither): you, or a pawn that isn't hostile to you.
-                if t.players_only || !t.pawns_only {
-                    // A player at a computer is bIgnore (MakePlayerIgnored): turrets skip him.
-                    if detectable && !radar_trans && !crate::computers::player_ignored() && in_range(me) && clear(me) {
-                        t.target = Some(TurretTarget::Player);
-                    } else if let Some(p) = pawns
-                        .iter()
-                        .filter(|p| !p.2 && in_range(p.1) && clear(p.1))
-                        .min_by(|a, b| a.1.distance(t.gun_pos).total_cmp(&b.1.distance(t.gun_pos)))
-                    {
-                        t.target = Some(TurretTarget::Pawn(p.0));
-                    }
-                }
-                if !t.players_only {
-                    if !t.pawns_only {
-                        // Decorations (not other electronics, not indestructible ones).
-                        for (b, c) in blockers.list.iter().enumerate() {
-                            if c.radius <= 0.0 || !in_range(c.center) || b == t.gun_blocker || Some(b) == t.base_blocker {
-                                continue;
-                            }
-                            let a = &lvl.actors[c.actor];
-                            if find(&a.props, "GroundSpeed").is_some()
-                                || find(&a.props, "bPushable").is_none()
-                                || electronic(&a.class)
-                                || a.class.starts_with("AutoTurret")
-                                || bv(&a.props, "bInvincible", false)
-                                || !clear(c.center)
-                            {
-                                continue;
-                            }
-                            t.target = Some(TurretTarget::Deco(b));
-                            break;
-                        }
-                    }
-                    if let Some(p) = pawns
-                        .iter()
-                        .filter(|p| p.2 && in_range(p.1) && clear(p.1))
-                        .min_by(|a, b| a.1.distance(t.gun_pos).total_cmp(&b.1.distance(t.gun_pos)))
-                    {
-                        t.target = Some(TurretTarget::Pawn(p.0));
-                    }
-                }
-                let target_pos = |tt: TurretTarget| match tt {
-                    TurretTarget::Player => me,
-                    TurretTarget::Pawn(b) | TurretTarget::Deco(b) => blockers.list[b].center,
-                };
-                match t.target {
-                    Some(tt) => {
-                        let (p, y) = rotator(target_pos(tt) - t.gun_pos);
-                        dest = (p, y);
-                        let near = t.pitch_limit / 2.0;
-                        t.want = (p.clamp(t.orig.0 - near, t.orig.0 + near), y);
-                    }
-                    None => t.want = t.orig,
-                }
-            }
-        } else if !t.confused {
-            t.want = t.orig;
+        lens = YELLOW;
+        light = Some(40);
+        sound = Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 2.0));
+        if c.confusion_t > c.confusion_dur {
+            c.confused = false;
+            c.confusion_t = 0.0;
+            c.confusion_dur = 10.0;
+            c.want = c.orig;
         }
-        // Physics Rotating (16384 / s).
-        let before = t.rot;
-        turn(&mut t.rot.0, t.want.0, 16384.0, dtd);
-        turn(&mut t.rot.1, t.want.1, 16384.0, dtd);
-        let near = wrap(t.rot.0 - t.want.0).abs() + wrap(t.rot.1 - t.want.1).abs();
-        let mut lens: Option<&'static str> = None;
-        if on {
-            if t.target.is_some() && t.target != t.last_target {
-                crate::sound::play("DeusExSounds.Generic.Beep6", t.gun_pos, 1.0, 1280.0, 1.0);
-            }
-            if t.target.is_some() {
-                lens = Some(RED);
-                if near < 4096.0 && wrap(t.rot.0 - dest.0).abs() < 8192.0 && t.fire_t > t.fire_rate {
-                    fire(t, &world, lvl, &blockers, &player_cyl, player_yaw, &mut ph, &mut pawn_hits, &mut deco_hits, &mut shells, &mut noises, &mut blood);
-                    t.fire_t = 0.0;
-                }
-            } else {
-                t.firing = false;
-                lens = Some(if t.confused { YELLOW } else { GREEN });
-            }
-            t.fire_t += dt;
-            t.last_target = t.target;
-        } else {
-            t.firing = false;
-            t.target = None;
-        }
-        // The gun: rotation, Fire loop while shooting, the lens and the muzzle flash skin.
-        if let Ok((mut d, _)) = decos.get_mut(t.gun_entity) {
-            let r = [t.rot.0.round() as i32, t.rot.1.round() as i32, 0];
+    } else {
+        (lens, light, sound) = camera_watch(c, cx);
+    }
+    // Physics Rotating toward DesiredRotation (RotationRate 65535 both ways).
+    turn(&mut c.rot.0, c.want.0, 65535.0, dtd);
+    turn(&mut c.rot.1, c.want.1, 65535.0, dtd);
+    if let Some(e) = c.entity {
+        if let Ok((mut d, _)) = decos.get_mut(e) {
+            let r = [c.rot.0.round() as i32, c.rot.1.round() as i32, 0];
             if d.rotation != r {
                 d.rotation = r;
                 d.spun = true;
             }
         }
-        animate_gun(t, dt, &mut meshes);
-        if let Some(l) = t.lens.as_mut() {
-            set_skin(l, lens, &mut commands, &mut assets, &mut images, &mut materials);
-        }
-        t.flash_t -= dt;
-        if let Some(m) = t.muzzle.as_mut() {
-            set_skin(m, if t.flash_t > 0.0 { Some(FLASH) } else { None }, &mut commands, &mut assets, &mut images, &mut materials);
-        }
-        if t.flash_t > 0.0 {
-            crate::dynlight::hold(0xD_1000_0000 | t.actor as u64, t.gun_pos, crate::dynlight::MUZZLE_FLASH, 0.0);
-        }
-        // AutoTurretHum on the base while it's on; AutoTurretMove while the gun turns.
-        let base_pos = t.base_blocker.map(|b| blockers.list[b].center).unwrap_or(t.gun_pos);
-        if t.hum && base_pos.distance(eye) < 1225.0 {
-            crate::sound::hold(0xC_2000_0000 | t.actor as u64, "DeusExSounds.Generic.AutoTurretHum", Some(base_pos), 192.0 / 255.0, 1225.0, 1.0);
-        }
-        let moving = wrap(t.rot.0 - before.0).abs() + wrap(t.rot.1 - before.1).abs() > 0.5 && near > 64.0;
-        if moving && t.gun_pos.distance(eye) < 625.0 {
-            crate::sound::hold(
-                0xC_3000_0000 | t.actor as u64,
-                "DeusExSounds.Generic.AutoTurretMove",
-                Some(t.gun_pos),
-                0.5,
-                625.0,
-                if t.confused { 2.0 } else { 1.0 },
+    }
+    if let Some(l) = c.lens.as_mut() {
+        cx.sk.set(l, Some(lens));
+    }
+    let eye = cx.f.eye;
+    if let Some(h) = light {
+        if c.pos.distance(eye) < 4000.0 {
+            crate::dynlight::hold(
+                0xC_0000_0000 | c.actor as u64,
+                c.pos,
+                crate::dynlight::Spec::new(h, 100, 120, 1.0),
+                0.0,
             );
         }
     }
-
-    // ---------------------------------------------------------------- lasers
-    let (beam_mesh, red_beam, spot_mesh, red_spot) = (
-        st.beam_mesh.clone().unwrap(),
-        st.beam_mat.clone().unwrap(),
-        st.spot_mesh.clone().unwrap(),
-        st.spot_mat.clone().unwrap(),
-    );
-    let (blue_beam, blue_spot) = (st.beam2_mat.clone().unwrap(), st.spot2_mat.clone().unwrap());
-    for i in 0..st.lasers.len() {
-        let l = &mut st.lasers[i];
-        if l.gone {
-            continue;
+    if let Some((snd, vol, radius, pitch)) = sound {
+        if c.pos.distance(eye) < radius as f64 {
+            crate::sound::hold(0xC_1000_0000 | c.actor as u64, snd, Some(c.pos), vol, radius, pitch);
         }
-        if l.hp <= 0.0 {
-            // Destroyed (blown up, or removed by the mission script).
-            l.gone = true;
-            for e in l.beams.drain(..).chain(l.spots.drain(..)) {
-                commands.entity(e).despawn();
-            }
-            if let Some(e) = l.emitter_entity.take() {
-                commands.entity(e).despawn();
-            }
-            alarms.set_external(l.alarm, false, l.pos, None);
-            continue;
-        }
-        if l.lens.is_none() {
-            if let Some(e) = l.emitter_entity {
-                let mi = refs.get(e).ok().map(|(_, r)| r.0);
-                if let Some(mi) = mi {
-                    let ma = &lvl.mesh_actors[mi];
-                    let hs = child_handles(e, &children, &part_mats, ma.parts.len());
-                    l.lens = find_skin_any(e, &hs, &ma.parts, 1, &children, &part_mats);
-                }
-            }
-        }
-        // Alarm timeout.
-        if let Some(t0) = l.alarm_t.as_mut() {
-            *t0 += dt;
-            if *t0 >= l.alarm_timeout {
-                l.alarm_t = None;
-            }
-        }
-        // EMP: the beam flickers (on 5% of frames) until it wears off.
-        let mut beam_on = l.on;
-        if l.confused && l.on {
-            l.confusion_t += dt;
-            beam_on = rnd(&mut l.seed) > 0.95;
-            if l.confusion_t > l.confusion_dur {
-                l.confused = false;
-                l.confusion_t = 0.0;
-                beam_on = true;
-            }
-        }
-        // bFrozen: not traced or drawn far from the player.
-        let near = l.pos.distance(me) < 960.0 || l.pos.distance(eye) < 3000.0;
-        let mut hit_now: Option<Broke> = None;
-        let mut segs: Vec<(DVec3, DVec3)> = Vec::new();
-        let mut spot_at: Vec<(DVec3, DVec3)> = Vec::new();
-        if beam_on && near {
-            // CalcTrace: the first thing in the way along the beam; mirrors (PF_Mirrored) bounce it twice.
-            let ax = rotator_axes(l.rot);
-            let mut start = l.pos;
-            let mut d = DVec3::new(ax[0][0] as f64, ax[0][1] as f64, ax[0][2] as f64).normalize_or_zero();
-            for _bounce in 0..2 {
-                let end = start + d * 5000.0;
-                let w = World { level: lvl, blockers: &blockers.list, ignore: None, pushable: None, movers: Some(&movers.rt) };
-                let h = w.trace(start, end, DVec3::ZERO);
-                let mut f = h.fraction;
-                let mut normal = h.normal;
-                let mut who = h.actor.map(Broke::Blocker);
-                if let Some(p) = trace_cylinder(&player_cyl, start, end, DVec3::ZERO) {
-                    if p.fraction < f && detectable {
-                        f = p.fraction;
-                        normal = p.normal;
-                        who = Some(Broke::Player);
-                    }
-                }
-                let at = start + (end - start) * f;
-                segs.push((start, at));
-                spot_at.push((at, normal));
-                if who.is_some() {
-                    hit_now = who;
-                    break;
-                }
-                // PF_Mirrored surfaces would bounce it (up to twice); the level's surface flags aren't kept per
-                // wall yet and the Island has no mirrors in a beam's path.
-                let mirror = false;
-                if !mirror {
-                    break;
-                }
-                d = (d - 2.0 * d.dot(normal) * normal).normalize_or_zero();
-                start = at + normal;
-            }
-            // Tick: a newly broken beam by something that counts sounds the alarm.
-            if let (Some(be), Some(who)) = (l.beam.as_mut(), hit_now) {
-                // BeamTrigger.Tick: a newly broken beam by something IsRelevant takes (adaptive armor hides the
-                // player) beeps and triggers Event.
-                if Some(who) != l.last_hit {
-                    let relevant = match who {
-                        Broke::Player => !(ph.camo || (crate::optfixes::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
-                        Broke::Blocker(b) => {
-                            let a = &lvl.actors[blockers.list[b].actor];
-                            let pawn = find(&a.props, "GroundSpeed").is_some();
-                            match l.trigger_type {
-                                1 => pawn,
-                                3 => true,
-                                _ => false,
-                            }
-                        }
-                    };
-                    if relevant {
-                        crate::sound::play("DeusExSounds.Generic.Beep2", l.pos, 1.0, 1280.0, 3.0);
-                        if !be.done {
-                            be.done = be.once;
-                            println!("SECURITY beam {} broken -> {}", lvl.actors[l.actor].name, be.event);
-                            if !be.event.is_empty() {
-                                if let Ok(mut q) = crate::movers::EVENTS_OUT.lock() {
-                                    q.push((be.event.clone(), true));
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if !l.no_alarm && hit_now.is_some() && hit_now != l.last_hit {
-                let relevant = match hit_now.unwrap() {
-                    Broke::Player => !(ph.camo || (crate::optfixes::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
-                    Broke::Blocker(b) => {
-                        let a = &lvl.actors[blockers.list[b].actor];
-                        let pawn = find(&a.props, "GroundSpeed").is_some();
-                        // TT_PlayerProximity: decorations too; TT_PawnProximity / Any: pawns.
-                        match l.trigger_type {
-                            0 => !pawn,
-                            1 => pawn,
-                            3 => true,
-                            _ => false,
-                        }
-                    }
-                };
-                if relevant {
-                    if l.alarm_t.is_none() {
-                        let (who_pos, who_h) = match hit_now.unwrap() {
-                            Broke::Player => (me, me_h),
-                            Broke::Blocker(b) => (blockers.list[b].center, blockers.list[b].height),
-                        };
-                        l.seek = who_pos - DVec3::Z * (who_h - 1.0);
-                        l.alarm_t = Some(0.0);
-                        println!("SECURITY laser {} tripped", lvl.actors[l.actor].name);
-                    }
-                    crate::sound::play("DeusExSounds.Generic.Beep2", l.pos, 1.0, 1280.0, 3.0);
-                }
-            }
-            l.last_hit = hit_now;
-        } else if !beam_on {
-            l.last_hit = None;
-        }
-        // Beam and spot visuals.
-        let (beam_mat, spot_mat) = if l.beam.is_some() { (&blue_beam, &blue_spot) } else { (&red_beam, &red_spot) };
-        for k in 0..2 {
-            if l.beams.len() <= k {
-                let b = commands
-                    .spawn((Mesh3d(beam_mesh.clone()), MeshMaterial3d(beam_mat.clone()), Transform::default(), Visibility::Hidden, LaserFx))
-                    .id();
-                let s = commands
-                    .spawn((Mesh3d(spot_mesh.clone()), MeshMaterial3d(spot_mat.clone()), Transform::default(), Visibility::Hidden, LaserFx))
-                    .id();
-                l.beams.push(b);
-                l.spots.push(s);
-                continue;
-            }
-            let show = beam_on && near && k < segs.len();
-            if let Ok((mut tf, mut vis)) = fx.get_mut(l.beams[k]) {
-                if show {
-                    let (a, b) = segs[k];
-                    let mid = (a + b) * 0.5;
-                    let len = a.distance(b).max(0.1);
-                    let dv = Vec3::from(ue_to_bevy(((b - a) / len).as_vec3().to_array()));
-                    *tf = Transform::from_translation(Vec3::from(ue_to_bevy(mid.as_vec3().to_array())))
-                        .with_rotation(Quat::from_rotation_arc(Vec3::Y, dv.normalize_or(Vec3::Y)))
-                        .with_scale(Vec3::new(0.65, len as f32, 0.65) * dx_level::METERS_PER_UNIT);
-                    if *vis != Visibility::Inherited {
-                        vis.set_if_neq(Visibility::Inherited);
-                    }
-                } else if *vis != Visibility::Hidden {
-                    vis.set_if_neq(Visibility::Hidden);
-                }
-            }
-            if let Ok((mut tf, mut vis)) = fx.get_mut(l.spots[k]) {
-                if show {
-                    let (at, n) = spot_at[k];
-                    let nb = Vec3::from(ue_to_bevy(n.as_vec3().to_array())).normalize_or(Vec3::Y);
-                    *tf = Transform::from_translation(Vec3::from(ue_to_bevy((at + n * 0.5).as_vec3().to_array())))
-                        .with_rotation(Quat::from_rotation_arc(Vec3::Z, nb))
-                        .with_scale(Vec3::splat(2.0 * dx_level::METERS_PER_UNIT));
-                    if *vis != Visibility::Inherited {
-                        vis.set_if_neq(Visibility::Inherited);
-                    }
-                } else if *vis != Visibility::Hidden {
-                    vis.set_if_neq(Visibility::Hidden);
-                }
-            }
-        }
-        if let Some(s) = l.lens.as_mut() {
-            set_skin(s, Some(if l.on { "Effects.Laser.LaserSpot1" } else { BLACK }), &mut commands, &mut assets, &mut images, &mut materials);
-        }
-        // The emitter's hum (Ambient.Laser, radius 25 x 17) while the beam is on; the klaxon while alarmed.
-        if beam_on && l.pos.distance(eye) < 425.0 {
-            crate::sound::hold(0xC_4000_0000 | l.actor as u64, "Ambient.Ambient.Laser", Some(l.pos), 0.5, 425.0, 1.0);
-        }
-        if l.alarm_t.is_some() && l.pos.distance(eye) < 1625.0 {
-            crate::sound::hold(0xC_5000_0000 | l.actor as u64, "Ambient.Ambient.Klaxon2", Some(l.pos), 0.5, 1625.0, 1.0);
-        }
-        let instigator = if l.last_hit == Some(Broke::Player) || l.alarm_t.is_some() { Some(Target::Player) } else { None };
-        alarms.set_external(l.alarm, l.alarm_t.is_some(), l.seek, instigator);
     }
-    let _ = world;
-    for i in dead_turrets {
-        remove_turret(&mut st.turrets[i], &mut commands, &mut blockers);
+    let seek = c.player_loc;
+    cx.alarms.set_external(c.alarm, c.triggered, seek, Some(Target::Player));
+}
+
+/// An active camera that isn't EMP'd: CheckPlayerVisibility every 0.1 s, the trigger delay with its beeps, memory,
+/// swinging. Returns the lens skin, the light hue and the held sound.
+#[allow(clippy::type_complexity)]
+fn camera_watch(c: &mut Cam, cx: &mut DevCx) -> (&'static str, Option<u8>, Option<(&'static str, f32, f32, f32)>) {
+    let dt = cx.f.dt;
+    let (me, me_h) = (cx.f.me, cx.f.me_h);
+    let mut lens: &'static str = GREEN;
+    let mut light = Some(80);
+    let mut sound = Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 1.0));
+    if !c.no_alarm {
+        c.check_t += dt;
+        if c.check_t > 0.1 {
+            c.check_t = 0.0;
+            // CheckPlayerVisibility.
+            let d = me.distance(c.pos);
+            if cx.f.detectable && !cx.f.radar_trans && d <= crate::smartai::camera_range(c.range) && sees_player(&cx.world, &cx.f, c.pos) {
+                let (rp, ry) = rotator(me - c.pos);
+                let yaw = wrap(c.rot.1 - ry).abs();
+                let pitch = wrap(c.rot.0 - rp).abs();
+                if yaw < c.fov && pitch < c.fov {
+                    if c.track {
+                        c.want = (rp, ry);
+                    }
+                    c.last_seen = 0.0;
+                    c.seen = true;
+                    c.track = true;
+                    c.player_loc = me - DVec3::Z * (me_h - 5.0);
+                    if !c.triggered && c.trigger_t >= crate::smartai::camera_delay(c.trigger_delay) {
+                        cam_event(c, true);
+                        println!("SECURITY camera {} raises the alarm", cx.lvl.actors[c.actor].name);
+                    }
+                }
+            }
+        }
+    }
+    if c.seen {
+        if !c.triggered {
+            c.trigger_t += dt;
+            // Smarter AI (GMDX bHardcoreAI1): every beep tells the guards near the player where they are.
+            if c.trigger_t % 0.5 > 0.4 && (c.trigger_t - dt) % 0.5 <= 0.4 {
+                crate::smartai::camera_spotted(c.player_loc + DVec3::Z * 40.0);
+            }
+            if c.trigger_t % 0.5 > 0.4 {
+                lens = RED;
+                light = Some(0);
+                crate::sound::play_owned(
+                    0xC_0000_0000 | c.actor as u64,
+                    crate::sound::slot::MISC,
+                    "DeusExSounds.Generic.Beep6",
+                    Some(c.pos),
+                    1.0,
+                    1280.0,
+                    1.0,
+                );
+            }
+        } else {
+            lens = RED;
+            light = Some(0);
+        }
+        if c.last_seen < c.memory {
+            c.last_seen += dt;
+        } else {
+            c.last_seen = 0.0;
+            c.seen = false;
+            cam_event(c, false);
+        }
+    } else {
+        c.swing_t += dt;
+        if c.swing && !c.track {
+            let ang = std::f64::consts::TAU * c.swing_t as f64 / c.swing_period;
+            c.want = (c.orig.0, c.orig.1 + ang.sin() * c.swing_angle);
+        }
+    }
+    if c.triggered {
+        sound = Some(("Ambient.Ambient.Klaxon2", 128.0 / 255.0, 25.0 * 65.0, 1.0));
+    }
+    (lens, light, sound)
+}
+
+/// AutoTurret.Tick: destroyed check, skins, AlarmHeard, EMP confusion, targeting, then turning / firing.
+/// Returns true when the turret was found destroyed (removed after the lasers).
+#[allow(clippy::too_many_arguments)]
+fn turret_tick(
+    t: &mut Turret,
+    cx: &mut DevCx,
+    pawns: &[(usize, DVec3, bool)],
+    decos: &mut Query<(&mut Deco, &mut Transform), Without<LaserFx>>,
+    children: &Query<&Children>,
+    part_mats: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    meshes: &mut Assets<Mesh>,
+    shot: &mut ShotCx,
+) -> bool {
+    if t.gone {
+        return false;
+    }
+    let (dt, me) = (cx.f.dt, cx.f.me);
+    let (lvl, blockers) = (cx.lvl, cx.blockers);
+    // The base and the gun go together (AutoTurret.Destroyed / AutoTurretGun.Destroyed).
+    let base_ok = t.base_blocker.is_none_or(|b| blockers.list[b].radius > 0.0)
+        && t.base_entity.is_none_or(|e| decos.get(e).is_ok());
+    let gun_ok = blockers.list[t.gun_blocker].radius > 0.0 && decos.get(t.gun_entity).is_ok();
+    if !base_ok || !gun_ok {
+        println!("TURRET {} destroyed (base {} gun {})", lvl.actors[t.actor].name, base_ok, gun_ok);
+        return true;
+    }
+    if t.lens.is_none() || t.muzzle.is_none() {
+        t.lens = find_skin(t.gun_entity, &t.handles, &t.parts, 1, children, part_mats);
+        t.muzzle = find_skin(t.gun_entity, &t.handles, &t.parts, 2, children, part_mats);
+    }
+    // AlarmHeard: an alarm going off nearby wakes it up until the alarm ends.
+    let heard = cx.alarms.heard_at(t.gun_pos);
+    if heard && !t.heard && !t.active {
+        t.pre_alarm = t.active;
+        t.active = true;
+        t.hum = true;
+    } else if !heard && t.heard && t.active {
+        t.active = t.pre_alarm;
+    }
+    t.heard = heard;
+    if t.confused {
+        t.confusion_t += dt;
+        if t.confusion_t % 0.25 > 0.2 {
+            t.want = (
+                t.orig.0 + (t.pitch_limit / 2.0 - rnd(&mut t.seed) * t.pitch_limit),
+                rnd(&mut t.seed) * URU,
+            );
+        }
+        if t.confusion_t > t.confusion_dur {
+            t.confused = false;
+            t.confusion_t = 0.0;
+            t.confusion_dur = 10.0;
+        }
+    }
+    let on = t.active && !t.disabled;
+    if env_on!("DXVIEW_TURRETLOG") && t.gun_pos.distance(me) < 2000.0 {
+        let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(cx.movers) };
+        let tr = w.trace(t.gun_pos, me, DVec3::ZERO);
+        println!(
+            "TURRET {} active={} disabled={} heard={} gun={:.0?} rot={:.0?} want={:.0?} dist={:.0} clear={:.3} target={}",
+            lvl.actors[t.actor].name, t.active, t.disabled, heard, t.gun_pos, t.rot, t.want,
+            t.gun_pos.distance(me), tr.fraction, t.target.is_some()
+        );
+    }
+    let dest = turret_target(t, cx, pawns, on);
+    turret_turn_and_fire(t, cx, on, dest, decos, meshes, shot);
+    false
+}
+
+/// AutoTurret target selection (bTrackPlayersOnly / bTrackPawnsOnly) and the DesiredRotation toward it. Returns
+/// where the gun would point at the target (unclamped), for the fire check.
+fn turret_target(t: &mut Turret, cx: &mut DevCx, pawns: &[(usize, DVec3, bool)], on: bool) -> (f64, f64) {
+    let (lvl, blockers, movers, me) = (cx.lvl, cx.blockers, cx.movers, cx.f.me);
+    let (detectable, radar_trans) = (cx.f.detectable, cx.f.radar_trans);
+    let mut dest = t.want;
+    if on {
+        t.target = None;
+        if !t.confused {
+            cx.world.ignore = Some(t.gun_blocker);
+            let clear = |to: DVec3| {
+                let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(movers) };
+                w.trace(t.gun_pos, to, DVec3::ZERO).fraction >= 0.999
+            };
+            let in_range = |p: DVec3| p.distance(t.gun_pos) < t.max_range;
+            // bTrackPlayersOnly (or neither): you, or a pawn that isn't hostile to you.
+            if t.players_only || !t.pawns_only {
+                // A player at a computer is bIgnore (MakePlayerIgnored): turrets skip him.
+                if detectable && !radar_trans && !crate::computers::player_ignored() && in_range(me) && clear(me) {
+                    t.target = Some(TurretTarget::Player);
+                } else if let Some(p) = pawns
+                    .iter()
+                    .filter(|p| !p.2 && in_range(p.1) && clear(p.1))
+                    .min_by(|a, b| a.1.distance(t.gun_pos).total_cmp(&b.1.distance(t.gun_pos)))
+                {
+                    t.target = Some(TurretTarget::Pawn(p.0));
+                }
+            }
+            if !t.players_only {
+                if !t.pawns_only {
+                    // Decorations (not other electronics, not indestructible ones).
+                    for (b, c) in blockers.list.iter().enumerate() {
+                        if c.radius <= 0.0 || !in_range(c.center) || b == t.gun_blocker || Some(b) == t.base_blocker {
+                            continue;
+                        }
+                        let a = &lvl.actors[c.actor];
+                        if find(&a.props, "GroundSpeed").is_some()
+                            || find(&a.props, "bPushable").is_none()
+                            || electronic(&a.class)
+                            || a.class.starts_with("AutoTurret")
+                            || bv(&a.props, "bInvincible", false)
+                            || !clear(c.center)
+                        {
+                            continue;
+                        }
+                        t.target = Some(TurretTarget::Deco(b));
+                        break;
+                    }
+                }
+                if let Some(p) = pawns
+                    .iter()
+                    .filter(|p| p.2 && in_range(p.1) && clear(p.1))
+                    .min_by(|a, b| a.1.distance(t.gun_pos).total_cmp(&b.1.distance(t.gun_pos)))
+                {
+                    t.target = Some(TurretTarget::Pawn(p.0));
+                }
+            }
+            let target_pos = |tt: TurretTarget| match tt {
+                TurretTarget::Player => me,
+                TurretTarget::Pawn(b) | TurretTarget::Deco(b) => blockers.list[b].center,
+            };
+            match t.target {
+                Some(tt) => {
+                    let (p, y) = rotator(target_pos(tt) - t.gun_pos);
+                    dest = (p, y);
+                    let near = t.pitch_limit / 2.0;
+                    t.want = (p.clamp(t.orig.0 - near, t.orig.0 + near), y);
+                }
+                None => t.want = t.orig,
+            }
+        }
+    } else if !t.confused {
+        t.want = t.orig;
+    }
+    dest
+}
+
+/// Physics Rotating (16384 / s), AutoTurret.Fire once aimed, the gun's pose and skins, the muzzle light, hum and
+/// move sounds.
+#[allow(clippy::too_many_arguments)]
+fn turret_turn_and_fire(
+    t: &mut Turret,
+    cx: &mut DevCx,
+    on: bool,
+    dest: (f64, f64),
+    decos: &mut Query<(&mut Deco, &mut Transform), Without<LaserFx>>,
+    meshes: &mut Assets<Mesh>,
+    shot: &mut ShotCx,
+) {
+    let (dt, dtd, eye) = (cx.f.dt, cx.f.dtd, cx.f.eye);
+    // Physics Rotating (16384 / s).
+    let before = t.rot;
+    turn(&mut t.rot.0, t.want.0, 16384.0, dtd);
+    turn(&mut t.rot.1, t.want.1, 16384.0, dtd);
+    let near = wrap(t.rot.0 - t.want.0).abs() + wrap(t.rot.1 - t.want.1).abs();
+    let mut lens: Option<&'static str> = None;
+    if on {
+        if t.target.is_some() && t.target != t.last_target {
+            crate::sound::play("DeusExSounds.Generic.Beep6", t.gun_pos, 1.0, 1280.0, 1.0);
+        }
+        if t.target.is_some() {
+            lens = Some(RED);
+            if near < 4096.0 && wrap(t.rot.0 - dest.0).abs() < 8192.0 && t.fire_t > t.fire_rate {
+                fire(
+                    t,
+                    &cx.world,
+                    cx.lvl,
+                    cx.blockers,
+                    &cx.f.player_cyl,
+                    cx.f.player_yaw,
+                    shot.ph,
+                    shot.pawn_hits,
+                    shot.deco_hits,
+                    shot.shells,
+                    shot.noises,
+                    shot.blood,
+                );
+                t.fire_t = 0.0;
+            }
+        } else {
+            t.firing = false;
+            lens = Some(if t.confused { YELLOW } else { GREEN });
+        }
+        t.fire_t += dt;
+        t.last_target = t.target;
+    } else {
+        t.firing = false;
+        t.target = None;
+    }
+    // The gun: rotation, Fire loop while shooting, the lens and the muzzle flash skin.
+    if let Ok((mut d, _)) = decos.get_mut(t.gun_entity) {
+        let r = [t.rot.0.round() as i32, t.rot.1.round() as i32, 0];
+        if d.rotation != r {
+            d.rotation = r;
+            d.spun = true;
+        }
+    }
+    animate_gun(t, dt, meshes);
+    if let Some(l) = t.lens.as_mut() {
+        cx.sk.set(l, lens);
+    }
+    t.flash_t -= dt;
+    if let Some(m) = t.muzzle.as_mut() {
+        cx.sk.set(m, if t.flash_t > 0.0 { Some(FLASH) } else { None });
+    }
+    if t.flash_t > 0.0 {
+        crate::dynlight::hold(0xD_1000_0000 | t.actor as u64, t.gun_pos, crate::dynlight::MUZZLE_FLASH, 0.0);
+    }
+    // AutoTurretHum on the base while it's on; AutoTurretMove while the gun turns.
+    let base_pos = t.base_blocker.map(|b| cx.blockers.list[b].center).unwrap_or(t.gun_pos);
+    if t.hum && base_pos.distance(eye) < 1225.0 {
+        crate::sound::hold(0xC_2000_0000 | t.actor as u64, "DeusExSounds.Generic.AutoTurretHum", Some(base_pos), 192.0 / 255.0, 1225.0, 1.0);
+    }
+    let moving = wrap(t.rot.0 - before.0).abs() + wrap(t.rot.1 - before.1).abs() > 0.5 && near > 64.0;
+    if moving && t.gun_pos.distance(eye) < 625.0 {
+        crate::sound::hold(
+            0xC_3000_0000 | t.actor as u64,
+            "DeusExSounds.Generic.AutoTurretMove",
+            Some(t.gun_pos),
+            0.5,
+            625.0,
+            if t.confused { 2.0 } else { 1.0 },
+        );
+    }
+}
+
+/// LaserTrigger / BeamTrigger Tick: destroyed check, lens, alarm timeout, EMP flicker, the beam trace and what
+/// breaking it does, beam visuals, hum / klaxon and the alarm.
+#[allow(clippy::too_many_arguments)]
+fn laser_tick(
+    l: &mut Laser,
+    cx: &mut DevCx,
+    gfx: &LaserGfx,
+    ph: &PlayerHealth,
+    refs: &Query<(Entity, &MeshActorRef)>,
+    children: &Query<&Children>,
+    part_mats: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    fx: &mut Query<(&mut Transform, &mut Visibility), (With<LaserFx>, Without<Deco>, Without<FlyCam>)>,
+) {
+    if l.gone {
+        return;
+    }
+    let (dt, me, eye) = (cx.f.dt, cx.f.me, cx.f.eye);
+    if l.hp <= 0.0 {
+        // Destroyed (blown up, or removed by the mission script).
+        l.gone = true;
+        for e in l.beams.drain(..).chain(l.spots.drain(..)) {
+            cx.sk.commands.entity(e).despawn();
+        }
+        if let Some(e) = l.emitter_entity.take() {
+            cx.sk.commands.entity(e).despawn();
+        }
+        cx.alarms.set_external(l.alarm, false, l.pos, None);
+        return;
+    }
+    if l.lens.is_none() {
+        if let Some(e) = l.emitter_entity {
+            let mi = refs.get(e).ok().map(|(_, r)| r.0);
+            if let Some(mi) = mi {
+                let ma = &cx.lvl.mesh_actors[mi];
+                let hs = child_handles(e, children, part_mats, ma.parts.len());
+                l.lens = find_skin_any(e, &hs, &ma.parts, 1, children, part_mats);
+            }
+        }
+    }
+    // Alarm timeout.
+    if let Some(t0) = l.alarm_t.as_mut() {
+        *t0 += dt;
+        if *t0 >= l.alarm_timeout {
+            l.alarm_t = None;
+        }
+    }
+    // EMP: the beam flickers (on 5% of frames) until it wears off.
+    let mut beam_on = l.on;
+    if l.confused && l.on {
+        l.confusion_t += dt;
+        beam_on = rnd(&mut l.seed) > 0.95;
+        if l.confusion_t > l.confusion_dur {
+            l.confused = false;
+            l.confusion_t = 0.0;
+            beam_on = true;
+        }
+    }
+    // bFrozen: not traced or drawn far from the player.
+    let near = l.pos.distance(me) < 960.0 || l.pos.distance(eye) < 3000.0;
+    let mut segs: Vec<(DVec3, DVec3)> = Vec::new();
+    let mut spot_at: Vec<(DVec3, DVec3)> = Vec::new();
+    if beam_on && near {
+        let hit_now = laser_trace(l, cx, &mut segs, &mut spot_at);
+        laser_broken(l, cx, ph, hit_now);
+        l.last_hit = hit_now;
+    } else if !beam_on {
+        l.last_hit = None;
+    }
+    laser_visuals(l, cx, gfx, fx, beam_on && near, &segs, &spot_at);
+    if let Some(s) = l.lens.as_mut() {
+        cx.sk.set(s, Some(if l.on { "Effects.Laser.LaserSpot1" } else { BLACK }));
+    }
+    // The emitter's hum (Ambient.Laser, radius 25 x 17) while the beam is on; the klaxon while alarmed.
+    if beam_on && l.pos.distance(eye) < 425.0 {
+        crate::sound::hold(0xC_4000_0000 | l.actor as u64, "Ambient.Ambient.Laser", Some(l.pos), 0.5, 425.0, 1.0);
+    }
+    if l.alarm_t.is_some() && l.pos.distance(eye) < 1625.0 {
+        crate::sound::hold(0xC_5000_0000 | l.actor as u64, "Ambient.Ambient.Klaxon2", Some(l.pos), 0.5, 1625.0, 1.0);
+    }
+    let instigator = if l.last_hit == Some(Broke::Player) || l.alarm_t.is_some() { Some(Target::Player) } else { None };
+    cx.alarms.set_external(l.alarm, l.alarm_t.is_some(), l.seek, instigator);
+}
+
+/// LaserEmitter.CalcTrace: the beam's segments and spots, and what (if anything) breaks it.
+fn laser_trace(l: &Laser, cx: &DevCx, segs: &mut Vec<(DVec3, DVec3)>, spot_at: &mut Vec<(DVec3, DVec3)>) -> Option<Broke> {
+    let (lvl, blockers) = (cx.lvl, cx.blockers);
+    let mut hit_now: Option<Broke> = None;
+    // CalcTrace: the first thing in the way along the beam; mirrors (PF_Mirrored) bounce it twice.
+    let ax = rotator_axes(l.rot);
+    let mut start = l.pos;
+    let mut d = DVec3::new(ax[0][0] as f64, ax[0][1] as f64, ax[0][2] as f64).normalize_or_zero();
+    for _bounce in 0..2 {
+        let end = start + d * 5000.0;
+        let w = World { level: lvl, blockers: &blockers.list, ignore: None, pushable: None, movers: Some(cx.movers) };
+        let h = w.trace(start, end, DVec3::ZERO);
+        let mut f = h.fraction;
+        let mut normal = h.normal;
+        let mut who = h.actor.map(Broke::Blocker);
+        if let Some(p) = trace_cylinder(&cx.f.player_cyl, start, end, DVec3::ZERO) {
+            if p.fraction < f && cx.f.detectable {
+                f = p.fraction;
+                normal = p.normal;
+                who = Some(Broke::Player);
+            }
+        }
+        let at = start + (end - start) * f;
+        segs.push((start, at));
+        spot_at.push((at, normal));
+        if who.is_some() {
+            hit_now = who;
+            break;
+        }
+        // PF_Mirrored surfaces would bounce it (up to twice); the level's surface flags aren't kept per
+        // wall yet and the Island has no mirrors in a beam's path.
+        let mirror = false;
+        if !mirror {
+            break;
+        }
+        d = (d - 2.0 * d.dot(normal) * normal).normalize_or_zero();
+        start = at + normal;
+    }
+    hit_now
+}
+
+/// LaserTrigger / BeamTrigger Tick: a newly broken beam by something that counts beeps and sounds the alarm (or
+/// triggers Event).
+fn laser_broken(l: &mut Laser, cx: &DevCx, ph: &PlayerHealth, hit_now: Option<Broke>) {
+    let (lvl, blockers, me, me_h) = (cx.lvl, cx.blockers, cx.f.me, cx.f.me_h);
+    // Tick: a newly broken beam by something that counts sounds the alarm.
+    if let (Some(be), Some(who)) = (l.beam.as_mut(), hit_now) {
+        // BeamTrigger.Tick: a newly broken beam by something IsRelevant takes (adaptive armor hides the
+        // player) beeps and triggers Event.
+        if Some(who) != l.last_hit {
+            let relevant = match who {
+                Broke::Player => !(ph.camo || (crate::optfixes::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
+                Broke::Blocker(b) => {
+                    let a = &lvl.actors[blockers.list[b].actor];
+                    let pawn = find(&a.props, "GroundSpeed").is_some();
+                    match l.trigger_type {
+                        1 => pawn,
+                        3 => true,
+                        _ => false,
+                    }
+                }
+            };
+            if relevant {
+                crate::sound::play("DeusExSounds.Generic.Beep2", l.pos, 1.0, 1280.0, 3.0);
+                if !be.done {
+                    be.done = be.once;
+                    println!("SECURITY beam {} broken -> {}", lvl.actors[l.actor].name, be.event);
+                    if !be.event.is_empty() {
+                        if let Ok(mut q) = crate::movers::EVENTS_OUT.lock() {
+                            q.push((be.event.clone(), true));
+                        }
+                    }
+                }
+            }
+        }
+    } else if !l.no_alarm && hit_now.is_some() && hit_now != l.last_hit {
+        let relevant = match hit_now.unwrap() {
+            Broke::Player => !(ph.camo || (crate::optfixes::radar_cloak() && crate::abilities::aug("AugCloak").is_some() && crate::abilities::aug("AugRadarTrans").is_some())),
+            Broke::Blocker(b) => {
+                let a = &lvl.actors[blockers.list[b].actor];
+                let pawn = find(&a.props, "GroundSpeed").is_some();
+                // TT_PlayerProximity: decorations too; TT_PawnProximity / Any: pawns.
+                match l.trigger_type {
+                    0 => !pawn,
+                    1 => pawn,
+                    3 => true,
+                    _ => false,
+                }
+            }
+        };
+        if relevant {
+            if l.alarm_t.is_none() {
+                let (who_pos, who_h) = match hit_now.unwrap() {
+                    Broke::Player => (me, me_h),
+                    Broke::Blocker(b) => (blockers.list[b].center, blockers.list[b].height),
+                };
+                l.seek = who_pos - DVec3::Z * (who_h - 1.0);
+                l.alarm_t = Some(0.0);
+                println!("SECURITY laser {} tripped", lvl.actors[l.actor].name);
+            }
+            crate::sound::play("DeusExSounds.Generic.Beep2", l.pos, 1.0, 1280.0, 3.0);
+        }
+    }
+}
+
+/// Beam and spot visuals: two segment / spot entity pairs per laser (spawned on first use), shown along the trace.
+fn laser_visuals(
+    l: &mut Laser,
+    cx: &mut DevCx,
+    gfx: &LaserGfx,
+    fx: &mut Query<(&mut Transform, &mut Visibility), (With<LaserFx>, Without<Deco>, Without<FlyCam>)>,
+    traced: bool,
+    segs: &[(DVec3, DVec3)],
+    spot_at: &[(DVec3, DVec3)],
+) {
+    // Beam and spot visuals.
+    let (beam_mat, spot_mat) = if l.beam.is_some() { (&gfx.blue_beam, &gfx.blue_spot) } else { (&gfx.red_beam, &gfx.red_spot) };
+    for k in 0..2 {
+        if l.beams.len() <= k {
+            let b = cx
+                .sk
+                .commands
+                .spawn((Mesh3d(gfx.beam_mesh.clone()), MeshMaterial3d(beam_mat.clone()), Transform::default(), Visibility::Hidden, LaserFx))
+                .id();
+            let s = cx
+                .sk
+                .commands
+                .spawn((Mesh3d(gfx.spot_mesh.clone()), MeshMaterial3d(spot_mat.clone()), Transform::default(), Visibility::Hidden, LaserFx))
+                .id();
+            l.beams.push(b);
+            l.spots.push(s);
+            continue;
+        }
+        let show = traced && k < segs.len();
+        if let Ok((mut tf, mut vis)) = fx.get_mut(l.beams[k]) {
+            if show {
+                let (a, b) = segs[k];
+                let mid = (a + b) * 0.5;
+                let len = a.distance(b).max(0.1);
+                let dv = Vec3::from(ue_to_bevy(((b - a) / len).as_vec3().to_array()));
+                *tf = Transform::from_translation(Vec3::from(ue_to_bevy(mid.as_vec3().to_array())))
+                    .with_rotation(Quat::from_rotation_arc(Vec3::Y, dv.normalize_or(Vec3::Y)))
+                    .with_scale(Vec3::new(0.65, len as f32, 0.65) * dx_level::METERS_PER_UNIT);
+                if *vis != Visibility::Inherited {
+                    vis.set_if_neq(Visibility::Inherited);
+                }
+            } else if *vis != Visibility::Hidden {
+                vis.set_if_neq(Visibility::Hidden);
+            }
+        }
+        if let Ok((mut tf, mut vis)) = fx.get_mut(l.spots[k]) {
+            if show {
+                let (at, n) = spot_at[k];
+                let nb = Vec3::from(ue_to_bevy(n.as_vec3().to_array())).normalize_or(Vec3::Y);
+                *tf = Transform::from_translation(Vec3::from(ue_to_bevy((at + n * 0.5).as_vec3().to_array())))
+                    .with_rotation(Quat::from_rotation_arc(Vec3::Z, nb))
+                    .with_scale(Vec3::splat(2.0 * dx_level::METERS_PER_UNIT));
+                if *vis != Visibility::Inherited {
+                    vis.set_if_neq(Visibility::Inherited);
+                }
+            } else if *vis != Visibility::Hidden {
+                vis.set_if_neq(Visibility::Hidden);
+            }
+        }
     }
 }
 
@@ -1601,6 +1839,8 @@ fn animate_gun(t: &mut Turret, dt: f32, meshes: &mut Assets<Mesh>) {
     }
 }
 
+/// First frame of a map: the beam assets, then every SecurityCamera, AutoTurret (with its gun) and LaserTrigger /
+/// BeamTrigger the map places.
 #[allow(clippy::too_many_arguments)]
 fn init(
     st: &mut Security,
@@ -1617,6 +1857,53 @@ fn init(
     let by_actor: HashMap<usize, usize> = blockers.list.iter().enumerate().map(|(b, c)| (c.actor, b)).collect();
     let mesh_entity: HashMap<usize, Entity> =
         refs.iter().filter_map(|(e, r)| lvl.mesh_actors.get(r.0).map(|m| (m.actor, e))).collect();
+    init_beam_assets(st, assets, images, meshes, materials);
+
+    let n = lvl.actors.len();
+    let mut new_guns: Vec<(usize, &'static str)> = Vec::new();
+    for i in 0..n {
+        let class = lvl.actors[i].class.clone();
+        let p = lvl.actors[i].props.clone();
+        match class.as_str() {
+            "SecurityCamera" => {
+                let cam = new_camera(i, &p, &by_actor, blockers, alarms, assets);
+                st.cams.push(cam);
+            }
+            "AutoTurret" => new_guns.push((i, "AutoTurretGun")),
+            "AutoTurretSmall" => new_guns.push((i, "AutoTurretGunSmall")),
+            "LaserTrigger" | "BeamTrigger" => {
+                let laser = new_laser(i, &class, &p, alarms, &mesh_entity);
+                st.lasers.push(laser);
+            }
+            _ => {}
+        }
+    }
+    // AutoTurret.PreBeginPlay: spawn the gun on the base (CollisionHeight of both along the base's up axis),
+    // facing the base's yaw.
+    for (i, gun_class) in new_guns {
+        let p = lvl.actors[i].props.clone();
+        let Some(gun) = spawn_gun(i, gun_class, &p, commands, lvl, blockers, assets, images, meshes, materials) else {
+            continue;
+        };
+        let turret = new_turret(i, &p, gun, &by_actor, blockers);
+        st.turrets.push(turret);
+    }
+    println!(
+        "security: {} cameras, {} turrets, {} lasers",
+        st.cams.len(),
+        st.turrets.len(),
+        st.lasers.len()
+    );
+}
+
+/// The laser beam / spot meshes and materials (LaserBeam1 / LaserSpot1 red, LaserBeam2 / LaserSpot2 blue).
+fn init_beam_assets(
+    st: &mut Security,
+    assets: &mut RuntimeAssets,
+    images: &mut Assets<Image>,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
     // Beam and spot assets.
     st.beam_mesh = Some(meshes.add(bevy::math::primitives::Cylinder::new(0.5, 1.0)));
     let beam_img = image_for(assets, images, "Effects.Laser.LaserBeam1");
@@ -1654,247 +1941,269 @@ fn init(
         alpha_mode: AlphaMode::Add,
         ..default()
     }));
+}
 
-    let n = lvl.actors.len();
-    let mut new_guns: Vec<(usize, &'static str)> = Vec::new();
-    for i in 0..n {
-        let class = lvl.actors[i].class.clone();
-        let p = lvl.actors[i].props.clone();
-        match class.as_str() {
-            "SecurityCamera" => {
-                let r = rot_of(&p);
-                let pos = loc_of(&p);
-                let blocker = by_actor.get(&i).copied();
-                let entity = blocker.and_then(|b| blockers.deco.get(&b).copied());
-                crate::sound::own_ambient(i);
-                crate::dynlight::suppress_actor_light(i);
-                let alarm = alarms.add_external(i, pos);
-                let d = assets.classes.defaults("SecurityCamera");
-                st.cams.push(Cam {
-                    actor: i,
-                    blocker,
-                    entity,
-                    pos,
-                    tag: crate::devices::name_prop(&p, "Tag"),
-                    orig: (r[0] as f64, r[1] as f64),
-                    rot: (r[0] as f64, r[1] as f64),
-                    want: (r[0] as f64, r[1] as f64),
-                    swing: bv(&p, "bSwing", false),
-                    swing_angle: fv(&p, "swingAngle", 8192.0),
-                    swing_period: fv(&p, "swingPeriod", 8.0).max(0.1),
-                    fov: fv(&p, "cameraFOV", 4096.0),
-                    range: fv(&p, "cameraRange", 1024.0),
-                    memory: fv(&p, "memoryTime", 5.0) as f32,
-                    trigger_delay: fv(&p, "triggerDelay", 4.0) as f32,
-                    active: bv(&p, "bActive", true),
-                    no_alarm: bv(&p, "bNoAlarm", false),
-                    track: false,
-                    seen: false,
-                    triggered: false,
-                    last_seen: 0.0,
-                    check_t: 0.0,
-                    swing_t: 0.0,
-                    trigger_t: 0.0,
-                    confused: false,
-                    confusion_t: 0.0,
-                    confusion_dur: fv(&p, "confusionDuration", 10.0) as f32,
-                    player_loc: pos,
-                    lens: None,
-                    alarm,
-                    hum: true,
-                    seed: 0xCA3E_0000 ^ i as u64,
-                    gone: false,
-                    msg_on: { let m = sv(&d, "msgActivated"); if m.is_empty() { "Camera activated".into() } else { m } },
-                    msg_off: { let m = sv(&d, "msgDeactivated"); if m.is_empty() { "Camera deactivated".into() } else { m } },
-                });
-            }
-            "AutoTurret" => new_guns.push((i, "AutoTurretGun")),
-            "AutoTurretSmall" => new_guns.push((i, "AutoTurretGunSmall")),
-            "LaserTrigger" | "BeamTrigger" => {
-                let pos = loc_of(&p);
-                let beam = (class == "BeamTrigger").then(|| BeamEvent {
-                    event: crate::devices::name_prop(&p, "Event"),
-                    once: bv(&p, "bTriggerOnceOnly", false),
-                    done: false,
-                });
-                let alarm = alarms.add_external(i, pos);
-                st.lasers.push(Laser {
-                    actor: i,
-                    tag: crate::devices::name_prop(&p, "Tag"),
-                    pos,
-                    rot: rot_of(&p),
-                    on: bv(&p, "bIsOn", true),
-                    no_alarm: bv(&p, "bNoAlarm", false),
-                    trigger_type: fv(&p, "TriggerType", 3.0) as u8,
-                    confused: false,
-                    confusion_t: 0.0,
-                    confusion_dur: fv(&p, "confusionDuration", 10.0) as f32,
-                    hp: fv(&p, "HitPoints", 50.0) as f32,
-                    min_damage: fv(&p, "minDamageThreshold", 50.0) as f32,
-                    alarm_timeout: fv(&p, "alarmTimeout", 30.0) as f32,
-                    alarm_t: None,
-                    last_hit: None,
-                    seed: 0x1A5E_0000 ^ i as u64,
-                    beams: Vec::new(),
-                    spots: Vec::new(),
-                    emitter_entity: mesh_entity.get(&i).copied(),
-                    lens: None,
-                    alarm,
-                    seek: pos,
-                    gone: false,
-                    beam,
-                });
-            }
-            _ => {}
-        }
+/// A placed SecurityCamera: its ambient and light owned here, an external alarm, its properties.
+fn new_camera(
+    i: usize,
+    p: &[Property],
+    by_actor: &HashMap<usize, usize>,
+    blockers: &Blockers,
+    alarms: &mut Alarms,
+    assets: &mut RuntimeAssets,
+) -> Cam {
+    let r = rot_of(p);
+    let pos = loc_of(p);
+    let blocker = by_actor.get(&i).copied();
+    let entity = blocker.and_then(|b| blockers.deco.get(&b).copied());
+    crate::sound::own_ambient(i);
+    crate::dynlight::suppress_actor_light(i);
+    let alarm = alarms.add_external(i, pos);
+    let d = assets.classes.defaults("SecurityCamera");
+    Cam {
+        actor: i,
+        blocker,
+        entity,
+        pos,
+        tag: crate::devices::name_prop(p, "Tag"),
+        orig: (r[0] as f64, r[1] as f64),
+        rot: (r[0] as f64, r[1] as f64),
+        want: (r[0] as f64, r[1] as f64),
+        swing: bv(p, "bSwing", false),
+        swing_angle: fv(p, "swingAngle", 8192.0),
+        swing_period: fv(p, "swingPeriod", 8.0).max(0.1),
+        fov: fv(p, "cameraFOV", 4096.0),
+        range: fv(p, "cameraRange", 1024.0),
+        memory: fv(p, "memoryTime", 5.0) as f32,
+        trigger_delay: fv(p, "triggerDelay", 4.0) as f32,
+        active: bv(p, "bActive", true),
+        no_alarm: bv(p, "bNoAlarm", false),
+        track: false,
+        seen: false,
+        triggered: false,
+        last_seen: 0.0,
+        check_t: 0.0,
+        swing_t: 0.0,
+        trigger_t: 0.0,
+        confused: false,
+        confusion_t: 0.0,
+        confusion_dur: fv(p, "confusionDuration", 10.0) as f32,
+        player_loc: pos,
+        lens: None,
+        alarm,
+        hum: true,
+        seed: 0xCA3E_0000 ^ i as u64,
+        gone: false,
+        msg_on: { let m = sv(&d, "msgActivated"); if m.is_empty() { "Camera activated".into() } else { m } },
+        msg_off: { let m = sv(&d, "msgDeactivated"); if m.is_empty() { "Camera deactivated".into() } else { m } },
     }
-    // AutoTurret.PreBeginPlay: spawn the gun on the base (CollisionHeight of both along the base's up axis),
-    // facing the base's yaw.
-    for (i, gun_class) in new_guns {
-        let p = lvl.actors[i].props.clone();
-        let base_loc = loc_of(&p);
-        let base_rot = rot_of(&p);
-        let base_h = fv(&p, "CollisionHeight", 20.2);
-        let gd = assets.classes.defaults(gun_class);
-        let gun_h = fv(&gd, "CollisionHeight", 9.1);
-        let ax = rotator_axes(base_rot);
-        let up = DVec3::new(ax[2][0] as f64, ax[2][1] as f64, ax[2][2] as f64);
-        let gun_pos = base_loc + up * (base_h + gun_h);
-        let rot = [0, base_rot[1], 0];
-        let mut props = gd.clone();
-        let set = |props: &mut Vec<Property>, n: &str, v: Value| {
-            props.retain(|x| !(x.name.eq_ignore_ascii_case(n) && x.index == 0));
-            props.push(Property { name: n.into(), index: 0, value: v });
-        };
-        set(&mut props, "Location", Value::Vector([gun_pos.x as f32, gun_pos.y as f32, gun_pos.z as f32]));
-        set(&mut props, "Rotation", Value::Rotator(rot));
-        let Some(Value::Path(mesh_path)) = find(&props, "Mesh").cloned() else { continue };
-        let pre = match find(&props, "PrePivot") {
-            Some(Value::Vector(v)) => DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64),
-            _ => DVec3::ZERO,
-        };
-        let draw = gun_pos + pre;
-        let scale = fv(&props, "DrawScale", 1.0) as f32;
-        let m = dx_level::actors::rotator_to_bevy_mat3(rot);
-        let root = commands
-            .spawn((
-                Transform::from_translation(Vec3::from(ue_to_bevy(draw.as_vec3().to_array()))).with_rotation(
-                    Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2]))),
-                ),
-                Visibility::default(),
-            ))
-            .id();
-        let map = |q: [f32; 3]| ue_to_bevy(q);
-        let Some((lm, parts, handles)) =
-            spawn_mesh_parts(&mesh_path, scale, &props, assets, images, meshes, materials, commands, root, &map, None)
-        else {
-            commands.entity(root).despawn();
-            continue;
-        };
-        let ai = lvl.actors.len();
-        lvl.actors.push(dx_level::actors::ActorInfo {
-            name: format!("{}{}", gun_class, i),
-            class: gun_class.to_string(),
-            export: -1,
-            props: props.clone(),
-        });
-        let mi = lvl.mesh_actors.len();
-        lvl.mesh_actors.push(MeshActor {
-            actor: ai,
-            parts: parts.clone(),
-            location: draw.as_vec3().to_array(),
+}
+
+/// A placed LaserTrigger or BeamTrigger (BeamTrigger: Event, bTriggerOnceOnly) with its external alarm.
+fn new_laser(i: usize, class: &str, p: &[Property], alarms: &mut Alarms, mesh_entity: &HashMap<usize, Entity>) -> Laser {
+    let pos = loc_of(p);
+    let beam = (class == "BeamTrigger").then(|| BeamEvent {
+        event: crate::devices::name_prop(p, "Event"),
+        once: bv(p, "bTriggerOnceOnly", false),
+        done: false,
+    });
+    let alarm = alarms.add_external(i, pos);
+    Laser {
+        actor: i,
+        tag: crate::devices::name_prop(p, "Tag"),
+        pos,
+        rot: rot_of(p),
+        on: bv(p, "bIsOn", true),
+        no_alarm: bv(p, "bNoAlarm", false),
+        trigger_type: fv(p, "TriggerType", 3.0) as u8,
+        confused: false,
+        confusion_t: 0.0,
+        confusion_dur: fv(p, "confusionDuration", 10.0) as f32,
+        hp: fv(p, "HitPoints", 50.0) as f32,
+        min_damage: fv(p, "minDamageThreshold", 50.0) as f32,
+        alarm_timeout: fv(p, "alarmTimeout", 30.0) as f32,
+        alarm_t: None,
+        last_hit: None,
+        seed: 0x1A5E_0000 ^ i as u64,
+        beams: Vec::new(),
+        spots: Vec::new(),
+        emitter_entity: mesh_entity.get(&i).copied(),
+        lens: None,
+        alarm,
+        seek: pos,
+        gone: false,
+        beam,
+    }
+}
+
+/// An AutoTurretGun spawned on its base: what `new_turret` needs of it.
+struct GunSpawn {
+    base_rot: [i32; 3],
+    gun_pos: DVec3,
+    root: Entity,
+    blocker: usize,
+    lm: unreal_pkg::mesh::LodMesh,
+    parts: Vec<dx_level::actors::MeshPart>,
+    handles: Vec<Handle<Mesh>>,
+}
+
+/// AutoTurret.PreBeginPlay's Spawn of the gun: a runtime actor, mesh actor, blocker and Deco entity at
+/// base + up * (CollisionHeight of both). None (and nothing spawned) when its mesh doesn't load.
+#[allow(clippy::too_many_arguments)]
+fn spawn_gun(
+    i: usize,
+    gun_class: &'static str,
+    p: &[Property],
+    commands: &mut Commands,
+    lvl: &mut dx_level::Level,
+    blockers: &mut Blockers,
+    assets: &mut RuntimeAssets,
+    images: &mut Assets<Image>,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Option<GunSpawn> {
+    let base_loc = loc_of(p);
+    let base_rot = rot_of(p);
+    let base_h = fv(p, "CollisionHeight", 20.2);
+    let gd = assets.classes.defaults(gun_class);
+    let gun_h = fv(&gd, "CollisionHeight", 9.1);
+    let ax = rotator_axes(base_rot);
+    let up = DVec3::new(ax[2][0] as f64, ax[2][1] as f64, ax[2][2] as f64);
+    let gun_pos = base_loc + up * (base_h + gun_h);
+    let rot = [0, base_rot[1], 0];
+    let mut props = gd.clone();
+    let set = |props: &mut Vec<Property>, n: &str, v: Value| {
+        props.retain(|x| !(x.name.eq_ignore_ascii_case(n) && x.index == 0));
+        props.push(Property { name: n.into(), index: 0, value: v });
+    };
+    set(&mut props, "Location", Value::Vector([gun_pos.x as f32, gun_pos.y as f32, gun_pos.z as f32]));
+    set(&mut props, "Rotation", Value::Rotator(rot));
+    let Some(Value::Path(mesh_path)) = find(&props, "Mesh").cloned() else { return None };
+    let pre = match find(&props, "PrePivot") {
+        Some(Value::Vector(v)) => DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64),
+        _ => DVec3::ZERO,
+    };
+    let draw = gun_pos + pre;
+    let scale = fv(&props, "DrawScale", 1.0) as f32;
+    let m = dx_level::actors::rotator_to_bevy_mat3(rot);
+    let root = commands
+        .spawn((
+            Transform::from_translation(Vec3::from(ue_to_bevy(draw.as_vec3().to_array()))).with_rotation(
+                Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2]))),
+            ),
+            Visibility::default(),
+        ))
+        .id();
+    let map = |q: [f32; 3]| ue_to_bevy(q);
+    let Some((lm, parts, handles)) =
+        spawn_mesh_parts(&mesh_path, scale, &props, assets, images, meshes, materials, commands, root, &map, None)
+    else {
+        commands.entity(root).despawn();
+        return None;
+    };
+    let ai = lvl.actors.len();
+    lvl.actors.push(dx_level::actors::ActorInfo {
+        name: format!("{}{}", gun_class, i),
+        class: gun_class.to_string(),
+        export: -1,
+        props: props.clone(),
+    });
+    let mi = lvl.mesh_actors.len();
+    lvl.mesh_actors.push(MeshActor {
+        actor: ai,
+        parts: parts.clone(),
+        location: draw.as_vec3().to_array(),
+        rotation: rot,
+        scale_glow: 1.0,
+        anim: None,
+    });
+    let radius = fv(&props, "CollisionRadius", 22.5);
+    let b = blockers.list.len();
+    blockers.list.push(Cylinder { center: gun_pos, radius, height: gun_h, actor: ai });
+    blockers.deco.insert(b, root);
+    let part_refs: Vec<(Handle<Mesh>, usize)> = handles.iter().cloned().enumerate().map(|(k, h)| (h, k)).collect();
+    commands.entity(root).insert((
+        MeshActorRef(mi),
+        Deco {
+            body: Body {
+                location: gun_pos,
+                velocity: DVec3::ZERO,
+                physics: BodyPhysics::None,
+                radius,
+                height: gun_h,
+                landed_vz: None,
+            },
+            blocker: Some(b),
+            mass: fv(&props, "Mass", 50.0),
+            pushable: false,
+            pre,
             rotation: rot,
             scale_glow: 1.0,
-            anim: None,
-        });
-        let radius = fv(&props, "CollisionRadius", 22.5);
-        let b = blockers.list.len();
-        blockers.list.push(Cylinder { center: gun_pos, radius, height: gun_h, actor: ai });
-        blockers.deco.insert(b, root);
-        let part_refs: Vec<(Handle<Mesh>, usize)> = handles.iter().cloned().enumerate().map(|(k, h)| (h, k)).collect();
-        commands.entity(root).insert((
-            MeshActorRef(mi),
-            Deco {
-                body: Body {
-                    location: gun_pos,
-                    velocity: DVec3::ZERO,
-                    physics: BodyPhysics::None,
-                    radius,
-                    height: gun_h,
-                    landed_vz: None,
-                },
-                blocker: Some(b),
-                mass: fv(&props, "Mass", 50.0),
-                pushable: false,
-                pre,
-                rotation: rot,
-                scale_glow: 1.0,
-                parts: part_refs,
-                mesh_actor: mi,
-                last_lit: DVec3::splat(1e9),
-                spun: true,
-                name: format!("{}{}", gun_class, i),
-                start: gun_pos,
-                buoyancy: 0.0,
-                floating: false,
-                orig_rot: rot,
-                thrown_by_player: false,
-                thrown_body: false,
-                push_snd: 0.0,
-                falls: false,
-            },
-        ));
-        let base_blocker = by_actor.get(&i).copied();
-        crate::sound::own_ambient(i);
-        let am = Arc::new(anim_mesh(&lm));
-        let seed = 0x7A11_0000 ^ i as u64;
-        st.turrets.push(Turret {
-            actor: i,
-            tag: crate::devices::name_prop(&p, "Tag"),
-            base_blocker,
-            base_entity: base_blocker.and_then(|bb| blockers.deco.get(&bb).copied()),
-            gun_blocker: b,
-            gun_entity: root,
-            gun_pos,
-            orig: (0.0, base_rot[1] as f64),
-            rot: (0.0, base_rot[1] as f64),
-            want: (0.0, base_rot[1] as f64),
-            active: bv(&p, "bActive", true),
-            pre_alarm: bv(&p, "bActive", true),
-            heard: false,
-            disabled: false,
-            players_only: bv(&p, "bTrackPlayersOnly", true),
-            pawns_only: bv(&p, "bTrackPawnsOnly", false),
-            max_range: fv(&p, "maxRange", 512.0),
-            fire_rate: fv(&p, "fireRate", 0.25) as f32,
-            accuracy: fv(&p, "gunAccuracy", 0.5),
-            damage: fv(&p, "gunDamage", 5.0) as f32,
-            pitch_limit: fv(&p, "pitchLimit", 11000.0),
-            fire_t: 0.0,
-            flash_t: 0.0,
-            target: None,
-            last_target: None,
-            confused: false,
-            confusion_t: 0.0,
-            confusion_dur: fv(&p, "confusionDuration", 10.0) as f32,
-            hum: true,
-            mesh: Some(am),
-            parts,
-            handles,
-            clip: None,
-            firing: false,
-            lens: None,
-            muzzle: None,
-            gone: false,
-            seed,
-        });
+            parts: part_refs,
+            mesh_actor: mi,
+            last_lit: DVec3::splat(1e9),
+            spun: true,
+            name: format!("{}{}", gun_class, i),
+            start: gun_pos,
+            buoyancy: 0.0,
+            floating: false,
+            orig_rot: rot,
+            thrown_by_player: false,
+            thrown_body: false,
+            push_snd: 0.0,
+            falls: false,
+        },
+    ));
+    Some(GunSpawn { base_rot, gun_pos, root, blocker: b, lm, parts, handles })
+}
+
+/// The AutoTurret's state around its spawned gun (the base's properties).
+fn new_turret(i: usize, p: &[Property], gun: GunSpawn, by_actor: &HashMap<usize, usize>, blockers: &Blockers) -> Turret {
+    let GunSpawn { base_rot, gun_pos, root, blocker: b, lm, parts, handles } = gun;
+    let base_blocker = by_actor.get(&i).copied();
+    crate::sound::own_ambient(i);
+    let am = Arc::new(anim_mesh(&lm));
+    let seed = 0x7A11_0000 ^ i as u64;
+    Turret {
+        actor: i,
+        tag: crate::devices::name_prop(p, "Tag"),
+        base_blocker,
+        base_entity: base_blocker.and_then(|bb| blockers.deco.get(&bb).copied()),
+        gun_blocker: b,
+        gun_entity: root,
+        gun_pos,
+        orig: (0.0, base_rot[1] as f64),
+        rot: (0.0, base_rot[1] as f64),
+        want: (0.0, base_rot[1] as f64),
+        active: bv(p, "bActive", true),
+        pre_alarm: bv(p, "bActive", true),
+        heard: false,
+        disabled: false,
+        players_only: bv(p, "bTrackPlayersOnly", true),
+        pawns_only: bv(p, "bTrackPawnsOnly", false),
+        max_range: fv(p, "maxRange", 512.0),
+        fire_rate: fv(p, "fireRate", 0.25) as f32,
+        accuracy: fv(p, "gunAccuracy", 0.5),
+        damage: fv(p, "gunDamage", 5.0) as f32,
+        pitch_limit: fv(p, "pitchLimit", 11000.0),
+        fire_t: 0.0,
+        flash_t: 0.0,
+        target: None,
+        last_target: None,
+        confused: false,
+        confusion_t: 0.0,
+        confusion_dur: fv(p, "confusionDuration", 10.0) as f32,
+        hum: true,
+        mesh: Some(am),
+        parts,
+        handles,
+        clip: None,
+        firing: false,
+        lens: None,
+        muzzle: None,
+        gone: false,
+        seed,
     }
-    println!(
-        "security: {} cameras, {} turrets, {} lasers",
-        st.cams.len(),
-        st.turrets.len(),
-        st.lasers.len()
-    );
 }
 
 /// What a security computer shows and controls (ComputerSecurityCameraWindow / ComputerScreenSecurity).

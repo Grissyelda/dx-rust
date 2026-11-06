@@ -645,6 +645,60 @@ pub struct Snapshot {
     items: Vec<(String, f32)>,
 }
 
+/// This frame's inputs to the windows' layout and drawing (DeusExHUD.ConfigurationChanged): screen size, what the
+/// conversation / cut-scene state hides or moves, and the text, fonts and sizes of the text windows.
+struct HudFrame {
+    s: i32,
+    sw: i32,
+    sh: i32,
+    hit_h: i32,
+    compass_h: i32,
+    con: crate::conui::ConView,
+    third: bool,
+    menu: bool,
+    first_w: i32,
+    first_h: i32,
+    up_h: i32,
+    low_h: i32,
+    bark_w: i32,
+    bark_h: i32,
+    win_pos: f32,
+    rec_head: Option<Arc<UiFont>>,
+    rec_small: Option<Arc<UiFont>>,
+    rec_any: bool,
+    rec_w: i32,
+    rec_h: i32,
+    start_font: Option<Arc<UiFont>>,
+    start: Option<(String, f32, f32)>,
+    start_lines: Vec<String>,
+    start_w: i32,
+    start_h: i32,
+    /// The information window's text id (crate::info::shown), when one is up.
+    info_id: Option<u64>,
+    info_font: Option<Arc<UiFont>>,
+    info_lines: Vec<(u8, [u8; 3], Vec<String>)>,
+    info_w: i32,
+    info_h: i32,
+    stay_msg: Option<String>,
+    msg_font: Option<Arc<UiFont>>,
+    fps_text: Option<String>,
+    fps_w: i32,
+    fps_h: i32,
+    debug_lines: Vec<String>,
+    debug_w: i32,
+    debug_h: i32,
+    msg_w: i32,
+    msg_h: i32,
+    ammo_visible: bool,
+    log_font: Option<Arc<UiFont>>,
+    log_w: i32,
+    log_lines: Vec<String>,
+    log_h: i32,
+    log_visible: bool,
+    damage_visible: bool,
+    face_split: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn classic_hud_system(
     time: Res<Time>,
@@ -698,15 +752,86 @@ pub fn classic_hud_system(
     if ph.breath.is_some() {
         *swim_clock += dt;
     }
+    gather_snapshot(&mut snap_keep, &ph, &weapons, &clips, lock.0, lock.1, &charged, yaw, *swim_clock);
+    let snap = &*snap_keep;
+    take_messages(hud, assets, &mut msg, &mut ph, dt);
+    let f = hud_frame(hud, assets, &msg, snap, s, sw, sh, dt);
+
+    let tiny = hud.font(assets, "FontTiny");
+    for w in Win::ALL {
+        let (x, y, ww, wh, visible) = f.layout(w, snap, *window);
+        // Enhancement: HUD customisation (each part hidden, sized and faded on its own).
+        let (show, k, alpha) = hud_part(w);
+        // Combat HUD (hudfade.rs): the status windows fade out of combat.
+        let alpha = if matches!(w, Win::Hit | Win::Compass | Win::Ammo | Win::Belt | Win::Active) { alpha * crate::hudfade::alpha() } else { alpha };
+        let visible = visible && show;
+        if !visible {
+            hide_window(&mut nodes, w);
+            continue;
+        }
+        let _wprof = crate::prof::scope(match w {
+            Win::Hit => "hud::Hit",
+            Win::Compass => "hud::Compass",
+            Win::Ammo => "hud::Ammo",
+            Win::Belt => "hud::Belt",
+            Win::Log => "hud::Log",
+            Win::Damage => "hud::Damage",
+            Win::Received => "hud::Received",
+            Win::Active => "hud::Active",
+            Win::InfoLink => "hud::InfoLink",
+            Win::InfoLinkFace => "hud::InfoLinkFace",
+            Win::ConFirst => "hud::ConFirst",
+            Win::ConUpper => "hud::ConUpper",
+            Win::ConLower => "hud::ConLower",
+            Win::Bark => "hud::Bark",
+            Win::ConCursor => "hud::ConCursor",
+            Win::Start => "hud::Start",
+            Win::Info => "hud::Info",
+            Win::Msg => "hud::Msg",
+            Win::Fps => "hud::Fps",
+            Win::Debug => "hud::Debug",
+        });
+        // Windows that only change with what they show are redrawn only when that changes.
+        let key = window_key(w, &f, snap, hud, &inv, ww, wh, y, dt);
+        // A settings change (theme, translucency, borders) redraws everything.
+        let key = key.map(|k| k ^ crate::settings::generation().wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let unchanged = key.is_some() && hud.keys.get(&w) == key.as_ref() && hud.last.contains_key(&w);
+        if !unchanged {
+            if let Some(k) = key {
+                hud.keys.insert(w, k);
+            } else {
+                hud.keys.remove(&w);
+            }
+            let mut canvas = window_canvas(hud, assets, w, &f, ww, wh);
+            draw_window(w, hud, assets, &mut canvas, &f, snap, &inv, tiny.as_deref(), (ww, wh, y), dt);
+            upload_window(hud, &mut images, &mut nodes, &mut layers, w, canvas, ww, wh, s);
+        }
+        place_window(&mut nodes, &mut layers, w, visible, (x, y, ww, wh), k, alpha, &f, *window);
+    }
+}
+
+/// The snapshot the windows draw from: health, energy, breath, the weapon in hand, the lock line, augs and charged
+/// items.
+#[allow(clippy::too_many_arguments)]
+fn gather_snapshot(
+    snap: &mut Snapshot,
+    ph: &PlayerHealth,
+    weapons: &Weapons,
+    clips: &Clips,
+    lock_text: &Text,
+    lock_color: &TextColor,
+    charged: &crate::charged::ActiveCharged,
+    yaw: i32,
+    swim_time: f32,
+) {
     let p = &ph.parts;
     // The snapshot the windows draw from: kept between frames and updated in place (strings and lists copied only
     // when they changed, so a steady HUD allocates nothing).
-    let snap = &mut *snap_keep;
     snap.parts = [P_HEAD, P_TORSO, P_ARM_L, P_ARM_R, P_LEG_L, P_LEG_R].map(|i| p[i].max(0.0).round() as i32);
     snap.energy = ph.energy;
     snap.breath = ph.breath;
     snap.stamina = if ph.breath.is_some() { None } else { crate::stamina::fraction() };
-    snap.swim_time = *swim_clock;
+    snap.swim_time = swim_time;
     snap.yaw = yaw;
     snap.dead = ph.dead;
     match weapons.held.as_ref() {
@@ -730,11 +855,11 @@ pub fn classic_hud_system(
     if snap.loaded_ammo != weapons.loaded_ammo {
         snap.loaded_ammo.clone_from(&weapons.loaded_ammo);
     }
-    if snap.lock_text != lock.0 .0 {
-        snap.lock_text.clone_from(&lock.0 .0);
+    if snap.lock_text != lock_text.0 {
+        snap.lock_text.clone_from(&lock_text.0);
     }
     snap.lock_color = {
-        let c = lock.1 .0.to_srgba();
+        let c = lock_color.0.to_srgba();
         [(c.red * 255.0) as u8, (c.green * 255.0) as u8, (c.blue * 255.0) as u8]
     };
     // bHUDShowAllAugs: every installed aug that can be toggled, lit while on (by hotkey).
@@ -773,8 +898,17 @@ pub fn classic_hud_system(
             None => snap.items.push((c.class.clone(), f)),
         }
     }
-    let snap = &*snap;
+}
 
+/// HUDLogDisplay / DamageHUDDisplay / HUDReceivedDisplay inputs: new messages to the log, damage icons, received
+/// items, and their timers.
+fn take_messages(
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    msg: &mut crate::movers::HudMessage,
+    ph: &mut PlayerHealth,
+    dt: f32,
+) {
     // Player messages (ClientMessage) go to the message log; the death prompt and keypad entry line stay where
     // they are. A message is new when its text changes or its timer is set again.
     if (msg.text != hud.seen_msg.0 || msg.time_left > hud.seen_msg.1 + 0.01)
@@ -822,6 +956,21 @@ pub fn classic_hud_system(
     if hud.received_t > RECEIVED_TIME {
         hud.received.clear();
     }
+}
+
+/// DeusExHUD.ConfigurationChanged: what hides or moves the windows this frame and the text windows' contents and
+/// sizes (the mission start text types on here).
+#[allow(clippy::too_many_arguments)]
+fn hud_frame(
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    msg: &crate::movers::HudMessage,
+    snap: &Snapshot,
+    s: i32,
+    sw: i32,
+    sh: i32,
+    dt: f32,
+) -> HudFrame {
     let rec_head = hud.font(assets, "FontMenuHeaders_DS");
     let rec_small = hud.font(assets, "FontMenuSmall_DS");
     let rec_any = !hud.received.is_empty();
@@ -858,75 +1007,8 @@ pub fn classic_hud_system(
         crate::conui::bark_height(hud, assets, &con.barks, bark_w)
     };
     let win_pos = if crate::cinematic::letterbox() { 1.0 } else { con.play.as_ref().map_or(0.0, |p| p.win_pos) };
-    // Mission start text: one character a frame in the original (PrintNextCharacter per Tick); here 40 a second,
-    // then 5 s (displayTime) before it hides.
-    let start_font = hud.font(assets, "DeusExUI.FontLocation");
-    let start = {
-        let mut g = START.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((msg, shown, left)) = g.as_mut() {
-            let n = msg.chars().count() as f32;
-            if *shown < n {
-                *shown = (*shown + dt * 40.0).min(n);
-            } else {
-                *left -= dt;
-            }
-            if *left <= 0.0 {
-                *g = None;
-            }
-        }
-        g.clone()
-    };
-    let start_lines: Vec<String> = match (&start, &start_font) {
-        (Some((msg, shown, _)), Some(f)) => {
-            let typed: String = msg.chars().take(*shown as usize).collect();
-            let all = crate::uicanvas::wrap(f, &msg.replace("|n", "\n"), 500);
-            // Lay out the whole message (the window is sized for it), show the typed part.
-            let mut left = typed.replace("|n", "").chars().count();
-            all.iter()
-                .map(|l| {
-                    let k = l.chars().count().min(left);
-                    left -= k;
-                    l.chars().take(k).collect()
-                })
-                .collect()
-        }
-        _ => Vec::new(),
-    };
-    let (start_w, start_h) = match (&start, &start_font) {
-        (Some((msg, ..)), Some(f)) => {
-            let all = crate::uicanvas::wrap(f, &msg.replace("|n", "\n"), 500);
-            (all.iter().map(|l| f.width(l)).max().unwrap_or(0) + 2, all.len() as i32 * f.height + 2)
-        }
-        _ => (1, 1),
-    };
-    // HUDInformationDisplay (DeusExHUD.ConfigurationChanged): as wide as its longest paragraph, at most
-    // Min(width - 170, 800), the paragraphs word-wrapped to that; centred between the InfoLink and the belt.
-    let info = crate::info::shown();
-    let info_font = hud.font(assets, "FontMenuSmall_DS");
-    let info_lines: Vec<(u8, [u8; 3], Vec<String>)> = match (&info, &info_font) {
-        (Some((_, paras)), Some(f)) => {
-            let max_w = (sw - 170).min(800);
-            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
-            let inner = pref.min(max_w) - INFO_SIDE * 2;
-            paras
-                .iter()
-                .map(|p| {
-                    let l = if p.text.is_empty() { vec![String::new()] } else { crate::uicanvas::wrap(f, &p.text, inner.max(1)) };
-                    (p.align, p.color, l)
-                })
-                .collect()
-        }
-        _ => Vec::new(),
-    };
-    let (info_w, info_h) = match (&info, &info_font) {
-        (Some((_, paras)), Some(f)) => {
-            let max_w = (sw - 170).min(800);
-            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
-            let lines: usize = info_lines.iter().map(|l| l.2.len()).sum();
-            (pref.min(max_w), (lines as i32 * f.height + INFO_TOP + INFO_BOTTOM).max(INFO_MIN_H))
-        }
-        _ => (1, 1),
-    };
+    let (start_font, start, start_lines, start_w, start_h) = start_text_window(hud, assets, dt);
+    let (info_id, info_font, info_lines, info_w, info_h) = info_window(hud, assets, sw);
     // A message that stays up: the death prompt.
     let stay_msg = (msg.time_left > 100.0 && !msg.text.is_empty()).then(|| msg.text.clone());
     let msg_font = hud.font(assets, "FontMenuSmall_DS");
@@ -973,7 +1055,192 @@ pub fn classic_hud_system(
             .link
             .as_ref()
             .is_some_and(|l| l.show_portrait && l.portrait.as_ref().is_some_and(|p| hud.tex(assets, p).is_some()));
-    let layout = |w: Win| -> (i32, i32, i32, i32, bool) {
+    HudFrame {
+        s,
+        sw,
+        sh,
+        hit_h,
+        compass_h,
+        con,
+        third,
+        menu,
+        first_w,
+        first_h,
+        up_h,
+        low_h,
+        bark_w,
+        bark_h,
+        win_pos,
+        rec_head,
+        rec_small,
+        rec_any,
+        rec_w,
+        rec_h,
+        start_font,
+        start,
+        start_lines,
+        start_w,
+        start_h,
+        info_id,
+        info_font,
+        info_lines,
+        info_w,
+        info_h,
+        stay_msg,
+        msg_font,
+        fps_text,
+        fps_w,
+        fps_h,
+        debug_lines,
+        debug_w,
+        debug_h,
+        msg_w,
+        msg_h,
+        ammo_visible,
+        log_font,
+        log_w,
+        log_lines,
+        log_h,
+        log_visible,
+        damage_visible,
+        face_split,
+    }
+}
+
+/// The mission start text (classic_hud::start_text) typing on: its font, state, the typed lines and the window size.
+#[allow(clippy::type_complexity)]
+fn start_text_window(
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    dt: f32,
+) -> (Option<Arc<UiFont>>, Option<(String, f32, f32)>, Vec<String>, i32, i32) {
+    // Mission start text: one character a frame in the original (PrintNextCharacter per Tick); here 40 a second,
+    // then 5 s (displayTime) before it hides.
+    let start_font = hud.font(assets, "DeusExUI.FontLocation");
+    let start = {
+        let mut g = START.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((msg, shown, left)) = g.as_mut() {
+            let n = msg.chars().count() as f32;
+            if *shown < n {
+                *shown = (*shown + dt * 40.0).min(n);
+            } else {
+                *left -= dt;
+            }
+            if *left <= 0.0 {
+                *g = None;
+            }
+        }
+        g.clone()
+    };
+    let start_lines: Vec<String> = match (&start, &start_font) {
+        (Some((msg, shown, _)), Some(f)) => {
+            let typed: String = msg.chars().take(*shown as usize).collect();
+            let all = crate::uicanvas::wrap(f, &msg.replace("|n", "\n"), 500);
+            // Lay out the whole message (the window is sized for it), show the typed part.
+            let mut left = typed.replace("|n", "").chars().count();
+            all.iter()
+                .map(|l| {
+                    let k = l.chars().count().min(left);
+                    left -= k;
+                    l.chars().take(k).collect()
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let (start_w, start_h) = match (&start, &start_font) {
+        (Some((msg, ..)), Some(f)) => {
+            let all = crate::uicanvas::wrap(f, &msg.replace("|n", "\n"), 500);
+            (all.iter().map(|l| f.width(l)).max().unwrap_or(0) + 2, all.len() as i32 * f.height + 2)
+        }
+        _ => (1, 1),
+    };
+    (start_font, start, start_lines, start_w, start_h)
+}
+
+/// HUDInformationDisplay's text: (text id, font, wrapped paragraphs, width, height).
+#[allow(clippy::type_complexity)]
+fn info_window(
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    sw: i32,
+) -> (Option<u64>, Option<Arc<UiFont>>, Vec<(u8, [u8; 3], Vec<String>)>, i32, i32) {
+    // HUDInformationDisplay (DeusExHUD.ConfigurationChanged): as wide as its longest paragraph, at most
+    // Min(width - 170, 800), the paragraphs word-wrapped to that; centred between the InfoLink and the belt.
+    let info = crate::info::shown();
+    let info_font = hud.font(assets, "FontMenuSmall_DS");
+    let info_lines: Vec<(u8, [u8; 3], Vec<String>)> = match (&info, &info_font) {
+        (Some((_, paras)), Some(f)) => {
+            let max_w = (sw - 170).min(800);
+            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
+            let inner = pref.min(max_w) - INFO_SIDE * 2;
+            paras
+                .iter()
+                .map(|p| {
+                    let l = if p.text.is_empty() { vec![String::new()] } else { crate::uicanvas::wrap(f, &p.text, inner.max(1)) };
+                    (p.align, p.color, l)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let (info_w, info_h) = match (&info, &info_font) {
+        (Some((_, paras)), Some(f)) => {
+            let max_w = (sw - 170).min(800);
+            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
+            let lines: usize = info_lines.iter().map(|l| l.2.len()).sum();
+            (pref.min(max_w), (lines as i32 * f.height + INFO_TOP + INFO_BOTTOM).max(INFO_MIN_H))
+        }
+        _ => (1, 1),
+    };
+    (info.as_ref().map(|i| i.0), info_font, info_lines, info_w, info_h)
+}
+
+impl HudFrame {
+    /// Where a window goes this frame and whether it shows: (x, y, width, height, visible) in UI units.
+    fn layout(&self, w: Win, snap: &Snapshot, window: &Window) -> (i32, i32, i32, i32, bool) {
+        let HudFrame {
+            s,
+            sw,
+            sh,
+            hit_h,
+            compass_h,
+            ref con,
+            third,
+            menu,
+            first_w,
+            first_h,
+            up_h,
+            low_h,
+            bark_w,
+            bark_h,
+            win_pos,
+            rec_any,
+            rec_w,
+            rec_h,
+            ref start,
+            start_w,
+            start_h,
+            info_id,
+            info_w,
+            info_h,
+            ref stay_msg,
+            ref fps_text,
+            fps_w,
+            fps_h,
+            ref debug_lines,
+            debug_w,
+            debug_h,
+            msg_w,
+            msg_h,
+            ammo_visible,
+            log_w,
+            log_h,
+            log_visible,
+            damage_visible,
+            face_split,
+            ..
+        } = *self;
         let (ww, wh) = w.size();
         match w {
             Win::Hit => (0, 0, ww, wh, !snap.dead && !menu),
@@ -1052,7 +1319,7 @@ pub fn classic_hud_system(
                     top + ((bottom - top) / 2 - info_h / 2) + 10,
                     info_w.max(1),
                     info_h.max(1),
-                    info.is_some() && !snap.dead && !menu,
+                    info_id.is_some() && !snap.dead && !menu,
                 )
             }
             Win::Fps => (sw - fps_w - 4, 2, fps_w.max(1), fps_h.max(1), fps_text.is_some()),
@@ -1099,327 +1366,371 @@ pub fn classic_hud_system(
                 )
             }
         }
-    };
+    }
+}
 
-    let tiny = hud.font(assets, "FontTiny");
-    for w in Win::ALL {
-        let (x, y, ww, wh, visible) = layout(w);
-        // Enhancement: HUD customisation (each part hidden, sized and faded on its own).
-        let (show, k, alpha) = hud_part(w);
-        // Combat HUD (hudfade.rs): the status windows fade out of combat.
-        let alpha = if matches!(w, Win::Hit | Win::Compass | Win::Ammo | Win::Belt | Win::Active) { alpha * crate::hudfade::alpha() } else { alpha };
-        let visible = visible && show;
-        if !visible {
-            // Hidden windows keep their last image: no canvas, no upload (a hidden ConLower alone was a
-            // screen-wide f32 canvas allocated, cleared and converted every frame).
-            for (hw, mut node, mut vis, _) in &mut nodes {
-                if hw.0 == w {
-                    vis.set_if_neq(Visibility::Hidden);
-                    // Lean Updates: out of Bevy's layout too (Visibility keeps a node in it).
-                    if crate::perf::lean_updates() && node.display != Display::None {
-                        node.display = Display::None;
-                    }
+/// A hidden window keeps its last image: its node is hidden (and out of layout with Lean Updates).
+fn hide_window(nodes: &mut Query<(&HudWindow, &mut Node, &mut Visibility, &MaterialNode<HudLayer>)>, w: Win) {
+    // Hidden windows keep their last image: no canvas, no upload (a hidden ConLower alone was a
+    // screen-wide f32 canvas allocated, cleared and converted every frame).
+    for (hw, mut node, mut vis, _) in nodes.iter_mut() {
+        if hw.0 == w {
+            vis.set_if_neq(Visibility::Hidden);
+            // Lean Updates: out of Bevy's layout too (Visibility keeps a node in it).
+            if crate::perf::lean_updates() && node.display != Display::None {
+                node.display = Display::None;
+            }
+        }
+    }
+}
+
+/// What a window that only changes with its inputs is drawn from (None = redrawn every frame). The hit display's
+/// colours tick here (BodyPart.color), so they are worked out before the redraw check.
+#[allow(clippy::too_many_arguments)]
+fn window_key(
+    w: Win,
+    f: &HudFrame,
+    snap: &Snapshot,
+    hud: &mut ClassicHud,
+    inv: &PlayerInventory,
+    ww: i32,
+    wh: i32,
+    y: i32,
+    dt: f32,
+) -> Option<u64> {
+    let HudFrame { s, sw, face_split, ref con, info_id, ref stay_msg, ref fps_text, ref debug_lines, ref log_lines, .. } = *f;
+    match w {
+        // With the portrait on a window of its own, the InfoLink changes only with its text.
+        Win::InfoLink if face_split => con.link.as_ref().map(|l| {
+            hkey(&(
+                &l.name,
+                l.name_visible,
+                &l.queued,
+                l.show_icon,
+                &l.text,
+                l.typed,
+                crate::conui::infolink_cursor_shown(l),
+                (ww, wh, s),
+            ))
+        }),
+        Win::Belt => {
+            // Hashed field by field (no formatted copies of the items).
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            inv.0.belt.hash(&mut h);
+            for &i in inv.0.belt.iter().flatten() {
+                if let Some(it) = inv.0.items.get(i) {
+                    (&it.def.class, &it.def.name, &it.def.belt_name, &it.def.icon, it.count, it.uid).hash(&mut h);
                 }
             }
+            snap.held.as_ref().map(|v| (&v.class, &v.ammo_class, v.loaded)).hash(&mut h);
+            snap.pending.hash(&mut h);
+            // The loaded-ammo map in any order.
+            snap.loaded_ammo.iter().fold(0u64, |a, kv| a ^ hkey(&kv)).hash(&mut h);
+            inv.0.ammo.hash(&mut h);
+            (ww, wh, s).hash(&mut h);
+            Some(h.finish())
+        }
+        Win::Info => Some(hkey(&(info_id, ww, wh, s))),
+        Win::Msg => Some(hkey(&(stay_msg, ww, wh, s))),
+        Win::Fps => Some(hkey(&(fps_text, ww, wh, s))),
+        Win::Debug => Some(hkey(&(debug_lines, ww, wh, s))),
+        Win::ConCursor => Some(hkey(&(ww, wh, s))),
+        // The ammo display changes with the gun, its rounds, the pool and the lock line.
+        Win::Ammo => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            if let Some(v) = snap.held.as_ref() {
+                (&v.class, &v.ammo_class, v.reload_count, v.loaded, v.reloading, v.can_track, v.item).hash(&mut h);
+            }
+            inv.0.ammo.hash(&mut h);
+            (&snap.lock_text, snap.lock_color).hash(&mut h);
+            (ww, wh, s).hash(&mut h);
+            Some(h.finish())
+        }
+        // The log: its lines and the age of the newest (fades by the second).
+        Win::Log => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            log_lines.hash(&mut h);
+            (ww, wh, s).hash(&mut h);
+            Some(h.finish())
+        }
+        // The hit display only changes with its colours and bars.
+        Win::Hit => {
+            let cols: [Rgb; 6] = std::array::from_fn(|i| hud.parts[i].color(dt, snap.parts[i]));
+            hud.hit_cols = cols;
+            let blink = snap.breath.is_some_and(|b| b < 0.1) && snap.swim_time % 0.5 > 0.25;
+            Some(hkey(&(
+                cols,
+                (snap.energy.clamp(0.0, 100.0) * 0.55) as i32,
+                snap.breath.map(|b| (b.clamp(0.0, 1.0) * 55.0) as i32),
+                snap.stamina.map(|b| (b.clamp(0.0, 1.0) * 55.0) as i32),
+                blink,
+                (ww, wh, s),
+            )))
+        }
+        // The compass only changes when the tick strip moves a pixel.
+        Win::Compass => Some(hkey(&(compass_positions(snap.yaw, hud.true_north.unwrap_or(0)), (ww, wh, s)))),
+        Win::Active => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            snap.augs.hash(&mut h);
+            for (c, f) in &snap.items {
+                (c, (f * 1000.0) as i32).hash(&mut h);
+            }
+            (ww, wh, s).hash(&mut h);
+            Some(h.finish())
+        }
+        // Lean Updates: the conversation windows (a cut scene is all conversation). The upper one is only its
+        // background; the lower one is the speaker, the line and the choices, where the letterbox puts it (the
+        // choice rows for the mouse stay as last drawn).
+        Win::ConUpper if crate::perf::lean_updates() => Some(hkey(&(ww, wh, s))),
+        Win::ConLower if crate::perf::lean_updates() => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (ww, wh, s, y, sw).hash(&mut h);
+            con.play.as_ref().map(|p| (&p.name, &p.text, p.player_line, p.forced, &p.choices, p.focus)).hash(&mut h);
+            crate::gamepad::pad_in_use().hash(&mut h);
+            std::mem::discriminant(&crate::gamepad::glyph_kind()).hash(&mut h);
+            Some(h.finish())
+        }
+        _ => None,
+    }
+}
+
+/// A fresh canvas for a window (the split InfoLink starts from its cached frame).
+fn window_canvas(hud: &mut ClassicHud, assets: &mut RuntimeAssets, w: Win, f: &HudFrame, ww: i32, wh: i32) -> Canvas {
+    let s = f.s;
+    if w == Win::InfoLink && f.face_split {
+        let fk = hkey(&(ww, wh, s, crate::settings::generation()));
+        if hud.infolink_frame.as_ref().map(|f| f.0) != Some(fk) {
+            let mut frame = Canvas::new(ww, wh, s);
+            crate::conui::draw_infolink_frame(hud, assets, &mut frame);
+            hud.infolink_frame = Some((fk, frame));
+        }
+        hud.infolink_frame.as_ref().map_or_else(|| Canvas::new(ww, wh, s), |f| f.1.clone())
+    } else {
+        Canvas::new(ww, wh, s)
+    }
+}
+
+/// Draw one window's picture into its canvas.
+#[allow(clippy::too_many_arguments)]
+fn draw_window(
+    w: Win,
+    hud: &mut ClassicHud,
+    assets: &mut RuntimeAssets,
+    canvas: &mut Canvas,
+    f: &HudFrame,
+    snap: &Snapshot,
+    inv: &PlayerInventory,
+    tiny: Option<&UiFont>,
+    (ww, wh, y): (i32, i32, i32),
+    dt: f32,
+) {
+    let HudFrame {
+        sw,
+        sh,
+        ref con,
+        face_split,
+        ref rec_head,
+        ref rec_small,
+        ref start_font,
+        ref start_lines,
+        ref info_font,
+        ref info_lines,
+        ref stay_msg,
+        ref msg_font,
+        ref fps_text,
+        ref debug_lines,
+        ref log_font,
+        ref log_lines,
+        ..
+    } = *f;
+    match w {
+        Win::Hit => draw_hit(hud, assets, canvas, tiny, snap, dt),
+        Win::Compass => draw_compass(hud, assets, canvas, snap),
+        Win::Ammo => draw_ammo(hud, assets, canvas, tiny, snap, inv),
+        Win::Belt => draw_belt(hud, assets, canvas, tiny, snap, inv),
+        Win::Log => draw_log(hud, assets, canvas, log_font.as_deref(), log_lines),
+        Win::Damage => draw_damage(hud, assets, canvas),
+        Win::Received => {
+            if let (Some(h), Some(sm)) = (rec_head, rec_small) {
+                draw_received(hud, assets, canvas, h, sm);
+            }
+        }
+        Win::Active => draw_active(
+            hud,
+            assets,
+            canvas,
+            tiny,
+            snap,
+            sh - Win::Belt.size().1,
+        ),
+        Win::InfoLink => {
+            if let Some(l) = &con.link {
+                if face_split {
+                    crate::conui::draw_infolink_contents(hud, assets, canvas, l, false);
+                } else {
+                    crate::conui::draw_infolink(hud, assets, canvas, l, true);
+                }
+            }
+        }
+        Win::InfoLinkFace => {
+            if let Some(l) = &con.link {
+                crate::conui::draw_infolink_face(hud, assets, canvas, l, 0, 0);
+            }
+        }
+        Win::ConFirst => {
+            if let Some(p) = &con.play {
+                crate::conui::draw_first(hud, assets, canvas, p);
+            }
+        }
+        Win::ConUpper => crate::conui::draw_upper(hud, assets, canvas),
+        Win::Bark => crate::conui::draw_barks(hud, assets, canvas, &con.barks),
+        Win::ConCursor => crate::inventory_screen::cursor_with_shadow(hud, assets, canvas),
+        Win::Start => {
+            if let Some(f) = start_font {
+                for (i, l) in start_lines.iter().enumerate() {
+                    let y = i as i32 * f.height;
+                    canvas.text(f, 2, y + 2, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
+                    canvas.text(f, 0, y, ww, f.height, HAlign::Left, VAlign::Top, [255, 255, 255], l);
+                }
+            }
+        }
+        Win::Info => draw_info(hud, assets, canvas, info_font.as_deref(), info_lines),
+        Win::Fps => {
+            if let (Some(f), Some(t)) = (msg_font, fps_text) {
+                canvas.text(f, 1, 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], t);
+                canvas.text(f, 0, 0, ww, f.height, HAlign::Left, VAlign::Top, [255, 242, 140], t);
+            }
+        }
+        Win::Debug => {
+            if let Some(f) = msg_font {
+                for (i, l) in debug_lines.iter().enumerate() {
+                    let y = i as i32 * f.height;
+                    canvas.text(f, 1, y + 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
+                    canvas.text(f, 0, y, ww, f.height, HAlign::Left, VAlign::Top, [220, 255, 220], l);
+                }
+            }
+        }
+        Win::Msg => {
+            if let (Some(f), Some(t)) = (msg_font, stay_msg) {
+                canvas.text(f, 2, 2, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], t);
+                canvas.text(f, 0, 0, ww, f.height, HAlign::Left, VAlign::Top, [255, 255, 255], t);
+            }
+        }
+        Win::ConLower => {
+            crate::conui::LOWER_Y.store(y, std::sync::atomic::Ordering::Relaxed);
+            if let Some(p) = &con.play {
+                crate::conui::draw_lower(hud, assets, canvas, p, sw);
+            } else {
+                // CinematicWindow: the letterbox alone.
+                canvas.fill(0, 0, ww, wh, crate::uicanvas::Style::Normal, [0, 0, 0]);
+            }
+        }
+    }
+}
+
+/// Upload a redrawn window: a resized image is rebuilt (and its material marked changed), changed pixels copied in.
+#[allow(clippy::too_many_arguments)]
+fn upload_window(
+    hud: &mut ClassicHud,
+    images: &mut Assets<Image>,
+    nodes: &mut Query<(&HudWindow, &mut Node, &mut Visibility, &MaterialNode<HudLayer>)>,
+    layers: &mut Assets<HudLayer>,
+    w: Win,
+    canvas: Canvas,
+    ww: i32,
+    wh: i32,
+    s: i32,
+) {
+    let bytes = canvas.to_rgba8();
+    let (handle, size) = hud.images.get(&w).cloned().unwrap();
+    let want_size = ww * 100000 + wh * 10 + s;
+    if size != want_size {
+        if let Some(mut img) = images.get_mut(&handle) {
+            *img = blank_image((ww * s) as u32, (wh * s) as u32);
+        }
+        hud.images.insert(w, (handle.clone(), want_size));
+        hud.last.remove(&w);
+        // A resized image is a new GPU texture; the material's bind group still points at the old one
+        // until the material itself is marked changed.
+        for (hw, _, _, mat) in nodes.iter() {
+            if hw.0 == w {
+                if let Some(m) = layers.get_mut(&mat.0) {
+                    m.into_inner();
+                }
+            }
+        }
+    }
+    if hud.last.get(&w) != Some(&bytes) {
+        if let Some(mut img) = images.get_mut(&handle) {
+            match &mut img.data {
+                Some(d) if d.len() == bytes.len() => d.copy_from_slice(&bytes),
+                d => *d = Some(bytes.clone()),
+            }
+        }
+        hud.last.insert(w, bytes);
+    }
+}
+
+/// Show a window's node, sized about the screen corner it sits nearest (HUD part size), at its opacity.
+#[allow(clippy::too_many_arguments)]
+fn place_window(
+    nodes: &mut Query<(&HudWindow, &mut Node, &mut Visibility, &MaterialNode<HudLayer>)>,
+    layers: &mut Assets<HudLayer>,
+    w: Win,
+    visible: bool,
+    (x, y, ww, wh): (i32, i32, i32, i32),
+    k: f32,
+    alpha: f32,
+    f: &HudFrame,
+    window: &Window,
+) {
+    let (s, sw, sh) = (f.s, f.sw, f.sh);
+    for (hw, mut node, mut vis, mat) in nodes.iter_mut() {
+        if hw.0 != w {
             continue;
         }
-        let _wprof = crate::prof::scope(match w {
-            Win::Hit => "hud::Hit",
-            Win::Compass => "hud::Compass",
-            Win::Ammo => "hud::Ammo",
-            Win::Belt => "hud::Belt",
-            Win::Log => "hud::Log",
-            Win::Damage => "hud::Damage",
-            Win::Received => "hud::Received",
-            Win::Active => "hud::Active",
-            Win::InfoLink => "hud::InfoLink",
-            Win::InfoLinkFace => "hud::InfoLinkFace",
-            Win::ConFirst => "hud::ConFirst",
-            Win::ConUpper => "hud::ConUpper",
-            Win::ConLower => "hud::ConLower",
-            Win::Bark => "hud::Bark",
-            Win::ConCursor => "hud::ConCursor",
-            Win::Start => "hud::Start",
-            Win::Info => "hud::Info",
-            Win::Msg => "hud::Msg",
-            Win::Fps => "hud::Fps",
-            Win::Debug => "hud::Debug",
-        });
-        // Windows that only change with what they show are redrawn only when that changes.
-        let key: Option<u64> = match w {
-            // With the portrait on a window of its own, the InfoLink changes only with its text.
-            Win::InfoLink if face_split => con.link.as_ref().map(|l| {
-                hkey(&(
-                    &l.name,
-                    l.name_visible,
-                    &l.queued,
-                    l.show_icon,
-                    &l.text,
-                    l.typed,
-                    crate::conui::infolink_cursor_shown(l),
-                    (ww, wh, s),
-                ))
-            }),
-            Win::Belt => {
-                // Hashed field by field (no formatted copies of the items).
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                inv.0.belt.hash(&mut h);
-                for &i in inv.0.belt.iter().flatten() {
-                    if let Some(it) = inv.0.items.get(i) {
-                        (&it.def.class, &it.def.name, &it.def.belt_name, &it.def.icon, it.count, it.uid).hash(&mut h);
-                    }
-                }
-                snap.held.as_ref().map(|v| (&v.class, &v.ammo_class, v.loaded)).hash(&mut h);
-                snap.pending.hash(&mut h);
-                // The loaded-ammo map in any order.
-                snap.loaded_ammo.iter().fold(0u64, |a, kv| a ^ hkey(&kv)).hash(&mut h);
-                inv.0.ammo.hash(&mut h);
-                (ww, wh, s).hash(&mut h);
-                Some(h.finish())
-            }
-            Win::Info => Some(hkey(&(info.as_ref().map(|i| i.0), ww, wh, s))),
-            Win::Msg => Some(hkey(&(&stay_msg, ww, wh, s))),
-            Win::Fps => Some(hkey(&(&fps_text, ww, wh, s))),
-            Win::Debug => Some(hkey(&(&debug_lines, ww, wh, s))),
-            Win::ConCursor => Some(hkey(&(ww, wh, s))),
-            // The ammo display changes with the gun, its rounds, the pool and the lock line.
-            Win::Ammo => {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                if let Some(v) = snap.held.as_ref() {
-                    (&v.class, &v.ammo_class, v.reload_count, v.loaded, v.reloading, v.can_track, v.item).hash(&mut h);
-                }
-                inv.0.ammo.hash(&mut h);
-                (&snap.lock_text, snap.lock_color).hash(&mut h);
-                (ww, wh, s).hash(&mut h);
-                Some(h.finish())
-            }
-            // The log: its lines and the age of the newest (fades by the second).
-            Win::Log => {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                log_lines.hash(&mut h);
-                (ww, wh, s).hash(&mut h);
-                Some(h.finish())
-            }
-            // The hit display only changes with its colours and bars.
-            Win::Hit => {
-                let cols: [Rgb; 6] = std::array::from_fn(|i| hud.parts[i].color(dt, snap.parts[i]));
-                hud.hit_cols = cols;
-                let blink = snap.breath.is_some_and(|b| b < 0.1) && snap.swim_time % 0.5 > 0.25;
-                Some(hkey(&(
-                    cols,
-                    (snap.energy.clamp(0.0, 100.0) * 0.55) as i32,
-                    snap.breath.map(|b| (b.clamp(0.0, 1.0) * 55.0) as i32),
-                    snap.stamina.map(|b| (b.clamp(0.0, 1.0) * 55.0) as i32),
-                    blink,
-                    (ww, wh, s),
-                )))
-            }
-            // The compass only changes when the tick strip moves a pixel.
-            Win::Compass => Some(hkey(&(compass_positions(snap.yaw, hud.true_north.unwrap_or(0)), (ww, wh, s)))),
-            Win::Active => {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                snap.augs.hash(&mut h);
-                for (c, f) in &snap.items {
-                    (c, (f * 1000.0) as i32).hash(&mut h);
-                }
-                (ww, wh, s).hash(&mut h);
-                Some(h.finish())
-            }
-            // Lean Updates: the conversation windows (a cut scene is all conversation). The upper one is only its
-            // background; the lower one is the speaker, the line and the choices, where the letterbox puts it (the
-            // choice rows for the mouse stay as last drawn).
-            Win::ConUpper if crate::perf::lean_updates() => Some(hkey(&(ww, wh, s))),
-            Win::ConLower if crate::perf::lean_updates() => {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                (ww, wh, s, y, sw).hash(&mut h);
-                con.play.as_ref().map(|p| (&p.name, &p.text, p.player_line, p.forced, &p.choices, p.focus)).hash(&mut h);
-                crate::gamepad::pad_in_use().hash(&mut h);
-                std::mem::discriminant(&crate::gamepad::glyph_kind()).hash(&mut h);
-                Some(h.finish())
-            }
-            _ => None,
-        };
-        // A settings change (theme, translucency, borders) redraws everything.
-        let key = key.map(|k| k ^ crate::settings::generation().wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let unchanged = key.is_some() && hud.keys.get(&w) == key.as_ref() && hud.last.contains_key(&w);
-        if !unchanged {
-        if let Some(k) = key {
-            hud.keys.insert(w, k);
+        let want = if visible {
+            Visibility::Inherited
         } else {
-            hud.keys.remove(&w);
-        }
-        let mut canvas = if w == Win::InfoLink && face_split {
-            let fk = hkey(&(ww, wh, s, crate::settings::generation()));
-            if hud.infolink_frame.as_ref().map(|f| f.0) != Some(fk) {
-                let mut frame = Canvas::new(ww, wh, s);
-                crate::conui::draw_infolink_frame(hud, assets, &mut frame);
-                hud.infolink_frame = Some((fk, frame));
-            }
-            hud.infolink_frame.as_ref().map_or_else(|| Canvas::new(ww, wh, s), |f| f.1.clone())
-        } else {
-            Canvas::new(ww, wh, s)
+            Visibility::Hidden
         };
-        {
-            match w {
-                Win::Hit => draw_hit(hud, assets, &mut canvas, tiny.as_deref(), snap, dt),
-                Win::Compass => draw_compass(hud, assets, &mut canvas, snap),
-                Win::Ammo => draw_ammo(hud, assets, &mut canvas, tiny.as_deref(), snap, &inv),
-                Win::Belt => draw_belt(hud, assets, &mut canvas, tiny.as_deref(), snap, &inv),
-                Win::Log => draw_log(hud, assets, &mut canvas, log_font.as_deref(), &log_lines),
-                Win::Damage => draw_damage(hud, assets, &mut canvas),
-                Win::Received => {
-                    if let (Some(h), Some(sm)) = (&rec_head, &rec_small) {
-                        draw_received(hud, assets, &mut canvas, h, sm);
-                    }
-                }
-                Win::Active => draw_active(
-                    hud,
-                    assets,
-                    &mut canvas,
-                    tiny.as_deref(),
-                    snap,
-                    sh - Win::Belt.size().1,
-                ),
-                Win::InfoLink => {
-                    if let Some(l) = &con.link {
-                        if face_split {
-                            crate::conui::draw_infolink_contents(hud, assets, &mut canvas, l, false);
-                        } else {
-                            crate::conui::draw_infolink(hud, assets, &mut canvas, l, true);
-                        }
-                    }
-                }
-                Win::InfoLinkFace => {
-                    if let Some(l) = &con.link {
-                        crate::conui::draw_infolink_face(hud, assets, &mut canvas, l, 0, 0);
-                    }
-                }
-                Win::ConFirst => {
-                    if let Some(p) = &con.play {
-                        crate::conui::draw_first(hud, assets, &mut canvas, p);
-                    }
-                }
-                Win::ConUpper => crate::conui::draw_upper(hud, assets, &mut canvas),
-                Win::Bark => crate::conui::draw_barks(hud, assets, &mut canvas, &con.barks),
-                Win::ConCursor => crate::inventory_screen::cursor_with_shadow(hud, assets, &mut canvas),
-                Win::Start => {
-                    if let Some(f) = &start_font {
-                        for (i, l) in start_lines.iter().enumerate() {
-                            let y = i as i32 * f.height;
-                            canvas.text(f, 2, y + 2, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
-                            canvas.text(f, 0, y, ww, f.height, HAlign::Left, VAlign::Top, [255, 255, 255], l);
-                        }
-                    }
-                }
-                Win::Info => draw_info(hud, assets, &mut canvas, info_font.as_deref(), &info_lines),
-                Win::Fps => {
-                    if let (Some(f), Some(t)) = (&msg_font, &fps_text) {
-                        canvas.text(f, 1, 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], t);
-                        canvas.text(f, 0, 0, ww, f.height, HAlign::Left, VAlign::Top, [255, 242, 140], t);
-                    }
-                }
-                Win::Debug => {
-                    if let Some(f) = &msg_font {
-                        for (i, l) in debug_lines.iter().enumerate() {
-                            let y = i as i32 * f.height;
-                            canvas.text(f, 1, y + 1, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], l);
-                            canvas.text(f, 0, y, ww, f.height, HAlign::Left, VAlign::Top, [220, 255, 220], l);
-                        }
-                    }
-                }
-                Win::Msg => {
-                    if let (Some(f), Some(t)) = (&msg_font, &stay_msg) {
-                        canvas.text(f, 2, 2, ww, f.height, HAlign::Left, VAlign::Top, [0, 0, 0], t);
-                        canvas.text(f, 0, 0, ww, f.height, HAlign::Left, VAlign::Top, [255, 255, 255], t);
-                    }
-                }
-                Win::ConLower => {
-                    crate::conui::LOWER_Y.store(y, std::sync::atomic::Ordering::Relaxed);
-                    if let Some(p) = &con.play {
-                        crate::conui::draw_lower(hud, assets, &mut canvas, p, sw);
-                    } else {
-                        // CinematicWindow: the letterbox alone.
-                        canvas.fill(0, 0, ww, wh, crate::uicanvas::Style::Normal, [0, 0, 0]);
-                    }
-                }
+        if *vis != want {
+            *vis = want;
+        }
+        // Back in layout when shown (a parked window is Display::None).
+        if node.display != Display::Flex {
+            node.display = Display::Flex;
+        }
+        // Sized about the screen corner it sits nearest.
+        let (sx, sy) = if k == 1.0 {
+            (x as f32, y as f32)
+        } else {
+            let fx = if x * 2 + ww < sw { x as f32 } else { (x + ww) as f32 - ww as f32 * k };
+            let fy = if y * 2 + wh < sh { y as f32 } else { (y + wh) as f32 - wh as f32 * k };
+            (fx, fy)
+        };
+        let lf = |v: f32| v * s as f32 / window.scale_factor();
+        let (l, t, wd, ht) = (
+            Val::Px(lf(sx)),
+            Val::Px(lf(sy)),
+            Val::Px(lf(ww as f32 * k)),
+            Val::Px(lf(wh as f32 * k)),
+        );
+        if layers.get(&mat.0).is_some_and(|m| m.gamma.y != alpha) {
+            if let Some(mut m) = layers.get_mut(&mat.0) {
+                m.gamma.y = alpha;
             }
         }
-        let bytes = canvas.to_rgba8();
-        let (handle, size) = hud.images.get(&w).cloned().unwrap();
-        let want_size = ww * 100000 + wh * 10 + s;
-        if size != want_size {
-            if let Some(mut img) = images.get_mut(&handle) {
-                *img = blank_image((ww * s) as u32, (wh * s) as u32);
-            }
-            hud.images.insert(w, (handle.clone(), want_size));
-            hud.last.remove(&w);
-            // A resized image is a new GPU texture; the material's bind group still points at the old one
-            // until the material itself is marked changed.
-            for (hw, _, _, mat) in &nodes {
-                if hw.0 == w {
-                    if let Some(m) = layers.get_mut(&mat.0) {
-                        m.into_inner();
-                    }
-                }
-            }
-        }
-        if hud.last.get(&w) != Some(&bytes) {
-            if let Some(mut img) = images.get_mut(&handle) {
-                match &mut img.data {
-                    Some(d) if d.len() == bytes.len() => d.copy_from_slice(&bytes),
-                    d => *d = Some(bytes.clone()),
-                }
-            }
-            hud.last.insert(w, bytes);
-        }
-        }
-        for (hw, mut node, mut vis, mat) in &mut nodes {
-            if hw.0 != w {
-                continue;
-            }
-            let want = if visible {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            };
-            if *vis != want {
-                *vis = want;
-            }
-            // Back in layout when shown (a parked window is Display::None).
-            if node.display != Display::Flex {
-                node.display = Display::Flex;
-            }
-            // Sized about the screen corner it sits nearest.
-            let (sx, sy) = if k == 1.0 {
-                (x as f32, y as f32)
-            } else {
-                let fx = if x * 2 + ww < sw { x as f32 } else { (x + ww) as f32 - ww as f32 * k };
-                let fy = if y * 2 + wh < sh { y as f32 } else { (y + wh) as f32 - wh as f32 * k };
-                (fx, fy)
-            };
-            let lf = |v: f32| v * s as f32 / window.scale_factor();
-            let (l, t, wd, ht) = (
-                Val::Px(lf(sx)),
-                Val::Px(lf(sy)),
-                Val::Px(lf(ww as f32 * k)),
-                Val::Px(lf(wh as f32 * k)),
-            );
-            if layers.get(&mat.0).is_some_and(|m| m.gamma.y != alpha) {
-                if let Some(mut m) = layers.get_mut(&mat.0) {
-                    m.gamma.y = alpha;
-                }
-            }
-            if node.left != l || node.top != t || node.width != wd || node.height != ht {
-                node.left = l;
-                node.top = t;
-                node.width = wd;
-                node.height = ht;
-            }
+        if node.left != l || node.top != t || node.width != wd || node.height != ht {
+            node.left = l;
+            node.top = t;
+            node.width = wd;
+            node.height = ht;
         }
     }
 }

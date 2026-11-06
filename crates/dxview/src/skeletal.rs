@@ -347,6 +347,35 @@ fn sample(rig: &Rig, clip: &Clip, t: f32, looped: bool, out: &mut [Trs]) {
 
 /// The baked clip standing in for an original sequence name.
 fn clip_for<'a>(rig: &'a Rig, seq: &str, female: bool) -> Option<&'a Clip> {
+    // (Called every frame for aiming bodies: the names are built in stack buffers, not Strings.)
+    let mut low = [0u8; 64];
+    let mut cat = [0u8; 80];
+    if seq.len() > low.len() || !seq.is_ascii() {
+        return clip_for_slow(rig, seq, female);
+    }
+    for (d, b) in low.iter_mut().zip(seq.bytes()) {
+        *d = b.to_ascii_lowercase();
+    }
+    let s = std::str::from_utf8(&low[..seq.len()]).unwrap_or("");
+    let g = if female { "feminine" } else { "masculine" };
+    let mut join = |a: &str, b: &str| -> Option<&'a Clip> {
+        let n = a.len() + b.len();
+        cat[..a.len()].copy_from_slice(a.as_bytes());
+        cat[a.len()..n].copy_from_slice(b.as_bytes());
+        rig.clips.get(std::str::from_utf8(&cat[..n]).unwrap_or(""))
+    };
+    let mapped = match s {
+        "strafe" => rig.clips.get("strafeleft"),
+        "strafe2h" => rig.clips.get("strafeleft2h"),
+        "breathelight" | "walk" | "pickup" | "dance" => join(s, g),
+        _ if s.starts_with("gesture") => join(s, g),
+        _ => None,
+    };
+    mapped.or_else(|| rig.clips.get(s)).or_else(|| join(s, g))
+}
+
+/// clip_for for names that don't fit its buffers.
+fn clip_for_slow<'a>(rig: &'a Rig, seq: &str, female: bool) -> Option<&'a Clip> {
     let s = seq.to_ascii_lowercase();
     let g = if female { "feminine" } else { "masculine" };
     let mapped: Option<String> = match s.as_str() {
@@ -506,6 +535,8 @@ pub struct SkelBody {
     look_yp: Vec2,
     layer_buf: Vec<Trs>,
     layer_g: Vec<Mat4>,
+    /// The aimed pose's globals (upper_layers scratch).
+    layer_gs: Vec<Mat4>,
     /// Foot plants (foot_plants): each foot down or not, its height last frame, time to the next plant it may
     /// make; `steps` counts the plants (the footstep sounds follow it), `steps_live` = counting on this body now.
     foot_down: [bool; 2],
@@ -880,6 +911,7 @@ fn build(
             look_yp: Vec2::ZERO,
             layer_buf: Vec::new(),
             layer_g: Vec::new(),
+            layer_gs: Vec::new(),
             foot_down: [true; 2],
             foot_prev: [0.0; 2],
             foot_cool: [0.0; 2],
@@ -1785,6 +1817,8 @@ struct RigParts {
     /// The upper body: spine.003 and up (chest, neck, head), shoulders, arms, hands, fingers, the weapon bone and the
     /// breasts. The export flattened Rigify's tree, so the arms hang off the rig's root, not the chest.
     upper: Vec<bool>,
+    /// The upper body's subtree roots (upper bones whose parent isn't upper).
+    roots: Vec<usize>,
     spine2: usize,
     spine3: usize,
     neck: usize,
@@ -1806,8 +1840,10 @@ fn rig_parts(rig: &Rig) -> Option<&'static RigParts> {
                         || ["shoulder", "upper_arm", "forearm", "hand", "f_middle", "thumb", "weapon", "breast"].iter().any(|k| n.contains(k)));
                 upper[i] = own || r.parent[i].is_some_and(|p| upper[p] && !n.contains("coat"));
             }
+            let roots = (0..r.names.len()).filter(|&i| upper[i] && r.parent[i].is_none_or(|p| !upper[p])).collect();
             Some(RigParts {
                 upper,
+                roots,
                 spine2: at("DEF-spine.002")?,
                 spine3: at("DEF-spine.003")?,
                 neck: at("DEF-spine.005")?,
@@ -1915,13 +1951,13 @@ pub(crate) fn upper_layers(s: &mut SkelBody, world: Mat4, seq: &str, lay: &Layer
     globals(s.rig, &s.pose, &mut g);
     let mut twist = Quat::IDENTITY;
     if s.aim_w > 0.0 {
-        let two = lay.aim.is_some_and(|a| a.1) || seq.to_ascii_lowercase().ends_with("2h");
+        let two = lay.aim.is_some_and(|a| a.1) || crate::util::ends_with_ci(seq, "2h");
         let shoot = clip_for(s.rig, if two { "Shoot2H" } else { "Shoot" }, s.body.female);
         if let Some(c) = shoot {
             let mut sp = std::mem::take(&mut s.layer_buf);
             sp.resize(s.rig.rest.len(), s.rig.rest[0]);
             sample(s.rig, c, 0.0, false, &mut sp);
-            let mut gs = Vec::with_capacity(sp.len());
+            let mut gs = std::mem::take(&mut s.layer_gs);
             globals(s.rig, &sp, &mut gs);
             // The aimed upper body carried onto this pose's lower spine.
             let m = g[parts.spine2] * gs[parts.spine2].inverse();
@@ -1944,6 +1980,7 @@ pub(crate) fn upper_layers(s: &mut SkelBody, world: Mat4, seq: &str, lay: &Layer
                 s.pose[i] = s.pose[i].lerp(&target, w);
             }
             s.layer_buf = sp;
+            s.layer_gs = gs;
             globals(s.rig, &s.pose, &mut g);
             // The chest turned toward the target (at most 50 degrees aside, 40 up or down).
             let want = match lay.aim.filter(|_| aiming) {
@@ -1957,10 +1994,10 @@ pub(crate) fn upper_layers(s: &mut SkelBody, world: Mat4, seq: &str, lay: &Layer
             s.aim_yp = Vec2::new(ease(s.aim_yp.x, want.x, 0.15), ease(s.aim_yp.y, want.y, 0.15));
             let r = Quat::from_rotation_arc(fwd, dir_of(s.aim_yp, up, fwd, right).normalize_or(fwd));
             twist = Quat::IDENTITY.slerp(r, w);
-            let roots: Vec<usize> = (0..s.pose.len()).filter(|&i| parts.upper[i] && s.rig.parent[i].is_none_or(|p| !parts.upper[p])).collect();
+            let roots = &parts.roots;
             let pivot = g[parts.spine3].w_axis.truncate();
             s.layer_g.clone_from(&g);
-            turn_subtrees(s, &mut g, &roots, pivot, twist);
+            turn_subtrees(s, &mut g, roots, pivot, twist);
             // The weapon: placed by the aimed hand, turned like the original's aimed pose (Shoot's first frame)
             // plus the chest's turn.
             let held = s.weapon;
