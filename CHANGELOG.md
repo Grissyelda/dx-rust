@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Release Builder (November 6)
+- **DXBuilder.exe** (built by `BUILD_BUILDER.bat`) makes the Windows, Linux / Steam Deck and macOS releases from one
+  window: Windows on the PC, Linux in WSL (or on GitHub), macOS on GitHub's Macs, with live logs, Cancel, and a
+  *Draft GitHub release* button. It replaces `BUILD_RELEASE.bat`.
+- `tools/release/build_linux.sh` and `setup_linux.sh` (the Linux build, usable on any Linux too) and the
+  *Release builds* GitHub workflow.
+
 ### Multiplayer, round two (November 6)
 - **Play without the online services**: every room also gets a long code (like `ABCDE-FGHIJ-KLMNO`) holding the
   host's address and his key's fingerprint, so players can join with it even when the lobby server is down. *Copy

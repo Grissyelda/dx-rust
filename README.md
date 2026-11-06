@@ -242,7 +242,18 @@ the Xcode command line tools. On Linux, also the development packages for Waylan
     cargo build --release --manifest-path crates/dxlauncher/Cargo.toml    # the launcher
     target/release/dxview "C:\path\to\Deus Ex"                            # or run the launcher
 
-On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder. On macOS, `BUILD_MAC.sh` makes `dist/DX RUST.app` (step by step under *Getting started > macOS*).
+**Release builds.** On Windows, run `BUILD_BUILDER.bat` once: it builds and opens `DXBuilder.exe`, the DX RUST
+Release Builder, which makes all three release archives in `dist\` from one window:
+
+- **Windows** (`dxrust-windows.zip`) is built on your PC with Rust.
+- **Linux / Steam Deck** (`dxrust-steamdeck.tar.xz`) is built in WSL on your PC (the Setup tab installs WSL and the
+  Linux tools once), or on GitHub if you'd rather not use WSL.
+- **macOS** (`dxrust-macos.zip`) is built on GitHub's Macs (`.github/workflows/release.yml`) through the GitHub CLI
+  and downloaded into `dist\`. GitHub builds use the code that is on GitHub, so push your changes first.
+
+*Draft GitHub release* then uploads the archives to a draft release with the changelog's Unreleased notes. On Linux,
+`tools/release/build_linux.sh` makes the Linux archive directly; on a Mac, `BUILD_MAC.sh` makes `dist/DX RUST.app`
+(step by step under *Getting started > macOS*).
 
 | Crate | What it does |
 | --- | --- |
@@ -252,6 +263,7 @@ On Windows, `BUILD_RELEASE.bat` makes a shareable `dist\` folder. On macOS, `BUI
 | `imsim-audio` | A software mixer: positional sounds and tracker music with section jumps |
 | `dxview` | The game itself, on Bevy |
 | `dxlauncher` | The launcher (egui) |
+| `dxbuilder` | The Release Builder (egui): Windows, Linux / Steam Deck and macOS releases from one window |
 | `dxtool` | Command-line package inspector |
 
 ## Status and what's left

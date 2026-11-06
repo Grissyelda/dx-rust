@@ -1,0 +1,78 @@
+# Release builds on GitHub's machines, started by the DX RUST Release Builder (or by hand: Actions > Release builds >
+# Run workflow). macOS can only be built on a Mac, so this is how a Windows PC gets the macOS release; the Linux /
+# Steam Deck job is the fallback for PCs without WSL. Each job uploads its archive as an artifact.
+name: Release builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Which releases: macos, linux, or macos,linux"
+        required: true
+        default: "macos,linux"
+        type: string
+      version:
+        description: "Version for the macOS app bundle (e.g. 0.12.0)"
+        required: false
+        default: "dev"
+        type: string
+      fast:
+        description: "Thin LTO (quicker build): true / false"
+        required: false
+        default: "false"
+        type: string
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  macos:
+    if: contains(inputs.platforms, 'macos')
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos
+      - name: Faster build
+        if: inputs.fast == 'true'
+        run: |
+          echo "CARGO_PROFILE_RELEASE_LTO=thin" >> "$GITHUB_ENV"
+          echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" >> "$GITHUB_ENV"
+      - name: Build
+        run: bash BUILD_MAC.sh "${{ inputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxrust-macos
+          path: dist/dxrust-macos.zip
+          if-no-files-found: error
+
+  linux:
+    if: contains(inputs.platforms, 'linux')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+      - name: System packages
+        run: sudo bash tools/release/setup_linux.sh root
+      - name: zig
+        run: python3 -m pip install --user ziglang
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Build
+        env:
+          DXR_TARGET: ${{ github.workspace }}/target/linux
+          DXR_FAST: ${{ inputs.fast == 'true' && '1' || '0' }}
+        run: bash tools/release/build_linux.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxrust-steamdeck
+          path: dist/dxrust-steamdeck.tar.xz
+          if-no-files-found: error

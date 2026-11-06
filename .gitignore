@@ -1,5 +1,22 @@
 /target
-# Original game data and anything extracted from it stays LOCAL. Never commit these.
+/dist
+crates/*/target
+*.log
+test_out/
+# Files the game writes beside the exe
+session.txt
+settings.txt
+launcher.txt
+keybinds.txt
+padbinds.txt
+Save/
+crash.log
+# The Release Builder's exe and settings
+/DXBuilder.exe
+builder.txt
+# Relief maps (third-party normal / height maps) ship in the release zip, not in git.
+/relief/
+# Deus Ex data, Lay D Denton files and anything extracted from them belong to their owners: never commit them.
 /game_data/
 /dx_src/
 *.u
@@ -8,9 +25,3 @@
 *.umx
 *.dx
 *.unr
-
-# Relief maps (third-party normal / height maps) are shipped in the release zip, not kept in git.
-/relief/
-
-# DX RUST Online Services working files (beside dxlobby.exe).
-/online/
