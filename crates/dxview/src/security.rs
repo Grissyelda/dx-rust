@@ -899,14 +899,15 @@ fn turret_pawns(npcs: &Query<&Npc>, lvl: &dx_level::Level, blockers: &Blockers) 
     npcs.iter()
         .filter(|n| {
             n.state != NpcState::Dead
-                && n.body.is_some()
+                // (Multiplayer: players' bodies are targets like the player.)
+                && (n.body.is_some() || n.net_player.is_some())
                 // Out of the world (bInWorld False): nothing to see or shoot.
                 && blockers.list.get(n.blocker).is_some_and(|c| c.radius > 0.0)
                 // GMDX fix (setting FixTurretAnimals): turrets don't waste rounds on rats, birds and dogs.
                 && !(setting!("FixTurretAnimals") > 0.5
                     && crate::classtree::is_a(&lvl.actors[n.actor].class, "Animal"))
         })
-        .map(|n| (n.blocker, n.body.as_ref().unwrap().location, n.hates("Player")))
+        .map(|n| (n.blocker, n.body.as_ref().map_or(blockers.list[n.blocker].center, |b| b.location), n.hates("Player")))
         .collect()
 }
 
@@ -1017,9 +1018,22 @@ fn camera_watch(c: &mut Cam, cx: &mut DevCx) -> (&'static str, Option<u8>, Optio
         c.check_t += dt;
         if c.check_t > 0.1 {
             c.check_t = 0.0;
-            // CheckPlayerVisibility.
-            let d = me.distance(c.pos);
-            if cx.f.detectable && !cx.f.radar_trans && d <= crate::smartai::camera_range(c.range) && sees_player(&cx.world, &cx.f, c.pos) {
+            // CheckPlayerVisibility (multiplayer: every player's body on the host counts too).
+            let range = crate::smartai::camera_range(c.range);
+            let host_seen = cx.f.detectable && !cx.f.radar_trans && me.distance(c.pos) <= range && sees_player(&cx.world, &cx.f, c.pos);
+            let seen_at = if host_seen {
+                Some(me)
+            } else if crate::netplay::is_host() {
+                crate::netplay::remote_bodies().into_iter().map(|(_, p)| p).find(|p| {
+                    p.distance(c.pos) <= range && cx.lvl.collision.trace(c.pos, *p, DVec3::ZERO).fraction >= 0.999 && {
+                        let (rp, ry) = rotator(*p - c.pos);
+                        wrap(c.rot.1 - ry).abs() < c.fov && wrap(c.rot.0 - rp).abs() < c.fov
+                    }
+                })
+            } else {
+                None
+            };
+            if let Some(me) = seen_at {
                 let (rp, ry) = rotator(me - c.pos);
                 let yaw = wrap(c.rot.1 - ry).abs();
                 let pitch = wrap(c.rot.0 - rp).abs();

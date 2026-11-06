@@ -100,6 +100,43 @@ pub fn server_addr() -> String {
         .unwrap_or_else(|| format!("127.0.0.1:{}", imsim_net::DEFAULT_PORT))
 }
 
+/// Point the game at another lobby (the menus' Online Services): launcher.txt's `LobbyServer=` line is rewritten, or
+/// added, every other line kept as it was (line endings too); an empty address removes it (this PC). Env
+/// DXVIEW_LAUNCHER_TXT names another file (tests).
+pub fn set_server_addr(addr: &str) -> std::io::Result<()> {
+    let path = std::env::var_os("DXVIEW_LAUNCHER_TXT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| unreal_pkg::paths::data_dir().join("launcher.txt"));
+    let old = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let nl = if old.contains("\r\n") { "\r\n" } else { "\n" };
+    let addr = addr.trim();
+    let mut out = String::with_capacity(old.len() + addr.len() + 16);
+    let mut done = false;
+    for l in old.lines() {
+        if l.starts_with("LobbyServer=") {
+            if !done && !addr.is_empty() {
+                out.push_str("LobbyServer=");
+                out.push_str(addr);
+                out.push_str(nl);
+            }
+            done = true;
+            continue;
+        }
+        out.push_str(l);
+        out.push_str(nl);
+    }
+    if !done && !addr.is_empty() {
+        out.push_str("LobbyServer=");
+        out.push_str(addr);
+        out.push_str(nl);
+    }
+    std::fs::write(&path, out)
+}
+
 /// Connect to online services (nothing happens if connected or connecting already).
 pub fn connect() {
     let start = with(|s| {

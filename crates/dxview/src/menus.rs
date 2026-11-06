@@ -796,8 +796,8 @@ struct Msg {
 }
 
 enum Body {
-    /// `note`: ours, a line of text in a well at (y): the multiplayer screen's connection.
-    Menu { buttons: Vec<MenuBtn>, x: i32, w: i32, note: Option<(i32, String)> },
+    /// `notes`: ours, lines of text in wells at (y): the multiplayer screen's connection and server address.
+    Menu { buttons: Vec<MenuBtn>, x: i32, w: i32, notes: Vec<(i32, String)> },
     Choices { choices: Vec<Choice> },
     NewGame(NewGame),
     Keys(Keys),
@@ -815,6 +815,8 @@ enum Body {
     Browse(MpBrowse),
     /// Ours: Choose Character before joining a room (multiplayer characters, New Character).
     Chars(MpChars),
+    /// Ours: Online Services - the lobby server's address.
+    Addr(MpAddr),
 }
 
 struct AchieveView {
@@ -1534,9 +1536,10 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 }
                 main_menu_achievements(&mut f, &mut buttons);
             }
-            Body::Menu { buttons, x, w, note: None }
+            Body::Menu { buttons, x, w, notes: Vec::new() }
         }
-        "MenuScreenMultiplayer" | "MenuScreenHostRoom" | "MenuScreenJoinRoom" | "MenuScreenLobbyBrowser" | "MenuScreenChooseCharacter" => {
+        "MenuScreenMultiplayer" | "MenuScreenHostRoom" | "MenuScreenJoinRoom" | "MenuScreenLobbyBrowser" | "MenuScreenChooseCharacter"
+        | "MenuScreenOnlineServices" => {
             let (mf, body) = mp_window(assets, class);
             f = mf;
             body
@@ -2046,8 +2049,8 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
     hash_debug(h, focus);
     std::mem::discriminant(body).hash(h);
     match body {
-        Body::Menu { buttons, x, w, note } => {
-            (x, w, buttons.len(), note).hash(h);
+        Body::Menu { buttons, x, w, notes } => {
+            (x, w, buttons.len(), notes).hash(h);
             for MenuBtn { label, y, action, invoke, key, enabled } in buttons {
                 (label, y, action, invoke, key, enabled).hash(h);
             }
@@ -2111,6 +2114,7 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             (name, code, players, joiners).hash(h);
         }
         Body::Join(MpJoin { code }) => code.hash(h),
+        Body::Addr(MpAddr { edit }) => edit_key(edit, h),
         Body::Chars(MpChars { list, rows, room, sel, scroll }) => (list, rows, room, sel, scroll).hash(h),
         Body::Browse(MpBrowse { rooms, state, list_ms, filters, shown, rows, sel, scroll }) => {
             hash_debug(h, rooms);
@@ -2326,9 +2330,9 @@ fn action_enabled(win: &Win, action: u8, key: &str) -> bool {
 fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, waiting_keys: bool) {
     let focus = win.focus;
     match &mut win.body {
-        Body::Menu { buttons, x, w, note } => {
+        Body::Menu { buttons, x, w, notes } => {
             draw_menu_buttons(u, buttons, *x, *w, fonts, cx, cy);
-            if let Some((y, text)) = note {
+            for (y, text) in notes.iter() {
                 draw_menu_note(u, *x, *w, *y, text, cx, cy);
             }
         }
@@ -2336,6 +2340,7 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
         Body::Join(j) => draw_mp_join(u, j, cx, cy),
         Body::Browse(b) => draw_mp_browse(u, b, cx, cy),
         Body::Chars(c) => draw_mp_chars(u, c, cx, cy),
+        Body::Addr(a) => draw_mp_addr(u, a, cx, cy),
         Body::Choices { choices } => draw_choices(u, choices, &win.f, &mut win.drop, cx, cy),
         Body::NewGame(ng) => draw_new_game(u, ng, focus, fonts, cx, cy),
         Body::Keys(k) if k.pad => draw_pad_keys(u, k, cx, cy, waiting_keys),
@@ -2819,6 +2824,8 @@ enum Act {
     MpNewChar(crate::travel::NewGame),
     /// Ours: the main menu's Leave Multiplayer.
     MpLeave,
+    /// Ours: Online Services saved: the lobby's new address (as typed), then connect there.
+    MpSetAddr(String),
 }
 
 /// A new save's description: where the player is (DeusExLevelInfo.MissionLocation), as the original's default.
@@ -3839,6 +3846,15 @@ fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
     if let Body::Join(j) = &mut win.body {
         return mp_join_typing(j, k, text);
     }
+    // The server address (host names, IPv4 / IPv6, a port).
+    if let Body::Addr(a) = &mut win.body {
+        if matches!(k, KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::ArrowUp | KeyCode::ArrowDown) {
+            return false;
+        }
+        let t = mp_addr_typed(text.as_deref());
+        a.edit.key(*k, t.as_deref(), shift, ctrl);
+        return true;
+    }
     // The save screen's description takes typing (Up / Down / Enter / Escape still work the list).
     if let Body::SaveLoad(sl) = &mut win.body {
         if sl.saving
@@ -3903,7 +3919,7 @@ fn menu_key(cx: &mut InCx, k: &KeyCode) {
                     st.waiting_key = Some(0.0);
                 }
                 Body::NewGame(_) | Body::Keypad(_) => {}
-                Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_) => mp_enter(win, acts),
+                Body::Host(_) | Body::Join(_) | Body::Browse(_) | Body::Chars(_) | Body::Addr(_) => mp_enter(win, acts),
                 Body::SaveLoad(sl) => {
                     let saving = sl.saving;
                     let heading = !saving
@@ -4178,6 +4194,7 @@ fn apply_acts(
                 mp_join_room(st, hud, assets);
             }
             Act::MpLeave => mp_leave(st),
+            Act::MpSetAddr(a) => mp_set_addr(st, hud, assets, &a),
         }
     }
 }
@@ -4209,6 +4226,8 @@ fn help_text(top_w: &Win, assets: &mut RuntimeAssets) -> String {
             None => "Type to search the options.".into(),
         },
         (Body::Host(h), focus) => mp_host_help(h, focus, &top_w.f),
+        (Body::Addr(_), _) => "The online services' host name or IP address, with :port when it isn't 27962 (ask whoever runs \
+             the server). Empty: this PC. Save & Connect or [Enter].".into(),
         (Body::Join(_), _) => "Type the four-character code the host gave you (letters and digits; codes never use look-alikes such as zero and O), then Join Room or [Enter].".into(),
         (Body::Choices { .. }, _) if top_w.f.class == "MenuScreenBrightness" => {
             pstr(&assets.classes.defaults("MenuScreenBrightness"), "HelpMessage")
@@ -4763,7 +4782,10 @@ const ACT_JOIN_CODE: u8 = 42;
 /// Choose Character: join with the selected character; Load Game from Start Game: New Game.
 const ACT_CHAR_GO: u8 = 43;
 const ACT_MP_NEWGAME: u8 = 44;
-const ACT_LAST: u8 = ACT_MP_NEWGAME;
+/// The connect-failed box: Change Address; Online Services: Save & Connect.
+const ACT_ADDR: u8 = 45;
+const ACT_ADDR_SAVE: u8 = 46;
+const ACT_LAST: u8 = ACT_ADDR_SAVE;
 
 /// How often the open multiplayer screen reads online services again.
 const MP_POLL: f32 = 0.25;
@@ -4804,6 +4826,11 @@ struct MpHost {
     players: u8,
     /// IPs of players who looked the room up, newest last.
     joiners: Vec<String>,
+}
+
+/// Online Services: the lobby's address being typed.
+struct MpAddr {
+    edit: Edit,
 }
 
 /// MenuScreenJoinRoom: the code typed so far (upper case, CODE_ALPHABET only, at most 4).
@@ -4852,18 +4879,20 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
                 key: String::new(),
                 enabled: true,
             };
-            // Wells 13, 49, 85 for the buttons, 121 for the connection line; 157..229 left out (Previous Menu
-            // moves up from 266).
-            const CUT: (i32, i32) = (152, 108);
+            // Wells 13..121 for the buttons, 157 for the connection line, 193 for the server's address; 229 left
+            // out (Previous Menu moves up from 266).
+            const CUT: (i32, i32) = (224, 36);
             f.cuts.push(CUT);
             f.ch -= CUT.1;
             let buttons = vec![
                 b("Host Room", 13, 1, "MenuScreenHostRoom"),
                 b("Join Room", 49, 1, "MenuScreenJoinRoom"),
                 b("Lobby Browser", 85, 1, "MenuScreenLobbyBrowser"),
+                b("Online Services", 121, 1, "MenuScreenOnlineServices"),
                 b("Previous Menu", 266 - CUT.1, 2, ""),
             ];
-            (f, Body::Menu { buttons, x, w, note: Some((121, mp_status_text())) })
+            let addr = format!("Server: {}", crate::online::server_addr());
+            (f, Body::Menu { buttons, x, w, notes: vec![(157, mp_status_text()), (193, addr)] })
         }
         "MenuScreenHostRoom" => {
             let mut f = frame(assets, "MenuScreenOptions");
@@ -4885,6 +4914,20 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
             let cancel = f.actions.iter().find(|a| a.1 == 2).map(|a| a.2.clone()).unwrap_or_else(|| "Cancel".into());
             f.actions = vec![(2, 2, cancel, String::new()), (2, ACT_JOIN_CODE, "Join Room".into(), String::new())];
             (f, Body::Join(MpJoin { code: String::new() }))
+        }
+        "MenuScreenOnlineServices" => {
+            let mut f = frame(assets, "MenuScreenOptions");
+            f.class = class.to_string();
+            f.title = "Online Services".into();
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, 1, slots);
+            let cancel = f.actions.iter().find(|a| a.1 == 2).map(|a| a.2.clone()).unwrap_or_else(|| "Cancel".into());
+            f.actions = vec![(2, 2, cancel, String::new()), (2, ACT_ADDR_SAVE, "Save & Connect".into(), String::new())];
+            let mut edit = Edit::new(64);
+            edit.text = crate::online::server_addr().chars().collect();
+            edit.cur = edit.text.len();
+            edit.anchor = 0;
+            (f, Body::Addr(MpAddr { edit }))
         }
         "MenuScreenChooseCharacter" => {
             let mut f = frame(assets, "MenuScreenLoadGame");
@@ -5052,8 +5095,60 @@ fn mp_enter(win: &mut Win, acts: &mut Vec<Act>) {
         (Body::Join(j), _) if imsim_net::valid_code(&j.code) => acts.push(Act::Join(j.code.clone())),
         (Body::Browse(b), _) => acts.extend(mp_browse_join(b)),
         (Body::Chars(c), _) => acts.extend(mp_chars_go(c)),
+        (Body::Addr(a), _) => acts.push(Act::MpSetAddr(a.edit.get())),
         _ => {}
     }
+}
+
+/// What an address field takes of typed text: host-name, IPv4 / IPv6 and port characters (None: nothing left).
+fn mp_addr_typed(text: Option<&str>) -> Option<String> {
+    let t: String = text?.chars().filter(|c| c.is_ascii_alphanumeric() || ".-:[]_".contains(*c)).collect();
+    (!t.is_empty()).then_some(t)
+}
+
+/// An address as typed, with the lobby's default port when none is given ("" stays "": this PC).
+fn mp_addr_normalize(s: &str) -> String {
+    let s = s.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    let port = imsim_net::DEFAULT_PORT;
+    if let Some(rest) = s.strip_prefix('[') {
+        // [IPv6] or [IPv6]:port
+        return match rest.split_once(']') {
+            Some((ip, tail)) if tail.strip_prefix(':').is_some_and(|p| p.parse::<u16>().is_ok()) => format!("[{ip}]{tail}"),
+            Some((ip, _)) => format!("[{ip}]:{port}"),
+            None => format!("[{rest}]:{port}"),
+        };
+    }
+    match s.matches(':').count() {
+        0 => format!("{s}:{port}"),
+        1 => match s.split_once(':') {
+            Some((h, p)) if p.parse::<u16>().is_ok() && !h.is_empty() => s.to_string(),
+            Some((h, _)) => format!("{h}:{port}"),
+            None => s.to_string(),
+        },
+        // A bare IPv6 address.
+        _ => format!("[{s}]:{port}"),
+    }
+}
+
+/// Online Services saved: launcher.txt's LobbyServer= line, then a fresh connection there (the multiplayer windows
+/// close; the connecting box takes over).
+fn mp_set_addr(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, typed: &str) {
+    let addr = mp_addr_normalize(typed);
+    if let Err(e) = crate::online::set_server_addr(&addr) {
+        let w = msg_box(hud, assets, "Online Services", &format!("The address couldn't be saved ({e})."), false, MsgPurpose::Info);
+        st.push(w);
+        return;
+    }
+    if st.mp.hosting {
+        crate::online::close_room();
+    }
+    crate::online::disconnect();
+    st.stack.retain(|w| !mp_win(w) && !matches!(w.body, Body::Addr(_)));
+    st.mp = MpLink::default();
+    mp_connect(st, hud, assets);
 }
 
 /// A window opened with ":mp": the new-game screen makes a multiplayer character; the Load Game screen (Start Game
@@ -5142,6 +5237,12 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
             }
         }
         (ACT_MP_NEWGAME, _) => acts.push(Act::Push("MenuSelectDifficulty".into())),
+        (ACT_ADDR, _) => {
+            // From the connect-failed box: the box goes, the address screen comes.
+            acts.push(Act::Pop);
+            acts.push(Act::Push("MenuScreenOnlineServices".into()));
+        }
+        (ACT_ADDR_SAVE, Body::Addr(a)) => acts.push(Act::MpSetAddr(a.edit.get())),
         (ACT_CHAR_GO, Body::Chars(c)) => acts.extend(mp_chars_go(c)),
         (ACT_CLOSE_ROOM, Body::Host(_)) => {
             crate::online::close_room();
@@ -5203,7 +5304,7 @@ fn mp_opened(link: &mut MpLink, w: &mut Win) {
             w.focus = Some(W::ChoiceBtn(0));
         }
         Body::Browse(_) => crate::online::refresh_list(),
-        Body::Join(_) => w.focus = Some(W::ChoiceBtn(0)),
+        Body::Join(_) | Body::Addr(_) => w.focus = Some(W::ChoiceBtn(0)),
         _ => {}
     }
     link.poll = 0.0;
@@ -5277,10 +5378,12 @@ fn mp_tick(st: &mut Menus, dt: f32, hud: &mut ClassicHud, assets: &mut RuntimeAs
     let Some(top) = st.stack.last_mut() else { return };
     let multiplayer = top.f.class == "MenuScreenMultiplayer";
     match &mut top.body {
-        Body::Menu { note: Some((_, n)), .. } if multiplayer => {
-            let t = mp_status_text();
-            if *n != t {
-                *n = t;
+        Body::Menu { notes, .. } if multiplayer => {
+            if let Some((_, n)) = notes.first_mut() {
+                let t = mp_status_text();
+                if *n != t {
+                    *n = t;
+                }
             }
         }
         Body::Host(h) => mp_poll_host(h),
@@ -5299,7 +5402,10 @@ fn mp_connecting(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAsset
         }
         crate::online::Status::Failed(m) => {
             st.pop();
-            let w = msg_box(hud, assets, "Multiplayer", &m, false, MsgPurpose::Info);
+            let mut w = msg_box(hud, assets, "Multiplayer", &m, false, MsgPurpose::Info);
+            if let Some(w) = w.as_mut() {
+                w.f.actions.push((0, ACT_ADDR, "Change Address".into(), String::new()));
+            }
             st.push(w);
         }
         _ => {}
@@ -5589,6 +5695,13 @@ fn draw_mp_browse(u: &mut Ui<W>, b: &mut MpBrowse, cx: i32, cy: i32) {
     u.wrapped(&fs, cx + 390, cy + 250, 155, 26, HAlign::Left, VAlign::Center, m_col(8), "Click a header to filter the list.");
 }
 
+/// Online Services: "Server Address" and its field.
+fn draw_mp_addr(u: &mut Ui<W>, a: &mut MpAddr, cx: i32, cy: i32) {
+    let y = cy + 27;
+    action_button(u, W::ChoiceBtn(0), cx + 7, y, 243, "|&Server Address", true);
+    edit_field(u, W::Edit(4), cx + 7 + 270, y, 240, &mut a.edit, true, true);
+}
+
 /// Choose Character: the characters list (New Character first), the selected one's card, the room being joined.
 fn draw_mp_chars(u: &mut Ui<W>, c: &mut MpChars, cx: i32, cy: i32) {
     header_button(u, W::Header(10), cx + 10, cy + 3, 238, "Character");
@@ -5750,6 +5863,20 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let addr = format!("127.0.0.1:{port}");
         std::env::set_var("DXVIEW_LOBBY", &addr);
+        // Online Services writes this copy, never the player's launcher.txt.
+        let launcher = std::env::temp_dir().join(format!("dxmenu-launcher-{}.txt", std::process::id()));
+        std::fs::write(&launcher, "GamePath=C:\\Games\\Deus Ex\r\nLobbyServer=old.example:1\r\nModPath=D:\\Mods\r\n").unwrap();
+        std::env::set_var("DXVIEW_LAUNCHER_TXT", &launcher);
+        for (typed, want) in [
+            ("lobby.example.net", "lobby.example.net:27962"),
+            (" 10.0.0.5:4000 ", "10.0.0.5:4000"),
+            ("10.0.0.5:", "10.0.0.5:27962"),
+            ("::1", "[::1]:27962"),
+            ("[::1]:5000", "[::1]:5000"),
+            ("", ""),
+        ] {
+            assert_eq!(mp_addr_normalize(typed), want, "{typed:?}");
+        }
         let mut st = Menus::default();
         let shot = |st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets, name: &str| {
             let w = st.stack.last_mut().unwrap();
@@ -5913,9 +6040,42 @@ mod tests {
         mp_connect(&mut st, hud, assets);
         wait(&mut st, hud, assets, "the failure", &|st| top_box(st, MsgPurpose::Info));
         shot(&mut st, hud, assets, "MP_ConnectFailed");
+        // Change Address on that box: the Online Services screen, then saving there rewrites only LobbyServer= and
+        // connects again (still nothing there: the reason again).
+        let (i, _) = st.stack.last().unwrap().f.actions.iter().enumerate().find(|(_, a)| a.1 == ACT_ADDR).expect("Change Address");
+        let mut acts = Vec::new();
+        let top = st.stack.len() - 1;
+        activate(&mut st, top, W::Act(i as u8), false, hud, assets, &mut acts);
+        assert!(matches!(acts.as_slice(), [Act::Pop, Act::Push(c)] if c == "MenuScreenOnlineServices"));
+        st.stack.pop();
+        let mut w = open_window(hud, assets, "MenuScreenOnlineServices").unwrap();
+        mp_opened(&mut st.mp, &mut w);
+        if let Body::Addr(a) = &mut w.body {
+            assert_eq!(a.edit.get(), "127.0.0.1:1");
+            a.edit.clear();
+            for t in ["1", "0", ".", "0", ".", "0", ".", "5", " ", "!"] {
+                a.edit.key(KeyCode::KeyA, mp_addr_typed(Some(t)).as_deref(), false, false);
+            }
+            assert_eq!(a.edit.get(), "10.0.0.5");
+        }
+        st.stack.push(w);
+        shot(&mut st, hud, assets, "MenuScreenOnlineServices");
+        let typed = match &st.stack.last().unwrap().body {
+            Body::Addr(a) => a.edit.get(),
+            _ => unreachable!(),
+        };
+        mp_set_addr(&mut st, hud, assets, &typed);
+        assert_eq!(std::fs::read_to_string(&launcher).unwrap(), "GamePath=C:\\Games\\Deus Ex\r\nLobbyServer=10.0.0.5:27962\r\nModPath=D:\\Mods\r\n");
+        assert!(!st.stack.iter().any(|w| matches!(w.body, Body::Addr(_))));
+        assert!(top_box(&st, MsgPurpose::Connecting));
+        wait(&mut st, hud, assets, "the failure again", &|st| top_box(st, MsgPurpose::Info));
         st.stack.pop();
         mp_tick(&mut st, 0.02, hud, assets);
         assert!(!st.mp.online);
+        // An empty address takes the line out (this PC); other lines stay.
+        crate::online::set_server_addr("").unwrap();
+        assert_eq!(std::fs::read_to_string(&launcher).unwrap(), "GamePath=C:\\Games\\Deus Ex\r\nModPath=D:\\Mods\r\n");
+        let _ = std::fs::remove_file(&launcher);
         drop(others);
     }
 }

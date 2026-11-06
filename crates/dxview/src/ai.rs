@@ -3479,6 +3479,8 @@ fn puppet_step(
             np.shots_seen = p.shots;
         }
         npc.just_fired = true;
+        // (A player's body holds its shooting pose a moment.)
+        npc.shot_timer = 0.35;
         if let Some(w) = npc.weapon.clone() {
             let snd = if w.silenced && !w.hand_to_hand { Some("DeusExSounds.Weapons.StealthPistolFire") } else { w.snd.fire.as_deref() };
             if let Some(snd) = snd {
@@ -3519,8 +3521,20 @@ fn puppet_step(
         // A player's body: Human.uc's choice from what he's doing.
         None => {
             let two = npc.two_handed();
+            npc.shot_timer = (npc.shot_timer - dt).max(0.0);
+            let shooting = npc.shot_timer > 0.0 && npc.weapon.is_some();
             let (name, fallback, mult): (&'static str, &'static str, f32) = if dead {
                 ("DeathBack", "Still", 1.0)
+            } else if shooting && !p.swim {
+                let melee = npc.weapon.as_ref().is_some_and(|w| w.hand_to_hand);
+                match (melee, p.crouch, p.speed > 20.0, two) {
+                    (true, ..) => ("Attack", "Shoot", 1.0),
+                    (_, true, ..) => ("CrouchShoot", "Shoot", 1.0),
+                    (_, _, true, true) => ("RunShoot2H", "RunShoot", 1.0),
+                    (_, _, true, false) => ("RunShoot", "Shoot", 1.0),
+                    (_, _, false, true) => ("Shoot2H", "Shoot", 1.0),
+                    _ => ("Shoot", "BreatheLight", 1.0),
+                }
             } else if p.swim {
                 if p.speed > 20.0 { ("Tread", "Walk", 1.0) } else { ("Tread", "BreatheLight", 0.6) }
             } else if p.crouch {

@@ -25,6 +25,9 @@
     with nothing on Hard and Realistic.
   - Joining players keep their own characters in multiplayer saves (inventory, skills, augmentations), written
     every 30 seconds and before each map change.
+  - The host's goals show on everyone's Goals screen; other players' flashlights light where they look, and
+    the augmentations they run glow on their bodies. Security cameras and turrets watch for every player.
+  - Leaving (Leave Multiplayer on the main menu, or the host closing the room) takes a joiner back to the title.
   - Classic / Modern is the room's choice for everyone (Tab doesn't switch it while playing together), and the
     game doesn't pause behind the menus.
 - **Deathmatch, first step**: the same rooms with players able to hurt each other, respawning away from the
@@ -34,7 +37,7 @@
   end with keys made fresh for each room (Noise protocol), replays are thrown away, and only the real host can
   answer a joiner, so nobody in between - the lobby included - can read or change the game.
 - **Online services**: `dxlobby.exe` (built by `BUILD_LOBBY.bat` into the `online` folder) is the lobby server's
-  controller: it starts the server in the background, shows the rooms, and can stop, restart or reset it, open
+  controller (the in-game Multiplayer > Online Services screen sets which lobby to use): it starts the server in the background, shows the rooms, and can stop, restart or reset it, open
   its log, or start it with Windows. Players reach it at `LobbyServer=<address>:27962` in `launcher.txt` (forward
   port 27962, TCP and UDP, to the PC running it).
 

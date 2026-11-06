@@ -98,7 +98,18 @@ pub struct PState {
     pub shots: u8,
     /// The map this state is on (hash of its name): states from another map are ignored.
     pub map: u32,
+    /// The flashlight augmentation is on.
+    pub flash: bool,
+    /// Augmentations running (shown as their glow on this player's body for the others).
+    pub augs: Vec<String>,
 }
+
+/// The augmentations whose glow shows on a body.
+const SHOWN_AUGS: [&str; 19] = [
+    "AugVision", "AugTarget", "AugLight", "AugDrone", "AugSpeed", "AugStealth", "AugMuscle", "AugCombat", "AugBallistic",
+    "AugEMP", "AugShield", "AugEnviro", "AugHealing", "AugDefense", "AugCloak", "AugRadarTrans", "AugPower", "AugAqualung",
+    "AugHeartLung",
+];
 
 /// A pawn as the host sends it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -512,6 +523,17 @@ pub fn leave(why: &str) {
         let _ = n.tx.send(Out::Stop);
         // Long enough for the link thread to say goodbye (the game may be quitting).
         std::thread::sleep(Duration::from_millis(30));
+        // A joiner's world was the host's: without him it's back to the title (his character is saved).
+        if n.role == Role::Client && n.welcomed {
+            drop(g);
+            crate::loader::request("DX.dx", crate::loader::Goal::Title);
+            if !why.is_empty() {
+                if let Ok(mut l) = LAST_END.lock() {
+                    *l = why.to_string();
+                }
+            }
+            return;
+        }
         if !why.is_empty() {
             if let Ok(mut l) = LAST_END.lock() {
                 *l = why.to_string();
@@ -634,7 +656,9 @@ pub fn puppet_hits(actor: usize, peer: Option<u8>, hits: &[crate::damage::PawnHi
                 // A pawn's hit on a player's body (or our own with friendly fire): that player takes it.
                 (Role::Host, Some(p)) => {
                     let players_hurt = n.rules.friendly_fire || !n.rules.coop;
-                    if h.attacker.is_some() || players_hurt {
+                    // Turrets and blasts hurt everyone; the host's own shots only with friendly fire.
+                    let world_hit = matches!(h.damage_type, "AutoShot" | "Exploded" | "Burned" | "Flamed" | "Shocked" | "Radiation" | "PoisonGas" | "TearGas" | "HalonGas");
+                    if h.attacker.is_some() || world_hit || players_hurt {
                         let by = if h.attacker.is_none() { Some(0) } else { None };
                         send_to(n, p, &Msg::Damage { damage: h.damage, kind: h.damage_type.to_string(), from, by }, true);
                     }
@@ -960,6 +984,9 @@ pub fn net_in_system(
     // Lines spoken on the host.
     let sp = with(|n| std::mem::take(&mut n.speech_in)).unwrap_or_default();
     for (at, sound, name, text, radius) in sp {
+        if env_on!("DXVIEW_NETLOG") {
+            println!("NET speech {name}: {text} ({sound})");
+        }
         if !sound.is_empty() {
             let at = at.map(|a| DVec3::new(a[0] as f64, a[1] as f64, a[2] as f64));
             match at {
@@ -1034,6 +1061,39 @@ pub fn net_in_system(
             .collect()
     })
     .unwrap_or_default();
+    // Other players' flashlights: a light where each one looks.
+    let lights: Vec<(u8, DVec3, f32, f32)> = with(|n| {
+        n.remotes
+            .iter()
+            .filter(|r| r.at.is_some() && r.st.flash && r.st.map == my_map && !r.st.dead)
+            .map(|r| (r.id, DVec3::new(r.st.pos[0] as f64, r.st.pos[1] as f64, r.st.pos[2] as f64), r.st.yaw, r.st.pitch))
+            .collect()
+    })
+    .unwrap_or_default();
+    // Other players' running augmentations: a soft light in each aug's colour on their bodies.
+    let glows: Vec<(u8, DVec3, Vec<String>)> = with(|n| {
+        n.remotes
+            .iter()
+            .filter(|r| r.at.is_some() && !r.st.augs.is_empty() && r.st.map == my_map && !r.st.dead)
+            .map(|r| (r.id, DVec3::new(r.st.pos[0] as f64, r.st.pos[1] as f64, r.st.pos[2] as f64), r.st.augs.clone()))
+            .collect()
+    })
+    .unwrap_or_default();
+    for (id, at, augs) in glows {
+        for (k, a) in augs.iter().take(4).enumerate() {
+            let c = crate::bodyfx::aug_colour(a);
+            let (h, sat) = hue_sat(c.x, c.y, c.z);
+            let key = 0xA060_0000_0000 | (id as u64) << 8 | k as u64;
+            crate::dynlight::hold(key, at + DVec3::new(0.0, 0.0, 10.0 + 8.0 * k as f64), crate::dynlight::Spec::new(h, sat, 90, 0.9), 0.0);
+        }
+    }
+    for (id, at, yaw, pitch) in lights {
+        let dir = DVec3::new((yaw.cos() * pitch.cos()) as f64, (yaw.sin() * pitch.cos()) as f64, pitch.sin() as f64);
+        let eye = at + DVec3::Z * 30.0;
+        let tr = lvl.collision.trace(eye, eye + dir * 900.0, DVec3::ZERO);
+        let hit = eye + dir * (900.0 * tr.fraction - 48.0).max(16.0);
+        crate::dynlight::hold(0xF00D_0000_0000 | id as u64, hit, crate::dynlight::Spec::new(32, 32, 210, 5.0), 0.0);
+    }
     for (_, mut npc, ..) in &mut npcs {
         if let Some(p) = npc.net_player {
             match poses.iter().find(|(id, _)| *id == p) {
@@ -1420,6 +1480,13 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         // Joiner side.
         (Role::Client, Msg::Welcome { you, map, rules }) => {
             force_look(&rules);
+            // The host's difficulty is everyone's.
+            if let Some(mut ng) = crate::travel::session() {
+                if ng.difficulty != rules.difficulty {
+                    ng.difficulty = rules.difficulty;
+                    crate::travel::set_session(ng);
+                }
+            }
             n.remotes.retain(|r| r.id != you);
             n.my_id = you;
             n.rules = rules;
@@ -1526,6 +1593,8 @@ pub fn net_out_system(
             weapon: weapons.held.as_ref().map(|h| h.stats.class.clone()).unwrap_or_default(),
             shots: with(|n| n.shots).unwrap_or(0),
             map: my_map,
+            flash: crate::dynlight::flashlight().is_some(),
+            augs: SHOWN_AUGS.iter().filter(|a| crate::abilities::aug_active(a)).map(|a| a.to_string()).collect(),
         };
         with(|n| match role {
             Role::Client => send_host(n, &Msg::Me(st), false),
@@ -1845,4 +1914,22 @@ pub fn exit_system(mut ev: MessageReader<AppExit>) {
     if ev.read().next().is_some() && active() {
         leave("");
     }
+}
+
+/// An RGB colour as Unreal's LightHue / LightSaturation bytes (saturation 0 = full colour, 255 = white).
+fn hue_sat(r: f32, g: f32, b: f32) -> (u8, u8) {
+    let max = r.max(g).max(b).max(1e-6);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let s = d / max;
+    let h = if d < 1e-6 {
+        0.0
+    } else if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } / 6.0;
+    ((h * 255.0) as u8, ((1.0 - s) * 255.0) as u8)
 }

@@ -557,7 +557,7 @@ const AUG_GLOWS: &[(&str, &[&str])] = &[
 
 /// Each aug's own glow colour (linear, past white so the bloom catches it): the eye augs tint the eyes and the light
 /// streaming from them, the others glow where they sit.
-fn aug_colour(aug: &str) -> Vec3 {
+pub(crate) fn aug_colour(aug: &str) -> Vec3 {
     match aug {
         "AugVision" => Vec3::new(0.35, 1.6, 0.45),
         "AugTarget" => Vec3::new(1.8, 0.25, 0.2),
