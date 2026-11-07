@@ -59,10 +59,7 @@ pub fn wireless_target(
         if !is_hackable(p) || matches!(find(p, "bHackable"), Some(Value::Bool(false))) {
             continue;
         }
-        let s = *hacking.strength.get(&b).unwrap_or(&match find(p, "hackStrength") {
-            Some(Value::Float(v)) => *v as f64,
-            _ => 0.2,
-        });
+        let s = *hacking.strength.get(&b).unwrap_or(&crate::devices::initial_strength(p));
         if s <= 0.0 {
             continue;
         }
@@ -90,6 +87,18 @@ fn names(p: &[Property], n: &str) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// HackableDevices.PostBeginPlay: hackStrength clamped to 0..1, and 1.0 when the device can't be hacked (the frob
+/// box's INF then has a full green bar).
+pub fn initial_strength(p: &[Property]) -> f64 {
+    if matches!(find(p, "bHackable"), Some(Value::Bool(false))) {
+        return 1.0;
+    }
+    match find(p, "hackStrength") {
+        Some(Value::Float(v)) => (*v as f64).clamp(0.0, 1.0),
+        _ => 0.2,
+    }
 }
 
 pub fn is_hackable(p: &[Property]) -> bool {
@@ -124,10 +133,7 @@ pub fn frob_device(
             *hacking
                 .strength
                 .entry(blocker)
-                .or_insert_with(|| match find(p, "hackStrength") {
-                    Some(Value::Float(v)) => *v as f64,
-                    _ => 0.2,
-                });
+                .or_insert_with(|| crate::devices::initial_strength(p));
         let hackable = !matches!(find(p, "bHackable"), Some(Value::Bool(false)));
         if tool == Some("Multitool") && hackable {
             if hacking.job.is_some() {

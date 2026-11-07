@@ -2753,7 +2753,7 @@ fn draw_med_health(
     max
 }
 
-/// HUDRechargeWindow (265 x 153, centred): title, info, bio energy and the bot's charge, Close and Recharge.
+/// HUDRechargeWindow (265 x 153, centred): title, info, bio energy and the bot's charge, Recharge and Close.
 fn recharge_page(ui: &mut PersonaUi, ctx: &mut Ctx, inp: &Input, s: i32) -> (Canvas, Option<Act>) {
     let cls = "HUDRechargeWindow";
     let f = ctx.fonts;
@@ -2765,8 +2765,9 @@ fn recharge_page(ui: &mut PersonaUi, ctx: &mut Ctx, inp: &Input, s: i32) -> (Can
     let full = ctx.ph.energy >= 100.0;
     let ready = ctx.bot.as_ref().is_some_and(|b| b.ready());
     let hits = [
-        (PB::Exit, (wx + 15, wy + 126, cw, 16), true),
-        (PB::Recharge, (wx + 15 + cw, wy + 126, rw, 16), ready && !full),
+        // PersonaButtonBarWindow places its buttons from the top child down: Recharge (added last), then Close.
+        (PB::Recharge, (wx + 15, wy + 126, rw, 16), ready && !full),
+        (PB::Exit, (wx + 15 + rw, wy + 126, cw, 16), true),
     ];
     if let Some(m) = crate::snap::page_map() {
         crate::snap::offer(crate::snap::LAYER_PERSONA, m, hits.iter().filter(|h| h.2).map(|h| h.1));
@@ -2837,8 +2838,14 @@ fn recharge_page(ui: &mut PersonaUi, ctx: &mut Ctx, inp: &Input, s: i32) -> (Can
             0
         }
     };
-    draw_button(&mut c, ctx.hud, ctx.assets, &f.headers, wx + 15, wy + 126, cw, &close, state(PB::Exit), false);
-    draw_button(&mut c, ctx.hud, ctx.assets, &f.headers, wx + 15 + cw, wy + 126, rw, &recharge, state(PB::Recharge), false);
+    draw_button(&mut c, ctx.hud, ctx.assets, &f.headers, wx + 15, wy + 126, rw, &recharge, state(PB::Recharge), false);
+    draw_button(&mut c, ctx.hud, ctx.assets, &f.headers, wx + 15 + rw, wy + 126, cw, &close, state(PB::Exit), false);
+    // The bar's filler (PersonaButtonFiller) covers the rest of its 191 units, over the background's cut-out.
+    if cw + rw < 191 {
+        if let Some(t) = ctx.hud.ui(ctx.assets, "PersonaButtonFiller") {
+            c.texture(wx + 15 + rw + cw, wy + 126, 191 - cw - rw, 16, 0, 0, &t, Style::Translucent, crate::menuui::h_col(0));
+        }
+    }
     (c, act)
 }
 

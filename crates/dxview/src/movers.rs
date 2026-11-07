@@ -119,22 +119,31 @@ pub fn spawn_movers(
             opening: false,
             locked: info.locked,
             moved_since_lit: false,
-            lock_strength: match unreal_pkg::props::find(
-                &level.actors[info.actor].props,
-                "lockStrength",
+            // DeusExMover.PostBeginPlay: strengths clamped to 0..1, a lock that can't be picked is 1.0 (and a door
+            // that can't be broken, below), so the frob box shows a full green bar beside INF.
+            lock_strength: if matches!(
+                unreal_pkg::props::find(&level.actors[info.actor].props, "bPickable"),
+                Some(unreal_pkg::props::Value::Bool(false))
             ) {
-                Some(unreal_pkg::props::Value::Float(v)) => *v as f64,
-                _ => 0.2,
+                1.0
+            } else {
+                match unreal_pkg::props::find(&level.actors[info.actor].props, "lockStrength") {
+                    Some(unreal_pkg::props::Value::Float(v)) => (*v as f64).clamp(0.0, 1.0),
+                    _ => 0.2,
+                }
             },
             pickable: !matches!(
                 unreal_pkg::props::find(&level.actors[info.actor].props, "bPickable"),
                 Some(unreal_pkg::props::Value::Bool(false))
             ),
-            door_strength: crate::sound::fprop(
-                &level.actors[info.actor].props,
-                "doorStrength",
-                0.25,
-            ) as f64,
+            door_strength: if matches!(
+                unreal_pkg::props::find(&level.actors[info.actor].props, "bBreakable"),
+                Some(unreal_pkg::props::Value::Bool(true))
+            ) {
+                (crate::sound::fprop(&level.actors[info.actor].props, "doorStrength", 0.25) as f64).clamp(0.0, 1.0)
+            } else {
+                1.0
+            },
             destroyed: false,
             carried: DVec3::ZERO,
             breakable: None,

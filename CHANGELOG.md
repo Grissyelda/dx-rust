@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### GitHub fixes (November 7)
+- Locks, doors and devices that can't be picked, broken or hacked show a full green bar beside INF, as the original's
+  do (their strength is 1.0) (#43).
+- The repairbot screen has Recharge before Close, as in the original, and the button bar's filler covers the gap
+  after them (#44).
+
 ## v0.12.0
 
 The highlights since v0.11.0 (the detailed notes for each day follow):
