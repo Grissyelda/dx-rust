@@ -1087,6 +1087,7 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, credits::credits_system)
         .add_systems(Update, projgen::projgen_system)
         .add_systems(Update, zones::npc_pain_system)
+        .add_systems(Update, zones::barrel_fire_system)
         .add_systems(Update, questrun::quest_system)
         .add_systems(Update, hanging::hanging_system.after(fly).before(actors::deco_physics))
         .add_systems(Update, fogball::fogball_system);

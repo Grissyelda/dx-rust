@@ -6,8 +6,9 @@
 //!   PlayersPlaySoundEffect also play Sound; DamageInstigator / KillInstigator hurt or kill the player.
 //! * SequenceTrigger: ElevatorMover.SetSeq(SeqNum) on the movers tagged Event, when triggered (or touched, if it
 //!   collides).
-//! * DamageTrigger: off until triggered (bIsOn); while on and the player stands in it, DamageAmount of DamageType
-//!   every damageInterval (bConstantDamage repeats, else once per touch).
+//! * DamageTrigger: on unless the map says bIsOn False (Trigger turns it on, UnTrigger off); while on, the player
+//!   touching it takes DamageAmount of DamageType at the trigger's location every damageInterval (bConstantDamage
+//!   repeats, else once per touch). The training's toxic pool is one: 10 'Radiation' a second while you're in it.
 
 use crate::LevelRes;
 use bevy::prelude::*;
@@ -16,6 +17,29 @@ use std::sync::Mutex;
 use unreal_pkg::props::{find, Property, Value};
 
 static INBOX: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+
+/// DamageTriggers' (bIsOn, bInitiallyActive) by list index, as they are now (saves) and as a save restores them.
+static DAMAGE_STATE: Mutex<Vec<(usize, bool, bool)>> = Mutex::new(Vec::new());
+static RESTORE: Mutex<Option<Vec<(usize, bool, bool)>>> = Mutex::new(None);
+
+/// For saves: every DamageTrigger's (index, bIsOn, bInitiallyActive).
+pub fn damage_state() -> Vec<(usize, bool, bool)> {
+    DAMAGE_STATE.lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// A save is loaded: its DamageTriggers' states apply once the list is built.
+pub fn set_damage_state(v: &[(usize, bool, bool)]) {
+    if let Ok(mut r) = RESTORE.lock() {
+        *r = Some(v.to_vec());
+    }
+}
+
+/// A new map: drop the old map's states.
+pub fn reset_level() {
+    if let Ok(mut v) = DAMAGE_STATE.lock() {
+        v.clear();
+    }
+}
 
 /// An event was raised this frame (devices.rs dispatch).
 pub fn event(name: &str, on: bool) {
@@ -74,9 +98,18 @@ enum Kind {
         interval: f32,
         constant: bool,
         damage_type: String,
+        /// bIsOn (Trigger turns it on, UnTrigger off).
         on: bool,
+        /// Trigger.IsRelevant: bInitiallyActive, switched by the OtherTrigger* states, and a TriggerType the player
+        /// counts for.
+        active: bool,
+        state: String,
+        player_type: bool,
         touching: bool,
-        timer: Option<f32>,
+        /// Touch set `damagee` (the player).
+        damagee: bool,
+        /// The actor timer: (time left, rate, looping).
+        timer: Option<(f32, f32, bool)>,
     },
 }
 
@@ -137,8 +170,13 @@ fn build(level: &dx_level::Level) -> Vec<Logic> {
                 interval: fl(p, "damageInterval", 0.5),
                 constant: bl(p, "bConstantDamage", true),
                 damage_type: name(p, "DamageType"),
-                on: false,
+                on: bl(p, "bIsOn", true),
+                active: bl(p, "bInitiallyActive", true),
+                state: name(p, "InitialState"),
+                // TT_PlayerProximity, TT_PawnProximity, TT_AnyProximity take the player.
+                player_type: matches!(find(p, "TriggerType"), None | Some(Value::Byte(0 | 1 | 3))),
                 touching: false,
+                damagee: false,
                 timer: None,
             },
             _ => continue,
@@ -184,6 +222,7 @@ pub fn logic_system(
     mut movers: ResMut<crate::movers::Movers>,
     mut ph: ResMut<crate::ai::PlayerHealth>,
     player: Res<crate::Player>,
+    cam: Query<&Transform, With<crate::FlyCam>>,
 ) {
     // Multiplayer: the host's to run (a joiner sees the results through him).
     if crate::netplay::story_off() {
@@ -193,6 +232,14 @@ pub fn logic_system(
     if !st.built {
         st.list = build(lvl);
         st.built = true;
+    }
+    if let Some(r) = RESTORE.lock().ok().and_then(|mut r| r.take()) {
+        for (i, o, a) in r {
+            if let Some(Kind::Damage { on, active, .. }) = st.list.get_mut(i).map(|l| &mut l.kind) {
+                *on = o;
+                *active = a;
+            }
+        }
     }
     let inbox: Vec<(String, bool)> = INBOX
         .lock()
@@ -267,34 +314,88 @@ pub fn logic_system(
                     seq_movers(lvl, &mut movers, &l.event, *seq);
                 }
             }
-            Kind::Damage { amount, interval, constant, damage_type, on, touching, timer } => {
-                for h in &hit {
-                    *on = *h;
+            Kind::Damage { amount, interval, constant, damage_type, on, active, state, player_type, touching, damagee, timer } => {
+                // DamageTrigger.Touch: nothing while off or not relevant; else damagee = the toucher and the timer
+                // runs at damageInterval (looping with bConstantDamage).
+                let touch = |on: bool, active: bool, damagee: &mut bool, timer: &mut Option<(f32, f32, bool)>| {
+                    if on && active && *player_type {
+                        *damagee = true;
+                        *timer = Some((*interval, *interval, *constant));
+                    }
+                };
+                for &h in &hit {
+                    if h {
+                        // DamageTrigger.Trigger: bIsOn = True, then Trigger.Trigger in its state.
+                        *on = true;
+                        match state.as_str() {
+                            "OtherTriggerToggles" => {
+                                *active = !*active;
+                                if *active && *touching {
+                                    touch(*on, *active, damagee, timer); // CheckTouchList
+                                }
+                            }
+                            "OtherTriggerTurnsOn" => {
+                                let was = *active;
+                                *active = true;
+                                if !was && *touching {
+                                    touch(*on, *active, damagee, timer);
+                                }
+                            }
+                            "OtherTriggerTurnsOff" => *active = false,
+                            _ => {}
+                        }
+                    } else {
+                        *on = false; // UnTrigger
+                    }
                 }
                 let (entered, left) = (inside && !*touching, !inside && *touching);
                 *touching = inside;
-                if !*on {
-                    // Touch / UnTouch do nothing while it's off (and Timer does no damage).
-                    continue;
-                }
                 if entered {
-                    *timer = Some(*interval);
-                } else if left {
-                    *timer = None;
+                    touch(*on, *active, damagee, timer);
+                } else if left && *on {
+                    // UnTouch: damagee = None, SetTimer(0.1, False).
+                    *damagee = false;
+                    *timer = Some((0.1, 0.1, false));
                 }
-                if let Some(t) = timer.as_mut() {
+                if let Some((t, rate, looping)) = timer.as_mut() {
                     *t -= dt;
                     if *t <= 0.0 {
-                        let ty = if damage_type.is_empty() { "None" } else { damage_type.as_str() };
-                        ph.damage(*amount, ty, DVec3::ZERO);
-                        if *constant {
-                            *t += *interval;
+                        if !*on {
+                            // Timer while off: SetTimer(0.1, False) and wait.
+                            *timer = Some((0.1, 0.1, false));
                         } else {
-                            *timer = None;
+                            if *damagee {
+                                // TakeDamage(damageAmount, None, Location, ...): hit at the trigger's own location.
+                                let ty = if damage_type.is_empty() { "None" } else { damage_type.as_str() };
+                                let yaw = cam.single().map_or(0.0, |t| {
+                                    let f = t.forward().as_vec3();
+                                    (f.z as f64).atan2(f.x as f64)
+                                });
+                                ph.damage(*amount, ty, crate::ai::player_offset(pc, yaw, l.pos));
+                                if env_on!("DXVIEW_ZONELOG") {
+                                    println!("DMGTRIG {} {ty} hp {:.0}", *amount, ph.hp);
+                                }
+                            }
+                            if *looping {
+                                *t += *rate;
+                            } else {
+                                *timer = None;
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+    // Saves read the DamageTriggers' switches from here (rewritten only when one changed).
+    let damage = st.list.iter().enumerate().filter_map(|(i, l)| match l.kind {
+        Kind::Damage { on, active, .. } => Some((i, on, active)),
+        _ => None,
+    });
+    if let Ok(mut v) = DAMAGE_STATE.lock() {
+        if !damage.clone().eq(v.iter().copied()) {
+            v.clear();
+            v.extend(damage);
         }
     }
 }

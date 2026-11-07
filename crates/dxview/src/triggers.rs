@@ -22,6 +22,8 @@ use unreal_pkg::props::{find, Property, Value};
 #[derive(Debug, Clone)]
 enum Kind {
     Plain,
+    /// UnTrigger: touching it (relevant) or triggering it untriggers its Event (no once-only, delay or message).
+    Un,
     /// LogicTrigger: inGroup1 / inGroup2, Op (AND, OR, XOR), Not, OneShot, in1, in2, outhit.
     Logic {
         g1: String,
@@ -261,8 +263,9 @@ fn i(p: &[Property], n: &str, d: i32) -> i32 {
     }
 }
 
-const CLASSES: [&str; 12] = [
+const CLASSES: [&str; 13] = [
     "Trigger",
+    "UnTrigger",
     "DirectionalTrigger",
     "DataLinkTrigger",
     "FlagTrigger",
@@ -352,6 +355,7 @@ fn build(level: &dx_level::Level) -> Vec<Trig> {
                 down: b(p, "bFadeDown", false),
                 time: None,
             },
+            "UnTrigger" => Kind::Un,
             _ => Kind::Plain,
         };
         out.push(Trig {
@@ -620,6 +624,11 @@ fn touch(
                 base_touch(t, now, out);
             }
         }
+        Kind::Un => {
+            if relevant(t, by_player) && !t.event.is_empty() {
+                out.emit(&t.event, &t.group, false);
+            }
+        }
         Kind::Shake(time, roll, vert) => {
             if relevant(t, by_player) {
                 if by_player {
@@ -819,6 +828,11 @@ fn triggered(
             }
         }
         Kind::Plain => trigger_state(t),
+        Kind::Un => {
+            if on && !t.event.is_empty() {
+                out.emit(&t.event, &t.group, false);
+            }
+        }
         Kind::Logic { g1, g2, op, not, one_shot, mut in1, mut in2, mut hit } => {
             // Other.Group == inGroupN (an actor with no Group matches an unset group).
             let src = take_source(&t.tag);

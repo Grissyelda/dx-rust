@@ -178,3 +178,59 @@ pub fn npc_pain_system(
         }
     });
 }
+
+/// BarrelFire.DamageOther: bumping a burning barrel or standing on it burns the player, 5 'Burned' at most once a
+/// second per barrel (ScriptedPawns aren't hurt).
+pub fn barrel_fire_system(
+    time: Res<Time>,
+    level: Res<crate::LevelRes>,
+    blockers: Res<crate::actors::Blockers>,
+    player: Res<crate::Player>,
+    mut ph: ResMut<crate::ai::PlayerHealth>,
+    mut last: Local<(u64, Vec<(usize, f64)>, Vec<usize>)>,
+) {
+    let lvl = &level.0;
+    if crate::loader::new_map(&mut last.0) {
+        last.1.clear();
+        last.2 = blockers
+            .list
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| lvl.actors.get(c.actor).is_some_and(|a| a.class.eq_ignore_ascii_case("BarrelFire")))
+            .map(|(i, _)| i)
+            .collect();
+    }
+    if last.2.is_empty() || ph.dead {
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    let p = player.body.location;
+    let (pr, phh) = (player.params.radius, player.params.height);
+    let v = player.body.velocity;
+    for k in 0..last.2.len() {
+        let b = last.2[k];
+        let Some(c) = blockers.list.get(b).filter(|c| c.radius > 0.0) else { continue };
+        let d = (p - c.center).truncate();
+        let gap = d.length() - (pr + c.radius);
+        let dz = p.z - c.center.z;
+        // SupportActor: standing on its top.
+        let on_top = d.length() < c.radius + pr && (dz - (phh + c.height)).abs() < 4.0;
+        // Bump: pressing into its side.
+        let bump = gap < 1.5 && dz.abs() < phh + c.height && v.truncate().dot(-d.normalize_or_zero()) > 1.0;
+        if !(on_top || bump) {
+            continue;
+        }
+        let i = match last.1.iter().position(|(x, _)| *x == b) {
+            Some(i) => i,
+            None => {
+                last.1.push((b, f64::NEG_INFINITY));
+                last.1.len() - 1
+            }
+        };
+        if now - last.1[i].1 >= 1.0 {
+            last.1[i].1 = now;
+            let off = c.center - p;
+            ph.damage(5.0, "Burned", DVec3::new(0.0, 0.0, off.z));
+        }
+    }
+}

@@ -309,6 +309,9 @@ pub struct LevelSave {
     /// Pain zones switched on / off (ZoneInfo.Trigger).
     #[serde(default)]
     pub pain_zones: Vec<usize>,
+    /// DamageTriggers' (index, bIsOn, bInitiallyActive).
+    #[serde(default)]
+    pub damage_triggers: Vec<(usize, bool, bool)>,
     /// Nanokeys pawns still carry: (pawn tag, KeyID, description).
     pub keys_carried: Vec<(String, String, String)>,
     /// Actors a mission script has hidden (bHidden / out of the world).
@@ -997,6 +1000,7 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
     }
     l.lamps = crate::dynlight::toggled();
     l.pain_zones = crate::zones::toggled();
+    l.damage_triggers = crate::logic::damage_state();
     l.keys_carried = crate::keys::carried();
 
     let count = if count_it {
@@ -1373,6 +1377,7 @@ fn restore_level_part(world: &mut World, s: &SaveGame, l: &LevelSave) {
     world.resource_mut::<crate::devices::Hacking>().strength = l.hack_strength.iter().copied().collect();
     crate::dynlight::set_toggled(&l.lamps);
     crate::zones::set_toggled(&l.pain_zones);
+    crate::logic::set_damage_state(&l.damage_triggers);
     {
         let mut hud = world.resource_mut::<crate::movers::HudMessage>();
         hud.text = String::new();

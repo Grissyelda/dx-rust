@@ -463,6 +463,7 @@ fn reset_modules() {
     crate::deathmatch::reset_level();
     crate::info::reset_level();
     crate::zones::reset_level();
+    crate::logic::reset_level();
     crate::hanging::reset_level();
     crate::stamina::reset_level();
     crate::smartai::reset_level();

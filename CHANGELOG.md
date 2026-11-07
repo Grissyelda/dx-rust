@@ -7,6 +7,13 @@
   do (their strength is 1.0) (#43).
 - The repairbot screen has Recharge before Close, as in the original, and the button bar's filler covers the gap
   after them (#44).
+- Damage triggers work as in the original (#39). They were left switched off until something turned them on, but
+  the original's start on, so 77 hazards across the game never hurt: the training's toxic pool (10 a second while
+  you're in it, on top of the water's own damage), poison gas in the Hong Kong storage and canal and the NYC
+  sewers, electrified water in Vandenberg, steam on Brooklyn Bridge Station and in Area 51, radiation in the MJ12
+  lab and Area 51, EMP fields and the Vandenberg drops. Valves, switches and panels that turn them off now do
+  (UnTrigger actors were missing too), and their state is kept in saves.
+- Burning barrels burn you when you bump into them or stand on them (5 a second), as the original's do.
 
 ## v0.12.0
 
