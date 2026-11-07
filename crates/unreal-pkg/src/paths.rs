@@ -66,12 +66,15 @@ pub fn root() -> Option<PathBuf> {
 }
 
 pub fn addons() -> Vec<PathBuf> {
+    if crate::mods::suspended() {
+        return Vec::new();
+    }
     ADDONS.read().map(|a| a.clone()).unwrap_or_default()
 }
 
 /// The HD texture packs' Textures folders, when HD textures are on.
 pub fn hd_texture_dirs() -> Vec<PathBuf> {
-    if !HD_TEX_ON.load(std::sync::atomic::Ordering::Relaxed) {
+    if !HD_TEX_ON.load(std::sync::atomic::Ordering::Relaxed) || crate::mods::suspended() {
         return Vec::new();
     }
     HD_TEX.read().map(|h| h.iter().map(|d| crate::mods::find_rel(d, "Textures").unwrap_or_else(|| d.join("Textures"))).collect()).unwrap_or_default()
@@ -85,7 +88,11 @@ pub fn set_hd_textures_on(on: bool) {
     HD_TEX_ON.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The overlay folders (none while mods are suspended).
 pub fn overlays() -> Vec<PathBuf> {
+    if crate::mods::suspended() {
+        return Vec::new();
+    }
     STATE.read().ok().and_then(|g| g.as_ref().map(|s| s.1.clone())).unwrap_or_default()
 }
 
@@ -106,7 +113,8 @@ fn ci_in(dir: &Path, name: &str) -> Option<PathBuf> {
 pub fn resolve(path: &Path) -> PathBuf {
     let g = STATE.read();
     let Some((root, ovs)) = g.as_ref().ok().and_then(|g| g.as_ref()) else { return path.to_path_buf() };
-    if ovs.is_empty() {
+    let off = crate::mods::suspended();
+    if ovs.is_empty() || off {
         if path.exists() {
             return path.to_path_buf();
         }
@@ -145,6 +153,9 @@ pub fn resolve(path: &Path) -> PathBuf {
 
 /// A file named `name` in an addon folder's `parent` (relative to the game folder), any case.
 fn in_addons(parent: &Path, name: &str) -> Option<PathBuf> {
+    if crate::mods::suspended() {
+        return None;
+    }
     let a = ADDONS.read().ok()?;
     if let Some(p) = a.iter().find_map(|d| ci_in(&d.join(parent), name)) {
         return Some(p);
@@ -248,12 +259,18 @@ pub fn set_dds_filter(allow: Option<Vec<String>>, deny: Vec<String>) {
 
 /// Any DDS overrides indexed.
 pub fn has_dds() -> bool {
+    if crate::mods::suspended() {
+        return false;
+    }
     DDS.read().map(|g| g.is_some()).unwrap_or(false)
 }
 
 /// The override for a texture path ("Package.Group.Name" or "Package.Name"), if a pack has one and its package
 /// is allowed.
 pub fn dds_for(path: &str) -> Option<PathBuf> {
+    if crate::mods::suspended() {
+        return None;
+    }
     let g = DDS.read().ok()?;
     let idx = g.as_ref()?;
     let key = path.to_ascii_lowercase().replace('.', "/");

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Multiplayer fixes (November 6, evening)
+- **Classic rooms with mods installed**: hosting (or joining) a Classic room switches your mods off while you play
+  instead of refusing; they come back when you leave. The Look choice says which mods are switched off.
+- **Heal each other**: Use on another player with a medkit in your inventory heals him (the medkit's amount with
+  your Medicine skill). His name tag shows his health and how many medkits you carry.
+- **The host picks his game**: Start Game opens "Host: Choose Your Game" - any character's saves, New Character (the
+  character creator), or Play On with the game that's up. The others see the host's chosen name and look.
+- Fix: a male JC looked broken (his face on Lay D Denton's body) on the screen of a player who plays Lay D Denton.
+
 ### Release Builder (November 6)
 - **DXBuilder.exe** (built by `BUILD_BUILDER.bat`) makes the Windows, Linux / Steam Deck and macOS releases from one
   window: Windows on the PC, Linux in WSL (or on GitHub), macOS on GitHub's Macs, with live logs, Cancel, and a

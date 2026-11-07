@@ -249,7 +249,7 @@ pub fn init(root: &std::path::Path) {
 
 /// Perks are on (the GMDX mod is).
 pub fn active() -> bool {
-    LIST.read().is_ok_and(|l| !l.is_empty())
+    !unreal_pkg::mods::suspended() && LIST.read().is_ok_and(|l| !l.is_empty())
 }
 
 pub fn labels() -> Option<Labels> {

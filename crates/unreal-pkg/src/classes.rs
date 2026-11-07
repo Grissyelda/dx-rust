@@ -321,7 +321,7 @@ impl ClassDb {
         let mut merged = self.defaults(&class);
         overlay(&mut merged, own);
         apply_class_overrides(&class, &mut merged);
-        if let Ok(h) = INSTANCE_HOOK.read() {
+        if let (false, Ok(h)) = (crate::mods::suspended(), INSTANCE_HOOK.read()) {
             if let Some(f) = h.as_ref() {
                 f(map.self_name.as_deref().unwrap_or(""), &class, &e.name, &mut merged);
             }
@@ -355,6 +355,15 @@ fn layer_rank(layer: &str) -> usize {
 static OVERRIDE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Bumped whenever an override layer is set (callers cache what they read from the layers by it).
+pub(crate) fn bump_override_generation() {
+    OVERRIDE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// While mods are suspended only our own layer (the player's skins, "travel") applies.
+fn layer_live(layer: &str) -> bool {
+    layer == "travel" || !crate::mods::suspended()
+}
+
 pub fn override_generation() -> u64 {
     OVERRIDE_GEN.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -371,6 +380,9 @@ pub fn set_override_layer(layer: &str, list: Vec<(String, String, u32, Value)>) 
 /// The values a layer sets (for code that needs to know what a mod changed).
 /// One property override in a layer (case-insensitive class / property names), cloned out without copying the layer.
 pub fn override_value(layer: &str, class: &str, name: &str) -> Option<Value> {
+    if !layer_live(layer) {
+        return None;
+    }
     let o = OVERRIDES.read().ok()?;
     let (_, list) = o.iter().find(|(l, _)| l == layer)?;
     list.iter()
@@ -379,12 +391,15 @@ pub fn override_value(layer: &str, class: &str, name: &str) -> Option<Value> {
 }
 
 pub fn override_layer(layer: &str) -> Vec<(String, String, u32, Value)> {
+    if !layer_live(layer) {
+        return Vec::new();
+    }
     OVERRIDES.read().ok().and_then(|o| o.iter().find(|(l, _)| l == layer).map(|(_, v)| v.clone())).unwrap_or_default()
 }
 
 pub fn apply_class_overrides(class: &str, props: &mut Vec<Property>) {
     let Ok(o) = OVERRIDES.read() else { return };
-    for (_, list) in o.iter() {
+    for (_, list) in o.iter().filter(|(l, _)| layer_live(l)) {
         for (c, name, index, value) in list {
             if !c.eq_ignore_ascii_case(class) {
                 continue;

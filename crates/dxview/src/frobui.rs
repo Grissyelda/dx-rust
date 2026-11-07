@@ -255,6 +255,10 @@ pub fn frob_target_system(
         if let Some(t) = ray_cylinder(eye, end, c.center, c.radius, c.height) {
             if t <= wall + 0.01 {
                 let mut text = display_name(&a.props);
+                // Multiplayer: another player - his name, and whether a medkit from our inventory would help him.
+                if let Some(id) = npcs.get(e).ok().and_then(|(n, _)| n.net_player) {
+                    text = crate::netplay::mate_label(id, owned("MedKit"));
+                }
                 let mut bars = None;
                 // HackableDevices: "Bypass Str: NN%" with a bar and how many multitools it will take (untrained 0.1
                 // each) drawn on it, or "Bypassed" / "INF".

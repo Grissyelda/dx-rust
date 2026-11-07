@@ -200,6 +200,8 @@ enum Target {
     Bot(Entity),
     /// A pawn or decoration with conversations (Frob -> StartConversation(IM_Frob)).
     Talk(usize),
+    /// Multiplayer: another player's body (Use heals him with one of our medkits).
+    Mate(u8),
 }
 
 /// The frob ray: from the eye along `dir`, MaxFrobDistance (112 units) to `end`; `wall` = the fraction where the
@@ -227,6 +229,28 @@ struct FrobCx<'a> {
     mv: Mut<'a, Movers>,
     assets: Mut<'a, crate::weapons::RuntimeAssets>,
     weapons: Mut<'a, crate::weapons::Weapons>,
+}
+
+/// Use on another player: one medkit from the inventory heals him as it would heal us (MedKit.healAmount x the
+/// Medicine skill), on his side of the game. Ours: the original has no way to treat another player.
+fn frob_mate(cx: &mut FrobCx, id: u8) {
+    let Some((name, health, dead)) = crate::netplay::mate(id) else { return };
+    let has = cx.inv.0.items.iter().any(|i| i.def.class == "MedKit");
+    let msg = if dead {
+        format!("{name} is down.")
+    } else if health >= 100 {
+        format!("{name} doesn't need healing.")
+    } else if !has {
+        format!("You need a medkit to heal {name}.")
+    } else {
+        let n = (30.0 * crate::abilities::skill("SkillMedicine")).floor();
+        cx.inv.0.use_one("MedKit");
+        crate::netplay::heal_player(id, n);
+        crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
+        format!("Healed {name} ({} points)", n as i32)
+    };
+    cx.hud.text = msg;
+    cx.hud.time_left = 2.0;
 }
 
 /// The queries frob_system's steps look through (pickups, pawns / bodies, grenades).
@@ -333,6 +357,7 @@ pub fn frob_system(
                 crate::consys::request_frob(b);
             }
         }
+        Some((Target::Mate(id), _)) => frob_mate(&mut cx, id),
         Some((Target::Mover(idx), _)) => frob_mover(&mut cx, idx, &mut picking),
         Some((Target::Item(e), _)) => frob_item(&mut cx, e, &items, &net_items, &mut commands),
         Some((Target::Body(e), _)) => frob_body(&mut cx, e, &mut bodies, &mut vis),
@@ -458,6 +483,18 @@ fn nearest_target(
         ) {
             if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Bot(e), t));
+            }
+        }
+    }
+    // Other players (multiplayer): Use heals them.
+    for (_, npc, deco) in bodies {
+        let Some(id) = npc.net_player else { continue };
+        if npc.state == crate::ai::NpcState::Dead {
+            continue;
+        }
+        if let Some(t) = ray_cylinder(eye, end, deco.body.location, npc.params.radius, npc.params.height) {
+            if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
+                best = Some((Target::Mate(id), t));
             }
         }
     }

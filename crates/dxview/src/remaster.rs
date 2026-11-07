@@ -210,6 +210,53 @@ pub fn switch(to_modern: bool) -> bool {
 }
 
 /// The save the in-place reload goes through.
+/// 0 idle, 1 asked, 2 saving, 3 loading.
+static RELOAD: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Rebuild the map being played in place (save, then load that save), without the wipe: multiplayer uses it when a
+/// room's look turns mods or the visual mod settings on or off while a map is up. Nothing happens on the logo map
+/// or where the game can't save (the next map load picks the change up there).
+pub fn request_reload() {
+    if !crate::menus::intro_map() {
+        let _ = RELOAD.compare_exchange(0, 1, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn reload_system(time: Res<Time<Real>>, mut since: Local<f32>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    match RELOAD.load(Relaxed) {
+        1 => {
+            if crate::loader::busy() {
+                return;
+            }
+            if !crate::save::can_save(false) {
+                RELOAD.store(0, Relaxed);
+                return;
+            }
+            let _ = std::fs::remove_file(swap_path());
+            crate::save::request(swap_path(), "Multiplayer look");
+            *since = 0.0;
+            RELOAD.store(2, Relaxed);
+        }
+        2 => {
+            *since += time.delta_secs();
+            if swap_path().exists() {
+                crate::save::load(std::path::Path::new(""), &swap_path());
+                RELOAD.store(3, Relaxed);
+            } else if *since > 3.0 {
+                RELOAD.store(0, Relaxed);
+            }
+        }
+        3 => {
+            if !crate::loader::busy() {
+                let _ = std::fs::remove_file(swap_path());
+                RELOAD.store(0, Relaxed);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn swap_path() -> std::path::PathBuf {
     crate::save::dir().join("ClassicModernSwap.ron")
 }
@@ -284,7 +331,7 @@ impl Plugin for RemasterPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(bevy::ui_render::UiMaterialPlugin::<WipeMaterial>::default())
             .add_systems(Startup, setup_wipe_shader)
-            .add_systems(Update, wipe_system);
+            .add_systems(Update, (wipe_system, reload_system));
         use bevy::render::{Render, RenderApp, RenderSystems};
         if let Some(r) = app.get_sub_app_mut(RenderApp) {
             r.add_systems(Render, count_waiting.in_set(RenderSystems::Cleanup));

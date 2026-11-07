@@ -218,6 +218,9 @@ enum Msg {
     Lasers(u32, Vec<u32>),
     /// A projectile somebody launched (rocket, dart, plasma...): everyone else sees it fly (it does no harm there).
     Ghost(GhostNet),
+    /// A player used one of his medkits on player `to`: `amount` health points, given on `to`'s side (the host
+    /// passes it on). `by`: the healer's name.
+    Heal { to: u8, amount: f32, by: String },
 }
 
 /// A placed decoration's place (Unreal units) and rotation.
@@ -296,6 +299,8 @@ pub struct Remote {
     pub ready: bool,
     /// Said hello (his name and look are known).
     pub hello: bool,
+    /// The look his body here was built with (a new look - another character - rebuilds it).
+    body_look: Option<Look>,
 }
 
 #[derive(Default)]
@@ -337,6 +342,8 @@ struct Net {
     events_in: Vec<(String, bool)>,
     hits_in: Vec<(u8, HitOn, f32, String, [f32; 3], [f32; 3])>,
     damage_in: Vec<(f32, String, [f32; 3], Option<u8>)>,
+    /// Medkits other players used on us: (points, who).
+    heals_in: Vec<(f32, String)>,
     /// The player who last hurt us (deathmatch credit).
     last_by: Option<u8>,
     /// Deathmatch: (kills, deaths) by player id (host keeps them; everyone hears the lines).
@@ -461,6 +468,7 @@ fn start(role: Role, ep: Endpoint, rules: Rules, look: Look) {
         events_in: Vec::new(),
         hits_in: Vec::new(),
         damage_in: Vec::new(),
+        heals_in: Vec::new(),
         last_by: None,
         scores: HashMap::new(),
         speech_in: Vec::new(),
@@ -548,7 +556,6 @@ fn send_host(n: &Net, m: &Msg, reliable: bool) {
 /// lobby's HOST line. Joiners are let in once the host is in a game.
 pub fn open_host(rules: Rules) -> Result<(u16, String, Option<SocketAddr>), String> {
     leave("");
-    host_mods_check(rules.classic)?;
     let (private, public) = game::keypair();
     let ep = Endpoint::host(imsim_net::DEFAULT_PORT + 10, private, lobby_udp(), None).map_err(|e| format!("Couldn't open the game port ({e})."))?;
     let port = ep.local_port();
@@ -576,10 +583,22 @@ pub fn host_registered(token: &str) {
 }
 
 /// The room's look for everyone: Classic or Modern is set here (the in-game switch stays off while playing).
+/// A Classic room is played on the plain game: the player's mods are switched off while he's in it (back on when
+/// he leaves); a map already up is rebuilt in place when that or the look's visual mod settings change.
 fn force_look(r: &Rules) {
     let modern = !r.classic;
+    let off = r.classic && !unreal_pkg::mods::installed_ids().is_empty();
+    let mut rebuild = unreal_pkg::mods::set_suspended(off);
+    if rebuild && off {
+        if let Some(note) = classic_mods_note() {
+            feed(&note.replace("Classic: ", "Classic room: "), NEWS);
+        }
+    }
     if crate::remaster::is_modern() != modern {
-        let _ = crate::remaster::switch(modern);
+        rebuild |= crate::remaster::switch(modern);
+    }
+    if rebuild {
+        crate::remaster::request_reload();
     }
 }
 
@@ -598,6 +617,8 @@ pub fn set_rules(r: Rules) {
     force_look(&r);
     with(|n| {
         n.rules = r.clone();
+        n.mods = unreal_pkg::mods::active_ids().into_iter().map(str::to_string).collect();
+        n.mods.sort();
         if n.role == Role::Host {
             send_all(n, &Msg::Rules(r), true, None);
         }
@@ -625,6 +646,11 @@ pub fn join(j: &imsim_net::client::Joined, look: Look) -> Result<(), String> {
 pub fn leave(why: &str) {
     let mut g = NET.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(n) = g.take() {
+        // The player's mods come back (the title map, or the next map, is built with them).
+        let resume = unreal_pkg::mods::set_suspended(false);
+        if resume && !(n.role == Role::Client && n.welcomed) {
+            crate::remaster::request_reload();
+        }
         if n.role == Role::Host {
             close_router_port();
         }
@@ -1100,6 +1126,17 @@ pub fn net_in_system(
         let off = from - player.body.location;
         ph.damage(d, &kind, off.normalize_or_zero() * player.params.radius);
     }
+    // Medkits other players used on us.
+    let heals = with(|n| std::mem::take(&mut n.heals_in)).unwrap_or_default();
+    for (amount, by) in heals {
+        if ph.dead {
+            continue;
+        }
+        let got = ph.heal(amount);
+        crate::bodyfx::healed(crate::ai::P_TORSO);
+        crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
+        crate::classic_hud::client_message(&format!("{by} healed you ({} points)", got.round() as i32));
+    }
     // Lines spoken on the host.
     let sp = with(|n| std::mem::take(&mut n.speech_in)).unwrap_or_default();
     for (at, sound, name, text, radius) in sp {
@@ -1126,17 +1163,35 @@ pub fn net_in_system(
         let mut reqs = Vec::new();
         for r in &mut n.remotes {
             if let Some((e, _, b)) = bodies.iter().find(|(_, p, _)| *p == r.id) {
+                if r.body_look.as_ref().is_some_and(|l| *l != r.look) {
+                    // He's playing another character now (name, skin, Lay D): the body goes and comes back as it.
+                    gone_bodies.push((*e, *b));
+                    r.body = None;
+                    r.blocker = None;
+                    r.asked = false;
+                    r.body_look = None;
+                    continue;
+                }
                 r.body = Some(*e);
                 r.blocker = Some(*b);
             }
             if r.body.is_none() && !r.asked && r.at.is_some() && r.st.map == my_map {
                 r.asked = true;
+                r.body_look = Some(r.look.clone());
                 reqs.push((r.id, r.look.clone(), r.st.clone()));
             }
         }
         for (e, p, b) in &bodies {
-            if !n.remotes.iter().any(|r| r.id == *p) {
+            if !n.remotes.iter().any(|r| r.id == *p) && !gone_bodies.iter().any(|(g, _)| g == e) {
                 gone_bodies.push((*e, *b));
+            }
+        }
+        // The host plays the character he picked after opening the room (a save, or a new one): everyone hears.
+        if n.role == Role::Host {
+            let look = my_look();
+            if look != n.look {
+                n.look = look;
+                send_roster(n);
             }
         }
         reqs
@@ -1497,7 +1552,23 @@ fn spawn_body(id: u8, look: &Look, st: &PState) {
             props.push(Property { name: "MultiSkins".into(), index: i as u32, value: Value::Path(s) });
         }
     } else {
-        props.push(Property { name: "MultiSkins".into(), index: 0, value: Value::Path(format!("DeusExCharacters.Skins.JCDentonTex{n}")) });
+        // The male JC set in full (JCDouble's defaults with his face): on a Lay D Denton player's PC the JCDouble class
+        // itself is dressed as her (travel's override layer), so nothing may be left to the class.
+        props.push(Property { name: "Mesh".into(), index: 0, value: Value::Path("DeusExCharacters.GM_Trench".into()) });
+        let t = |x: &str| format!("DeusExCharacters.Skins.{x}");
+        let skins = [
+            t(&format!("JCDentonTex{n}")),
+            t("JCDentonTex2"),
+            t("JCDentonTex3"),
+            t("JCDentonTex0"),
+            t("JCDentonTex1"),
+            t("JCDentonTex2"),
+            t("FramesTex4"),
+            t("LensesTex5"),
+        ];
+        for (i, s) in skins.into_iter().enumerate() {
+            props.push(Property { name: "MultiSkins".into(), index: i as u32, value: Value::Path(s) });
+        }
     }
     let yaw = (st.yaw as f64 / std::f64::consts::TAU * 65536.0) as i32;
     crate::spawn::request(crate::spawn::SpawnReq {
@@ -1591,6 +1662,7 @@ fn remote_mut(n: &mut Net, id: u8) -> &mut Remote {
         ping: 0.0,
         ready: false,
         hello: false,
+        body_look: None,
     });
     n.remotes.last_mut().unwrap()
 }
@@ -1644,6 +1716,13 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Host, Msg::FrobFixture(a)) => n.frob_fixtures.push(a),
         (Role::Host, Msg::Lock(i, l)) => n.locks.push((i, l)),
         (Role::Host, Msg::Hit { on, damage, kind, at, from }) => n.hits_in.push((peer, on, damage, kind, at, from)),
+        (Role::Host, Msg::Heal { to, amount, by }) => {
+            if to == 0 {
+                n.heals_in.push((amount, by));
+            } else if to != peer {
+                send_to(n, to, &Msg::Heal { to, amount, by }, true);
+            }
+        }
         (Role::Host, Msg::Noise { at, radius }) => n.noises_in.push((peer, at, radius)),
         (Role::Host, Msg::Died { by, kind }) => died(n, peer, by, &kind),
         (Role::Host, Msg::DecoMove(_, d)) => sync(|s| s.deco_moves.push(d)),
@@ -1716,6 +1795,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Client, Msg::Flags(f)) => n.flags_in = Some(f),
         (Role::Client, Msg::Event(name, on)) => n.events_in.push((name, on)),
         (Role::Client, Msg::Damage { damage, kind, from, by }) => n.damage_in.push((damage, kind, from, by)),
+        (Role::Client, Msg::Heal { amount, by, .. }) => n.heals_in.push((amount, by)),
         (Role::Client, Msg::Travel(map)) => {
             n.host_map = Some(map.clone());
             n.travel_in = Some(map);
@@ -2296,24 +2376,51 @@ fn mod_names(ids: &[String]) -> String {
     ids.iter().map(|i| unreal_pkg::mods::def(i).map_or(i.as_str(), |d| d.name)).collect::<Vec<_>>().join(", ")
 }
 
-/// Host: a Classic room is played without mods.
-pub fn host_mods_check(classic: bool) -> Result<(), String> {
-    let ids: Vec<String> = unreal_pkg::mods::active_ids().into_iter().map(str::to_string).collect();
-    if classic && !ids.is_empty() {
-        return Err(format!(
-            "Classic rooms are played without mods, and this game runs {}. Switch them off on the launcher's Mods page, or host a Modern room.",
-            mod_names(&ids)
-        ));
+// ---------------------------------------------------------------------------------------------------------------
+// Healing each other: Use on another player's body with a medkit in the inventory.
+
+/// Another player as the frob line sees him: (name, overall health percent, down).
+pub fn mate(id: u8) -> Option<(String, u8, bool)> {
+    with(|n| n.remotes.iter().find(|r| r.id == id).map(|r| (r.look.name.clone(), r.st.health, r.st.dead))).flatten()
+}
+
+/// The frob label over another player: his name, and what Use would do with the medkits we carry.
+pub fn mate_label(id: u8, medkits: u32) -> String {
+    let Some((name, health, dead)) = mate(id) else { return "Player".into() };
+    if dead {
+        format!("{name}\nDown")
+    } else if health >= 100 {
+        format!("{name}\nHealth {health}%")
+    } else if medkits == 0 {
+        format!("{name}\nHealth {health}% (no medkit)")
+    } else {
+        format!("{name}\nHealth {health}%: Use to heal ({medkits} medkit{})", if medkits == 1 { "" } else { "s" })
     }
-    Ok(())
+}
+
+/// Send `amount` health points to player `to` (one of our medkits, used up by the caller).
+pub fn heal_player(to: u8, amount: f32) {
+    with(|n| {
+        let m = Msg::Heal { to, amount, by: n.look.name.clone() };
+        if n.role == Role::Host {
+            send_to(n, to, &m, true);
+        } else {
+            send_host(n, &m, true);
+        }
+    });
+}
+
+/// The note a host sees for his look: in a Classic room his mods are switched off while he plays (None = no mods).
+pub fn classic_mods_note() -> Option<String> {
+    let ids: Vec<String> = unreal_pkg::mods::installed_ids().into_iter().map(str::to_string).collect();
+    (!ids.is_empty()).then(|| format!("Classic: {} switched off while you play.", mod_names(&ids)))
 }
 
 /// Why a joiner running `theirs` can't play in this room (None = he can).
 fn mods_mismatch(classic: bool, host: &[String], theirs: &[String]) -> Option<String> {
     if classic {
-        return (!theirs.is_empty()).then(|| {
-            format!("This is a Classic room, played without mods: switch off {} on the launcher's Mods page to join.", mod_names(theirs))
-        });
+        // A joiner's own mods are switched off when the room's rules reach him (force_look).
+        return None;
     }
     if host == theirs {
         return None;

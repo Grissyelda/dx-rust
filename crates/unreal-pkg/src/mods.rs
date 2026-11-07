@@ -339,13 +339,42 @@ pub fn activate(list: &[(&'static ModDef, PathBuf)]) {
     }
 }
 
-/// The ids of every enabled mod (multiplayer checks that a room's players run the same ones).
+static SUSPENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every mod switched off for now (a Classic multiplayer room is played on the plain game): `active` / `active_ids`
+/// answer as if none were enabled, `paths` stops looking in mod folders, the class override layers and per-actor hook
+/// of mods stop applying. What is already built (the map in memory) changes at the next map load. Returns whether
+/// it changed.
+pub fn set_suspended(on: bool) -> bool {
+    let was = SUSPENDED.swap(on, std::sync::atomic::Ordering::Relaxed);
+    if was != on {
+        crate::classes::bump_override_generation();
+    }
+    was != on
+}
+
+pub fn suspended() -> bool {
+    SUSPENDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The ids of every enabled mod (multiplayer checks that a room's players run the same ones). None while suspended.
 pub fn active_ids() -> Vec<&'static str> {
+    if suspended() {
+        return Vec::new();
+    }
+    installed_ids()
+}
+
+/// The ids of every enabled mod, suspended or not.
+pub fn installed_ids() -> Vec<&'static str> {
     ACTIVE.read().map(|a| a.iter().map(|(i, _)| *i).collect()).unwrap_or_default()
 }
 
-/// The folder of an enabled mod.
+/// The folder of an enabled mod (None while mods are suspended).
 pub fn active(id: &str) -> Option<PathBuf> {
+    if suspended() {
+        return None;
+    }
     ACTIVE.read().ok()?.iter().find(|(i, _)| *i == id).map(|(_, p)| p.clone())
 }
 

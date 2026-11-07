@@ -1102,6 +1102,9 @@ fn hdtp_jc() -> bool {
 
 /// Outfit.ApplyOutfitToActor: (mesh, carcass mesh, Texture, MultiSkins).
 fn look(carcass: bool) -> Option<(String, String, String, [String; 8])> {
+    if !active() {
+        return None;
+    }
     let (gi, mesh_id, parts) = worn()?;
     let g = DATA.read().ok()?;
     let d = g.as_ref()?;
@@ -1506,6 +1509,9 @@ pub fn player_skin(class: &str) -> String {
 
 /// SetDefaultSkin: the skin an NPC's weapon has (its class is among the skin's owners).
 pub fn npc_skin(npc_class: &str, weapon_class: &str) -> String {
+    if !active() {
+        return "default".into();
+    }
     let Ok(g) = DATA.read() else { return "default".into() };
     let Some(d) = g.as_ref() else { return "default".into() };
     let (o1, o2) = (format!("DeusEx.{npc_class}"), format!("DeusEx.{npc_class}Carcass"));

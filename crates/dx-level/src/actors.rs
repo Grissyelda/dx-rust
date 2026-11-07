@@ -291,7 +291,7 @@ pub fn build(
         actors.push(ActorInfo { name: e.name.clone(), class, export: i as i32 + 1, props });
     }
     // Actors a mod adds to this map (Augmentique's outfit boxes, from GMDX Augmented's copy of the map).
-    if let Ok(h) = EXTRA_ACTORS.read() {
+    if let (false, Ok(h)) = (unreal_pkg::mods::suspended(), EXTRA_ACTORS.read()) {
         if let Some(f) = h.as_ref() {
             for (class, name, props) in f(pkg.self_name.as_deref().unwrap_or("")) {
                 actors.push(ActorInfo { name, class, export: -1, props });

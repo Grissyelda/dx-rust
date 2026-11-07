@@ -136,7 +136,7 @@ pub fn init_lddp() {
 
 /// The Lay D Denton Project's files are laid over the game.
 pub fn lddp() -> bool {
-    LDDP.load(std::sync::atomic::Ordering::Relaxed)
+    LDDP.load(std::sync::atomic::Ordering::Relaxed) && !unreal_pkg::mods::suspended()
 }
 
 /// Playing the female JC (LDDP's LDDPJCIsFemale).

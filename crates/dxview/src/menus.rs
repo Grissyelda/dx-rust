@@ -4816,7 +4816,9 @@ const ACT_ADDR_SAVE: u8 = 46;
 const ACT_OFFLINE: u8 = 47;
 const ACT_LEAVE: u8 = 48;
 const ACT_READY: u8 = 49;
-const ACT_LAST: u8 = ACT_READY;
+/// The host's game screen: carry on with the game already up (as its character).
+const ACT_MP_PLAYON: u8 = 50;
+const ACT_LAST: u8 = ACT_MP_PLAYON;
 /// Host Room widgets: Copy Code, and a Kick per player row (40 + row).
 const HDR_COPY: u8 = 29;
 const HDR_KICK: u8 = 40;
@@ -5089,13 +5091,7 @@ fn mp_host_choices() -> Vec<Choice> {
             (2..=imsim_net::MAX_PLAYERS).map(|n| n.to_string()).collect(),
             (d.max_players.clamp(2, imsim_net::MAX_PLAYERS) - 2) as usize,
         ),
-        mp_choice(
-            "MpLook",
-            "|&Look",
-            "Everyone plays in this look. The Classic / Modern switch is off in multiplayer.",
-            s(&["Classic", "Modern"]),
-            if modern { 1 } else { 0 },
-        ),
+        mp_choice("MpLook", "|&Look", &mp_look_help(!modern), s(&["Classic", "Modern"]), if modern { 1 } else { 0 }),
         mp_choice("MpTough", "|&Tougher Enemies", "Co-op: enemies get tougher with more players.", s(&["Off", "On"]), if d.tough { 1 } else { 0 }),
         mp_choice("MpFriendly", "|&Friendly Fire", "Players' shots and blasts hurt each other.", s(&["Off", "On"]), 0),
     ]
@@ -5114,17 +5110,23 @@ fn mp_host_settings(h: &MpHost) -> RoomSettings {
     }
 }
 
+/// The Look choice's help: in Classic it says which of the host's mods are switched off while the room lasts.
+fn mp_look_help(classic: bool) -> String {
+    let base = "Everyone plays in this look. The Classic / Modern switch is off in multiplayer.";
+    match (classic, crate::netplay::classic_mods_note()) {
+        (true, Some(note)) => format!("{base} {note}"),
+        _ => base.to_string(),
+    }
+}
+
 /// A host choice stepped (click, Left / Right): the lobby (or, for Friendly Fire, the game session) hears of it at once.
-/// A Classic look with mods installed is refused (netplay::host_mods_check): the choice steps back and the reason
-/// comes back for a message box.
+/// Classic with mods installed is fine: the host's mods are switched off while the room lasts (netplay::force_look,
+/// said in the Look choice's help). Returns a message for a box (none now).
 fn mp_host_cycle(h: &mut MpHost, i: u8, dir: i32) -> Option<String> {
     let c = h.choices.get_mut(i as usize)?;
     c.cycle(dir);
-    if c.key == "MpLook" && c.value < 0.5 {
-        if let Err(e) = crate::netplay::host_mods_check(true) {
-            c.cycle(-dir);
-            return Some(e);
-        }
+    if c.key == "MpLook" {
+        c.help = mp_look_help(c.value < 0.5);
     }
     if c.key == "MpFriendly" {
         crate::netplay::set_friendly_fire(c.value > 0.5);
@@ -5319,7 +5321,13 @@ fn mp_variant(w: &mut Win) {
             w.f.title = "New Multiplayer Character".into();
             w.focus = Some(W::Edit(0));
         }
-        Body::SaveLoad(_) => w.f.actions.push((0, ACT_MP_NEWGAME, "New Game".into(), String::new())),
+        Body::SaveLoad(_) => {
+            w.f.title = "Host: Choose Your Game".into();
+            w.f.actions.push((0, ACT_MP_NEWGAME, "New Character".into(), String::new()));
+            if !intro_map() {
+                w.f.actions.push((0, ACT_MP_PLAYON, "Play On".into(), String::new()));
+            }
+        }
         _ => {}
     }
 }
@@ -5399,14 +5407,13 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
         (ACT_START, Body::Host(h)) if h.open && h.all_ready => {
             // The lobby's players come in once a map is up. On a playable map: back to the game, the room open. On
             // the logo map: the host's story first (a save, or New Game on the same screen).
+            // The host picks his game every time: a save (any character's), a new character (New Game: the
+            // character creator), or, with a game up, carrying on with it.
             crate::netplay::start_game();
-            if intro_map() {
-                acts.push(Act::Push("MenuScreenLoadGame:mp".into()));
-            } else {
-                acts.push(Act::PopAll);
-            }
+            acts.push(Act::Push("MenuScreenLoadGame:mp".into()));
         }
         (ACT_MP_NEWGAME, _) => acts.push(Act::Push("MenuSelectDifficulty".into())),
+        (ACT_MP_PLAYON, _) => acts.push(Act::PopAll),
         (ACT_ADDR, _) => {
             // From the connect-failed box: the box goes, the address screen comes.
             acts.push(Act::Pop);
@@ -6334,12 +6341,12 @@ mod tests {
             h.all_ready = true;
             h.copied = None;
         }
-        // Start Game: back to the game on a playable map; on the logo map the Load Game screen, with New Game.
+        // Start Game: the host's game screen (saves, New Character, and Play On with a game up).
         {
             let mut acts = Vec::new();
             let w = st.stack.last_mut().unwrap();
             mp_action(w, ACT_START, &mut acts);
-            assert!(matches!(acts.as_slice(), [Act::PopAll]));
+            assert!(matches!(acts.as_slice(), [Act::Push(c)] if c == "MenuScreenLoadGame:mp"));
             let m = MISSION.swap(-2, Ordering::Relaxed);
             let mut acts = Vec::new();
             mp_action(st.stack.last_mut().unwrap(), ACT_START, &mut acts);
