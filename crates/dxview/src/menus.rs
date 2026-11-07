@@ -4635,7 +4635,11 @@ fn save_load_action(st: &mut Menus, top: usize, key: &str, hud: &mut ClassicHud,
     match key {
         "LOAD" => {
             if let Some(g) = game {
-                acts.push(Act::LoadGame(g.path));
+                // Hosting: not a character someone in the room already plays as.
+                match crate::netplay::name_taken(&g.char_name).filter(|_| crate::netplay::is_host() && !g.char_name.trim().is_empty()) {
+                    Some(who) => acts.push(Act::Msg("Name Taken".into(), name_taken_text(&who), false, MsgPurpose::MpResult)),
+                    None => acts.push(Act::LoadGame(g.path)),
+                }
             }
         }
         "SAVE" => {
@@ -4707,9 +4711,12 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                     // MenuScreenNewGame START.
                     if let Body::NewGame(ng) = &win.body {
                         let name = ng.name.get().trim().to_string();
+                        let taken = crate::netplay::name_taken(&name);
                         if name.is_empty() {
                             let d = assets.classes.defaults("MenuScreenNewGame");
                             acts.push(Act::Msg(pstr(&d, "NameBlankTitle"), pstr(&d, "NameBlankPrompt"), false, MsgPurpose::NameBlank));
+                        } else if let Some(who) = taken.filter(|_| key == "START") {
+                            acts.push(Act::Msg("Name Taken".into(), name_taken_text(&who), false, MsgPurpose::MpResult));
                         } else if key == "START" {
                             let lddp = crate::travel::lddp();
                             let female = lddp && ng.portrait % 2 == 1;
@@ -5545,6 +5552,11 @@ fn mp_leave(st: &mut Menus) {
 }
 
 /// Choose Character: the selected row's way in.
+/// The box when a name is already played by someone in the room.
+fn name_taken_text(who: &str) -> String {
+    format!("{who} is already in this room. Every player needs their own name: pick another character or give this one a different name.")
+}
+
 fn mp_chars_go(c: &MpChars) -> Option<Act> {
     match c.sel? {
         0 => Some(Act::Push("MenuScreenNewGame:mp".into())),
@@ -6297,6 +6309,9 @@ fn dm_char_save(d: &mut DmEdit) -> Result<(), String> {
     let name = d.name.get().trim().to_string();
     if name.is_empty() {
         return Err("Give your character a name.".into());
+    }
+    if let Some(who) = crate::netplay::name_taken(&name) {
+        return Err(name_taken_text(&who));
     }
     d.c.name = name;
     crate::dmchar::save(&mut d.c);

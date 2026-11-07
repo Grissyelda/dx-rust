@@ -2051,6 +2051,29 @@ fn handle(role: Role, e: NetEvent, lvl: &dx_level::Level) {
     }
 }
 
+/// Names match as the room shows them: case, spaces and underscores aside.
+fn name_key(s: &str) -> String {
+    imsim_net::clean_name(s).to_ascii_lowercase()
+}
+
+/// Host: why `peer` can't play under `name` (the host or another player already does), else None.
+fn name_refusal(n: &Net, peer: u8, name: &str) -> Option<String> {
+    let k = name_key(name);
+    let taken = name_key(&n.look.name) == k || n.remotes.iter().any(|r| r.hello && r.id != peer && name_key(&r.look.name) == k);
+    taken.then(|| {
+        format!(
+            "Someone in this room already plays as {name}. Choose or make a character with another name, then join again."
+        )
+    })
+}
+
+/// Someone else in the session already plays under this name: his name as shown (menus refuse it for us).
+pub fn name_taken(name: &str) -> Option<String> {
+    let k = name_key(name);
+    with(|n| n.remotes.iter().filter(|r| r.hello && r.id != n.my_id).find(|r| name_key(&r.look.name) == k).map(|r| r.look.name.clone()))
+        .flatten()
+}
+
 fn send_roster(n: &Net) {
     let mut list = vec![(0u8, n.look.clone(), true)];
     list.extend(n.remotes.iter().filter(|r| r.hello).map(|r| (r.id, r.look.clone(), r.ready)));
@@ -2095,6 +2118,12 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
                 return;
             }
             look.name = imsim_net::show_name(&imsim_net::clean_name(&look.name));
+            // No two players under one name (characters, feed lines and the scoreboard go by it).
+            if let Some(why) = name_refusal(n, peer, &look.name) {
+                send_to(n, peer, &Msg::Refuse(why), true);
+                let _ = n.tx.send(Out::Kick(peer, "name".into()));
+                return;
+            }
             let line = format!("{} joined the game.", look.name);
             send_to(n, peer, &Msg::YouAre(peer), true);
             crate::deathmatch::host_join(peer, &look.name);
@@ -2108,6 +2137,11 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         }
         (Role::Host, Msg::LookIs(mut look)) => {
             look.name = imsim_net::show_name(&imsim_net::clean_name(&look.name));
+            if let Some(why) = name_refusal(n, peer, &look.name) {
+                send_to(n, peer, &Msg::Refuse(why), true);
+                let _ = n.tx.send(Out::Kick(peer, "name".into()));
+                return;
+            }
             crate::deathmatch::host_join(peer, &look.name);
             remote_mut(n, peer).look = look;
             send_roster(n);

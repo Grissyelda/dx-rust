@@ -457,7 +457,7 @@ pub fn new_char_id(name: &str) -> String {
     let t = unix_now();
     let mut id = format!("{stem}-{t}");
     let mut n = 1;
-    while char_dir(&id).exists() {
+    while char_dir(&id).exists() || mp_path(&id).exists() {
         n += 1;
         id = format!("{stem}-{t}-{n}");
     }

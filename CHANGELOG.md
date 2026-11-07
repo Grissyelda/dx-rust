@@ -11,6 +11,8 @@
 - **Deathmatch Character** (Multiplayer screen): name, body (female with Lay D Denton), face, Augmentique outfit,
   record, and a skin per weapon - kills with a weapon unlock its Augmentique skins (10, 25, 50... kills).
 - **Scoreboard** on Tab in any multiplayer session: kills, deaths, heals given, streak, ping; teams side by side.
+- **One name per player**: a room won't take a second player under a name someone already plays as (the joiner is
+  told to pick or rename a character), and the host can't load or make a character under a joiner's name.
 - **Match Settings** for the host: map, frag limit, time limit, what comes after a match, team auto-balance; a
   results screen at the end of a match.
 - Co-op fixes: floating items no longer jitter; NPCs killed on the host die (and ragdoll) for everyone; mines and gas
