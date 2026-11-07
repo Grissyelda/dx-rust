@@ -226,7 +226,57 @@ pub fn poll_system(gilrs: Option<NonSendMut<GilrsRes>>, mut prev: Local<Vec<PadB
     if let Some(g) = gilrs {
         read_pad(g, &mut f, &mut any_event);
     }
+    // Android: the controller as winit's hook last reported it (android.rs; gilrs has no Android backend).
+    #[cfg(target_os = "android")]
+    if !f.connected {
+        if let Some(p) = crate::android::pad() {
+            android_frame(&mut f, &p);
+        }
+    }
     finish_frame(f, any_event, &mut prev);
+}
+
+/// An Android controller's state as a frame: Android's KEYCODE_BUTTON_* / D-pad codes, the hat as the D-pad, the
+/// triggers as LT / RT past a third.
+#[cfg(target_os = "android")]
+fn android_frame(f: &mut PadFrame, p: &crate::android::AndroidPad) {
+    f.connected = true;
+    f.name = p.name.clone();
+    f.kind = kind_of(&p.name, None);
+    let dz = [0.06, 0.1, 0.15, 0.22, 0.3][(setting!("PadDeadzone") as usize).min(4)];
+    f.ls = dead(p.ls, dz);
+    f.rs = dead(p.rs, dz);
+    f.lt = p.lt;
+    f.rt = p.rt;
+    for &k in &p.held {
+        let b = match k {
+            96 => PadBtn::South,
+            97 => PadBtn::East,
+            99 => PadBtn::West,
+            100 => PadBtn::North,
+            102 => PadBtn::LB,
+            103 => PadBtn::RB,
+            104 => PadBtn::LT,
+            105 => PadBtn::RT,
+            106 => PadBtn::L3,
+            107 => PadBtn::R3,
+            108 => PadBtn::Start,
+            109 => PadBtn::Select,
+            19 => PadBtn::Up,
+            20 => PadBtn::Down,
+            21 => PadBtn::Left,
+            22 => PadBtn::Right,
+            _ => continue,
+        };
+        if !f.held.contains(&b) {
+            f.held.push(b);
+        }
+    }
+    for (on, b) in [(p.hat.y > 0.5, PadBtn::Up), (p.hat.y < -0.5, PadBtn::Down), (p.hat.x < -0.5, PadBtn::Left), (p.hat.x > 0.5, PadBtn::Right), (f.lt > 0.33, PadBtn::LT), (f.rt > 0.33, PadBtn::RT)] {
+        if on && !f.held.contains(&b) {
+            f.held.push(b);
+        }
+    }
 }
 
 fn read_pad(mut g: NonSendMut<GilrsRes>, f: &mut PadFrame, any_event: &mut bool) {

@@ -2666,8 +2666,10 @@ fn look_step(
         let inv = if crate::settings::invert_mouse() { -1.0 } else { 1.0 };
         // The gamepad's right stick turns at a rate (gamepad.rs).
         let pad = gamepad::look_delta(time.delta_secs()) + touch::look_delta();
-        let dyaw = motion.delta.x * k + pad.x;
-        let dpitch = -inv * motion.delta.y * k + pad.y;
+        // (The desktop touch test: the mouse is a finger, so its motion isn't mouse look.)
+        let mouse = if touch::emulating() { Vec2::ZERO } else { motion.delta };
+        let dyaw = mouse.x * k + pad.x;
+        let dpitch = -inv * mouse.y * k + pad.y;
         looked = dyaw != 0.0 || dpitch != 0.0;
         if free_cam {
             thirdperson::orbit_look(dyaw, dpitch);

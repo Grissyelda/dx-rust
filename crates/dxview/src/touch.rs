@@ -351,6 +351,7 @@ fn hud_at(p: Vec2) -> Option<HudTap> {
 const TAP_SECS: f32 = 0.2;
 const TAP_TRAVEL: f32 = 14.0;
 const LONG_SECS: f32 = 0.45;
+const HUD_TAP_SECS: f32 = 0.8;
 
 /// The fingers this frame: (id, logical position, just started, just ended).
 fn fingers(touches: &Touches, emu: &mut Local<(bool, bool)>, mouse_ev: &mut MessageReader<MouseButtonInput>, cursor: Option<Vec2>) -> Vec<(u64, Vec2, bool, bool)> {
@@ -449,6 +450,8 @@ pub fn touch_system(
         // Releases.
         for f in &ended {
             let quick = now - f.t0 < TAP_SECS + 0.1 && f.travel < TAP_TRAVEL;
+            // HUD taps may be slower (a thumb resting a moment on a belt slot still means that slot).
+            let hud_tap = now - f.t0 < HUD_TAP_SECS && f.travel < TAP_TRAVEL;
             match f.role {
                 Role::Look { firing } => {
                     // A quick tap: one shot (in a conversation the next line, in a cut scene skip).
@@ -487,7 +490,7 @@ pub fn touch_system(
                         }
                     }
                 },
-                Role::Hud(t) if quick => match t {
+                Role::Hud(t) if hud_tap => match t {
                     HudTap::Belt(n) => {
                         let name = if n == 0 { "Belt 0 (keys)".to_string() } else { format!("Belt {n}") };
                         if let Some(i) = bound(map, &name) {
