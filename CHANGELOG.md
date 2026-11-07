@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased
+## v0.12.0
+
+The highlights since v0.11.0 (the detailed notes for each day follow):
+- **Multiplayer**: co-op for up to 16 players, with the host's game as the story and one shared world: NPCs, doors,
+  switches, alarms, cameras, turrets, mines and bodies. Every player keeps his own character, skills and saves,
+  and players can heal each other with medkits. Our own lobby server has room codes and a public browser; long codes
+  work without it, players on one network find each other, and the router's port is opened by UPnP. Rooms have
+  ready-up, chat and a news feed, and one name per player. Classic rooms switch your mods off while you play.
+- **Deathmatch and Team Deathmatch** (up to 8 v 8) on the original's five multiplayer maps, with the original's
+  rules and damage from a table. Pickups are balanced so each map has one GEP gun that respawns every two minutes.
+  Deathmatch characters unlock Augmentique weapon skins as kill rewards; a Tab scoreboard and the host's Match
+  Settings (frag and time limits, what comes next) round it out.
+- **Classic completeness**: the original's datacube window, frob info boxes with lock and bypass bars, the key
+  ring's use animation, scroll bars on every persona pane, notes on DataVault images, and the Gore Level and
+  Augmentation Display settings.
+- **Hazards and the world**: pain zones on every map that switch off as the original's do, water currents, map
+  exits that arrive at the right spot, swaying hanging decorations and rolling carts.
+- **Combat and animation**: GMDX's NPC combat for Smarter AI (firing positions, strafing, grenades, wider alarms),
+  Third-Person Cover, Melee Bash, Smooth Animation, Posable Bodies, and glowing surfaces that light their
+  surroundings.
+- **Platforms**: macOS on Apple Silicon (thanks to poltak), a Large HUD by default on a Steam Deck, and the
+  Release Builder for Windows, Linux / Steam Deck and macOS from one window.
+- **Performance**: JohnUzoka's Performance settings from his Nintendo Switch port (Lean Rendering, Lean Updates,
+  Anti-Aliasing, HDR, an FPS counter) and his speed-ups. Procedural textures are made off the main thread, sound
+  no longer holds up the frame, and the renderer's own bookkeeping runs on one thread.
+- **Fixes** from GitHub reports #11, #12, #13, #14, #16 and #37-#40 (training pickups, the key ring, Classic water,
+  doors while carrying a body, mouse look, the toxic pool, thrown bodies), plus a burn timer that ran faster with
+  more people around.
+- Coat cloth is out of the Modern mix; far water in storms is flat.
 
 ### Deathmatch and co-op fixes (November 6, night)
 - **Deathmatch and Team Deathmatch** (up to 8 v 8) on the original's five multiplayer maps (Area 51 Bunker,

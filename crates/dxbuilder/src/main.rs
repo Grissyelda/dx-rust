@@ -579,6 +579,35 @@ fn github_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, g
     });
 }
 
+/// The CHANGELOG's part for this version ("## v<version>"), else its "Unreleased" part, for the release notes.
+fn release_notes(root: &Path, version: &str) -> String {
+    let own = format!("## v{}", version.trim_start_matches('v'));
+    let text = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap_or_default();
+    if text.lines().any(|l| l.trim() == own) {
+        return section(&text, |l| l.trim() == own);
+    }
+    unreleased_notes(root)
+}
+
+/// The lines under the first "## " heading `pick` accepts, up to the next one.
+fn section(text: &str, pick: impl Fn(&str) -> bool) -> String {
+    let mut out = Vec::new();
+    let mut on = false;
+    for l in text.lines() {
+        if l.starts_with("## ") {
+            if on {
+                break;
+            }
+            on = pick(l);
+            continue;
+        }
+        if on {
+            out.push(l);
+        }
+    }
+    out.join("\n").trim().to_string()
+}
+
 /// The CHANGELOG's "Unreleased" part, for the release notes.
 fn unreleased_notes(root: &Path) -> String {
     let Ok(text) = std::fs::read_to_string(root.join("CHANGELOG.md")) else { return String::new() };
@@ -617,7 +646,7 @@ fn release_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, 
             return;
         }
         let notes = dist.join("release_notes.md");
-        let mut text = unreleased_notes(&cfg.root());
+        let mut text = release_notes(&cfg.root(), &cfg.version());
         if text.is_empty() {
             text = format!("DX RUST {tag}");
         }
@@ -952,7 +981,7 @@ impl eframe::App for App {
                     .add_enabled(can_release, egui::Button::new("Draft GitHub release").min_size([150.0, 28.0].into()))
                     .on_hover_text(format!(
                         "Makes a draft release v{} on GitHub with the archives in dist\\ and the CHANGELOG's \
-                         Unreleased notes. It stays a draft until you publish it on GitHub.",
+                         notes for this version (or the Unreleased ones). It stays a draft until you publish it on GitHub.",
                         self.cfg.version()
                     ));
                 if rel.clicked() {
@@ -1162,5 +1191,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&d);
         std::fs::write(d.join("CHANGELOG.md"), "# Changelog\n\n## Unreleased\n\n- a\n- b\n\n## v0.1\n- old\n").unwrap();
         assert_eq!(unreleased_notes(&d), "- a\n- b");
+        assert_eq!(release_notes(&d, "0.1"), "- old");
+        assert_eq!(release_notes(&d, "0.2"), "- a\n- b");
     }
 }
