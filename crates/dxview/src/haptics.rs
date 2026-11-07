@@ -9,6 +9,7 @@
 //! The device is looked for while a DualSense is connected over USB; the stream lives on its own thread (a cpal
 //! stream isn't Send everywhere).
 
+#[cfg(not(target_os = "android"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -59,9 +60,11 @@ pub fn setup() {
     if STARTED.swap(true, Ordering::Relaxed) || env_on!("DXVIEW_NO_HID") {
         return;
     }
+    #[cfg(not(target_os = "android"))]
     let _ = std::thread::Builder::new().name("dualsense-audio".into()).spawn(audio_thread);
 }
 
+#[cfg(not(target_os = "android"))]
 fn find_device() -> Option<cpal::Device> {
     let host = cpal::default_host();
     host.output_devices().ok()?.find(|d| {
@@ -72,6 +75,7 @@ fn find_device() -> Option<cpal::Device> {
     })
 }
 
+#[cfg(not(target_os = "android"))]
 fn audio_thread() {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -114,6 +118,7 @@ fn audio_thread() {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn fill<T: Copy>(out: &mut [T], ch: usize, conv: impl Fn(f32) -> T) {
     let mut g = match SYNTH.lock() {
         Ok(g) => g,

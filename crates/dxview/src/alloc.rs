@@ -9,6 +9,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub struct Counting;
 
+// Android: the system heap (mimalloc's C build isn't set up for the NDK here).
+#[cfg(not(target_os = "android"))]
+use mimalloc::MiMalloc as Inner;
+#[cfg(target_os = "android")]
+use std::alloc::System as Inner;
+
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
@@ -33,21 +39,21 @@ unsafe impl GlobalAlloc for Counting {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         note(layout.size());
-        unsafe { mimalloc::MiMalloc.alloc(layout) }
+        unsafe { Inner.alloc(layout) }
     }
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         note(layout.size());
-        unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+        unsafe { Inner.alloc_zeroed(layout) }
     }
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { mimalloc::MiMalloc.dealloc(ptr, layout) }
+        unsafe { Inner.dealloc(ptr, layout) }
     }
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         note(new_size);
-        unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) }
+        unsafe { Inner.realloc(ptr, layout, new_size) }
     }
 }
 

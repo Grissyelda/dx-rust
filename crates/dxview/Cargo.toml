@@ -16,19 +16,13 @@ imsim-audio = { path = "../imsim-audio" }
 imsim-plants = { path = "../imsim-plants" }
 imsim-net = { path = "../imsim-net", features = ["game"] }
 bincode = "1.3.3"
-arboard = { version = "3.6.1", default-features = false }
 glam = "0.32"
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"
 half = "2.7"
 # Gamepads (XInput / Windows.Gaming.Input / evdev) for controller support.
 gilrs = "0.11"
-cpal = "0.15"
-# macos-shared-device: gilrs reads the same pad, and hidapi otherwise opens it exclusively on macOS.
-hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
 # Ragdolls (skeletal.rs ragdoll): rigid bodies and joints.
-# The heap (alloc.rs): faster than the system allocators for many small allocations.
-mimalloc = { version = "0.1", default-features = false }
 avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "parallel", "xpbd_joints"] }
 
 [features]
@@ -36,6 +30,25 @@ avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", 
 trace = ["bevy/trace_chrome"]
 # Bevy's spans (every system, render graph node, submit, present) summed per frame into prof.log with DXVIEW_PROF=1.
 spans = ["bevy/trace", "bevy/debug"]
+
+# The desktop only: the clipboard, the DualSense over HID and its USB audio, the mimalloc heap.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = { version = "3.6.1", default-features = false }
+cpal = "0.15"
+# macos-shared-device: gilrs reads the same pad, and hidapi otherwise opens it exclusively on macOS.
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
+# The heap (alloc.rs): faster than the system allocators for many small allocations.
+mimalloc = { version = "0.1", default-features = false }
+
+# Android (crates/dxandroid builds the APK): NativeActivity, JNI for permissions / clipboard / keyboard, sensors
+# for gyro aim, and winit for its controller hook (our patched copy in vendor/winit).
+[target.'cfg(target_os = "android")'.dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["android-native-activity", "default_font"] }
+jni = "0.21"
+ndk-context = "0.1"
+ndk = { version = "0.9", default-features = false }
+ndk-sys = "0.6"
+winit = { version = "0.30.13", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }

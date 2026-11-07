@@ -137,6 +137,19 @@ fn applies(key: &str) -> bool {
     key != "Weather" || crate::weather::available()
 }
 
+/// A setting only the Modern look or a mod has (left out of Android's Enhancements: Android is Classic only).
+pub fn modern_only(key: &str) -> bool {
+    PRESET.iter().any(|p| p.0 == key) || MOD_KEYS.iter().any(|m| m.0 == key) || key.starts_with("Modern")
+}
+
+/// Android: every Modern feature off for this run (Classic only), whatever the settings file says.
+pub fn force_classic() {
+    for (k, _) in PRESET {
+        crate::settings::set(k, 0.0);
+    }
+    crate::settings::set("ModernMode", 0.0);
+}
+
 /// Modern right now. Before the switch was ever used, the look of the settings decides: Modern when most of the
 /// enhancements are on.
 pub fn is_modern() -> bool {

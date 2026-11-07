@@ -362,12 +362,14 @@ pub fn remap_system(
     let mut kbm = false;
     for e in kb.read() {
         kbm = true;
+        // Android's Back button (gesture or key) is Escape.
+        let code = if e.key_code == KeyCode::BrowserBack { KeyCode::Escape } else { e.key_code };
         if e.state == ButtonState::Pressed {
-            b.typed.push((e.key_code, e.text.as_ref().map(|t| t.to_string())));
+            b.typed.push((code, e.text.as_ref().map(|t| t.to_string())));
         }
         match e.state {
-            ButtonState::Pressed => b.kb_keys.press(e.key_code),
-            ButtonState::Released => b.kb_keys.release(e.key_code),
+            ButtonState::Pressed => b.kb_keys.press(code),
+            ButtonState::Released => b.kb_keys.release(code),
         }
     }
     if focus.read().count() > 0 {
@@ -379,6 +381,10 @@ pub fn remap_system(
         b.kb_keys.release_all();
     }
     for e in mouse_ev.read() {
+        // The desktop touch test: the mouse is a finger (touch.rs reads it), not a mouse.
+        if crate::touch::emulating() {
+            continue;
+        }
         kbm = true;
         match e.state {
             ButtonState::Pressed => b.kb_buttons.press(e.button),
@@ -397,6 +403,11 @@ pub fn remap_system(
     let pad = crate::gamepad::outputs(&b.map, time.delta_secs().min(0.1), ui, snap_ok && ui);
     if pad.scroll != 0.0 {
         scroll.delta.y += pad.scroll;
+    }
+    // Touch (touch.rs): its held inputs merge with the pad's below, its finger is the cursor in a screen.
+    let (touch_inputs, touch_cursor, touch_scroll) = crate::touch::outputs();
+    if touch_scroll != 0.0 {
+        scroll.delta.y += touch_scroll;
     }
     // The pad's cursor is kept here, not read back from the window: after a warp the OS still delivers move
     // events from before it, so reading the position back made the cursor hop between old and new spots. The
@@ -419,15 +430,31 @@ pub fn remap_system(
             };
             *pad_cursor = Some(to.clamp(Vec2::ZERO, Vec2::new(ww - 1.0, wh - 1.0)));
         }
-        if let Some(p) = *pad_cursor {
+        static TOUCH_PREV: std::sync::Mutex<Option<Vec2>> = std::sync::Mutex::new(None);
+        if let (Some(t), true) = (touch_cursor, ui) {
+            if vcur {
+                // A terminal's own cursor follows the finger's moves.
+                if let Some(prev) = TOUCH_PREV.lock().ok().and_then(|p| *p) {
+                    crate::diegetic::add_pad_delta(t - prev);
+                }
+            } else {
+                *pad_cursor = Some(t);
+            }
+        }
+        if let Ok(mut p) = TOUCH_PREV.lock() {
+            *p = touch_cursor;
+        }
+        if let (Some(p), false) = (*pad_cursor, vcur && touch_cursor.is_some()) {
             if w.cursor_position().is_none_or(|c| c.distance(p) > 0.25) {
                 w.set_cursor_position(Some(p));
             }
         }
     }
     // Merge: an input is down while the keyboard / mouse or the pad holds it.
-    let pad_keys: Vec<KeyCode> = pad.inputs.iter().filter_map(|i| if let Input::Key(k) = i { Some(*k) } else { None }).collect();
-    let pad_btns: Vec<MouseButton> = pad.inputs.iter().filter_map(|i| if let Input::Mouse(m) = i { Some(*m) } else { None }).collect();
+    let pad_keys: Vec<KeyCode> =
+        pad.inputs.iter().chain(touch_inputs.iter()).filter_map(|i| if let Input::Key(k) = i { Some(*k) } else { None }).collect();
+    let pad_btns: Vec<MouseButton> =
+        pad.inputs.iter().chain(touch_inputs.iter()).filter_map(|i| if let Input::Mouse(m) = i { Some(*m) } else { None }).collect();
     b.keys.clear();
     b.buttons.clear();
     // (A handful of inputs: a linear dedup, no sorting by formatted names.)

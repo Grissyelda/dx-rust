@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Which releases: macos, linux, or macos,linux"
+        description: "Which releases: any of macos, linux, android (comma-separated)"
         required: true
         default: "macos,linux"
         type: string
@@ -75,4 +75,44 @@ jobs:
         with:
           name: dxrust-steamdeck
           path: dist/dxrust-steamdeck.tar.xz
+          if-no-files-found: error
+
+  android:
+    if: contains(inputs.platforms, 'android')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-apk
+      # Optional: a signing key kept as repository secrets (base64 keystore + password), so new builds install over
+      # old ones. Without it the APK is signed with a fresh debug key.
+      - name: Signing key
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/dxrust.keystore"
+            echo "DXR_KEYSTORE=$RUNNER_TEMP/dxrust.keystore" >> "$GITHUB_ENV"
+            echo "DXR_KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
+          fi
+      - name: Build
+        env:
+          DXR_TARGET: ${{ github.workspace }}/target/android
+          DXR_FAST: ${{ inputs.fast == 'true' && '1' || '0' }}
+        run: |
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
+          bash tools/release/build_android.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxrust-android
+          path: dist/dxrust-android.apk
           if-no-files-found: error

@@ -1751,6 +1751,22 @@ fn place_window(
             (fx, fy)
         };
         let lf = |v: f32| v * s as f32 / window.scale_factor();
+        // Touch: where the window is, for taps on the HUD (touch.rs).
+        if hw.0 == w {
+            let name = match w {
+                Win::Hit => Some("Hit"),
+                Win::Compass => Some("Compass"),
+                Win::Ammo => Some("Ammo"),
+                Win::Belt => Some("Belt"),
+                Win::Log => Some("Log"),
+                Win::Active => Some("Active"),
+                _ => None,
+            };
+            if let Some(n) = name {
+                let r = Rect::new(lf(sx), lf(sy), lf(sx + ww as f32 * k), lf(sy + wh as f32 * k));
+                crate::touch::note_hud(n, visible.then_some(r), lf(k));
+            }
+        }
         let (l, t, wd, ht) = (
             Val::Px(lf(sx)),
             Val::Px(lf(sy)),
@@ -1974,12 +1990,29 @@ fn draw_active(
 ) {
     let (augs_at, items_at, _) = active_layout(snap, avail_h);
     let bg = hud.ui(assets, "HUDIconsBackground");
+    // Touch: where each aug icon is, so a tap switches it (touch.rs).
+    let mut touch_icons = Vec::new();
     if !snap.augs.is_empty() {
         let h = column_height(&AUG_COLUMN, snap.augs.len());
         draw_column_border(hud, assets, c, &AUG_COLUMN, augs_at.0, augs_at.1, h);
         for (k, (hotkey, icon, on)) in snap.augs.iter().enumerate() {
             let x = augs_at.0 + AUG_COLUMN.tile.0;
             let y = augs_at.1 + AUG_COLUMN.tile.1 + k as i32 * (ACTIVE_ICON + 2);
+            const FKEYS: [KeyCode; 10] = [
+                KeyCode::F3,
+                KeyCode::F4,
+                KeyCode::F5,
+                KeyCode::F6,
+                KeyCode::F7,
+                KeyCode::F8,
+                KeyCode::F9,
+                KeyCode::F10,
+                KeyCode::F11,
+                KeyCode::F12,
+            ];
+            if let Some(&key) = (*hotkey as usize).checked_sub(3).and_then(|i| FKEYS.get(i)) {
+                touch_icons.push((Rect::new(x as f32, y as f32, (x + ACTIVE_ICON) as f32, (y + ACTIVE_ICON) as f32), key));
+            }
             if let Some(t) = &bg {
                 c.texture(
                     x,
@@ -2079,6 +2112,7 @@ fn draw_active(
             );
         }
     }
+    crate::touch::note_aug_icons(touch_icons);
 }
 
 /// TextLogWindow: each message word-wrapped to the width; only the newest LOG_LINES lines are kept.

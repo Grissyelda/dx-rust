@@ -1157,7 +1157,11 @@ mod device {
             .default_output_device()
             .ok_or("no default output device")?;
         let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
+        // (cpal 0.17, on Android, made the rate a plain u32.)
+        #[cfg(not(target_os = "android"))]
         let rate = cfg.sample_rate().0;
+        #[cfg(target_os = "android")]
+        let rate = cfg.sample_rate();
         state.rate = rate;
         let channels = cfg.channels() as usize;
         let sc: cpal::StreamConfig = cfg.config();

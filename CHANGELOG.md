@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Android (Classic) (November 6-7, night)
+- **DX RUST on Android**: 64-bit phones and tablets, Android 10 or newer, as an APK (`dxrust-android.apk`), in
+  Classic (no mods or Modern features). The first run asks for All Files Access, finds your copied Deus Ex folder on
+  the phone or an SD card, and restarts into the game.
+- **Touch controls**: a floating move stick on the left half, drag-to-look and tap-to-fire on the right (a finger
+  held still keeps firing), Use / Jump / Duck / Reload / Zoom over the right thumb, Lean on the left edge, Menu and
+  Items at the top (Chat and Scores in multiplayer). The HUD is tappable: belt slots, augmentation icons, the health
+  figure (Health screen), the compass (Goals), the ammo display (change ammo) and the log. In menus and screens a
+  finger is the mouse (long press = right click, two fingers scroll), with a button for the on-screen keyboard.
+  Android's Back is Escape.
+- **Controllers** over Bluetooth or USB, through the same controller code as the PC (our copy of winit hands their
+  sticks, triggers and buttons to the game instead of turning them into touches).
+- **Gyro Aim** (off by default) and Touch settings (look speed, button size and opacity, vibration) under
+  Settings > Enhancements > Touch.
+- **Multiplayer**: Android joins and hosts Classic co-op rooms.
+- Android defaults: a Large HUD, Lean Rendering and Lean Updates on, HDR off, 60 fps at most.
+- The Release Builder and the *Release builds* workflow make the APK on GitHub.
+- The game is now a library (`dxview`) that the desktop exe and the Android app both start.
+
 ## v0.12.0
 
 The highlights since v0.11.0 (the detailed notes for each day follow):

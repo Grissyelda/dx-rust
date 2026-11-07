@@ -746,6 +746,12 @@ pub struct SoundScratch {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Silence at once (Android going to the background: the mixer would otherwise keep playing while no frame runs);
+/// sound_system restores the volumes on the next frame in the foreground.
+pub fn mute_now(st: &SoundState) {
+    st.audio.set_volumes(0.0, 0.0);
+}
+
 pub fn sound_system(
     time: Res<Time>,
     mut st: ResMut<SoundState>,
@@ -774,7 +780,9 @@ pub fn sound_system(
         let want = if talking { 0.4 } else { 1.0 };
         let d = st.music_duck;
         st.music_duck = d + (want - d).clamp(-dt * 2.0, dt * 0.35);
-        st.audio.set_volumes(st.sfx_gain, st.music_gain * st.music_duck);
+        // Android: silent while the app is in the background (platform::backgrounded).
+        let mute = if crate::platform::backgrounded() { 0.0 } else { 1.0 };
+        st.audio.set_volumes(st.sfx_gain * mute, st.music_gain * st.music_duck * mute);
     }
     st.time += dt;
     let now = st.time;

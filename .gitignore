@@ -14,6 +14,10 @@ crash.log
 # The Release Builder's exe and settings
 /DXBuilder.exe
 builder.txt
+# Android signing keys (tools/release/build_android.sh): never in the repository.
+/android-key/
+*.keystore
+*.jks
 # Relief maps (third-party normal / height maps) ship in the release zip, not in git.
 /relief/
 # Deus Ex data, Lay D Denton files and anything extracted from them belong to their owners: never commit them.

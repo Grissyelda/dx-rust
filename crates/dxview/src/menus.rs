@@ -877,10 +877,17 @@ impl Enhance {
         Self::option_items(&mut items);
         Self::performance_items(&mut items);
         Self::hud_items(&mut items);
+        if crate::touch::enabled() {
+            Self::touch_items(&mut items);
+        }
+        // Android is Classic only: no Modern feature to turn on one by one, no mods.
+        if crate::platform::android() {
+            items.retain(|c| !crate::remaster::modern_only(&c.key));
+        }
         Enhance {
             items,
             search: Edit::new(40),
-            sel: Some(Row::Master),
+            sel: Some(if crate::platform::android() { Row::Group(0) } else { Row::Master }),
             scroll: 0,
             open: Default::default(),
             modern: crate::remaster::is_modern(),
@@ -1192,6 +1199,26 @@ impl Enhance {
             items.push(tag(c, "Visuals"));
         }
     }
+    /// Touch controls and gyro aiming (Android).
+    fn touch_items(items: &mut Vec<Choice>) {
+        for (key, label, help, values) in [
+            ("TouchLook", "Touch Look Speed", "How far the view turns for a drag on the right half of the screen.", vec!["Slowest", "Slow", "Normal", "Fast", "Fastest"]),
+            ("TouchSize", "Touch Button Size", "The size of the on-screen buttons.", vec!["Small", "Normal", "Large"]),
+            ("TouchOpacity", "Touch Button Opacity", "How solid the on-screen buttons and the move stick are drawn.", vec!["25%", "50%", "70%", "90%"]),
+            ("TouchVibrate", "Vibrate On Button Press", "A short buzz when a finger lands on an on-screen button.", vec!["Off", "On"]),
+            ("GyroAim", "Gyro Aim", "Tilt the phone to fine-tune your aim; dragging still turns the view.", vec!["Off", "On"]),
+            ("GyroSensitivity", "Gyro Speed", "How far the view turns for a tilt of the phone.", vec!["Slowest", "Slow", "Normal", "Fast", "Fastest"]),
+        ] {
+            let mut c = debug_mode_choice();
+            c.key = key.into();
+            c.label = label.into();
+            c.help = help.into();
+            c.kind = ChoiceKind::Enum(values.iter().map(|v| v.to_string()).collect());
+            c.value = crate::settings::get(key);
+            c.saved = c.value;
+            items.push(tag(c, "Touch"));
+        }
+    }
     /// HUD parts (hidden / size / opacity), Smooth Lip Sync, and Debug Mode last.
     fn hud_items(items: &mut Vec<Choice>) {
         // HUD customisation: each part shown or hidden, sized, faded.
@@ -1256,7 +1283,8 @@ impl Enhance {
                 .map(Row::Item)
                 .collect();
         }
-        let mut rows = vec![Row::Master];
+        // (Android is Classic only: no master switch.)
+        let mut rows = if crate::platform::android() { Vec::new() } else { vec![Row::Master] };
         for (gi, g) in self.groups().iter().enumerate() {
             rows.push(Row::Group(gi));
             if self.open.contains(g) {
@@ -5204,7 +5232,8 @@ fn mp_host_choices() -> Vec<Choice> {
             "MpMode",
             "|&Game Mode",
             "Co-op: play the story together. Deathmatch: everyone for themselves on the multiplayer maps. Team Deathmatch: UNATCO against the NSF, up to 8 a side. Match Settings sets the map and limits.",
-            s(&["Co-op", "Deathmatch", "Team Deathmatch"]),
+            // (Android hosts co-op only: deathmatch needs Modern and Augmentique.)
+            if crate::platform::android() { s(&["Co-op"]) } else { s(&["Co-op", "Deathmatch", "Team Deathmatch"]) },
             0,
         ),
         mp_choice(
@@ -5221,7 +5250,11 @@ fn mp_host_choices() -> Vec<Choice> {
             (2..=imsim_net::MAX_PLAYERS).map(|n| n.to_string()).collect(),
             (d.max_players.clamp(2, imsim_net::MAX_PLAYERS) - 2) as usize,
         ),
-        mp_choice("MpLook", "|&Look", &mp_look_help(!modern), s(&["Classic", "Modern"]), if modern { 1 } else { 0 }),
+        if crate::platform::android() {
+            mp_choice("MpLook", "|&Look", "Android plays Classic: the original game for everyone in the room.", s(&["Classic"]), 0)
+        } else {
+            mp_choice("MpLook", "|&Look", &mp_look_help(!modern), s(&["Classic", "Modern"]), if modern { 1 } else { 0 })
+        },
         mp_choice("MpTough", "|&Tougher Enemies", "Co-op: enemies get tougher with more players.", s(&["Off", "On"]), if d.tough { 1 } else { 0 }),
         mp_choice("MpFriendly", "|&Friendly Fire", "Players' shots and blasts hurt each other.", s(&["Off", "On"]), 0),
     ]
@@ -5388,7 +5421,7 @@ fn mp_join_typing(j: &mut MpJoin, k: &KeyCode, text: &Option<String>, ctrl: bool
             true
         }
         KeyCode::KeyV if ctrl => {
-            let pasted = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+            let pasted = crate::platform::clipboard_get().unwrap_or_default();
             j.code.clear();
             mp_code_push(&mut j.code, &pasted);
             true

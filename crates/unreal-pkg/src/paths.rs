@@ -25,6 +25,11 @@ fn in_app_bundle(exe_dir: &Path) -> bool {
 pub fn data_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
+        // Android (and tests): the folder the app was given (set_data_dir before the first call).
+        if let Some(d) = DATA_OVERRIDE.get() {
+            let _ = std::fs::create_dir_all(d);
+            return d.clone();
+        }
         let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
         let support = exe_dir
             .as_deref()
@@ -38,6 +43,14 @@ pub fn data_dir() -> PathBuf {
         exe_dir.unwrap_or_else(|| ".".into())
     })
     .clone()
+}
+
+static DATA_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Where settings, saves, launcher.txt and logs go, instead of beside the exe (Android: the app's own folder). Only
+/// counts before the first data_dir call.
+pub fn set_data_dir(dir: PathBuf) {
+    let _ = DATA_OVERRIDE.set(dir);
 }
 
 /// The game folder and the overlay folders, highest priority first.

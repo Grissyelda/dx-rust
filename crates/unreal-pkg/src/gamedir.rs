@@ -94,6 +94,68 @@ pub fn detect() -> Option<PathBuf> {
     candidates().into_iter().find(|p| is_game_dir(p))
 }
 
+/// Deus Ex folders under `roots`, at most `depth` folders down (a folder holding System/DeusEx.u, any letter case),
+/// nearest first. Used on Android, where the game is copied anywhere on the phone or its SD card. Hidden folders and
+/// Android's own app folders are skipped.
+pub fn scan(roots: &[PathBuf], depth: usize) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<(usize, PathBuf)>, level: usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut subs = Vec::new();
+        for e in rd.flatten() {
+            let Ok(t) = e.file_type() else { continue };
+            if !t.is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.eq_ignore_ascii_case("system") {
+                if crate::paths::find_ci(&e.path(), "DeusEx.u").is_some() {
+                    out.push((level, dir.to_path_buf()));
+                    return;
+                }
+                continue;
+            }
+            if name.starts_with('.') || name.eq_ignore_ascii_case("Android") {
+                continue;
+            }
+            subs.push(e.path());
+        }
+        if depth > 0 {
+            for d in subs {
+                walk(&d, depth - 1, out, level + 1);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for r in roots {
+        walk(r, depth, &mut out, 0);
+    }
+    out.sort_by_key(|(l, _)| *l);
+    let mut seen = Vec::new();
+    out.into_iter()
+        .map(|(_, p)| p)
+        .filter(|p| {
+            let k = p.canonicalize().unwrap_or_else(|_| p.clone());
+            let new = !seen.contains(&k);
+            seen.push(k);
+            new
+        })
+        .collect()
+}
+
+/// Android's storage roots: the phone's shared storage and every SD card or USB drive (/storage/XXXX-XXXX).
+pub fn android_roots() -> Vec<PathBuf> {
+    let mut v = vec![PathBuf::from("/storage/emulated/0")];
+    if let Ok(rd) = std::fs::read_dir("/storage") {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n != "emulated" && n != "self" && e.path().is_dir() {
+                v.push(e.path());
+            }
+        }
+    }
+    v
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
@@ -103,5 +165,24 @@ mod tests {
         let c = candidates();
         assert!(c.iter().any(|p| p.ends_with("Library/Application Support/Steam/steamapps/common/Deus Ex")));
         assert!(c.iter().any(|p| p.ends_with("steamapps/content/app_6910/depot_6911")));
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    #[test]
+    fn finds_a_copied_game_folder_in_any_letter_case() {
+        let root = std::env::temp_dir().join("dxrust_scan_test");
+        let _ = std::fs::remove_dir_all(&root);
+        let game = root.join("Download").join("Deus Ex GOTY");
+        std::fs::create_dir_all(game.join("system")).unwrap();
+        std::fs::write(game.join("system").join("deusex.u"), b"x").unwrap();
+        std::fs::create_dir_all(root.join(".hidden").join("System")).unwrap();
+        std::fs::write(root.join(".hidden").join("System").join("DeusEx.u"), b"x").unwrap();
+        assert_eq!(scan(&[root.clone()], 4), vec![game]);
+        assert!(scan(&[root.clone()], 0).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

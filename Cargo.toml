@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/imsim-core", "crates/unreal-pkg", "crates/dx-level", "crates/dxtool", "crates/dxview", "crates/imsim-audio", "crates/imsim-plants", "crates/imsim-net"]
-exclude = ["crates/dxlauncher"]
+members = ["crates/imsim-core", "crates/unreal-pkg", "crates/dx-level", "crates/dxtool", "crates/dxview", "crates/imsim-audio", "crates/imsim-plants", "crates/imsim-net", "crates/dxandroid"]
+exclude = ["crates/dxlauncher", "vendor/winit"]
 resolver = "2"
 
 [workspace.package]
@@ -23,3 +23,7 @@ codegen-units = 64
 incremental = true
 strip = false
 panic = "unwind"
+
+# winit with a controller hook on Android (vendor/winit/README.DXRUST.md); other platforms build as upstream.
+[patch.crates-io]
+winit = { path = "vendor/winit" }

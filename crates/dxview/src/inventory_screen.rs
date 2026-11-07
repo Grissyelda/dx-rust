@@ -1369,7 +1369,8 @@ fn toggle_screen(cx: &mut InvCx, npcs: &mut Query<&mut crate::ai::Npc>) -> bool 
     } else if f2 {
         Some(crate::persona::SCREEN_GOALS)
     } else {
-        None
+        // Touch: the health figure, compass or log tapped (touch.rs).
+        crate::touch::take_open_screen().filter(|_| st.bot.is_none() && !editing)
     };
     // Optional Fixes: a bot's screen closes when the bot dies or is disabled (HUDMedBot*Screen.Tick PopWindow).
     let bot_gone = crate::optfixes::fixes()

@@ -771,6 +771,9 @@ pub fn host_registered(token: &str) {
 /// The room's look for everyone: Classic or Modern is set here (the in-game switch stays off while playing).
 /// A Classic room is played on the plain game: the player's mods are switched off while he's in it (back on when
 /// he leaves); a map already up is rebuilt in place when that or the look's visual mod settings change.
+/// Android joins Classic rooms only (no Modern features, no mods there).
+const ANDROID_CLASSIC_ONLY: &str = "This room plays Modern. DX RUST on Android joins Classic rooms only.";
+
 fn force_look(r: &Rules) {
     let modern = !r.classic;
     let off = r.classic && !unreal_pkg::mods::installed_ids().is_empty();
@@ -1051,7 +1054,8 @@ pub fn health_scale() -> f32 {
 
 /// The Classic / Modern switch is the room's.
 pub fn look_locked() -> bool {
-    active()
+    // (Android is Classic only.)
+    active() || crate::platform::android()
 }
 
 /// Seconds until this dead player gets up again (None = not waiting).
@@ -2220,6 +2224,13 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Host, Msg::HackSet(a, v)) => sync(|s| s.hacks_in.push((a, v))),
         (Role::Host, Msg::HackAct(a, k)) => sync(|s| s.hack_acts_in.push((a, k))),
         // Joiner side.
+        (Role::Client, Msg::Welcome { you, map, rules }) if crate::platform::android() && !rules.classic => {
+            let _ = (you, map);
+            n.lost = Some(ANDROID_CLASSIC_ONLY.into());
+        }
+        (Role::Client, Msg::Rules(r)) if crate::platform::android() && !r.classic => {
+            n.lost = Some(ANDROID_CLASSIC_ONLY.into());
+        }
         (Role::Client, Msg::Welcome { you, map, rules }) => {
             force_look(&rules);
             // The host's difficulty is everyone's.
@@ -2922,8 +2933,7 @@ pub fn join_code(code: &str) -> Result<(), String> {
 
 /// Copy text (the direct code) to the system clipboard.
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
-    let mut c = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    c.set_text(text.to_string()).map_err(|e| e.to_string())
+    crate::platform::clipboard_set(text)
 }
 
 fn close_router_port() {

@@ -96,6 +96,11 @@ The *Smooth Lip Sync* enhancement uses the timings from Joe Wintergreen's lipsyn
 
 It was rewritten in Rust; none of the mod's files are included. Credit to Joe Wintergreen (@joewintergreen).
 
+## winit (modified copy in `vendor/winit`)
+winit 0.30.13, Apache-2.0 or MIT (its `LICENSE` file is kept in `vendor/winit`). This is an altered copy: on
+Android it hands controller events to a hook and accepts cursor grab / position requests as no-ops (see
+`vendor/winit/README.DXRUST.md`). Every other platform builds as upstream.
+
 ## Rust crates
 DX RUST's dependencies (Bevy, egui / eframe, gilrs, hidapi, cpal, rfd, serde and others) keep their own licences,
 listed in each crate. `cargo about` or `cargo license` prints the full list.

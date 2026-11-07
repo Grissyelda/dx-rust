@@ -125,11 +125,13 @@ pub fn setup() {
     if STARTED.swap(true, Ordering::Relaxed) || env_on!("DXVIEW_NO_HID") {
         return;
     }
+    #[cfg(not(target_os = "android"))]
     let _ = std::thread::Builder::new().name("dualsense".into()).spawn(hid_thread);
 }
 
 // ------------------------------------------------------------------------------------------------ HID thread
 
+#[cfg(not(target_os = "android"))]
 fn hid_thread() {
     let mut api = match hidapi::HidApi::new() {
         Ok(a) => a,
@@ -169,6 +171,7 @@ struct Finger {
     start_t: f64,
 }
 
+#[cfg(not(target_os = "android"))]
 fn run_pad(dev: &hidapi::HidDevice, usb: bool) {
     if !usb {
         // Reading the calibration feature report switches the pad to its full 0x31 reports.

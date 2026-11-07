@@ -129,6 +129,31 @@ It runs as a native Windows program, on Steam Deck / Linux and on Apple Silicon 
 4. Add `dxrust.sh` (or `dxlauncher`) to Steam as a *Non-Steam Game* to play from Game Mode. Use Steam Input's
    *Gamepad* template.
 
+### Android (Classic)
+DX RUST runs on 64-bit Android phones and tablets (Android 10 or newer, with Vulkan) in Classic: the original
+game, without mods or Modern features.
+
+1. Copy your whole *Deus Ex* folder (with `System`, `Maps`, `Textures` and `Sounds` inside) from your PC to the
+   phone or its SD card, anywhere you like, such as `Download/Deus Ex`.
+2. Download `dxrust-android.apk` from [Releases](../../releases) and install it (Android asks you to allow installs
+   from your browser or file manager once).
+3. Start DX RUST. The first time, it asks for *All files access* so it can find the folder, then searches the phone
+   and SD cards and starts the game.
+
+**Touch controls.** The left half of the screen is a move stick that appears under your thumb (a light push walks,
+a full push runs). Drag on the right half to look; a quick tap there fires, and holding a finger still keeps
+firing. Use (lit when something is in reach), Jump, Duck, Reload and Zoom sit above the belt, Lean on the left
+edge, Menu and Items at the top. The HUD is tappable: a belt slot selects it, an augmentation icon switches it, the
+health figure opens the Health screen, the compass the Goals and the ammo display changes ammo. In menus and
+screens a finger is the mouse (a long press is a right click, two fingers scroll); KEYS brings up the keyboard.
+Settings > Enhancements > Touch sets the look speed, button size and opacity, and optional gyro aiming.
+
+**Controllers.** Bluetooth and USB controllers work as on the PC (the same buttons and settings).
+
+**Multiplayer.** Android joins and hosts Classic co-op rooms (Modern and deathmatch rooms need a PC).
+
+Settings and saves are kept in `Android/data/com.dxrust.game/files`, so they can be copied over USB.
+
 ### macOS (Apple Silicon)
 There is no download for macOS yet, so you build the app yourself. It takes a few commands in Terminal. You also need
 the Windows files of the game: Steam and GOG sell only the Windows version, but the game files are the same.
@@ -257,9 +282,13 @@ Release Builder, which makes all three release archives in `dist\` from one wind
   Linux tools once), or on GitHub if you'd rather not use WSL.
 - **macOS** (`dxrust-macos.zip`) is built on GitHub's Macs (`.github/workflows/release.yml`) through the GitHub CLI
   and downloaded into `dist\`. GitHub builds use the code that is on GitHub, so push your changes first.
+- **Android** (`dxrust-android.apk`) is built on GitHub too (the Android SDK and NDK are on its machines). Without
+  repository secrets `ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` each build is signed with a new debug key,
+  so installing a newer one means uninstalling the old app first (saves are in its data folder: copy them off).
 
 *Draft GitHub release* then uploads the archives to a draft release with the changelog's Unreleased notes. On Linux,
-`tools/release/build_linux.sh` makes the Linux archive directly; on a Mac, `BUILD_MAC.sh` makes `dist/DX RUST.app`
+`tools/release/build_linux.sh` makes the Linux archive directly and `tools/release/build_android.sh` the APK
+(with the Android SDK and NDK and `cargo-apk`); on a Mac, `BUILD_MAC.sh` makes `dist/DX RUST.app`
 (step by step under *Getting started > macOS*).
 
 | Crate | What it does |
@@ -270,7 +299,8 @@ Release Builder, which makes all three release archives in `dist\` from one wind
 | `imsim-audio` | A software mixer: positional sounds and tracker music with section jumps |
 | `dxview` | The game itself, on Bevy |
 | `dxlauncher` | The launcher (egui) |
-| `dxbuilder` | The Release Builder (egui): Windows, Linux / Steam Deck and macOS releases from one window |
+| `dxbuilder` | The Release Builder (egui): Windows, Linux / Steam Deck, macOS and Android releases from one window |
+| `dxandroid` | The Android app (NativeActivity) around `dxview`; `vendor/winit` is winit with an Android controller hook |
 | `dxtool` | Command-line package inspector |
 
 ## Status and what's left

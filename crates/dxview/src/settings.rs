@@ -303,7 +303,34 @@ pub fn default_of(key: &str) -> f32 {
 /// Defaults that depend on the machine: on a Steam Deck the HUD starts Large (its 800p screen is small at arm's
 /// length).
 fn platform_default(key: &str) -> Option<f32> {
-    (key == "HUDScale" && steam_deck()).then_some(2.0)
+    if crate::platform::android() {
+        // Phones and tablets: a Large HUD for small screens, the lean switches on, 16-bit HDR off (half the memory
+        // traffic on a mobile GPU), 60 fps at most.
+        let v = match key {
+            "HUDScale" => 2.0,
+            "LeanRendering" | "LeanUpdates" => 1.0,
+            "HDRRendering" => 0.0,
+            "FPSLimit" => 2.0,
+            _ => return touch_default(key),
+        };
+        return Some(v);
+    }
+    if key == "HUDScale" && steam_deck() {
+        return Some(2.0);
+    }
+    touch_default(key)
+}
+
+/// Touch controls' settings (touch.rs, android.rs gyro).
+fn touch_default(key: &str) -> Option<f32> {
+    Some(match key {
+        "TouchLook" | "GyroSensitivity" => 2.0,
+        "TouchSize" => 1.0,
+        "TouchOpacity" => 2.0,
+        "TouchVibrate" => 1.0,
+        "GyroAim" => 0.0,
+        _ => return None,
+    })
 }
 
 /// Running on a Steam Deck: SteamOS sets SteamDeck=1 for games; otherwise the board is Valve's Jupiter (LCD) or

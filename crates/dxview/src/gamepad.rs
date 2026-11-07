@@ -720,7 +720,7 @@ pub const WALK_PUSH: f32 = 0.5;
 /// Analog movement (forward, right) for walking, or None when the stick is centred.
 pub fn move_axes() -> Option<Vec2> {
     let f = frame();
-    (f.connected && f.ls.length() > 0.0).then_some(f.ls)
+    (f.connected && f.ls.length() > 0.0).then_some(f.ls).or_else(crate::touch::move_axes)
 }
 
 /// View turn this frame (yaw, pitch) in radians from the right stick: an exponent-2 curve, up to 220 deg/s
