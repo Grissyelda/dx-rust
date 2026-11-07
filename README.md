@@ -95,7 +95,7 @@ face, outfit); kills unlock weapon skins. The host sets the map and the frag and
 
 **No server needed:** the long code holds the host's address. If the room screen says the router didn't open the
 port itself, forward **UDP 27972** to the host (or turn on UPnP). Players on the same network find the host on their
-own.
+own. -- You can also use Radmin VPN or Hamachi to skip port forwarding, similar to playing Minecraft with friends.
 
 ### Mods (optional)
 1. Unzip each mod into its own folder:
