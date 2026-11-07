@@ -260,6 +260,12 @@ pub fn loader_system(world: &mut World) {
             Goal::NewGame(_) => {
                 crate::augmentique::new_game();
                 crate::perks::new_game();
+                // A deathmatch map: the deathmatch character's outfit and weapon skins go back on.
+                if crate::deathmatch::versus() && crate::deathmatch::is_dm_map(&map) {
+                    if let Some(c) = crate::dmchar::current() {
+                        crate::dmchar::apply(&c);
+                    }
+                }
             }
             Goal::Load(s) => {
                 crate::augmentique::restore(s.global.augmentique.clone());
@@ -454,6 +460,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// is put back afterwards from the captured save.
 fn reset_modules() {
     crate::netplay::reset_level();
+    crate::deathmatch::reset_level();
     crate::info::reset_level();
     crate::zones::reset_level();
     crate::hanging::reset_level();
@@ -824,6 +831,23 @@ fn dev_goto(world: &mut World) {
             }
             *SHOT_AT.lock().unwrap() = Some((now + std::time::Duration::from_secs_f32(
                 env_val!("DXVIEW_GOTO_SHOT_DELAY").map(str::to_owned).and_then(|d| d.parse().ok()).unwrap_or(6.0f32)), i + 1));
+            return;
+        }
+        // "secs;<ActorName>;defuse": use that placed grenade as the player's frob would (multiplayer mine tests).
+        Some("defuse") => {
+            let lvl = &world.resource::<crate::LevelRes>().0;
+            if let Some(i) = lvl.actors.iter().position(|a| a.name.eq_ignore_ascii_case(map)) {
+                let mut q = world.query::<&mut crate::grenades::Grenade>();
+                for mut g in q.iter_mut(world) {
+                    if g.net == i as u32 + 1 {
+                        let (msg, take) = crate::grenades::frob_grenade(&mut g);
+                        if g.remote {
+                            crate::netplay::grenade_frob_out(g.net);
+                        }
+                        println!("GOTO defuse {map}: {msg:?} take {take} remote {}", g.remote);
+                    }
+                }
+            }
             return;
         }
         // "secs;<FlagName>;flag": set a game flag (mission script tests).

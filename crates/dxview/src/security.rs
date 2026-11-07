@@ -60,6 +60,11 @@ pub fn alarm_light(actor: usize, on: bool) {
 static MISSION: Mutex<bool> = Mutex::new(false);
 
 pub fn hacked(blocker: usize) {
+    // Multiplayer: a joiner's HackAction is the host's to do (and so everyone's).
+    if crate::netplay::is_client() {
+        crate::netplay::hack_act_out(blocker);
+        return;
+    }
     if let Ok(mut q) = HACKED.lock() {
         q.push(blocker);
     }
@@ -88,6 +93,11 @@ pub fn warren(center: DVec3, radius: f64, slot: u8) {
 }
 
 pub fn blast(center: DVec3, radius: f64, damage: f32, damage_type: &'static str) {
+    // Multiplayer: a joiner's own blast reaches the host's devices and grenades (here nothing of them is decided).
+    if crate::netplay::is_client() {
+        crate::netplay::blast_out(center, radius, damage, damage_type);
+        return;
+    }
     if let Ok(mut q) = BLASTS.lock() {
         q.push((center, radius, damage, damage_type));
     }
@@ -314,6 +324,8 @@ struct Cam {
     gone: bool,
     msg_on: String,
     msg_off: String,
+    /// The lens shown (netplay::LENS_*), for the joiners.
+    net_lens: u8,
 }
 
 struct Turret {
@@ -355,6 +367,9 @@ struct Turret {
     muzzle: Option<Skin>,
     gone: bool,
     seed: u64,
+    /// The lens shown (netplay::LENS_*) and shots fired (wrapping), for the joiners.
+    net_lens: u8,
+    shots: u8,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -418,6 +433,8 @@ pub struct Security {
     beam2_mat: Option<Handle<StandardMaterial>>,
     spot2_mat: Option<Handle<StandardMaterial>>,
     seed: u64,
+    /// Joiner: the host's devices as he last sent them.
+    net_view: Option<crate::netplay::SecNet>,
 }
 
 /// What a save keeps of the security devices (save.rs). Destroyed cameras and turrets come back destroyed by
@@ -630,14 +647,47 @@ pub fn security_system(
         for l in st.lasers.iter_mut() {
             laser_tick(l, &mut cx, &gfx, &ph, &refs, &children, &part_mats, &mut fx, true);
         }
+        // Cameras and turrets as the host runs them.
+        if let Some(net) = crate::netplay::take_security() {
+            st.net_view = Some(net);
+        }
+        if let Some(net) = st.net_view.clone() {
+            client_devices(st, &net, &mut cx, &mut decos, &children, &part_mats, &mut meshes, &mut shells);
+        }
+        let gone: Vec<usize> = st.turrets.iter().enumerate().filter(|(_, t)| !t.gone && t.net_lens == u8::MAX).map(|(i, _)| i).collect();
+        for i in gone {
+            remove_turret(&mut st.turrets[i], &mut commands, &mut blockers);
+        }
         return;
     }
 
     // ---------------------------------------------------------------- incoming
     let hacked: Vec<usize> = HACKED.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     let events: Vec<(String, bool)> = EVENTS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-    let blasts: Vec<(DVec3, f64, f32, &'static str)> =
+    let mut blasts: Vec<(DVec3, f64, f32, &'static str)> =
         BLASTS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    // Multiplayer (host): the joiners' blasts, security computer settings and shots at turret guns.
+    blasts.extend(crate::netplay::take_sec_blasts());
+    for (kind, tag, a, b) in crate::netplay::take_sec_controls() {
+        match kind {
+            0 => {
+                for c in st.cams.iter_mut().filter(|c| !c.gone && c.tag.eq_ignore_ascii_case(&tag)) {
+                    if a > 0.5 {
+                        cam_trigger(c, false);
+                    } else {
+                        cam_untrigger(c, false);
+                    }
+                }
+            }
+            1 => control::set_camera_desired(st, &tag, (a as f64, b as f64)),
+            _ => control::set_turret(st, &tag, a as u8),
+        }
+    }
+    for (base, damage, kind) in crate::netplay::take_turret_hits() {
+        if let Some(t) = st.turrets.iter().find(|t| t.actor == base && !t.gone) {
+            deco_hits.0.push(crate::destruct::DecoHit { blocker: t.gun_blocker, damage, damage_type: kind });
+        }
+    }
     let mission = MISSION.lock().map(|mut m| std::mem::take(&mut *m)).unwrap_or(false);
 
     apply_hacks(st, hacked, lvl);
@@ -694,12 +744,225 @@ pub fn security_system(
     for l in st.lasers.iter_mut() {
         laser_tick(l, &mut cx, &gfx, &shot.ph, &refs, &children, &part_mats, &mut fx, false);
     }
-    // Multiplayer: the joiners draw the beams that are on.
+    // Multiplayer: the joiners draw the beams that are on, and the cameras and turrets as they are here.
     if crate::netplay::is_host() {
         crate::netplay::lasers_on(st.lasers.iter().filter(|l| l.on && !l.gone).map(|l| l.actor as u32).collect());
     }
     for i in dead_turrets {
         remove_turret(&mut st.turrets[i], &mut commands, &mut blockers);
+    }
+    if crate::netplay::is_host() {
+        crate::netplay::security_out(dt, || net_state(st));
+    }
+}
+
+/// The lens skin as a wire code (netplay::LENS_*).
+fn lens_code(l: Option<&str>) -> u8 {
+    use crate::netplay::*;
+    match l {
+        None => LENS_NONE,
+        Some(BLACK) => LENS_BLACK,
+        Some(GREEN) => LENS_GREEN,
+        Some(RED) => LENS_RED,
+        Some(YELLOW) => LENS_YELLOW,
+        Some(_) => LENS_NONE,
+    }
+}
+
+fn lens_of(code: u8) -> Option<&'static str> {
+    use crate::netplay::*;
+    match code {
+        LENS_BLACK => Some(BLACK),
+        LENS_GREEN => Some(GREEN),
+        LENS_RED => Some(RED),
+        LENS_YELLOW => Some(YELLOW),
+        _ => None,
+    }
+}
+
+/// Host: the cameras and turrets for the joiners.
+fn net_state(st: &Security) -> crate::netplay::SecNet {
+    use crate::netplay::*;
+    let r = |v: (f64, f64)| [v.0.round() as i32, v.1.round() as i32];
+    SecNet {
+        cams: st
+            .cams
+            .iter()
+            .map(|c| {
+                let mut flags = 0;
+                for (on, f) in [(c.gone, CAM_GONE), (c.active, CAM_ACTIVE), (c.triggered, CAM_TRIGGERED), (c.confused, CAM_CONFUSED), (c.hum, CAM_HUM)] {
+                    if on {
+                        flags |= f;
+                    }
+                }
+                CamNet { actor: c.actor as u32, rot: r(c.rot), lens: c.net_lens, flags }
+            })
+            .collect(),
+        turrets: st
+            .turrets
+            .iter()
+            .map(|t| {
+                let mut flags = 0;
+                for (on, f) in [
+                    (t.gone, TUR_GONE),
+                    (t.active, TUR_ACTIVE),
+                    (t.disabled, TUR_DISABLED),
+                    (t.firing, TUR_FIRING),
+                    (t.hum, TUR_HUM),
+                    (t.players_only, TUR_PLAYERS),
+                    (t.pawns_only, TUR_PAWNS),
+                    (t.confused, TUR_CONFUSED),
+                ] {
+                    if on {
+                        flags |= f;
+                    }
+                }
+                TurretNet { actor: t.actor as u32, rot: r(t.rot), lens: t.net_lens, flags, shots: t.shots }
+            })
+            .collect(),
+    }
+}
+
+/// Joiner: the host's cameras and turrets drawn here - turning toward his rotations, his lens colours, lights and
+/// hums, the klaxon of a camera that raised the alarm, a turret's shots (sound, flash, casing; the damage was
+/// his). Their switches read back as his (security computers show his settings).
+#[allow(clippy::too_many_arguments)]
+fn client_devices(
+    st: &mut Security,
+    net: &crate::netplay::SecNet,
+    cx: &mut DevCx,
+    decos: &mut Query<(&mut Deco, &mut Transform), Without<LaserFx>>,
+    children: &Query<&Children>,
+    part_mats: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
+    meshes: &mut Assets<Mesh>,
+    shells: &mut crate::destruct::Shells,
+) {
+    use crate::netplay::*;
+    let (dt, dtd, eye) = (cx.f.dt, cx.f.dtd, cx.f.eye);
+    for n in &net.cams {
+        let Some(c) = st.cams.iter_mut().find(|c| c.actor == n.actor as usize) else { continue };
+        if c.gone {
+            continue;
+        }
+        if n.flags & CAM_GONE != 0 {
+            c.gone = true;
+            continue;
+        }
+        c.active = n.flags & CAM_ACTIVE != 0;
+        c.triggered = n.flags & CAM_TRIGGERED != 0;
+        c.confused = n.flags & CAM_CONFUSED != 0;
+        c.hum = n.flags & CAM_HUM != 0;
+        c.want = (n.rot[0] as f64, n.rot[1] as f64);
+        turn(&mut c.rot.0, c.want.0, 65535.0, dtd);
+        turn(&mut c.rot.1, c.want.1, 65535.0, dtd);
+        if let Some(e) = c.entity {
+            if let Ok((mut d, _)) = decos.get_mut(e) {
+                if c.lens.is_none() {
+                    let ma = &cx.lvl.mesh_actors[d.mesh_actor];
+                    let hs: Vec<Handle<Mesh>> = ma_handles(&d.parts, ma.parts.len());
+                    c.lens = find_skin(e, &hs, &ma.parts, 2, children, part_mats);
+                }
+                let r = [c.rot.0.round() as i32, c.rot.1.round() as i32, 0];
+                if d.rotation != r {
+                    d.rotation = r;
+                    d.spun = true;
+                }
+            }
+        }
+        let lens = lens_of(n.lens);
+        if let Some(l) = c.lens.as_mut() {
+            if lens.is_some() {
+                cx.sk.set(l, lens);
+            }
+        }
+        let light = match n.lens {
+            LENS_GREEN => Some(80),
+            LENS_RED => Some(0),
+            LENS_YELLOW => Some(40),
+            _ => None,
+        };
+        if let Some(h) = light {
+            if c.pos.distance(eye) < 4000.0 {
+                crate::dynlight::hold(0xC_0000_0000 | c.actor as u64, c.pos, crate::dynlight::Spec::new(h, 100, 120, 1.0), 0.0);
+            }
+        }
+        let sound = if c.triggered && c.active {
+            Some(("Ambient.Ambient.Klaxon2", 128.0 / 255.0, 25.0 * 65.0, 1.0))
+        } else if c.confused {
+            Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 2.0))
+        } else if c.active || c.hum {
+            Some(("DeusExSounds.Generic.CameraHum", 192.0 / 255.0, 25.0 * 49.0, 1.0))
+        } else {
+            None
+        };
+        if let Some((snd, vol, radius, pitch)) = sound {
+            if c.pos.distance(eye) < radius as f64 {
+                crate::sound::hold(0xC_1000_0000 | c.actor as u64, snd, Some(c.pos), vol, radius, pitch);
+            }
+        }
+    }
+    for n in &net.turrets {
+        let Some(t) = st.turrets.iter_mut().find(|t| t.actor == n.actor as usize) else { continue };
+        if t.gone {
+            continue;
+        }
+        if n.flags & TUR_GONE != 0 {
+            // Taken away by the caller (remove_turret).
+            t.net_lens = u8::MAX;
+            continue;
+        }
+        if t.lens.is_none() || t.muzzle.is_none() {
+            t.lens = find_skin(t.gun_entity, &t.handles, &t.parts, 1, children, part_mats);
+            t.muzzle = find_skin(t.gun_entity, &t.handles, &t.parts, 2, children, part_mats);
+        }
+        t.active = n.flags & TUR_ACTIVE != 0;
+        t.disabled = n.flags & TUR_DISABLED != 0;
+        t.firing = n.flags & TUR_FIRING != 0;
+        t.hum = n.flags & TUR_HUM != 0;
+        t.players_only = n.flags & TUR_PLAYERS != 0;
+        t.pawns_only = n.flags & TUR_PAWNS != 0;
+        t.confused = n.flags & TUR_CONFUSED != 0;
+        let before = t.rot;
+        t.want = (n.rot[0] as f64, n.rot[1] as f64);
+        turn(&mut t.rot.0, t.want.0, 16384.0, dtd);
+        turn(&mut t.rot.1, t.want.1, 16384.0, dtd);
+        if let Ok((mut d, _)) = decos.get_mut(t.gun_entity) {
+            let r = [t.rot.0.round() as i32, t.rot.1.round() as i32, 0];
+            if d.rotation != r {
+                d.rotation = r;
+                d.spun = true;
+            }
+        }
+        // A shot there: its sound, flash and casing here.
+        if n.shots != t.shots {
+            t.shots = n.shots;
+            t.flash_t = 0.1;
+            crate::sound::play("DeusExSounds.Weapons.PistolFire", t.gun_pos, 1.0, 1600.0, 1.0);
+            let side = rotator_axes([0, (t.rot.1 - 16384.0).round() as i32, 0]);
+            shells.0.push(("ShellCasing", t.gun_pos, DVec3::new(side[0][0] as f64, side[0][1] as f64, side[0][2] as f64) * 100.0));
+        }
+        animate_gun(t, dt, meshes);
+        let lens = lens_of(n.lens);
+        if let Some(l) = t.lens.as_mut() {
+            cx.sk.set(l, lens);
+        }
+        t.net_lens = n.lens;
+        t.flash_t -= dt;
+        if let Some(m) = t.muzzle.as_mut() {
+            cx.sk.set(m, if t.flash_t > 0.0 { Some(FLASH) } else { None });
+        }
+        if t.flash_t > 0.0 {
+            crate::dynlight::hold(0xD_1000_0000 | t.actor as u64, t.gun_pos, crate::dynlight::MUZZLE_FLASH, 0.0);
+        }
+        let base_pos = t.base_blocker.map(|b| cx.blockers.list[b].center).unwrap_or(t.gun_pos);
+        if t.hum && base_pos.distance(eye) < 1225.0 {
+            crate::sound::hold(0xC_2000_0000 | t.actor as u64, "DeusExSounds.Generic.AutoTurretHum", Some(base_pos), 192.0 / 255.0, 1225.0, 1.0);
+        }
+        let near = wrap(t.rot.0 - t.want.0).abs() + wrap(t.rot.1 - t.want.1).abs();
+        let moving = wrap(t.rot.0 - before.0).abs() + wrap(t.rot.1 - before.1).abs() > 0.5 && near > 64.0;
+        if moving && t.gun_pos.distance(eye) < 625.0 {
+            crate::sound::hold(0xC_3000_0000 | t.actor as u64, "DeusExSounds.Generic.AutoTurretMove", Some(t.gun_pos), 0.5, 625.0, if t.confused { 2.0 } else { 1.0 });
+        }
     }
 }
 
@@ -1011,6 +1274,7 @@ fn camera_tick(
     if let Some(l) = c.lens.as_mut() {
         cx.sk.set(l, Some(lens));
     }
+    c.net_lens = lens_code(Some(lens));
     let eye = cx.f.eye;
     if let Some(h) = light {
         if c.pos.distance(eye) < 4000.0 {
@@ -1333,6 +1597,7 @@ fn turret_turn_and_fire(
     if let Some(l) = t.lens.as_mut() {
         cx.sk.set(l, lens);
     }
+    t.net_lens = lens_code(lens);
     t.flash_t -= dt;
     if let Some(m) = t.muzzle.as_mut() {
         cx.sk.set(m, if t.flash_t > 0.0 { Some(FLASH) } else { None });
@@ -1760,6 +2025,7 @@ fn fire(
     blood: &mut crate::effects::BloodFx,
 ) {
     t.firing = true;
+    t.shots = t.shots.wrapping_add(1);
     let ax = rotator_axes([t.rot.0.round() as i32, t.rot.1.round() as i32, 0]);
     let x = DVec3::new(ax[0][0] as f64, ax[0][1] as f64, ax[0][2] as f64);
     let y = DVec3::new(ax[1][0] as f64, ax[1][1] as f64, ax[1][2] as f64);
@@ -2051,6 +2317,7 @@ fn new_camera(
         gone: false,
         msg_on: { let m = sv(&d, "msgActivated"); if m.is_empty() { "Camera activated".into() } else { m } },
         msg_off: { let m = sv(&d, "msgDeactivated"); if m.is_empty() { "Camera deactivated".into() } else { m } },
+        net_lens: 0,
     }
 }
 
@@ -2258,6 +2525,8 @@ fn new_turret(i: usize, p: &[Property], gun: GunSpawn, by_actor: &HashMap<usize,
         muzzle: None,
         gone: false,
         seed,
+        net_lens: 0,
+        shots: 0,
     }
 }
 
@@ -2273,6 +2542,10 @@ pub mod control {
     /// Switch a camera by tag (DeusExPlayer.ToggleCameraState: Trigger / UnTrigger with the player as the
     /// instigator, so the "camera activated / deactivated" message shows).
     pub fn set_camera(st: &mut Security, tag: &str, on: bool) {
+        // Multiplayer: a joiner's setting is the host's to make (shown here at once; his state follows).
+        if crate::netplay::is_client() {
+            crate::netplay::sec_control_out(0, tag, if on { 1.0 } else { 0.0 }, 0.0);
+        }
         for c in st.cams.iter_mut().filter(|c| !c.gone && c.tag.eq_ignore_ascii_case(tag)) {
             if on {
                 cam_trigger(c, true);
@@ -2289,6 +2562,9 @@ pub mod control {
 
     /// DeusExPlayer.UpdateCameraRotation: set its DesiredRotation (a swinging camera keeps swinging over it).
     pub fn set_camera_desired(st: &mut Security, tag: &str, rot: (f64, f64)) {
+        if crate::netplay::is_client() {
+            crate::netplay::sec_control_out(1, tag, rot.0 as f32, rot.1 as f32);
+        }
         for c in st.cams.iter_mut().filter(|c| !c.gone && c.tag.eq_ignore_ascii_case(tag)) {
             c.want = rot;
         }
@@ -2316,6 +2592,9 @@ pub mod control {
 
     /// ComputerScreenSecurity.SetTurretState / SetTurretTrackMode.
     pub fn set_turret(st: &mut Security, tag: &str, mode: u8) {
+        if crate::netplay::is_client() {
+            crate::netplay::sec_control_out(2, tag, mode as f32, 0.0);
+        }
         for t in st.turrets.iter_mut().filter(|t| !t.gone && t.tag.eq_ignore_ascii_case(tag)) {
             match mode {
                 0 => {

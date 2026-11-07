@@ -36,9 +36,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The game messages' version (Hello / Welcome).
-pub const PROTO: u32 = 1;
-/// Seconds before a dead player gets up again near the host.
+pub const PROTO: u32 = 3;
+/// Seconds before a dead player gets up again near the host (Easy / Medium).
 pub const RESPAWN_SECS: f32 = 4.0;
+/// Hard and Realistic co-op: the wait is longer, and if every player is down at once the level restarts for all.
+pub const RESPAWN_HARD_SECS: f32 = 10.0;
+/// Seconds between "everyone is down" and the host reloading the map.
+const RESET_DELAY: f32 = 3.0;
 const ME_HZ: f32 = 30.0;
 const PAWN_HZ: f32 = 15.0;
 const MOVER_HZ: f32 = 10.0;
@@ -62,11 +66,13 @@ pub struct Rules {
     pub max_players: u8,
     /// The host's CombatDifficulty (Hard and up: a death loses the inventory).
     pub difficulty: f32,
+    /// Deathmatch / Team Deathmatch: the match's rules (deathmatch.rs); None = co-op.
+    pub dm: Option<crate::deathmatch::DmRules>,
 }
 
 impl Default for Rules {
     fn default() -> Self {
-        Rules { coop: true, classic: false, tough: false, friendly_fire: false, max_players: 4, difficulty: 1.5 }
+        Rules { coop: true, classic: false, tough: false, friendly_fire: false, max_players: 4, difficulty: 1.5, dm: None }
     }
 }
 
@@ -76,6 +82,10 @@ pub struct Look {
     pub name: String,
     pub female: bool,
     pub skin: u8,
+    /// The Augmentique outfit he wears, resolved (mesh, Texture, MultiSkins): his body is dressed in it.
+    pub outfit: Option<(String, String, [String; 8])>,
+    /// His weapon skins (class, Augmentique skin id): his body's weapon wears them.
+    pub skins: Vec<(String, String)>,
 }
 
 /// One player's body, 30 times a second.
@@ -106,6 +116,8 @@ pub struct PState {
     /// his body by the same rules as the host's own JC.
     pub light: f32,
     pub camo: bool,
+    /// The loader generation of his map: a new value is a new arrival (a reload of the same map counts).
+    pub gen: u32,
 }
 
 /// The augmentations whose glow shows on a body.
@@ -132,6 +144,8 @@ pub struct PawnNet {
     pub gone: bool,
     pub weapon: String,
     pub shots: u8,
+    /// Not drawn on the host (a body somebody carries, gibbed, swapped for its carcass).
+    pub hidden: bool,
 }
 
 /// A mover as the host sends it (when it changes).
@@ -187,7 +201,8 @@ enum Msg {
     Lock(u16, bool),
     Hit { on: HitOn, damage: f32, kind: String, at: [f32; 3], from: [f32; 3] },
     /// `by`: the player who did it (friendly fire / deathmatch), None = a pawn.
-    Damage { damage: f32, kind: String, from: [f32; 3], by: Option<u8> },
+    /// `at`: where it hit, from the body's centre (None: unknown); `weapon`: the attacker's weapon class.
+    Damage { damage: f32, kind: String, from: [f32; 3], by: Option<u8>, at: Option<[f32; 3]>, weapon: String },
     /// A player went down (`by`: the player who did it).
     Died { by: Option<u8>, kind: String },
     Travel(String),
@@ -221,6 +236,133 @@ enum Msg {
     /// A player used one of his medkits on player `to`: `amount` health points, given on `to`'s side (the host
     /// passes it on). `by`: the healer's name.
     Heal { to: u8, amount: f32, by: String },
+    // --- Protocol 2 (added at the end: nothing above shifts) ---
+    /// Host -> all: placed pawn `actor` was just killed or knocked out by this hit (the joiners' copies fall the
+    /// same way: ragdoll push, death side).
+    PawnDied { actor: u32, hit: [f32; 3], from: [f32; 3], damage: f32, vel: [f32; 3] },
+    /// Host -> all: placed pawn `actor` was blown apart (robots explode: `boom` = the blast radius, 0 = none).
+    PawnGib { actor: u32, at: [f32; 3], r: f32, h: f32, robot: bool, boom: f32 },
+    /// Host -> all: every player is down on Hard / Realistic - the map restarts (the host's Travel that follows
+    /// reloads it; joiners come back with what their character had at its last save).
+    Reset(String),
+    /// Joiner -> host: he threw (or placed on a wall, `wall` = the wall's normal) a grenade: the host's to run.
+    GrenThrow { class: String, pos: [f32; 3], dir: [f32; 3], wall: Option<[f32; 3]> },
+    /// Host -> all: a grenade the host runs came into the world (thrown, placed on a wall).
+    GrenSpawn(GrenNet),
+    /// Host -> all: grenades whose state changed (where, armed, disarmed, about to go), on map `map`.
+    GrenStates(u32, Vec<GrenState>),
+    /// Host -> all: grenade `id` is gone - exploded (the joiners draw the blast) or picked up.
+    GrenGone { map: u32, id: u32, exploded: bool },
+    /// Joiner -> host: he used (disarmed / picked up) grenade `id`.
+    GrenFrob(u32),
+    /// Joiner -> host: a blast of his own (rocket, prod...): grenades, cameras, turrets and lasers on the host feel it.
+    Blast { at: [f32; 3], radius: f32, damage: f32, kind: String },
+    /// Host -> all: security cameras and turrets as the host runs them, on map `map`.
+    Security(u32, SecNet),
+    /// Joiner -> host: a security computer's setting (0 camera on/off: a = 1/0; 1 camera pan: a, b = pitch, yaw;
+    /// 2 turret mode: a = mode), by device tag.
+    SecControl { kind: u8, tag: String, a: f32, b: f32 },
+    /// Joiner -> host: his shot / blow on the turret gun of placed AutoTurret `base`.
+    TurretHit { base: u32, damage: f32, kind: String },
+    /// Host -> all: the alarm units sounding (placed actors), on map `map`.
+    Alarms(u32, Vec<u32>),
+    /// Host -> all: hackable devices' strength left (placed actors), on map `map`.
+    Hacks(u32, Vec<(u32, f32)>),
+    /// Joiner -> host: his multitool work on placed device `actor`: strength left.
+    HackSet(u32, f32),
+    /// Joiner -> host: HackAction on placed device `actor` (0 camera / turret switch, 1 alarm unit silenced).
+    HackAct(u32, u8),
+    /// Joiner -> host: his look changed (a deathmatch character chosen after joining).
+    LookIs(Look),
+    /// Host -> all: the scoreboard / match state (deathmatch.rs Board).
+    Board(crate::deathmatch::Board),
+    /// Host -> a killer: his kill counted with this weapon class (skin unlocks, Reward).
+    Frag(String),
+    /// Joiner -> host: he takes a placed deathmatch pickup. Host -> him: it's his.
+    PickupAsk(u32),
+    PickupGrant(u32),
+    /// Host -> all: the placed deathmatch pickups that are there (map hash, actors).
+    Pickups(u32, Vec<u32>),
+}
+
+/// A grenade the host runs, as it comes into the world.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GrenNet {
+    pub map: u32,
+    pub id: u32,
+    pub class: String,
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub wall: Option<[f32; 3]>,
+    pub fuse: f32,
+    pub blast: f32,
+}
+
+/// A grenade's state (GS_* flags).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GrenState {
+    pub id: u32,
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub rot: [i32; 3],
+    pub flags: u8,
+}
+pub const GS_STUCK: u8 = 1;
+pub const GS_ARMED: u8 = 2;
+pub const GS_DISABLED: u8 = 4;
+pub const GS_TICKING: u8 = 8;
+/// Ids of grenades made while playing start here (below: placed grenades, by actor index + 1).
+pub const GREN_RUNTIME: u32 = 0x4000_0000;
+
+/// The security devices as the host runs them.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct SecNet {
+    pub cams: Vec<CamNet>,
+    pub turrets: Vec<TurretNet>,
+}
+
+/// A security camera: rotation (pitch, yaw), lens (LENS_*), CAM_* flags.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CamNet {
+    pub actor: u32,
+    pub rot: [i32; 2],
+    pub lens: u8,
+    pub flags: u8,
+}
+
+/// A turret (by its placed AutoTurret base): gun rotation, lens, TUR_* flags, shots fired (wrapping).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct TurretNet {
+    pub actor: u32,
+    pub rot: [i32; 2],
+    pub lens: u8,
+    pub flags: u8,
+    pub shots: u8,
+}
+pub const LENS_NONE: u8 = 0;
+pub const LENS_BLACK: u8 = 1;
+pub const LENS_GREEN: u8 = 2;
+pub const LENS_RED: u8 = 3;
+pub const LENS_YELLOW: u8 = 4;
+pub const CAM_GONE: u8 = 1;
+pub const CAM_ACTIVE: u8 = 2;
+pub const CAM_TRIGGERED: u8 = 4;
+pub const CAM_CONFUSED: u8 = 8;
+pub const CAM_HUM: u8 = 16;
+pub const TUR_GONE: u8 = 1;
+pub const TUR_ACTIVE: u8 = 2;
+pub const TUR_DISABLED: u8 = 4;
+pub const TUR_FIRING: u8 = 8;
+pub const TUR_HUM: u8 = 16;
+pub const TUR_PLAYERS: u8 = 32;
+pub const TUR_PAWNS: u8 = 64;
+pub const TUR_CONFUSED: u8 = 128;
+
+/// What the host said about a placed pawn's end (joiner side, read by ai::puppet_step).
+#[derive(Clone, Debug)]
+pub enum PawnFx {
+    Died { hit: DVec3, from: DVec3, damage: f32, vel: DVec3 },
+    Gibbed { at: DVec3, r: f64, h: f64, robot: bool, boom: f64 },
 }
 
 /// A placed decoration's place (Unreal units) and rotation.
@@ -341,7 +483,7 @@ struct Net {
     locks: Vec<(u16, bool)>,
     events_in: Vec<(String, bool)>,
     hits_in: Vec<(u8, HitOn, f32, String, [f32; 3], [f32; 3])>,
-    damage_in: Vec<(f32, String, [f32; 3], Option<u8>)>,
+    damage_in: Vec<(f32, String, [f32; 3], Option<u8>, Option<[f32; 3]>, String)>,
     /// Medkits other players used on us: (points, who).
     heals_in: Vec<(f32, String)>,
     /// The player who last hurt us (deathmatch credit).
@@ -366,6 +508,11 @@ struct Net {
     mover_t: f32,
     flag_t: f32,
     respawn: Option<f32>,
+    /// Hard / Realistic: everyone is down. Host: seconds until the map is reloaded (then f32::MAX while it loads);
+    /// joiner: the host said so (the next Travel reloads the map; nobody gets up meanwhile).
+    reset_t: Option<f32>,
+    /// Joiner: placed pawns (actors) hidden because the host hides them.
+    net_hidden: HashSet<usize>,
     shots: u8,
     lost: Option<String>,
 }
@@ -429,10 +576,47 @@ fn lobby_udp() -> Option<SocketAddr> {
 
 fn my_look() -> Look {
     let s = crate::travel::session();
+    // Deathmatch characters dress in their outfit and skins for everyone (they need Augmentique).
+    let dm = crate::deathmatch::versus();
     Look {
         name: s.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "JC Denton".into()),
         female: s.as_ref().is_some_and(|s| s.female),
         skin: s.as_ref().map_or(0, |s| s.skin.min(4)),
+        outfit: if dm { crate::augmentique::worn_look() } else { None },
+        skins: if dm { crate::dmchar::current().map(|c| c.weapon_skins).unwrap_or_default() } else { Vec::new() },
+    }
+}
+
+/// The host's rules with the deathmatch room's (deathmatch.rs holds what the Host Room chose).
+fn rules_now(n: &Net) -> Rules {
+    let mut r = n.rules.clone();
+    r.dm = crate::deathmatch::rules();
+    if r.dm.is_some() {
+        r.coop = false;
+        r.classic = false;
+        r.friendly_fire = r.dm.as_ref().is_some_and(|d| d.friendly_fire);
+    }
+    r
+}
+
+/// A joiner got the room's rules: a deathmatch room plays his deathmatch character.
+fn joiner_rules(n: &mut Net, r: &Rules) {
+    let was = crate::deathmatch::versus();
+    crate::deathmatch::set_rules(r.dm.clone());
+    if r.dm.is_some() && !was {
+        let c = crate::dmchar::last().unwrap_or_else(|| {
+            let mut c = crate::dmchar::fresh();
+            c.name = n.look.name.clone();
+            crate::dmchar::save(&mut c);
+            crate::dmchar::set_current(c.clone());
+            c
+        });
+        crate::dmchar::apply(&c);
+        let look = my_look();
+        if look != n.look {
+            n.look = look.clone();
+            send_host(n, &Msg::LookIs(look), true);
+        }
     }
 }
 
@@ -487,6 +671,8 @@ fn start(role: Role, ep: Endpoint, rules: Rules, look: Look) {
         mover_t: 0.0,
         flag_t: 0.0,
         respawn: None,
+        reset_t: None,
+        net_hidden: HashSet::new(),
         shots: 0,
         lost: None,
     };
@@ -646,6 +832,10 @@ pub fn join(j: &imsim_net::client::Joined, look: Look) -> Result<(), String> {
 pub fn leave(why: &str) {
     let mut g = NET.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(n) = g.take() {
+        // Out of the room: no match, no board.
+        crate::deathmatch::host_end();
+        crate::deathmatch::set_rules(None);
+        crate::deathmatch::set_my_id(0);
         // The player's mods come back (the title map, or the next map, is built with them).
         let resume = unreal_pkg::mods::set_suspended(false);
         if resume && !(n.role == Role::Client && n.welcomed) {
@@ -752,6 +942,18 @@ pub fn host_travel(map: &str) {
     });
 }
 
+/// Host: the next deathmatch on `map` (file stem) - everyone loads it fresh, as his deathmatch character.
+pub fn start_match(map: &str) {
+    with(|n| {
+        if n.role == Role::Host {
+            send_all(n, &Msg::Reset(map.to_string()), true, None);
+        }
+    });
+    host_travel(map);
+    let ng = crate::dmchar::current().map(|c| crate::dmchar::new_game(&c)).or_else(crate::travel::session).unwrap_or_default();
+    crate::loader::request(&format!("{map}.dx"), crate::loader::Goal::NewGame(ng));
+}
+
 /// Joiners only travel when the host does.
 pub fn may_travel() -> bool {
     !is_client() || ALLOW_TRAVEL.load(std::sync::atomic::Ordering::Relaxed)
@@ -797,7 +999,10 @@ pub fn puppet_hits(actor: usize, peer: Option<u8>, hits: &[crate::damage::PawnHi
                     let world_hit = matches!(h.damage_type, "AutoShot" | "Exploded" | "Burned" | "Flamed" | "Shocked" | "Radiation" | "PoisonGas" | "TearGas" | "HalonGas");
                     if h.attacker.is_some() || world_hit || players_hurt {
                         let by = if h.attacker.is_none() { Some(0) } else { None };
-                        send_to(n, p, &Msg::Damage { damage: h.damage, kind: h.damage_type.to_string(), from, by }, true);
+                        // Where on him (from his body's centre) and with what (the host's own weapon for his shots).
+                        let local = n.remotes.iter().find(|r| r.id == p).map(|r| [at[0] - r.st.pos[0], at[1] - r.st.pos[1], at[2] - r.st.pos[2]]);
+                        let weapon = if h.attacker.is_none() { MY_WEAPON.lock().map(|w| w.clone()).unwrap_or_default() } else { String::new() };
+                        send_to(n, p, &Msg::Damage { damage: h.damage, kind: h.damage_type.to_string(), from, by, at: local, weapon }, true);
                     }
                 }
                 (Role::Client, Some(p)) => {
@@ -912,6 +1117,8 @@ pub fn net_in_system(
             n.pawns_alive.clear();
             n.pawns_in.clear();
             n.flags_sig = 0;
+            n.reset_t = None;
+            n.net_hidden.clear();
             for r in &mut n.remotes {
                 r.body = None;
                 r.blocker = None;
@@ -959,7 +1166,23 @@ pub fn net_in_system(
     let playable = !crate::loader::busy() && !crate::menus::intro_map();
     // Joiner: travel with the host.
     if role == Role::Client {
-        let travel = with(|n| n.travel_in.take()).flatten();
+        let (travel, reset) = with(|n| (n.travel_in.take(), n.reset_t.is_some())).unwrap_or((None, false));
+        if let (Some(map), true) = (travel.as_ref(), reset) {
+            // Everyone was down: the map again, with what this character had at its last save (not what he died with).
+            let id = CHARACTER.lock().ok().and_then(|c| c.as_ref().map(|c| c.id.clone()));
+            let carry = id.as_deref().and_then(crate::save::read_mp);
+            if let Ok(mut c) = CHARACTER.lock() {
+                if let Some(c) = c.as_mut() {
+                    c.carry = carry;
+                }
+            }
+            println!("NET reset: reloading {map} from the character's last save");
+            ALLOW_TRAVEL.store(true, std::sync::atomic::Ordering::Relaxed);
+            let ng = crate::travel::session().unwrap_or_default();
+            crate::loader::request(map, crate::loader::Goal::NewGame(ng));
+            ALLOW_TRAVEL.store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
         if let Some(map) = travel {
             save_character_soon();
             if !map.eq_ignore_ascii_case(&lvl.name) || !playable {
@@ -984,7 +1207,6 @@ pub fn net_in_system(
     if role == Role::Host {
         with(|n| {
             let map = lvl.name.clone();
-            let rules = n.rules.clone();
             let mut welcomed = Vec::new();
             if !n.started {
                 return;
@@ -994,12 +1216,48 @@ pub fn net_in_system(
                 welcomed.push(r.id);
             }
             for id in welcomed {
-                send_to(n, id, &Msg::Welcome { you: id, map: map.clone(), rules: rules.clone() }, true);
+                send_to(n, id, &Msg::Welcome { you: id, map: map.clone(), rules: rules_now(n) }, true);
                 send_to(n, id, &Msg::Flags(flags.0.clone()), true);
                 n.sent_movers.clear();
                 n.goals_sig = 0;
             }
         });
+    }
+    // Deathmatch (and the co-op scoreboard): the host keeps everyone up to date.
+    if role == Role::Host {
+        with(|n| {
+            let r = rules_now(n);
+            if r != n.rules {
+                n.rules = r.clone();
+                send_all(n, &Msg::Rules(r), true, None);
+            }
+            if crate::deathmatch::board().is_none() && n.started {
+                let mut players = vec![(0u8, n.look.name.clone())];
+                players.extend(n.remotes.iter().filter(|r| r.hello).map(|r| (r.id, r.look.name.clone())));
+                crate::deathmatch::host_begin(&players);
+            }
+            if let Some(b) = crate::deathmatch::take_board() {
+                send_all(n, &Msg::Board(b), true, None);
+            }
+            for line in crate::deathmatch::take_news() {
+                send_all(n, &Msg::Note(line), true, None);
+            }
+            if let Some(v) = crate::deathmatch::take_pickup_state() {
+                send_all(n, &Msg::Pickups(my_map, v), true, None);
+            }
+        });
+        if let Some((map, after)) = crate::deathmatch::take_travel() {
+            match after {
+                crate::deathmatch::After::Room => crate::deathmatch::await_room(),
+                _ => start_match(&map),
+            }
+        }
+    }
+    // Joiner: deathmatch pickups he reached for.
+    if role == Role::Client {
+        for a in crate::deathmatch::take_asked() {
+            with(|n| send_host(n, &Msg::PickupAsk(a), true));
+        }
     }
     // Flags: the host's are everyone's.
     if role == Role::Client {
@@ -1108,11 +1366,18 @@ pub fn net_in_system(
                     if !ff {
                         continue;
                     }
+                    // The shooter's weapon, and where it hit (from the victim's centre).
+                    let weapon = with(|n| n.remotes.iter().find(|r| r.id == from_peer).map(|r| r.st.weapon.clone())).flatten().unwrap_or_default();
                     if p == 0 {
                         with(|n| n.last_by = Some(from_peer));
-                        ph.damage(dmg, &kind, DVec3::ZERO);
+                        let c = player.body.location;
+                        let local = [at[0] - c.x as f32, at[1] - c.y as f32, at[2] - c.z as f32];
+                        take_hit(&mut ph, &player, dmg, &kind, from, Some(from_peer), Some(local), &weapon);
                     } else {
-                        with(|n| send_to(n, p, &Msg::Damage { damage: dmg, kind, from, by: Some(from_peer) }, true));
+                        with(|n| {
+                            let local = n.remotes.iter().find(|r| r.id == p).map(|r| [at[0] - r.st.pos[0], at[1] - r.st.pos[1], at[2] - r.st.pos[2]]);
+                            send_to(n, p, &Msg::Damage { damage: dmg, kind, from, by: Some(from_peer), at: local, weapon }, true)
+                        });
                     }
                 }
             }
@@ -1120,11 +1385,9 @@ pub fn net_in_system(
     }
     // Damage the host sent us (pawns' shots at our body there).
     let dmg = with(|n| std::mem::take(&mut n.damage_in)).unwrap_or_default();
-    for (d, kind, from, by) in dmg {
+    for (d, kind, from, by, at, weapon) in dmg {
         with(|n| n.last_by = by);
-        let from = DVec3::new(from[0] as f64, from[1] as f64, from[2] as f64);
-        let off = from - player.body.location;
-        ph.damage(d, &kind, off.normalize_or_zero() * player.params.radius);
+        take_hit(&mut ph, &player, d, &kind, from, by, at, &weapon);
     }
     // Medkits other players used on us.
     let heals = with(|n| std::mem::take(&mut n.heals_in)).unwrap_or_default();
@@ -1287,6 +1550,7 @@ pub fn net_in_system(
     // Joiner: every placed pawn is the host's.
     if role == Role::Client {
         let pin = with(|n| std::mem::take(&mut n.pawns_in)).unwrap_or_default();
+        let mut net_hidden = with(|n| std::mem::take(&mut n.net_hidden)).unwrap_or_default();
         for (e, mut npc, deco, mut vis, out) in &mut npcs {
             // (Bodies the map placed have no blocker: they lie where they are, searchable, on every machine.)
             if npc.net_player.is_some() || npc.actor >= placed || npc.blocker >= blockers.list.len() {
@@ -1323,6 +1587,18 @@ pub fn net_in_system(
                 }
                 _ => {}
             }
+            // A body carried off, blown apart or swapped for its carcass on the host: out of sight here too (and
+            // back when the host puts it down). What this joiner hides himself (a body he carries) stays his.
+            if p.dead != 0 && p.hidden && out.is_none() {
+                if net_hidden.insert(npc.actor) {
+                    vis.set_if_neq(Visibility::Hidden);
+                    npc.carried = true;
+                    npc.searched = true;
+                }
+            } else if !p.hidden && net_hidden.remove(&npc.actor) {
+                vis.set_if_neq(Visibility::Inherited);
+                npc.carried = false;
+            }
             let seen = npc.net.as_ref().map_or(p.shots, |o| o.shots_seen);
             npc.net = Some(Box::new(NetPose {
                 pos: DVec3::new(p.pos[0] as f64, p.pos[1] as f64, p.pos[2] as f64),
@@ -1338,9 +1614,11 @@ pub fn net_in_system(
                 seen: true,
             }));
         }
+        with(|n| n.net_hidden = net_hidden);
         // Get in near the host once his body is here.
         let host_at = with(|n| {
-            if n.placed_near_host {
+            // (Deathmatch: everyone starts at a start of his own - deathmatch::match_system.)
+            if n.placed_near_host || crate::deathmatch::playing() {
                 return None;
             }
             n.remotes.iter().find(|r| r.id == 0 && r.at.is_some() && r.st.map == my_map).map(|r| r.st.pos)
@@ -1392,6 +1670,44 @@ pub fn net_in_system(
     respawn_tick(&mut ph, &mut player, &mut inv, lvl, &blockers, dt, my_map);
 }
 
+/// The weapon in this player's hands (deathmatch damage on the others' side).
+static MY_WEAPON: Mutex<String> = Mutex::new(String::new());
+
+/// A hit on this player from another machine: in a deathmatch through deathmatch.rs's table (by body region and
+/// the attacker's weapon; teammates' share in Team Deathmatch), else as the game worked it out.
+#[allow(clippy::too_many_arguments)]
+fn take_hit(ph: &mut PlayerHealth, player: &crate::Player, d: f32, kind: &str, from: [f32; 3], by: Option<u8>, at: Option<[f32; 3]>, weapon: &str) {
+    let from = DVec3::new(from[0] as f64, from[1] as f64, from[2] as f64);
+    if crate::deathmatch::playing() {
+        if crate::deathmatch::match_over() {
+            return;
+        }
+        let me = crate::deathmatch::my_id();
+        let mut mult = 1.0;
+        if let Some(k) = by.filter(|k| *k != me) {
+            if crate::deathmatch::allied(k, me) {
+                mult = crate::deathmatch::friendly_mult();
+            }
+        }
+        if mult <= 0.0 {
+            return;
+        }
+        let local = at.map(|a| DVec3::new(a[0] as f64, a[1] as f64, a[2] as f64));
+        let (dd, off) = crate::deathmatch::player_damage(weapon, kind, d, local, player.params.height, player.params.radius);
+        ph.damage(dd * mult, kind, off);
+        return;
+    }
+    let off = from - player.body.location;
+    ph.damage(d, kind, off.normalize_or_zero() * player.params.radius);
+}
+
+enum Up {
+    /// Get up again near `near` (None: where we fell); `hard`: with nothing.
+    Respawn(Option<DVec3>, bool),
+    /// Host: everyone stayed down - reload the map now.
+    Reset,
+}
+
 fn respawn_tick(
     ph: &mut PlayerHealth,
     player: &mut crate::Player,
@@ -1402,6 +1718,31 @@ fn respawn_tick(
     my_map: u32,
 ) {
     let up = with(|n| {
+        let hard = n.rules.coop && n.rules.difficulty >= 2.0;
+        // Hard / Realistic: everyone down at once (each stays down RESPAWN_HARD_SECS, so the windows overlap) - the
+        // level restarts for all. Players still loading or not in the game yet don't count.
+        if n.role == Role::Host && hard && ph.dead && n.reset_t.is_none() {
+            let all_down = n.remotes.iter().filter(|r| r.hello && !r.waiting && r.at.is_some() && r.st.map == my_map).all(|r| r.st.dead);
+            if all_down {
+                let line = "Everyone is down: the level restarts.".to_string();
+                feed(&line, DEATH);
+                send_all(n, &Msg::Note(line), true, None);
+                send_all(n, &Msg::Reset(lvl.name.clone()), true, None);
+                n.reset_t = Some(RESET_DELAY);
+                n.respawn = None;
+            }
+        }
+        if let Some(t) = n.reset_t.as_mut() {
+            // Nobody gets up meanwhile (the host reloads, joiners wait for his Travel).
+            if n.role == Role::Host && *t < f32::MAX {
+                *t -= dt;
+                if *t <= 0.0 {
+                    *t = f32::MAX;
+                    return Some(Up::Reset);
+                }
+            }
+            return None;
+        }
         if !ph.dead {
             n.respawn = None;
             return None;
@@ -1410,18 +1751,25 @@ fn respawn_tick(
             // Just went down: who did it is everyone's news.
             let by = n.last_by.take();
             let kind = LAST_HURT.lock().map(|k| k.clone()).unwrap_or_default();
+            if crate::deathmatch::playing() {
+                crate::dmchar::note_death();
+            }
             match n.role {
                 Role::Host => died(n, 0, by, &kind),
                 Role::Client => send_host(n, &Msg::Died { by, kind }, true),
                 Role::Off => {}
             }
         }
-        let t = n.respawn.get_or_insert(RESPAWN_SECS);
+        let t = n.respawn.get_or_insert(if hard { RESPAWN_HARD_SECS } else { RESPAWN_SECS });
         *t -= dt;
         if *t > 0.0 {
             return None;
         }
         n.respawn = None;
+        if crate::deathmatch::playing() {
+            crate::deathmatch::request_respawn();
+            return None;
+        }
         // Near the host (or, for the host, near any other living player); nobody: where we fell.
         let near = n
             .remotes
@@ -1431,10 +1779,29 @@ fn respawn_tick(
             .map(|r| DVec3::new(r.st.pos[0] as f64, r.st.pos[1] as f64, r.st.pos[2] as f64));
         // Deathmatch: somewhere away from everyone instead.
         let others: Vec<DVec3> = n.remotes.iter().filter(|r| r.at.is_some()).map(|r| DVec3::new(r.st.pos[0] as f64, r.st.pos[1] as f64, r.st.pos[2] as f64)).collect();
-        Some((if n.rules.coop { near } else { dm_spot(lvl, &others) }, n.rules.difficulty >= 2.0 && n.rules.coop))
+        Some(Up::Respawn(if n.rules.coop { near } else { dm_spot(lvl, &others) }, hard))
     })
     .flatten();
-    let Some((near, hard)) = up else { return };
+    let (near, hard) = match up {
+        None => return,
+        Some(Up::Reset) => {
+            // The host's last save of this map (manual, quick or auto), else the map from its start. The loader's
+            // travel brings every joiner along (Msg::Reset told them to reload it from their character's save).
+            let path = crate::save::latest_for_map(&lvl.name);
+            match path.filter(|p| crate::save::read(p).is_some()) {
+                Some(p) => {
+                    println!("NET reset: loading {}", p.display());
+                    crate::save::load(std::path::Path::new(""), &p);
+                }
+                None => {
+                    println!("NET reset: restarting {}", lvl.name);
+                    crate::loader::request(&lvl.name, crate::loader::Goal::Restart);
+                }
+            }
+            return;
+        }
+        Some(Up::Respawn(near, hard)) => (near, hard),
+    };
     let at = near.unwrap_or(player.body.location);
     *ph = PlayerHealth::default();
     player.body = imsim_core::movement::Character::new(spot_near(lvl, blockers, at, player.params.radius, player.params.height));
@@ -1469,6 +1836,36 @@ fn dm_spot(lvl: &dx_level::Level, others: &[DVec3]) -> Option<DVec3> {
 
 /// Host: a player went down - the line for everyone, and the deathmatch score.
 fn died(n: &mut Net, who: u8, by: Option<u8>, kind: &str) {
+    // The scoreboard (co-op counts deaths; deathmatch scores, says the line and credits the killer).
+    let weapon = match by {
+        Some(0) => MY_WEAPON.lock().map(|w| w.clone()).unwrap_or_default(),
+        Some(k) => n.remotes.iter().find(|r| r.id == k).map(|r| r.st.weapon.clone()).unwrap_or_default(),
+        None => String::new(),
+    };
+    let method = crate::deathmatch::method(&weapon, kind);
+    let news = crate::deathmatch::host_died(who, by, &weapon, &method);
+    if crate::deathmatch::playing() {
+        if !news.line.is_empty() {
+            feed(&news.line, DEATH);
+            send_all(n, &Msg::Note(news.line.clone()), true, None);
+        }
+        if let Some((k, w)) = news.credit {
+            if k == 0 {
+                crate::dmchar::credit_kill(&w);
+                crate::deathmatch::reward_kill();
+            } else {
+                send_to(n, k, &Msg::Frag(w), true);
+            }
+        }
+        if let (Some(m), Some(k)) = (news.to_killer, by) {
+            if k == 0 {
+                crate::classic_hud::client_message(&m);
+            } else {
+                send_to(n, k, &Msg::Note(m), true);
+            }
+        }
+        return;
+    }
     let name = |n: &Net, id: u8| -> String {
         if id == 0 && n.role == Role::Host {
             n.look.name.clone()
@@ -1570,6 +1967,17 @@ fn spawn_body(id: u8, look: &Look, st: &PState) {
             props.push(Property { name: "MultiSkins".into(), index: i as u32, value: Value::Path(s) });
         }
     }
+    // Deathmatch: his Augmentique outfit over the JC set, and his weapon skins on his body's weapon.
+    if let Some((mesh, tex, skins)) = look.outfit.as_ref().filter(|_| crate::augmentique::active()) {
+        props.retain(|p| !matches!(p.name.as_str(), "Mesh" | "MultiSkins" | "Texture" | "Skin"));
+        props.push(Property { name: "Mesh".into(), index: 0, value: Value::Path(mesh.clone()) });
+        props.push(Property { name: "Texture".into(), index: 0, value: Value::Path(tex.clone()) });
+        props.push(Property { name: "Skin".into(), index: 0, value: Value::Path("None".into()) });
+        for (i, s) in skins.iter().enumerate() {
+            props.push(Property { name: "MultiSkins".into(), index: i as u32, value: Value::Path(s.clone()) });
+        }
+    }
+    crate::deathmatch::set_remote_skins(id, look.skins.clone());
     let yaw = (st.yaw as f64 / std::f64::consts::TAU * 65536.0) as i32;
     crate::spawn::request(crate::spawn::SpawnReq {
         class: "JCDouble".into(),
@@ -1613,6 +2021,9 @@ fn handle(role: Role, e: NetEvent, lvl: &dx_level::Level) {
                     sync(|s| {
                         s.synced.remove(&id);
                     });
+                    if role == Role::Host {
+                        crate::deathmatch::host_leave(id);
+                    }
                     feed(&line, NEWS);
                     if role == Role::Host {
                         send_all(n, &Msg::Note(line), true, None);
@@ -1686,6 +2097,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             look.name = imsim_net::show_name(&imsim_net::clean_name(&look.name));
             let line = format!("{} joined the game.", look.name);
             send_to(n, peer, &Msg::YouAre(peer), true);
+            crate::deathmatch::host_join(peer, &look.name);
             let r = remote_mut(n, peer);
             r.look = look;
             r.waiting = true;
@@ -1693,6 +2105,17 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             feed(&line, NEWS);
             send_all(n, &Msg::Note(line), true, Some(peer));
             send_roster(n);
+        }
+        (Role::Host, Msg::LookIs(mut look)) => {
+            look.name = imsim_net::show_name(&imsim_net::clean_name(&look.name));
+            crate::deathmatch::host_join(peer, &look.name);
+            remote_mut(n, peer).look = look;
+            send_roster(n);
+        }
+        (Role::Host, Msg::PickupAsk(a)) => {
+            if crate::deathmatch::host_request(a) {
+                send_to(n, peer, &Msg::PickupGrant(a), true);
+            }
         }
         (Role::Host, Msg::Ready(on)) => {
             remote_mut(n, peer).ready = on;
@@ -1708,8 +2131,25 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         }
         (Role::Host, Msg::Me(st)) => {
             let r = remote_mut(n, peer);
+            // A new map on his side (a reload of the same map too, after a reset): he gets the whole picture again.
+            let arrived = r.at.is_some() && r.st.gen != st.gen;
+            let first = r.at.is_none();
             r.st = st;
             r.at = Some(Instant::now());
+            if arrived || first {
+                send_to(n, peer, &Msg::Pickups(map_hash(&_lvl.name), crate::deathmatch::pickup_state()), true);
+                if let Some(b) = crate::deathmatch::board() {
+                    send_to(n, peer, &Msg::Board(b), true);
+                }
+            }
+            if arrived {
+                n.sent_movers.clear();
+                n.flags_sig = 0;
+                n.goals_sig = 0;
+                sync(|s| {
+                    s.synced.remove(&peer);
+                });
+            }
         }
         (Role::Host, Msg::Event(name, on)) => n.events_in.push((name, on)),
         (Role::Host, Msg::FrobMover(i)) => n.frob_movers.push((peer, i)),
@@ -1717,6 +2157,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Host, Msg::Lock(i, l)) => n.locks.push((i, l)),
         (Role::Host, Msg::Hit { on, damage, kind, at, from }) => n.hits_in.push((peer, on, damage, kind, at, from)),
         (Role::Host, Msg::Heal { to, amount, by }) => {
+            crate::deathmatch::host_heal(peer);
             if to == 0 {
                 n.heals_in.push((amount, by));
             } else if to != peer {
@@ -1734,6 +2175,16 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             send_all(n, &Msg::Ghost(g.clone()), false, Some(peer));
             sync(|s| s.ghosts.push(g));
         }
+        (Role::Host, Msg::GrenThrow { class, pos, dir, wall }) => sync(|s| s.gren_throws.push((peer, class, d3(pos), d3(dir), wall.map(d3)))),
+        (Role::Host, Msg::GrenFrob(id)) => sync(|s| s.gren_frobs.push(id)),
+        (Role::Host, Msg::Blast { at, radius, damage, kind }) => sync(|s| {
+            s.sec_blasts.push((d3(at), radius as f64, damage, kind.clone()));
+            s.remote_blasts.push((d3(at), radius as f64, kind));
+        }),
+        (Role::Host, Msg::SecControl { kind, tag, a, b }) => sync(|s| s.sec_controls.push((kind, tag, a, b))),
+        (Role::Host, Msg::TurretHit { base, damage, kind }) => sync(|s| s.turret_hits.push((base, damage, kind))),
+        (Role::Host, Msg::HackSet(a, v)) => sync(|s| s.hacks_in.push((a, v))),
+        (Role::Host, Msg::HackAct(a, k)) => sync(|s| s.hack_acts_in.push((a, k))),
         // Joiner side.
         (Role::Client, Msg::Welcome { you, map, rules }) => {
             force_look(&rules);
@@ -1746,6 +2197,8 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             }
             n.remotes.retain(|r| r.id != you);
             n.my_id = you;
+            crate::deathmatch::set_my_id(you);
+            joiner_rules(n, &rules);
             n.rules = rules;
             n.welcomed = true;
             n.status = "In the host's game".into();
@@ -1755,6 +2208,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Client, Msg::Refuse(why)) => n.lost = Some(why),
         (Role::Client, Msg::YouAre(id)) => {
             n.my_id = id;
+            crate::deathmatch::set_my_id(id);
             n.remotes.retain(|r| r.id != id);
             n.status = "In the host's lobby".into();
         }
@@ -1794,7 +2248,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Client, Msg::Movers(list)) => n.movers_in.extend(list),
         (Role::Client, Msg::Flags(f)) => n.flags_in = Some(f),
         (Role::Client, Msg::Event(name, on)) => n.events_in.push((name, on)),
-        (Role::Client, Msg::Damage { damage, kind, from, by }) => n.damage_in.push((damage, kind, from, by)),
+        (Role::Client, Msg::Damage { damage, kind, from, by, at, weapon }) => n.damage_in.push((damage, kind, from, by, at, weapon)),
         (Role::Client, Msg::Heal { amount, by, .. }) => n.heals_in.push((amount, by)),
         (Role::Client, Msg::Travel(map)) => {
             n.host_map = Some(map.clone());
@@ -1804,7 +2258,19 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Client, Msg::Goals(g)) => n.goals_in = Some(g),
         (Role::Client, Msg::Rules(r)) => {
             force_look(&r);
+            joiner_rules(n, &r);
             n.rules = r;
+        }
+        (Role::Client, Msg::Board(b)) => crate::deathmatch::set_board(b),
+        (Role::Client, Msg::Frag(weapon)) => {
+            crate::dmchar::credit_kill(&weapon);
+            crate::deathmatch::reward_kill();
+        }
+        (Role::Client, Msg::PickupGrant(a)) => crate::deathmatch::grant_placed(a),
+        (Role::Client, Msg::Pickups(map, there)) => {
+            if map == map_hash(&_lvl.name) {
+                crate::deathmatch::set_pickup_state(there);
+            }
         }
         (Role::Client, Msg::Note(line)) => feed(&line, NEWS),
         (Role::Client, Msg::Decos { map, moved, gone }) => sync(|s| {
@@ -1827,6 +2293,46 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             }
         }),
         (Role::Client, Msg::Ghost(g)) => sync(|s| s.ghosts.push(g)),
+        (Role::Client, Msg::PawnDied { actor, hit, from, damage, vel }) => sync(|s| {
+            s.pawn_fx.insert(actor, PawnFx::Died { hit: d3(hit), from: d3(from), damage, vel: d3(vel) });
+        }),
+        (Role::Client, Msg::PawnGib { actor, at, r, h, robot, boom }) => sync(|s| {
+            s.pawn_fx.insert(actor, PawnFx::Gibbed { at: d3(at), r: r as f64, h: h as f64, robot, boom: boom as f64 });
+        }),
+        (Role::Client, Msg::Reset(_)) => {
+            n.reset_t = Some(0.0);
+            n.respawn = None;
+        }
+        (Role::Client, Msg::GrenSpawn(g)) => sync(|s| {
+            if g.map == s.map {
+                s.gren_spawns.push(g);
+            }
+        }),
+        (Role::Client, Msg::GrenStates(map, v)) => sync(|s| {
+            if map == s.map {
+                s.gren_states_in.extend(v);
+            }
+        }),
+        (Role::Client, Msg::GrenGone { map, id, exploded }) => sync(|s| {
+            if map == s.map {
+                s.gren_gone_in.push((id, exploded));
+            }
+        }),
+        (Role::Client, Msg::Security(map, sec)) => sync(|s| {
+            if map == s.map {
+                s.sec_in = Some(sec);
+            }
+        }),
+        (Role::Client, Msg::Alarms(map, v)) => sync(|s| {
+            if map == s.map {
+                s.alarms_in = Some(v);
+            }
+        }),
+        (Role::Client, Msg::Hacks(map, v)) => sync(|s| {
+            if map == s.map {
+                s.hacks_in.extend(v);
+            }
+        }),
         _ => {}
     }
 }
@@ -1843,7 +2349,7 @@ pub fn net_out_system(
     weapons: Res<crate::weapons::Weapons>,
     plight: Res<crate::stealth::PlayerLight>,
     cam: Single<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>, Without<Npc>)>,
-    npcs: Query<(&Npc, &crate::actors::Deco, &crate::actors::Animated, Option<&OutOfWorld>)>,
+    npcs: Query<(&Npc, &crate::actors::Deco, &crate::actors::Animated, Option<&OutOfWorld>, &Visibility)>,
 ) {
     let Some(role) = with(|n| n.role) else { return };
     let _prof = crate::prof::scope("netplay::net_out_system");
@@ -1891,7 +2397,11 @@ pub fn net_out_system(
             augs: SHOWN_AUGS.iter().filter(|a| crate::abilities::aug_active(a)).map(|a| a.to_string()).collect(),
             light: plight.brightness,
             camo: ph.camo,
+            gen: crate::loader::generation() as u32,
         };
+        if let Ok(mut w) = MY_WEAPON.lock() {
+            w.clone_from(&st.weapon);
+        }
         with(|n| match role {
             Role::Client => send_host(n, &Msg::Me(st), false),
             Role::Host => {
@@ -1923,19 +2433,22 @@ pub fn net_out_system(
     if send_pawns {
         let mut list = Vec::new();
         let mut alive = HashSet::new();
-        for (npc, deco, an, out) in &npcs {
+        for (npc, deco, an, out, vis) in &npcs {
             if npc.net.is_some() || npc.net_player.is_some() || npc.actor >= placed || npc.blocker == usize::MAX {
                 continue;
             }
             alive.insert(npc.actor as u32);
             let (t, rate, looping) = an.clip.as_ref().map_or((an.time, 1.0, true), |c| (c.t, c.rate, c.looping));
+            // The sequence actually playing: a clip set straight on the animation (the death fall, hit reactions)
+            // doesn't always change `npc.anim` (a pawn killed mid-run kept "Run": the joiners' copy ran on).
+            let anim = an.clip.as_ref().and_then(|c| clip_sequence(lvl, an.mesh_actor, c)).unwrap_or(npc.anim);
             let dead = if npc.state == NpcState::Dead { if npc.knocked_out { 2 } else { 1 } } else { 0 };
             let l = deco.body.location;
             list.push(PawnNet {
                 actor: npc.actor as u32,
                 pos: [l.x as f32, l.y as f32, l.z as f32],
                 yaw: npc.yaw as f32,
-                anim: npc.anim.to_string(),
+                anim: anim.to_string(),
                 t,
                 rate,
                 looping,
@@ -1944,6 +2457,7 @@ pub fn net_out_system(
                 gone: false,
                 weapon: npc.weapon.as_ref().map(|w| w.class.clone()).unwrap_or_default(),
                 shots: npc.net_shots,
+                hidden: *vis == Visibility::Hidden,
             });
         }
         with(|n| {
@@ -1961,6 +2475,7 @@ pub fn net_out_system(
                     gone: true,
                     weapon: String::new(),
                     shots: 0,
+                    hidden: true,
                 });
             }
             n.pawns_alive = alive;
@@ -2033,6 +2548,17 @@ pub fn net_out_system(
             }
         }
     });
+}
+
+/// The name of the sequence a clip plays (the mesh's sequence starting at its first frame, that long).
+fn clip_sequence(lvl: &dx_level::Level, mesh_actor: usize, c: &crate::weapons::Clip) -> Option<&'static str> {
+    let m = lvl.mesh_actors.get(mesh_actor)?.anim.as_ref()?;
+    let s = m
+        .mesh
+        .seqs
+        .iter()
+        .find(|s| s.start_frame.max(0) as usize == c.start && s.num_frames.max(1) as usize == c.frames && !s.name.eq_ignore_ascii_case("All"))?;
+    Some(crate::util::intern(&s.name))
 }
 
 fn flags_sig(f: &imsim_core::flags::FlagBase) -> u64 {
@@ -2221,7 +2747,8 @@ pub fn save_character_soon() {
 
 /// Joiner: the character is written every 30 s in the host's game, before each map change and when asked.
 pub fn char_save_system(world: &mut World, mut t: Local<f32>) {
-    if !is_client() || !in_game() {
+    // (Deathmatch characters keep their own files: dmchar.rs.)
+    if !is_client() || !in_game() || crate::deathmatch::versus() {
         *t = 0.0;
         return;
     }
@@ -2229,6 +2756,10 @@ pub fn char_save_system(world: &mut World, mut t: Local<f32>) {
     *t += dt;
     let now = SAVE_NOW.swap(false, std::sync::atomic::Ordering::Relaxed);
     if !(now || *t >= 30.0) || crate::loader::busy() || crate::save::restoring() || crate::menus::intro_map() {
+        return;
+    }
+    // Not while down: the character's save is what he comes back with after a level restart.
+    if world.get_resource::<PlayerHealth>().is_some_and(|p| p.dead) {
         return;
     }
     *t = 0.0;
@@ -2403,6 +2934,7 @@ pub fn heal_player(to: u8, amount: f32) {
     with(|n| {
         let m = Msg::Heal { to, amount, by: n.look.name.clone() };
         if n.role == Role::Host {
+            crate::deathmatch::host_heal(0);
             send_to(n, to, &m, true);
         } else {
             send_host(n, &m, true);
@@ -2702,6 +3234,45 @@ struct Sync {
     // Joiner bookkeeping: where the host last put each decoration.
     applied: HashMap<u32, DecoNet>,
     deco_t: f32,
+    /// Decorations this player pushed / carried / threw lately (blocker -> when): his to report (joiner), and the
+    /// others' moves of them wait meanwhile (both sides).
+    touched: HashMap<usize, Instant>,
+    // Grenades. Host in: joiners' throws (who, class, pos, dir, wall), uses, blasts. Joiner in: spawns, states,
+    // gone (id, exploded). Host bookkeeping: runtime grenades alive (for late joiners), states last sent, placed
+    // grenades gone.
+    gren_throws: Vec<(u8, String, DVec3, DVec3, Option<DVec3>)>,
+    gren_frobs: Vec<u32>,
+    remote_blasts: Vec<(DVec3, f64, String)>,
+    gren_spawns: Vec<GrenNet>,
+    gren_states_in: Vec<GrenState>,
+    gren_gone_in: Vec<(u32, bool)>,
+    gren_live: HashMap<u32, GrenNet>,
+    gren_sent: HashMap<u32, GrenState>,
+    gren_dead: Vec<u32>,
+    gren_t: f32,
+    next_gren: u32,
+    // Security. Host in: joiners' blasts, computer settings, turret hits. Joiner in: the host's state. Host: last
+    // state built / sent reliably, clocks.
+    sec_blasts: Vec<(DVec3, f64, f32, String)>,
+    sec_controls: Vec<(u8, String, f32, f32)>,
+    turret_hits: Vec<(u32, f32, String)>,
+    sec_in: Option<SecNet>,
+    sec_last: Option<SecNet>,
+    sec_rel: Option<SecNet>,
+    sec_t: f32,
+    sec_rel_t: f32,
+    // Alarm units sounding: host (last sent), joiner (from the host).
+    alarms_on: Vec<u32>,
+    alarms_in: Option<Vec<u32>>,
+    // Hacking: strengths in (joiner: the host's; host: joiners'), HackActions in (host), out (joiner: blocker /
+    // actor, kind), the strength last known per placed device, clock.
+    hacks_in: Vec<(u32, f32)>,
+    hack_acts_in: Vec<(u32, u8)>,
+    hack_out: Vec<(usize, u8)>,
+    hack_known: HashMap<u32, f32>,
+    hack_t: f32,
+    /// Joiner: how placed pawns died on the host (by actor).
+    pawn_fx: HashMap<u32, PawnFx>,
 }
 
 static SYNC: Mutex<Option<Sync>> = Mutex::new(None);
@@ -2769,7 +3340,8 @@ fn sync_map(lvl: &dx_level::Level) -> u32 {
     sync(|s| {
         if s.gen != g || s.map != m {
             let next = s.next_item.max(1);
-            *s = Sync { map: m, gen: g, next_item: next, ..Default::default() };
+            let next_gren = s.next_gren;
+            *s = Sync { map: m, gen: g, next_item: next, next_gren, ..Default::default() };
         }
     });
     m
@@ -2975,6 +3547,21 @@ pub fn take_lasers() -> Option<Vec<u32>> {
 }
 
 /// A blocker that is another player's body here: whether he's hidden by camouflage. None = not a player.
+/// Host: a pawn went down to a player (None = the host's own hand, else the attacker's blocker if it's a
+/// player's body): the co-op scoreboard's count.
+pub fn credit_pawn_kill(attacker: Option<usize>) {
+    if !is_host() {
+        return;
+    }
+    let who = match attacker {
+        None => Some(0),
+        Some(b) => with(|n| n.remotes.iter().find(|r| r.blocker == Some(b)).map(|r| r.id)).flatten(),
+    };
+    if let Some(id) = who {
+        crate::deathmatch::host_npc_kill(id);
+    }
+}
+
 pub fn player_blocker(b: usize) -> Option<bool> {
     with(|n| n.remotes.iter().find(|r| r.blocker == Some(b)).map(|r| r.st.camo)).flatten()
 }
@@ -3001,21 +3588,492 @@ pub fn take_ghosts() -> Vec<(String, DVec3, DVec3, Option<f64>)> {
     })
 }
 
-// --- Decorations ------------------------------------------------------------------------------------------------
+// --- Pawns' ends, grenades, security devices, alarms, hacking: decided on the host, shown everywhere ------------
 
-fn deco_net(actor: usize, d: &crate::actors::Deco) -> DecoNet {
-    let l = d.body.location;
-    DecoNet { actor: actor as u32, pos: [l.x as f32, l.y as f32, l.z as f32], rot: d.rotation }
+/// Host: placed pawn `actor` was killed or knocked out by this hit (ai.rs pawn_died).
+pub fn pawn_died(actor: usize, hit: DVec3, from: DVec3, damage: f32, vel: DVec3) {
+    with(|n| {
+        if n.role == Role::Host && !n.remotes.is_empty() {
+            send_all(n, &Msg::PawnDied { actor: actor as u32, hit: v3(hit), from: v3(from), damage, vel: v3(vel) }, true, None);
+        }
+    });
 }
 
-fn differs(a: &DecoNet, b: &DecoNet) -> bool {
-    let d = (a.pos[0] - b.pos[0]).abs() + (a.pos[1] - b.pos[1]).abs() + (a.pos[2] - b.pos[2]).abs();
-    d > 0.75 || a.rot != b.rot
+/// Host: placed pawn `actor` was blown apart (robots: `boom` = their explosion's radius).
+pub fn pawn_gibbed(actor: usize, at: DVec3, r: f64, h: f64, robot: bool, boom: f64) {
+    with(|n| {
+        if n.role == Role::Host && !n.remotes.is_empty() {
+            send_all(n, &Msg::PawnGib { actor: actor as u32, at: v3(at), r: r as f32, h: h as f32, robot, boom: boom as f32 }, true, None);
+        }
+    });
+}
+
+/// Joiner: what the host said about placed pawn `actor`'s end (once).
+pub fn take_pawn_fx(actor: usize) -> Option<PawnFx> {
+    sync(|s| if s.pawn_fx.is_empty() { None } else { s.pawn_fx.remove(&(actor as u32)) })
+}
+
+/// Hard / Realistic: everyone is down and the level is about to restart.
+pub fn reset_pending() -> bool {
+    with(|n| n.reset_t.is_some()).unwrap_or(false)
+}
+
+/// This player pushed, carried or threw the decoration with this blocker: for a while it's his to move (a
+/// joiner reports it to the host; the others' word on it waits).
+pub fn deco_touched(blocker: usize) {
+    if active() {
+        sync(|s| {
+            s.touched.insert(blocker, Instant::now());
+        });
+    }
+}
+
+/// Seconds a decoration stays ours after we last touched it (a throw's flight, a push rolling out).
+const TOUCH_SECS: f32 = 4.0;
+
+fn touched_lately(s: &Sync, blocker: Option<usize>) -> bool {
+    blocker.and_then(|b| s.touched.get(&b)).is_some_and(|t| t.elapsed().as_secs_f32() < TOUCH_SECS)
+}
+
+/// Joiner: a grenade he throws (or places on a wall) is the host's to run. True = don't spawn it here (it comes
+/// back from the host for everyone).
+pub fn grenade_throw_out(class: &str, pos: DVec3, dir: DVec3, wall: Option<DVec3>) -> bool {
+    if !is_client() {
+        return false;
+    }
+    with(|n| {
+        if n.welcomed {
+            send_host(n, &Msg::GrenThrow { class: class.to_string(), pos: v3(pos), dir: v3(dir), wall: wall.map(v3) }, true);
+        }
+    });
+    true
+}
+
+/// Host: joiners' grenades to throw this frame: (class, pos, dir, thrower = his body's blocker, wall normal).
+pub fn take_grenade_throws() -> Vec<(String, DVec3, DVec3, Option<usize>, Option<DVec3>)> {
+    let list = sync(|s| std::mem::take(&mut s.gren_throws));
+    if list.is_empty() {
+        return Vec::new();
+    }
+    list.into_iter()
+        .map(|(peer, class, pos, dir, wall)| {
+            // (His body not here yet: the grenade counts as the host's.)
+            let body = with(|n| n.remotes.iter().find(|r| r.id == peer).and_then(|r| r.blocker)).flatten();
+            (class, pos, dir, body, wall)
+        })
+        .collect()
+}
+
+/// Host: a grenade came into the world here (thrown, placed): its id, and every joiner sees it. 0 = not in a game.
+pub fn grenade_spawned(class: &str, pos: DVec3, vel: DVec3, wall: Option<DVec3>, fuse: f32, blast: f64) -> u32 {
+    if !is_host() {
+        return 0;
+    }
+    let g = sync(|s| {
+        s.next_gren = s.next_gren.max(GREN_RUNTIME);
+        let id = s.next_gren;
+        s.next_gren += 1;
+        let g = GrenNet { map: s.map, id, class: class.to_string(), pos: v3(pos), vel: v3(vel), wall: wall.map(v3), fuse, blast: blast as f32 };
+        s.gren_live.insert(id, g.clone());
+        g
+    });
+    let id = g.id;
+    with(|n| send_all(n, &Msg::GrenSpawn(g), true, None));
+    id
+}
+
+/// Joiner: grenades the host put in the world.
+pub fn take_grenade_spawns() -> Vec<GrenNet> {
+    sync(|s| std::mem::take(&mut s.gren_spawns))
+}
+
+/// Host: the grenades' states now (called every frame; sent ten times a second, what changed).
+pub fn grenade_states_out(dt: f32, states: impl FnOnce() -> Vec<GrenState>) {
+    if !is_host() {
+        return;
+    }
+    let due = sync(|s| {
+        s.gren_t += dt;
+        if s.gren_t >= 0.1 {
+            s.gren_t = 0.0;
+            true
+        } else {
+            false
+        }
+    });
+    if !due {
+        return;
+    }
+    let now = states();
+    let (map, changed) = sync(|s| {
+        let mut out = Vec::new();
+        for g in now {
+            let differs = s.gren_sent.get(&g.id).is_none_or(|o| {
+                o.flags != g.flags || o.rot != g.rot || (0..3).any(|k| (o.pos[k] - g.pos[k]).abs() > 2.0)
+            });
+            if differs {
+                // Placed grenades are only news once they change from how the map placed them.
+                if g.id >= GREN_RUNTIME || s.gren_sent.contains_key(&g.id) || g.flags & (GS_DISABLED | GS_TICKING) != 0 {
+                    out.push(g.clone());
+                }
+                s.gren_sent.insert(g.id, g);
+            }
+        }
+        (s.map, out)
+    });
+    if !changed.is_empty() {
+        with(|n| send_all(n, &Msg::GrenStates(map, changed), true, None));
+    }
+}
+
+/// Joiner: grenade states from the host.
+pub fn take_grenade_states() -> Vec<GrenState> {
+    sync(|s| std::mem::take(&mut s.gren_states_in))
+}
+
+/// Host: grenade `id` is gone (exploded, or picked up).
+pub fn grenade_gone(id: u32, exploded: bool) {
+    if id == 0 || !is_host() {
+        return;
+    }
+    let map = sync(|s| {
+        s.gren_live.remove(&id);
+        s.gren_sent.remove(&id);
+        if id < GREN_RUNTIME {
+            s.gren_dead.push(id);
+        }
+        s.map
+    });
+    with(|n| send_all(n, &Msg::GrenGone { map, id, exploded }, true, None));
+}
+
+/// Joiner: grenades the host says are gone (id, exploded).
+pub fn take_grenades_gone() -> Vec<(u32, bool)> {
+    sync(|s| std::mem::take(&mut s.gren_gone_in))
+}
+
+/// Joiner: he used grenade `id` (the host disarms it or hands it over for everyone).
+pub fn grenade_frob_out(id: u32) {
+    with(|n| {
+        if n.role == Role::Client && n.welcomed {
+            send_host(n, &Msg::GrenFrob(id), true);
+        }
+    });
+}
+
+/// Host: grenades joiners used this frame.
+pub fn take_grenade_frobs() -> Vec<u32> {
+    sync(|s| std::mem::take(&mut s.gren_frobs))
+}
+
+/// Joiner: a blast of his own (security::blast) goes to the host - grenades, cameras, turrets and lasers there.
+pub fn blast_out(at: DVec3, radius: f64, damage: f32, kind: &str) {
+    with(|n| {
+        if n.role == Role::Client && n.welcomed {
+            send_host(n, &Msg::Blast { at: v3(at), radius: radius as f32, damage, kind: kind.to_string() }, true);
+        }
+    });
+}
+
+/// Host: joiners' blasts for the grenades (centre, radius, kind).
+pub fn take_remote_blasts() -> Vec<(DVec3, f64, &'static str)> {
+    sync(|s| s.remote_blasts.drain(..).map(|(p, r, k)| (p, r, crate::util::intern(&k))).collect())
+}
+
+/// Host: joiners' blasts for the security devices (centre, radius, damage, kind).
+pub fn take_sec_blasts() -> Vec<(DVec3, f64, f32, &'static str)> {
+    sync(|s| s.sec_blasts.drain(..).map(|(p, r, d, k)| (p, r, d, crate::util::intern(&k))).collect())
+}
+
+/// Host: the security devices' state (built at most ten times a second; sent when it changed, and reliably once a
+/// second when it changed since the last reliable copy).
+pub fn security_out(dt: f32, build: impl FnOnce() -> SecNet) {
+    if !is_host() || !with(|n| n.remotes.iter().any(|r| r.hello && !r.waiting)).unwrap_or(false) {
+        return;
+    }
+    let due = sync(|s| {
+        s.sec_t += dt;
+        s.sec_rel_t += dt;
+        if s.sec_t >= 0.1 {
+            s.sec_t = 0.0;
+            true
+        } else {
+            false
+        }
+    });
+    if !due {
+        return;
+    }
+    let now = build();
+    let (map, quick, sure) = sync(|s| {
+        let quick = s.sec_last.as_ref() != Some(&now);
+        let sure = s.sec_rel_t >= 1.0 && s.sec_rel.as_ref() != Some(&now);
+        if sure {
+            s.sec_rel_t = 0.0;
+            s.sec_rel = Some(now.clone());
+        }
+        s.sec_last = Some(now.clone());
+        (s.map, quick, sure)
+    });
+    if quick || sure {
+        with(|n| send_all(n, &Msg::Security(map, now), sure, None));
+    }
+}
+
+/// Joiner: the host's security devices, when they changed.
+pub fn take_security() -> Option<SecNet> {
+    sync(|s| s.sec_in.take())
+}
+
+/// Joiner: a security computer's setting goes to the host (security::control).
+pub fn sec_control_out(kind: u8, tag: &str, a: f32, b: f32) {
+    with(|n| {
+        if n.role == Role::Client && n.welcomed {
+            send_host(n, &Msg::SecControl { kind, tag: tag.to_string(), a, b }, kind != 1);
+        }
+    });
+}
+
+/// Host: joiners' security computer settings (kind, tag, a, b).
+pub fn take_sec_controls() -> Vec<(u8, String, f32, f32)> {
+    sync(|s| std::mem::take(&mut s.sec_controls))
+}
+
+/// Joiner: his hit on the gun of the turret whose placed base is `base`.
+pub fn turret_hit_out(base: usize, damage: f32, kind: &str) {
+    with(|n| {
+        if n.role == Role::Client && n.welcomed {
+            send_host(n, &Msg::TurretHit { base: base as u32, damage, kind: kind.to_string() }, true);
+        }
+    });
+}
+
+/// Host: joiners' hits on turret guns (base actor, damage, kind).
+pub fn take_turret_hits() -> Vec<(usize, f32, &'static str)> {
+    sync(|s| s.turret_hits.drain(..).map(|(a, d, k)| (a as usize, d, crate::util::intern(&k))).collect())
+}
+
+/// Host: the alarm units sounding now (placed actors): the joiners are told when it changes.
+pub fn alarms_out(mut on: Vec<u32>) {
+    if !is_host() {
+        return;
+    }
+    on.sort_unstable();
+    let (changed, map) = sync(|s| {
+        let c = s.alarms_on != on;
+        if c {
+            s.alarms_on = on.clone();
+        }
+        (c, s.map)
+    });
+    if changed {
+        with(|n| send_all(n, &Msg::Alarms(map, on), true, None));
+    }
+}
+
+/// Joiner: the host's sounding alarm units, when they changed.
+pub fn take_alarms() -> Option<Vec<u32>> {
+    sync(|s| s.alarms_in.take())
+}
+
+/// Joiner: a HackAction on the device with this blocker (a camera / turret switched) is the host's to do.
+pub fn hack_act_out(blocker: usize) {
+    sync(|s| s.hack_out.push((blocker, 0)));
+}
+
+/// Joiner: an alarm unit (placed actor) silenced by his multitool is the host's to do.
+pub fn alarm_hack_out(actor: usize) {
+    sync(|s| s.hack_out.push((actor, 1)));
+}
+
+/// Hackable devices' strength left, both ways: the host's is everyone's (the frob label's "Bypassed"); a joiner's
+/// multitool work goes to the host, with the HackActions it ends in.
+pub fn device_sync_system(
+    time: Res<Time>,
+    level: Res<LevelRes>,
+    blockers: Res<crate::actors::Blockers>,
+    mut hacking: ResMut<crate::devices::Hacking>,
+) {
+    let role = role();
+    if role == Role::Off || crate::loader::busy() || crate::menus::intro_map() || !in_game() {
+        return;
+    }
+    let lvl = &level.0;
+    let placed = crate::save::placed_count().min(lvl.actors.len());
+    let blocker_of = |a: u32| blockers.list.iter().position(|c| c.actor == a as usize && c.radius > 0.0);
+    let map = sync_map(lvl);
+    let (ins, acts, outs, due) = sync(|s| {
+        s.hack_t += time.delta_secs();
+        let due = s.hack_t >= 0.25;
+        if due {
+            s.hack_t = 0.0;
+        }
+        (std::mem::take(&mut s.hacks_in), std::mem::take(&mut s.hack_acts_in), std::mem::take(&mut s.hack_out), due)
+    });
+    match role {
+        Role::Host => {
+            for (a, v) in ins {
+                if let Some(b) = blocker_of(a) {
+                    hacking.strength.insert(b, v as f64);
+                }
+            }
+            for (a, k) in acts {
+                match k {
+                    0 => {
+                        if let Some(b) = blocker_of(a) {
+                            crate::security::hacked(b);
+                        }
+                    }
+                    _ => crate::alarms::hacked(a as usize),
+                }
+            }
+            if due {
+                let changed: Vec<(u32, f32)> = sync(|s| {
+                    let mut v = Vec::new();
+                    for (b, st) in &hacking.strength {
+                        let Some(c) = blockers.list.get(*b) else { continue };
+                        if c.actor >= placed {
+                            continue;
+                        }
+                        let a = c.actor as u32;
+                        if s.hack_known.get(&a).is_none_or(|k| (*k - *st as f32).abs() > 1e-4) {
+                            s.hack_known.insert(a, *st as f32);
+                            v.push((a, *st as f32));
+                        }
+                    }
+                    v
+                });
+                if !changed.is_empty() {
+                    with(|n| send_all(n, &Msg::Hacks(map, changed), true, None));
+                }
+            }
+        }
+        Role::Client => {
+            let busy = hacking.job.as_ref().map(|j| j.blocker);
+            let mut known = Vec::new();
+            for (a, v) in ins {
+                if let Some(b) = blocker_of(a) {
+                    if Some(b) != busy {
+                        hacking.strength.insert(b, v as f64);
+                    }
+                    known.push((a, v));
+                }
+            }
+            // What this joiner's multitool did since: to the host.
+            let mut sets = Vec::new();
+            sync(|s| {
+                for (a, v) in known {
+                    s.hack_known.insert(a, v);
+                }
+                if due || !outs.is_empty() {
+                    for (b, st) in &hacking.strength {
+                        let Some(c) = blockers.list.get(*b) else { continue };
+                        if c.actor >= placed {
+                            continue;
+                        }
+                        let a = c.actor as u32;
+                        if s.hack_known.get(&a).is_none_or(|k| (*k - *st as f32).abs() > 1e-4) {
+                            s.hack_known.insert(a, *st as f32);
+                            sets.push((a, *st as f32));
+                        }
+                    }
+                }
+            });
+            let acts: Vec<(u32, u8)> = outs
+                .into_iter()
+                .filter_map(|(x, k)| match k {
+                    0 => blockers.list.get(x).filter(|c| c.actor < placed).map(|c| (c.actor as u32, 0)),
+                    _ => (x < placed).then_some((x as u32, 1)),
+                })
+                .collect();
+            if !sets.is_empty() || !acts.is_empty() {
+                with(|n| {
+                    for (a, v) in sets {
+                        send_host(n, &Msg::HackSet(a, v), true);
+                    }
+                    for (a, k) in acts {
+                        send_host(n, &Msg::HackAct(a, k), true);
+                    }
+                });
+            }
+        }
+        Role::Off => {}
+    }
+}
+
+/// Host: the whole picture of grenades, security devices, alarms and hacking for a joiner who just arrived.
+fn send_devices_to(id: u8) {
+    let (map, spawns, states, dead, sec, alarms, hacks) = sync(|s| {
+        (
+            s.map,
+            s.gren_live.values().cloned().collect::<Vec<_>>(),
+            s.gren_sent.values().filter(|g| g.id >= GREN_RUNTIME || g.flags & (GS_DISABLED | GS_TICKING) != 0).cloned().collect::<Vec<_>>(),
+            s.gren_dead.clone(),
+            s.sec_last.clone(),
+            s.alarms_on.clone(),
+            s.hack_known.iter().map(|(a, v)| (*a, *v)).collect::<Vec<_>>(),
+        )
+    });
+    with(|n| {
+        for g in spawns {
+            send_to(n, id, &Msg::GrenSpawn(g), true);
+        }
+        if !states.is_empty() {
+            send_to(n, id, &Msg::GrenStates(map, states), true);
+        }
+        for g in dead {
+            send_to(n, id, &Msg::GrenGone { map, id: g, exploded: false }, true);
+        }
+        if let Some(sec) = sec {
+            send_to(n, id, &Msg::Security(map, sec), true);
+        }
+        send_to(n, id, &Msg::Alarms(map, alarms), true);
+        if !hacks.is_empty() {
+            send_to(n, id, &Msg::Hacks(map, hacks), true);
+        }
+    });
+}
+
+// --- Decorations ------------------------------------------------------------------------------------------------
+
+/// A decoration's place for the wire. A floating one sends its resting rotation: the rocking on the waves is each
+/// machine's own (it runs on each one's clock), so it is never news.
+fn deco_net(actor: usize, d: &crate::actors::Deco) -> DecoNet {
+    let l = d.body.location;
+    DecoNet { actor: actor as u32, pos: [l.x as f32, l.y as f32, l.z as f32], rot: if d.floating { d.orig_rot } else { d.rotation } }
+}
+
+/// Moved enough to tell the others. Something floating bobs up and down in the water by its own buoyancy on each
+/// machine: only a move across the water (or a big drop) counts.
+fn differs(a: &DecoNet, b: &DecoNet, floating: bool) -> bool {
+    let flat = (a.pos[0] - b.pos[0]).abs() + (a.pos[1] - b.pos[1]).abs();
+    let up = (a.pos[2] - b.pos[2]).abs();
+    if floating {
+        flat > 3.0 || up > 24.0 || a.rot[1] != b.rot[1]
+    } else {
+        flat + up > 0.75 || a.rot != b.rot
+    }
 }
 
 fn put_deco(d: &mut crate::actors::Deco, tf: &mut Transform, blockers: &mut crate::actors::Blockers, to: &DecoNet) {
     let p = d3(to.pos);
     let far = p.distance(d.body.location) > 12.0;
+    if d.floating {
+        // Afloat: it keeps bobbing here; only where it floats and its heading come from the other side.
+        let near = DVec3::new(p.x, p.y, d.body.location.z);
+        let flat_far = (p - d.body.location).truncate().length() > 3.0;
+        if flat_far || (p.z - d.body.location.z).abs() > 24.0 {
+            d.body.location = if (p.z - d.body.location.z).abs() > 24.0 { p } else { near };
+            d.body.velocity = DVec3::ZERO;
+            if let Some(b) = d.blocker {
+                if let Some(c) = blockers.list.get_mut(b) {
+                    c.center = d.body.location;
+                }
+            }
+        }
+        d.orig_rot = to.rot;
+        return;
+    }
     d.body.location = p;
     d.body.velocity = DVec3::ZERO;
     if d.rotation != to.rot {
@@ -3061,17 +4119,25 @@ pub fn world_sync_system(
         let a = blockers.list.get(b)?.actor;
         (a < placed).then_some(a)
     };
-    // Positions to apply (host: from joiners; joiner: from the host).
+    // Security cameras turn as the host's security devices say (Msg::Security), not as decorations.
+    let camera = |a: usize| lvl.actors[a].class == "SecurityCamera";
+    // Positions to apply (host: from joiners; joiner: from the host). What this player is moving himself (pushing,
+    // carrying, a throw in flight) stays his for a moment: the other side's word on it is old news.
     let moves = sync(|s| std::mem::take(&mut s.deco_moves));
     if !moves.is_empty() {
         let want: HashMap<u32, &DecoNet> = moves.iter().map(|m| (m.actor, m)).collect();
         for (mut d, mut tf) in &mut decos {
             let Some(a) = actor_of(&d, &blockers) else { continue };
             if let Some(m) = want.get(&(a as u32)) {
+                if camera(a) || sync(|s| touched_lately(s, d.blocker)) {
+                    continue;
+                }
                 put_deco(&mut d, &mut tf, &mut blockers, m);
                 if role == Role::Client {
+                    // Where the host put it: not this player's own move (never sent back).
+                    let now = deco_net(a, &d);
                     sync(|s| {
-                        s.applied.insert(a as u32, (*m).clone());
+                        s.applied.insert(a as u32, now);
                     });
                 }
             }
@@ -3101,10 +4167,13 @@ pub fn world_sync_system(
             sync(|s| {
                 for (d, _) in &decos {
                     let Some(a) = actor_of(&d, &blockers) else { continue };
+                    if camera(a) {
+                        continue;
+                    }
                     let now = deco_net(a, &d);
                     let start = DecoNet { actor: a as u32, pos: v3(d.start), rot: d.orig_rot };
                     let last = s.sent_decos.get(&(a as u32)).unwrap_or(&start);
-                    if differs(&now, last) {
+                    if differs(&now, last, d.floating) {
                         s.sent_decos.insert(a as u32, now.clone());
                         moved.push(now);
                     }
@@ -3113,6 +4182,9 @@ pub fn world_sync_system(
             });
             let gone = sync(|s| std::mem::take(&mut s.new_broken));
             if !moved.is_empty() || !gone.is_empty() {
+                if env_on!("DXVIEW_NETLOG") {
+                    println!("NET decos out {:?} gone {gone:?}", moved.iter().map(|m| lvl.actors[m.actor as usize].name.as_str()).collect::<Vec<_>>());
+                }
                 with(|n| send_all(n, &Msg::Decos { map: my_map, moved, gone }, true, None));
             }
             // A joiner who has just arrived on this map gets the whole picture: moved and broken decorations, the
@@ -3138,6 +4210,7 @@ pub fn world_sync_system(
                         }
                         send_to(n, id, &Msg::Lasers(my_map, lasers), true);
                     });
+                    send_devices_to(id);
                 }
             }
         }
@@ -3145,19 +4218,20 @@ pub fn world_sync_system(
             if !with(|n| n.welcomed).unwrap_or(false) {
                 return;
             }
-            // What this player moved himself (pushed, carried, threw) goes to the host. Only things near him: the
-            // rest only move because the host says so.
+            // What this player moved himself (pushed, carried, threw) goes to the host. Only what he touched lately:
+            // everything else moves here only because the host says so (its own physics settling a crate the host
+            // put somewhere, a barrel bobbing in the water, is not news - sent back it fought the host's).
             let mut out = Vec::new();
             sync(|s| {
                 for (d, _) in &decos {
                     let Some(a) = actor_of(&d, &blockers) else { continue };
-                    if d.body.location.distance(me) > 400.0 {
+                    if d.body.location.distance(me) > 1200.0 || camera(a) || !touched_lately(s, d.blocker) {
                         continue;
                     }
                     let now = deco_net(a, &d);
                     let start = DecoNet { actor: a as u32, pos: v3(d.start), rot: d.orig_rot };
                     let last = s.applied.get(&(a as u32)).unwrap_or(&start);
-                    if differs(&now, last) {
+                    if differs(&now, last, d.floating) {
                         s.applied.insert(a as u32, now.clone());
                         out.push(now);
                     }
@@ -3166,6 +4240,9 @@ pub fn world_sync_system(
             if !out.is_empty() {
                 with(|n| {
                     for d in out {
+                        if env_on!("DXVIEW_NETLOG") {
+                            println!("NET decomove out {}", lvl.actors[d.actor as usize].name);
+                        }
                         send_host(n, &Msg::DecoMove(my_map, d), false);
                     }
                 });

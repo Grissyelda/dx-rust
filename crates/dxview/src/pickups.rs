@@ -710,6 +710,25 @@ fn frob_item(cx: &mut FrobCx, e: Entity, items: &FrobItems, net_items: &Query<&c
             return;
         }
     }
+    // Deathmatch: placed pickups are everyone's and come back after their respawn time (deathmatch.rs); a joiner
+    // asks the host for one and gets it when the host says (net_give_system).
+    if let Some(a) = it.actor.filter(|_| net.is_none()) {
+        match crate::deathmatch::frob_placed(a) {
+            crate::deathmatch::Frob::Normal => {}
+            crate::deathmatch::Frob::Asked => {
+                crate::deathmatch::hide(commands, e, it);
+                return;
+            }
+            crate::deathmatch::Frob::Take => {
+                let (class, props) = (it.class.clone(), it.props.clone());
+                if take_pickup(&mut cx.inv, &mut cx.hud, &mut cx.assets, &mut cx.weapons.floor_use, &class, &props) {
+                    crate::deathmatch::taken(a);
+                    crate::deathmatch::hide(commands, e, it);
+                }
+                return;
+            }
+        }
+    }
     let (class, props) = (it.class.clone(), it.props.clone());
     if take_pickup(&mut cx.inv, &mut cx.hud, &mut cx.assets, &mut cx.weapons.floor_use, &class, &props) {
         commands.entity(e).despawn();
@@ -1009,6 +1028,12 @@ pub fn net_give_system(
         }
         return;
     }
+    // Deathmatch: placed pickups the host gave us.
+    for actor in crate::deathmatch::take_granted_placed() {
+        if let Some((class, props)) = crate::deathmatch::placed_item(level, actor as usize) {
+            let _ = take_pickup(&mut inv, &mut hud, &mut assets, &mut weapons.floor_use, &class, &props);
+        }
+    }
     for it in crate::netplay::take_granted() {
         if env_on!("DXVIEW_NETLOG") {
             println!("NETITEM granted {}", it.class);
@@ -1075,7 +1100,12 @@ fn frob_grenade(cx: &mut FrobCx, e: Entity, grenades: &mut FrobGrenades, command
         cx.hud.text = m;
         cx.hud.time_left = 2.0;
     }
+    // Multiplayer: a joiner's copy of the host's grenade - the host disarms it / hands it over for everyone.
+    if g.remote {
+        crate::netplay::grenade_frob_out(g.net);
+    }
     if take && !g.weapon.is_empty() {
+        crate::netplay::grenade_gone(g.net, false);
         // DeusExProjectile.Frob: becomes its weapon (one grenade).
         let class = g.weapon.clone();
         let d = cx.assets.classes.defaults(&class);
@@ -1110,6 +1140,14 @@ fn frob_device(
         }
         let tag = crate::devices::name_prop(&a.props, "Tag");
         crate::scriptworld::push(crate::scriptworld::ActorReq::Destroy(crate::scriptworld::ActorSel::tag(&tag)));
+        return;
+    }
+    // Multiplayer ammo crates (AmmoCrate.Frob): every weapon carried is topped up to its pickup amount.
+    if a.class.eq_ignore_ascii_case("ammocrate") {
+        let msg = crate::deathmatch::restock(&mut cx.inv.0, &mut cx.assets.classes);
+        crate::classic_hud::client_message(&msg);
+        let at = blockers.list[b].center;
+        crate::sound::play("DeusExSounds.Generic.WeaponPickup", at, 0.5 + crate::sound::frand() * 0.25, 256.0, 0.95 + crate::sound::frand() * 0.1);
         return;
     }
     // Computers and ATMs log you in (Computers.Frob / ATM.Frob).
@@ -1390,6 +1428,7 @@ pub fn device_like(a: &dx_level::actors::ActorInfo) -> bool {
         && (crate::devices::is_hackable(p)
             || crate::fixtures::is_fixture(&a.class)
             || crate::augmentique::is_spawner(&a.class)
+            || a.class.eq_ignore_ascii_case("ammocrate")
             || crate::computers::is_terminal(&a.class)
             || !crate::devices::name_prop(p, "Event").is_empty()
             || !crate::devices::name_prop(p, "textTag").is_empty())

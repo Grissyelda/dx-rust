@@ -73,7 +73,9 @@ pub const ACTIONS: &[(&str, Input)] = &[
     ("Debug overlay", K(KeyCode::PageDown)),
     ("Third person view", K(KeyCode::KeyH)),
     ("Swap shoulder (third person)", K(KeyCode::KeyJ)),
-    ("Classic / Modern", K(KeyCode::Tab)),
+    // Tab: the Classic / Modern switch; in a multiplayer session (where the room sets the look) held for the
+    // scoreboard (scoreboard.rs).
+    ("Classic / Modern (scores in multiplayer)", K(KeyCode::Tab)),
     ("Chat (multiplayer)", K(KeyCode::KeyY)),
     ("Player list (multiplayer)", K(KeyCode::KeyP)),
 ];
@@ -250,6 +252,8 @@ impl Bindings {
                 continue;
             };
             let (name, value) = (name.trim(), value.trim());
+            // (Older files name the Tab action without the scoreboard.)
+            let name = if name == "Classic / Modern" { "Classic / Modern (scores in multiplayer)" } else { name };
             let Some(i) = ACTIONS.iter().position(|a| a.0 == name) else {
                 continue;
             };

@@ -1,0 +1,147 @@
+// Deathmatch and Team Deathmatch tuning (deathmatch.rs reads this at start-up). Everything here is ours or
+// derived by hand from the original multiplayer rules (DeusExMPGame / DeathMatchGame / TeamDMGame, DeusExWeapon mp*
+// properties); map pickup lists were made from the DXMP maps' placed actors by tools (scratchpad balance.py, see
+// CLAUDE.md 3zz63) and are only actor names.
+(
+    // Damage a hit does to a player, in health points of a 100-point region (deathmatch players have the
+    // original MP's three regions: head, body = torso and arms, legs; head or body at 0 is death). Shotguns: per
+    // pellet. Weapons not listed, and blasts / fire / gas / poison, use `kinds` x the weapon's own damage.
+    // The original MP numbers were mpHitDamage x2 for a head shot (pistol 20 / 40): too soft for a "real" feel, so
+    // a pistol or rifle head shot kills or nearly kills, a few body shots kill, the rifle body shot nearly kills.
+    weapons: {
+        "WeaponPistol":          (body: 34, head: 100, legs: 25),
+        "WeaponStealthPistol":   (body: 20, head: 75,  legs: 15),
+        "WeaponAssaultGun":      (body: 15, head: 60,  legs: 11),
+        "WeaponAssaultShotgun":  (body: 9,  head: 22,  legs: 7),
+        "WeaponSawedOffShotgun": (body: 12, head: 28,  legs: 9),
+        "WeaponRifle":           (body: 75, head: 200, legs: 55),
+        "WeaponMiniCrossbow":    (body: 30, head: 90,  legs: 22),
+        "WeaponShuriken":        (body: 30, head: 80,  legs: 22),
+        "WeaponCombatKnife":     (body: 30, head: 60,  legs: 22),
+        "WeaponNanoSword":       (body: 60, head: 120, legs: 45),
+        "WeaponSword":           (body: 35, head: 75,  legs: 25),
+        "WeaponCrowbar":         (body: 25, head: 55,  legs: 18),
+        "WeaponBaton":           (body: 15, head: 35,  legs: 10),
+        "WeaponProd":            (body: 20, head: 40,  legs: 15),
+    },
+    // Damage types a table entry stands for (the weapon's own trace / blow); anything else is scaled by `kinds`.
+    traced: ["Shot", "Sabot", "KnockedOut", "Stunned"],
+    // Multipliers on the game's own damage for everything else (SP blast damage is lethal near: x0.6 keeps a
+    // rocket or LAM deadly within a few metres, a grenade's edge survivable).
+    kinds: { "Exploded": 0.6, "Burned": 1.0, "Flamed": 1.0, "Shocked": 0.8, "Poison": 1.0, "PoisonGas": 1.0,
+             "TearGas": 1.0, "Radiation": 1.0, "EMP": 1.0, "Fell": 1.0, "Drowned": 1.0 },
+    // Team Deathmatch friendly fire (TeamDMGame fFriendlyFireMult).
+    friendly_fire_mult: 0.5,
+    // Pickup tiers and their respawn times (seconds after somebody takes one).
+    respawn: { "power": 120, "heavy": 90, "common": 30, "grenade": 45, "ammo": 20, "item": 20, "tool": 30 },
+    tiers: {
+        "WeaponGEPGun": "power",
+        "WeaponLAW": "heavy", "WeaponPlasmaRifle": "heavy", "WeaponFlamethrower": "heavy", "WeaponRifle": "heavy",
+        "WeaponNanoSword": "heavy",
+        "WeaponPistol": "common", "WeaponStealthPistol": "common", "WeaponAssaultGun": "common",
+        "WeaponAssaultShotgun": "common", "WeaponSawedOffShotgun": "common", "WeaponMiniCrossbow": "common",
+        "WeaponCombatKnife": "common", "WeaponShuriken": "common", "WeaponSword": "common", "WeaponCrowbar": "common",
+        "WeaponBaton": "common", "WeaponProd": "common", "WeaponPepperGun": "common", "WeaponHideAGun": "common",
+        "WeaponLAM": "grenade", "WeaponEMPGrenade": "grenade", "WeaponGasGrenade": "grenade",
+        "WeaponNanoVirusGrenade": "grenade",
+        "Ammo20mm": "ammo", "AmmoRocketWP": "ammo", "AmmoRocket": "ammo", "Ammo10mm": "ammo", "Ammo762mm": "ammo",
+        "AmmoShell": "ammo", "AmmoSabot": "ammo", "Ammo3006": "ammo", "AmmoPlasma": "ammo", "AmmoNapalm": "ammo",
+        "AmmoDart": "ammo", "AmmoDartPoison": "ammo", "AmmoDartFlare": "ammo", "AmmoShuriken": "ammo",
+        "MedKit": "item", "BioelectricCell": "item", "BallisticArmor": "item", "HazMatSuit": "item",
+        "Multitool": "tool", "Lockpick": "tool",
+    },
+    // GiveInitialInventory in multiplayer: a pistol with 50 rounds, a medkit, a lockpick and a multitool.
+    start_kit: [("WeaponPistol", 50), ("MedKit", 1), ("Lockpick", 1), ("Multitool", 1)],
+    // DeusExMPGame: InitialAugs / AugsPerKill (Deathmatch 2 / 2, Team Deathmatch 0 / 0), granted at full level in
+    // DeusExPlayer.AugPrefs order; skills at MPSkillStartLevel (Trained).
+    dm_augs: (2, 2),
+    team_augs: (0, 0),
+    aug_prefs: ["AugVision", "AugHealing", "AugSpeed", "AugDefense", "AugBallistic", "AugShield", "AugEMP", "AugStealth",
+                "AugAqualung"],
+    skill_level: 1,
+    // Kills with a weapon class needed for each of its Augmentique skins in turn.
+    skin_unlocks: [10, 25, 50, 100, 200, 350, 500],
+    // DeusExMPGame.NewMapDelay: seconds the results show before the next map.
+    new_map_delay: 16,
+    // The DXMP maps: kept pickups by actor name (everything else of a class in `tiers` is taken out of the map).
+    maps: [
+        // DXMP_Area51Bunker: 67 kept, starts 24, value near starts min 14 max 44 mean 32.3; quadrants [14, 39, 37, 38]
+        // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 8, Lockpick 9, MedKit 6, Multitool 10, AssaultGun 2, AssaultShotgun 3, CombatKnife 2, EMPGrenade 2, Flamethrower 1, GEPGun 1, GasGrenade 2, LAM 2, LAW 1, MiniCrossbow 2, NanoSword 1, Pistol 3, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 2, StealthPistol 2
+        (file: "DXMP_Area51Bunker", title: "Area 51 Bunker", keep: [
+            "Ammo20mm1", "Ammo20mm3", "AmmoRocketWP3", "BioelectricCell0", "BioelectricCell1", "BioelectricCell2",
+            "BioelectricCell3", "BioelectricCell5", "BioelectricCell6", "BioelectricCell7", "BioelectricCell8",
+            "Lockpick0", "Lockpick1", "Lockpick10", "Lockpick11", "Lockpick12", "Lockpick13", "Lockpick2",
+            "Lockpick3", "Lockpick4", "MedKit2", "MedKit4", "MedKit5", "MedKit6", "MedKit7", "MedKit8", "Multitool0",
+            "Multitool1", "Multitool10", "Multitool11", "Multitool12", "Multitool13", "Multitool2", "Multitool3",
+            "Multitool5", "Multitool9", "WeaponAssaultGun0", "WeaponAssaultGun6", "WeaponAssaultShotgun1",
+            "WeaponAssaultShotgun2", "WeaponAssaultShotgun6", "WeaponCombatKnife0", "WeaponCombatKnife3",
+            "WeaponEMPGrenade5", "WeaponEMPGrenade7", "WeaponFlamethrower2", "WeaponGEPGun1", "WeaponGasGrenade4",
+            "WeaponGasGrenade5", "WeaponLAM1", "WeaponLAM3", "WeaponLAW0", "WeaponMiniCrossbow2",
+            "WeaponMiniCrossbow5", "WeaponNanoSword1", "WeaponPistol12", "WeaponPistol2", "WeaponPistol3",
+            "WeaponPlasmaRifle6", "WeaponRifle0", "WeaponSawedOffShotgun0", "WeaponSawedOffShotgun1",
+            "WeaponSawedOffShotgun5", "WeaponShuriken0", "WeaponShuriken7", "WeaponStealthPistol2",
+            "WeaponStealthPistol6",
+        ]),
+        // DXMP_CMD: 55 kept, starts 31, value near starts min 23 max 92 mean 60.2; quadrants [28, 67, 23, 4]
+        // Ammo20mm 2, BioelectricCell 4, Lockpick 5, MedKit 2, Multitool 6, AssaultGun 3, AssaultShotgun 3, CombatKnife 3, EMPGrenade 3, Flamethrower 1, GEPGun 1, GasGrenade 1, LAM 2, LAW 1, MiniCrossbow 3, NanoSword 1, Pistol 3, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 3, StealthPistol 3
+        (file: "DXMP_CMD", title: "Vandenberg Command", keep: [
+            "Ammo20mm0", "Ammo20mm2", "BioelectricCell0", "BioelectricCell10", "BioelectricCell12",
+            "BioelectricCell3", "Lockpick11", "Lockpick12", "Lockpick13", "Lockpick2", "Lockpick9", "MedKit0",
+            "MedKit6", "Multitool0", "Multitool11", "Multitool12", "Multitool14", "Multitool2", "Multitool7",
+            "WeaponAssaultGun0", "WeaponAssaultGun1", "WeaponAssaultGun4", "WeaponAssaultShotgun0",
+            "WeaponAssaultShotgun1", "WeaponAssaultShotgun2", "WeaponCombatKnife0", "WeaponCombatKnife2",
+            "WeaponCombatKnife4", "WeaponEMPGrenade4", "WeaponEMPGrenade8", "WeaponEMPGrenade9",
+            "WeaponFlamethrower1", "WeaponGEPGun1", "WeaponGasGrenade8", "WeaponLAM5", "WeaponLAM7", "WeaponLAW0",
+            "WeaponMiniCrossbow0", "WeaponMiniCrossbow2", "WeaponMiniCrossbow3", "WeaponNanoSword2", "WeaponPistol3",
+            "WeaponPistol4", "WeaponPistol5", "WeaponPlasmaRifle1", "WeaponRifle1", "WeaponSawedOffShotgun0",
+            "WeaponSawedOffShotgun2", "WeaponSawedOffShotgun4", "WeaponShuriken0", "WeaponShuriken2",
+            "WeaponShuriken4", "WeaponStealthPistol0", "WeaponStealthPistol2", "WeaponStealthPistol4",
+        ]),
+        // DXMP_Cathedral: 51 kept, starts 22, value near starts min 7 max 65 mean 50.0; quadrants [43, 11, 0, 59]
+        // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 2, Lockpick 6, MedKit 6, Multitool 5, AssaultGun 3, AssaultShotgun 3, CombatKnife 2, EMPGrenade 2, Flamethrower 1, GEPGun 1, LAM 1, MiniCrossbow 2, NanoSword 1, Pistol 2, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 3, StealthPistol 3
+        (file: "DXMP_Cathedral", title: "Cathedral", keep: [
+            "Ammo20mm1", "Ammo20mm2", "AmmoRocketWP0", "BioelectricCell1", "BioelectricCell3", "Lockpick1",
+            "Lockpick3", "Lockpick4", "Lockpick6", "Lockpick7", "Lockpick8", "MedKit0", "MedKit1", "MedKit3",
+            "MedKit4", "MedKit5", "MedKit7", "Multitool1", "Multitool12", "Multitool13", "Multitool14", "Multitool15",
+            "WeaponAssaultGun0", "WeaponAssaultGun1", "WeaponAssaultGun5", "WeaponAssaultShotgun0",
+            "WeaponAssaultShotgun2", "WeaponAssaultShotgun7", "WeaponCombatKnife0", "WeaponCombatKnife3",
+            "WeaponEMPGrenade0", "WeaponEMPGrenade4", "WeaponFlamethrower13", "WeaponGEPGun7", "WeaponLAM0",
+            "WeaponMiniCrossbow0", "WeaponMiniCrossbow3", "WeaponNanoSword4", "WeaponPistol13", "WeaponPistol16",
+            "WeaponPlasmaRifle0", "WeaponRifle5", "WeaponSawedOffShotgun0", "WeaponSawedOffShotgun2",
+            "WeaponSawedOffShotgun4", "WeaponShuriken1", "WeaponShuriken2", "WeaponShuriken9", "WeaponStealthPistol1",
+            "WeaponStealthPistol2", "WeaponStealthPistol7",
+        ]),
+        // DXMP_Silo: 68 kept, starts 54, value near starts min 16 max 77 mean 39.4; quadrants [42, 35, 18, 60]
+        // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 9, Lockpick 4, MedKit 2, Multitool 4, AssaultGun 4, AssaultShotgun 4, CombatKnife 4, EMPGrenade 2, Flamethrower 1, GEPGun 1, GasGrenade 1, LAM 3, LAW 1, MiniCrossbow 5, NanoSword 1, Pistol 5, PlasmaRifle 1, Rifle 1, SawedOffShotgun 4, Shuriken 4, StealthPistol 4
+        (file: "DXMP_Silo", title: "Missile Silo", keep: [
+            "Ammo20mm1", "Ammo20mm4", "AmmoRocketWP2", "BioelectricCell0", "BioelectricCell1", "BioelectricCell2",
+            "BioelectricCell3", "BioelectricCell4", "BioelectricCell5", "BioelectricCell6", "BioelectricCell8",
+            "BioelectricCell9", "Lockpick0", "Lockpick2", "Lockpick3", "Lockpick6", "MedKit4", "MedKit5",
+            "Multitool1", "Multitool2", "Multitool4", "Multitool5", "WeaponAssaultGun1", "WeaponAssaultGun6",
+            "WeaponAssaultGun8", "WeaponAssaultGun9", "WeaponAssaultShotgun1", "WeaponAssaultShotgun2",
+            "WeaponAssaultShotgun6", "WeaponAssaultShotgun9", "WeaponCombatKnife3", "WeaponCombatKnife4",
+            "WeaponCombatKnife5", "WeaponCombatKnife7", "WeaponEMPGrenade1", "WeaponEMPGrenade3",
+            "WeaponFlamethrower6", "WeaponGEPGun10", "WeaponGasGrenade0", "WeaponLAM1", "WeaponLAM6", "WeaponLAM8",
+            "WeaponLAW0", "WeaponMiniCrossbow0", "WeaponMiniCrossbow1", "WeaponMiniCrossbow2", "WeaponMiniCrossbow5",
+            "WeaponMiniCrossbow8", "WeaponNanoSword4", "WeaponPistol1", "WeaponPistol3", "WeaponPistol4",
+            "WeaponPistol5", "WeaponPistol6", "WeaponPlasmaRifle4", "WeaponRifle3", "WeaponSawedOffShotgun2",
+            "WeaponSawedOffShotgun5", "WeaponSawedOffShotgun7", "WeaponSawedOffShotgun8", "WeaponShuriken10",
+            "WeaponShuriken11", "WeaponShuriken6", "WeaponShuriken7", "WeaponStealthPistol2", "WeaponStealthPistol5",
+            "WeaponStealthPistol6", "WeaponStealthPistol8",
+        ]),
+        // DXMP_Smuggler: 47 kept, starts 14, value near starts min 16 max 42 mean 29.1; quadrants [28, 16, 30, 36]
+        // Ammo20mm 1, AmmoRocketWP 1, BioelectricCell 5, Lockpick 3, MedKit 2, Multitool 4, AssaultGun 3, AssaultShotgun 3, CombatKnife 3, EMPGrenade 3, Flamethrower 1, GEPGun 1, GasGrenade 1, LAM 2, MiniCrossbow 2, NanoSword 1, Pistol 2, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 2, StealthPistol 2
+        (file: "DXMP_Smuggler", title: "Smuggler's Lair", keep: [
+            "Ammo20mm0", "AmmoRocketWP0", "BioelectricCell0", "BioelectricCell1", "BioelectricCell2",
+            "BioelectricCell3", "BioelectricCell6", "Lockpick0", "Lockpick3", "Lockpick5", "MedKit0", "MedKit3",
+            "Multitool0", "Multitool3", "Multitool4", "Multitool5", "WeaponAssaultGun0", "WeaponAssaultGun2",
+            "WeaponAssaultGun3", "WeaponAssaultShotgun0", "WeaponAssaultShotgun2", "WeaponAssaultShotgun3",
+            "WeaponCombatKnife0", "WeaponCombatKnife2", "WeaponCombatKnife3", "WeaponEMPGrenade1",
+            "WeaponEMPGrenade2", "WeaponEMPGrenade4", "WeaponFlamethrower2", "WeaponGEPGun1", "WeaponGasGrenade2",
+            "WeaponLAM2", "WeaponLAM3", "WeaponMiniCrossbow1", "WeaponMiniCrossbow3", "WeaponNanoSword1",
+            "WeaponPistol4", "WeaponPistol8", "WeaponPlasmaRifle3", "WeaponRifle1", "WeaponSawedOffShotgun0",
+            "WeaponSawedOffShotgun2", "WeaponSawedOffShotgun3", "WeaponShuriken5", "WeaponShuriken8",
+            "WeaponStealthPistol2", "WeaponStealthPistol4",
+        ]),
+    ],
+)

@@ -45,6 +45,15 @@ pub struct GasClouds(pub Vec<(DVec3, f32, f32, Option<usize>)>);
 #[derive(Resource, Default)]
 pub struct Launches(pub Vec<Launch>);
 
+/// Multiplayer (joiner): gas clouds of the host's grenades, here only to be seen (the host's clouds hurt).
+static HARMLESS_CLOUDS: std::sync::Mutex<Vec<(DVec3, f32, f32)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn harmless_clouds(c: Vec<(DVec3, f32, f32)>) {
+    if let Ok(mut q) = HARMLESS_CLOUDS.lock() {
+        q.extend(c);
+    }
+}
+
 #[derive(Component)]
 pub struct Projectile {
     /// Multiplayer: another player's (or the host's pawns') projectile, here only to be seen - it hurts nothing.
@@ -212,7 +221,7 @@ pub fn launch_system(
         })
         .collect();
     // Multiplayer: what the others launched flies here too, harmlessly (`ghost`); what is launched here, they see.
-    let ghosts: Vec<Launch> = crate::netplay::take_ghosts()
+    let mut ghosts: Vec<Launch> = crate::netplay::take_ghosts()
         .into_iter()
         .map(|(class, pos, dir, speed)| Launch {
             class,
@@ -229,6 +238,20 @@ pub fn launch_system(
             ownerless: true,
         })
         .collect();
+    ghosts.extend(HARMLESS_CLOUDS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default().into_iter().map(|(pos, scale, life)| Launch {
+        class: "TearGas".into(),
+        pos,
+        dir: DVec3::X,
+        from: None,
+        mult: 0.0,
+        life: Some(life),
+        scale: Some(scale),
+        still: true,
+        track: None,
+        track_at: None,
+        speed: None,
+        ownerless: true,
+    }));
     let n_own = launches.0.len() + gas.len();
     for (k, l) in launches.0.drain(..).chain(gas).chain(ghosts).enumerate() {
         let ghost = k >= n_own;
@@ -634,6 +657,7 @@ pub fn projectile_system(
                 }
                 // Cloud.Timer: everything in reach but the cloud's Owner (pepper spray's sprayer; grenade gas has none).
                 if (from.is_some() || p.ownerless)
+                    && !ghost
                     && !ph.dead
                     && player.body.location.distance(center) < r
                     && sees(player.body.location)

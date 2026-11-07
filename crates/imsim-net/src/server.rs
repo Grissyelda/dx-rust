@@ -339,6 +339,7 @@ fn conn(sh: &Shared, s: TcpStream, addr: SocketAddr, id: u64) {
                         tough: r.settings.tough,
                         host_ms: r.host_ms,
                         name: r.settings.name.clone(),
+                        detail: r.settings.detail.clone(),
                     };
                     s.push_str(&info.line());
                     s.push('\n');
@@ -671,7 +672,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let addr = format!("127.0.0.1:{port}");
         let mut host = Client::connect(&addr, Duration::from_secs(2)).expect("host connects");
-        let s = RoomSettings { mode: Mode::Coop, public: true, max_players: 4, look: Look::Classic, tough: true, name: "JC Denton".into() };
+        let s = RoomSettings { mode: Mode::Coop, public: true, max_players: 4, look: Look::Classic, tough: true, name: "JC Denton".into(), detail: String::new() };
         let key = "ab".repeat(32);
         let (code, token) = host.host(&s, 7790, &key, None).expect("room");
         assert!(valid_code(&code));

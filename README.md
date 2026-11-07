@@ -184,9 +184,9 @@ for Modern if the frame rate is low. macOS uses some function keys itself: turn 
 the augmentations to other keys. gilrs has no rumble on macOS, so only a DualSense rumbles there (it uses HID). Upscaling has no
 temporal antialiasing on macOS, so *Native AA* only sharpens there.
 
-### Multiplayer (co-op)
+### Multiplayer
 Choose **Multiplayer** on the main menu.
-- **Host Room**: pick Co-op or Deathmatch, Classic or Modern, public or private, and up to 16 players. You get a short
+- **Host Room**: pick Co-op, Deathmatch or Team Deathmatch, Classic or Modern, public or private, and up to 16 players. You get a short
   code (like `DX12`) and a long code (like `ABCDE-FGHIJ-KLMNO`); *Copy Code* puts the long one on the clipboard.
   Everyone marks *Ready*, then the host presses *Start Game*.
 - **Join Room**: type either code, pick or make a multiplayer character, then press *Ready*.
@@ -194,9 +194,16 @@ Choose **Multiplayer** on the main menu.
 
 In co-op the host plays the story: conversations, mission scripts and travel follow the host, everything else
 (enemies, doors, switches, computers, kills) is shared, and each player keeps their own inventory, skills and
-augmentations. A fallen player gets up near the host after a few seconds (on Hard and Realistic without their
-inventory). Press **Y** to chat. Classic rooms are played without mods; in a Modern room every player needs the
-host's mods. Deathmatch works but needs more work.
+augmentations. A fallen player gets up near the host after a few seconds; on Hard and Realistic after 10 seconds and
+without their inventory, and if everyone is down at once the level restarts. Use a medkit on another player to heal
+him. Press **Y** to chat, hold **Tab** for the scoreboard. Classic rooms switch your mods off while you play; in a
+Modern room every player needs the host's mods.
+
+**Deathmatch and Team Deathmatch** (up to 8 v 8) are played on the original's five multiplayer maps, which come with
+the game, in Modern with the Augmentique mod. Make a **Deathmatch Character** on the Multiplayer screen (name, body,
+face, outfit); kills with a weapon unlock its Augmentique skins. The host sets the map, frag and time limits and
+what comes after a match. Each map has one GEP gun to fight over and at most one of each heavy weapon; pickups
+respawn for everyone.
 
 **Without the online services.** The short codes and the browser need the DX RUST lobby server; the long code
 doesn't. It holds the host's address, so players can join with it even when the server is down:
@@ -277,7 +284,7 @@ The whole game is implemented. Before 1.0:
 
 Much of the v2.0 list is already in (the Classic / Modern switch, real-time shadows, weather, modern water,
 third person, Smarter AI, achievements, skeletal characters, ragdolls, fluid blood and remastered lighting with
-relief maps). Co-op multiplayer is in too (deathmatch needs more work).
+relief maps). Co-op, deathmatch and team deathmatch multiplayer are in too.
 Every item stays optional. Four performance passes so far: a GPU pass took Modern from about 32 to 47 fps on an
 RTX 3050; a CPU pass (for slower and many-core processors, where the game's own threads were the limit) took the
 default settings on a Ryzen 5 3600 from 72 to 98 fps; a GPU-driven drawing pass (bindless materials and

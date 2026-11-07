@@ -63,7 +63,10 @@ pub fn nametag_system(
         }
         let b = Vec3::from(ue_to_bevy([head.x as f32, head.y as f32, head.z as f32]));
         if let Ok(v) = camera.world_to_viewport(gt, b) {
-            shown.push((name, v / px));
+            // Team Deathmatch: the tag in the team's colour (the team is part of the tag's key, so a change of
+            // sides redraws it).
+            let team = crate::deathmatch::team_of_name(&name).map_or('-', |t| (b'0' + t) as char);
+            shown.push((format!("{team}{name}"), v / px));
         }
     }
     let mut free: Vec<Entity> = Vec::new();
@@ -74,7 +77,7 @@ pub fn nametag_system(
             continue;
         };
         let (name, at) = shown.remove(i);
-        let (w, h) = (font.width(&name) + 6, font.height + 4);
+        let (w, h) = (font.width(&name[1..]) + 6, font.height + 4);
         if tag.scale != si {
             // Redraw at the new scale.
             let img = draw(&font, &name, w, h, si);
@@ -94,7 +97,7 @@ pub fn nametag_system(
         }
     }
     for (name, at) in shown {
-        let (w, h) = (font.width(&name) + 6, font.height + 4);
+        let (w, h) = (font.width(&name[1..]) + 6, font.height + 4);
         let img = images.add(draw(&font, &name, w, h, si));
         let tex = img.clone();
         let (x, y) = ((at.x - w as f32 / 2.0).floor() * k, (at.y - h as f32).floor() * k);
@@ -118,11 +121,17 @@ pub fn nametag_system(
 }
 
 /// The tag picture: the name in the HUD's text colour over a light shade.
-fn draw(font: &crate::uicanvas::UiFont, name: &str, w: i32, h: i32, s: i32) -> Image {
+fn draw(font: &crate::uicanvas::UiFont, key: &str, w: i32, h: i32, s: i32) -> Image {
     use crate::uicanvas::{Canvas, HAlign, VAlign};
+    let (team, name) = key.split_at(key.chars().next().map_or(0, |c| c.len_utf8()));
+    let col = match team {
+        "0" => [120, 170, 255],
+        "1" => [255, 90, 90],
+        _ => crate::menuui::h_col(7),
+    };
     let mut c = Canvas::new(w, h, s);
     c.shade(0, 0, w, h, 0.45);
-    c.text(font, 3, 2, w - 6, font.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(7), name);
+    c.text(font, 3, 2, w - 6, font.height, HAlign::Left, VAlign::Top, col, name);
     Image::new(
         bevy::render::render_resource::Extent3d { width: (w * s) as u32, height: (h * s) as u32, depth_or_array_layers: 1 },
         bevy::render::render_resource::TextureDimension::D2,

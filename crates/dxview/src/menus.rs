@@ -819,6 +819,8 @@ enum Body {
     Addr(MpAddr),
     /// Ours: the waiting room (a joiner in the host's lobby).
     Wait(MpWait),
+    /// Ours: the deathmatch character creator (dmchar.rs).
+    DmChar(DmEdit),
 }
 
 struct AchieveView {
@@ -1545,7 +1547,7 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             Body::Menu { buttons, x, w, notes: Vec::new() }
         }
         "MenuScreenMultiplayer" | "MenuScreenHostRoom" | "MenuScreenJoinRoom" | "MenuScreenLobbyBrowser" | "MenuScreenChooseCharacter"
-        | "MenuScreenOnlineServices" | "MenuScreenWaitingRoom" => {
+        | "MenuScreenOnlineServices" | "MenuScreenWaitingRoom" | "MenuScreenDmCharacter" => {
             let (mf, body) = mp_window(assets, class);
             f = mf;
             body
@@ -1633,6 +1635,16 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 }
             }
             Body::Enhance(en)
+        }
+        "MenuScreenMatchSettings" => {
+            // Ours: the host's deathmatch match settings (deathmatch.rs reads them as the room's rules).
+            f = frame(assets, "MenuScreenDisplay");
+            f.class = class.to_string();
+            f.title = "Match Settings".into();
+            let choices = match_choices();
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, choices.len(), slots);
+            Body::Choices { choices }
         }
         "MenuScreenDualSense" | "MenuScreenPadOptions" => {
             // Ours, on the Controls screen's frame: features beyond the original (the v2.0 options go here).
@@ -1867,6 +1879,34 @@ fn pad_option_choices() -> Vec<Choice> {
 }
 
 /// Ours: the DualSense screen (ROADMAP Phase 0.3), under Enhancements.
+/// Match Settings: map, frag limit, time limit, what comes after a match, team auto-balance.
+fn match_choices() -> Vec<Choice> {
+    let e = |key: &str, label: &str, help: &str, values: Vec<String>| {
+        let v = crate::settings::get(key);
+        Choice {
+            key: key.into(),
+            label: label.into(),
+            help: help.into(),
+            kind: ChoiceKind::Enum(values),
+            value: v,
+            saved: v,
+            info_w: 140,
+            info_x: 270,
+            control_x: 270,
+            voff: 0,
+            dropdown: false,
+        }
+    };
+    let n = |v: &[u32], unit: &str| v.iter().map(|x| if *x == 0 { "None".to_string() } else { format!("{x}{unit}") }).collect::<Vec<_>>();
+    vec![
+        e("DmMap", "|&Map", "The original's multiplayer map to play. Weapons are laid out so every part of it is worth fighting for: one GEP gun, one of each heavy weapon.", crate::deathmatch::maps().into_iter().map(|m| m.1).collect()),
+        e("DmFragLimit", "|&Frag Limit", "Kills that win the match (the team's total in Team Deathmatch).", n(&crate::deathmatch::FRAG_LIMITS, " kills")),
+        e("DmTimeLimit", "|&Time Limit", "Minutes until the match ends: the most kills wins.", n(&crate::deathmatch::TIME_LIMITS, " minutes")),
+        e("DmAfter", "After the |&Match", "When a match ends and its results have shown: the next of the five maps, the same map again, or back to the room.", ["Next Map", "Same Map", "Back to Room"].iter().map(|s| s.to_string()).collect()),
+        e("DmAutoBalance", "Team |&Auto-Balance", "Team Deathmatch: when one team is two players bigger, its next player to die joins the other.", ["Off", "On"].iter().map(|s| s.to_string()).collect()),
+    ]
+}
+
 fn dualsense_choices() -> Vec<Choice> {
     let e = |key: &str, label: &str, help: &str, values: &[&str]| {
         let v = crate::settings::get(key);
@@ -2120,6 +2160,11 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             (name, code, players, offline, open, direct, note, lobby, all_ready, copied.is_some()).hash(h);
         }
         Body::Wait(MpWait { rows, ready, connected, scroll }) => (rows, ready, connected, scroll).hash(h),
+        Body::DmChar(d) => {
+            edit_key(&d.name, h);
+            hash_debug(h, &d.c);
+            (d.sel, d.scroll, d.others.len(), &d.weapons).hash(h);
+        }
         Body::Join(MpJoin { code }) => code.hash(h),
         Body::Addr(MpAddr { edit }) => edit_key(edit, h),
         Body::Chars(MpChars { list, rows, room, sel, scroll }) => (list, rows, room, sel, scroll).hash(h),
@@ -2349,6 +2394,7 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
         Body::Chars(c) => draw_mp_chars(u, c, cx, cy),
         Body::Addr(a) => draw_mp_addr(u, a, cx, cy),
         Body::Wait(w) => draw_mp_wait(u, w, cx, cy),
+        Body::DmChar(d) => draw_dm_char(u, d, cx, cy),
         Body::Choices { choices } => draw_choices(u, choices, &win.f, &mut win.drop, cx, cy),
         Body::NewGame(ng) => draw_new_game(u, ng, focus, fonts, cx, cy),
         Body::Keys(k) if k.pad => draw_pad_keys(u, k, cx, cy, waiting_keys),
@@ -3333,6 +3379,11 @@ fn open_from_game(
         let w = pad_map_box(hud, assets);
         st.push(w);
     }
+    // Deathmatch, After the Match = Back to Room: the host chooses the next match.
+    if crate::deathmatch::take_room_open() {
+        let w = open_window(hud, assets, "MenuScreenMatchSettings");
+        st.push(w);
+    }
     // A keypad was used (Keypad.ActivateKeypadWindow).
     if let Some((title, text)) = EXTERNAL_BOX.lock().ok().and_then(|mut b| b.take()) {
         let w = msg_box(hud, assets, &title, &text, true, MsgPurpose::External);
@@ -3678,6 +3729,14 @@ fn left_press(cx: &mut InCx) -> Option<&'static str> {
                                 acts.extend(mp_browse_join(b));
                             }
                         }
+                        Body::DmChar(d) if l == 0 => {
+                            if d.sel == Some(r) {
+                                if let Some(m) = d.step(1) {
+                                    acts.push(Act::Msg("Deathmatch Character".into(), m, false, MsgPurpose::Info));
+                                }
+                            }
+                            d.sel = Some(r);
+                        }
                         Body::Chars(c) if l == 0 => {
                             c.sel = Some(r);
                             if double {
@@ -3853,6 +3912,30 @@ fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
         if !matches!(k, KeyCode::Escape | KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter) || en.sel.is_some() && matches!(k, KeyCode::Enter | KeyCode::NumpadEnter) {
             return true;
         }
+    }
+    // The deathmatch character creator: arrows work the list, everything else types the name.
+    if let Body::DmChar(d) = &mut win.body {
+        let msg = match k {
+            KeyCode::ArrowUp => {
+                d.move_sel(-1);
+                None
+            }
+            KeyCode::ArrowDown => {
+                d.move_sel(1);
+                None
+            }
+            KeyCode::ArrowLeft => d.step(-1),
+            KeyCode::ArrowRight | KeyCode::Enter | KeyCode::NumpadEnter => d.step(1),
+            KeyCode::Escape | KeyCode::Tab => return false,
+            _ => {
+                d.name.key(*k, text.as_deref(), shift, ctrl);
+                None
+            }
+        };
+        if let Some(m) = msg {
+            acts.push(Act::Msg("Deathmatch Character".into(), m, false, MsgPurpose::Info));
+        }
+        return true;
     }
     // The join screen's room code.
     if let Body::Join(j) = &mut win.body {
@@ -4242,6 +4325,7 @@ fn help_text(top_w: &Win, assets: &mut RuntimeAssets) -> String {
             None => "Type to search the options.".into(),
         },
         (Body::Host(h), focus) => mp_host_help(h, focus, &top_w.f),
+        (Body::DmChar(d), _) => d.help(),
         (Body::Addr(_), _) => "The online services' host name or IP address, with :port when it isn't 27962 (ask whoever runs \
              the server). Empty: this PC. Save & Connect or [Enter].".into(),
         (Body::Join(_), _) => "Type the host's room code: four characters from online services, or the long direct code (Ctrl+V pastes it). Then Join Room or [Enter].".into(),
@@ -4606,6 +4690,9 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
             match action {
                 1 | 4 => {
                     save_choices(win);
+                    if win.f.class == "MenuScreenMatchSettings" {
+                        crate::deathmatch::room_go();
+                    }
                     crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
                     acts.push(Act::Pop);
                 }
@@ -4818,7 +4905,13 @@ const ACT_LEAVE: u8 = 48;
 const ACT_READY: u8 = 49;
 /// The host's game screen: carry on with the game already up (as its character).
 const ACT_MP_PLAYON: u8 = 50;
-const ACT_LAST: u8 = ACT_MP_PLAYON;
+/// Host Room: Match Settings; the deathmatch character creator: Save Character, Delete; the multiplayer screen
+/// and Host Room: Deathmatch Character.
+const ACT_MATCH: u8 = 51;
+const ACT_DMCHAR_SAVE: u8 = 52;
+const ACT_DMCHAR_DEL: u8 = 53;
+const ACT_DMCHAR: u8 = 54;
+const ACT_LAST: u8 = ACT_DMCHAR;
 /// Host Room widgets: Copy Code, and a Kick per player row (40 + row).
 const HDR_COPY: u8 = 29;
 const HDR_KICK: u8 = 40;
@@ -4945,16 +5038,17 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
                 key: String::new(),
                 enabled: true,
             };
-            // Wells 13..121 for the buttons, 157 for the connection line, 193 for the server's address; 229 left
-            // out (Previous Menu moves up from 266).
-            const CUT: (i32, i32) = (224, 36);
-            f.cuts.push(CUT);
-            f.ch -= CUT.1;
+            // Wells 13..121 for the buttons, 157 for the connection line, 193 for the server's address, 229 for
+            // the deathmatch character.
+            const CUT: (i32, i32) = (224, 0);
+            let mut dm = b("Deathmatch Character", 229, 1, "MenuScreenDmCharacter");
+            dm.enabled = crate::dmchar::blocked().is_none();
             let buttons = vec![
                 b("Host Room", 13, 1, "MenuScreenHostRoom"),
                 b("Join Room", 49, 1, "MenuScreenJoinRoom"),
                 b("Lobby Browser", 85, 1, "MenuScreenLobbyBrowser"),
                 b("Online Services", 121, 1, "MenuScreenOnlineServices"),
+                dm,
                 b("Previous Menu", 266 - CUT.1, 2, ""),
             ];
             let addr = format!("Server: {}", crate::online::server_addr());
@@ -4965,7 +5059,12 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
             f.class = class.to_string();
             f.title = "Host Room".into();
             let choices = mp_host_choices();
-            f.actions = vec![(0, ACT_START, "Start Game".into(), String::new()), (2, ACT_CLOSE_ROOM, "Close Room".into(), String::new())];
+            f.actions = vec![
+                (0, ACT_START, "Start Game".into(), String::new()),
+                (0, ACT_MATCH, "Match Settings".into(), String::new()),
+                (0, ACT_DMCHAR, "Character".into(), String::new()),
+                (2, ACT_CLOSE_ROOM, "Close Room".into(), String::new()),
+            ];
             let name = crate::travel::with_session(|s| s.name.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Player".into());
             // All nine rows of art: the six choices, then the players panel over the last three.
             let host = MpHost {
@@ -5013,6 +5112,24 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
             f.title = "Waiting Room".into();
             f.actions = vec![(2, ACT_LEAVE, "Leave".into(), String::new()), (2, ACT_READY, "Ready".into(), String::new())];
             (f, Body::Wait(MpWait { rows: Vec::new(), ready: false, connected: false, scroll: 0 }))
+        }
+        "MenuScreenDmCharacter" => {
+            let mut f = frame(assets, "MenuScreenCustomizeKeys");
+            f.class = class.to_string();
+            f.title = "Deathmatch Character".into();
+            f.actions = vec![
+                (2, 2, "Cancel".into(), String::new()),
+                (2, ACT_DMCHAR_SAVE, "Save Character".into(), String::new()),
+                (0, ACT_DMCHAR_DEL, "Delete".into(), String::new()),
+            ];
+            let c = crate::dmchar::last().unwrap_or_else(|| {
+                let mut c = crate::dmchar::fresh();
+                if let Some(n) = crate::travel::with_session(|s| s.name.clone()).filter(|n| !n.trim().is_empty()) {
+                    c.name = n;
+                }
+                c
+            });
+            (f, Body::DmChar(DmEdit::new(c)))
         }
         "MenuScreenChooseCharacter" => {
             let mut f = frame(assets, "MenuScreenLoadGame");
@@ -5076,7 +5193,13 @@ fn mp_host_choices() -> Vec<Choice> {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
     let modern = crate::remaster::is_modern();
     vec![
-        mp_choice("MpMode", "|&Game Mode", "Co-op: play the story together. Deathmatch: fight each other.", s(&["Co-op", "Deathmatch"]), 0),
+        mp_choice(
+            "MpMode",
+            "|&Game Mode",
+            "Co-op: play the story together. Deathmatch: everyone for themselves on the multiplayer maps. Team Deathmatch: UNATCO against the NSF, up to 8 a side. Match Settings sets the map and limits.",
+            s(&["Co-op", "Deathmatch", "Team Deathmatch"]),
+            0,
+        ),
         mp_choice(
             "MpRoom",
             "|&Room",
@@ -5101,13 +5224,34 @@ fn mp_host_choices() -> Vec<Choice> {
 fn mp_host_settings(h: &MpHost) -> RoomSettings {
     let v = |k: &str| h.choices.iter().find(|c| c.key == k).map_or(0, |c| c.value.max(0.0) as u8);
     RoomSettings {
-        mode: if v("MpMode") == 1 { Mode::Deathmatch } else { Mode::Coop },
+        mode: match v("MpMode") {
+            1 => Mode::Deathmatch,
+            2 => Mode::TeamDeathmatch,
+            _ => Mode::Coop,
+        },
         public: v("MpRoom") == 0,
         max_players: (2 + v("MpPlayers")).min(imsim_net::MAX_PLAYERS),
         look: if v("MpLook") == 0 { Look::Classic } else { Look::Modern },
         tough: v("MpTough") == 1,
         name: h.name.clone(),
+        detail: mp_dm_detail(v("MpMode")),
     }
+}
+
+/// A deathmatch room's map and limits for the browser ("Cathedral/20_kills/10_min").
+fn mp_dm_detail(mode: u8) -> String {
+    if mode == 0 {
+        return String::new();
+    }
+    let r = crate::deathmatch::rules_from_settings(crate::deathmatch::Mode::Deathmatch, false);
+    let mut d = crate::deathmatch::map_title(&r.map).replace(' ', "_").replace('\'', "");
+    if r.frag_limit > 0 {
+        d.push_str(&format!("/{}_kills", r.frag_limit));
+    }
+    if r.time_limit > 0 {
+        d.push_str(&format!("/{}_min", r.time_limit));
+    }
+    d
 }
 
 /// The Look choice's help: in Classic it says which of the host's mods are switched off while the room lasts.
@@ -5124,7 +5268,34 @@ fn mp_look_help(classic: bool) -> String {
 /// said in the Look choice's help). Returns a message for a box (none now).
 fn mp_host_cycle(h: &mut MpHost, i: u8, dir: i32) -> Option<String> {
     let c = h.choices.get_mut(i as usize)?;
+    let before = c.value;
     c.cycle(dir);
+    // Deathmatch needs Augmentique (outfits, weapon skins) and is played in Modern.
+    if c.key == "MpMode" && c.value > 0.5 {
+        if let Some(why) = crate::dmchar::blocked() {
+            c.value = 0.0;
+            return Some(why.to_string());
+        }
+    }
+    if c.key == "MpLook" && c.value < 0.5 && mp_host_versus(h) {
+        let c = h.choices.get_mut(i as usize)?;
+        c.value = 1.0;
+        return Some("Deathmatch is played in the Modern look.".into());
+    }
+    let c = h.choices.get_mut(i as usize)?;
+    if c.key == "MpMode" {
+        let versus = c.value > 0.5;
+        let changed = (before > 0.5) != versus || (before - c.value).abs() > 0.5;
+        if let Some(l) = h.choices.iter_mut().find(|c| c.key == "MpLook") {
+            if versus {
+                l.value = 1.0;
+            }
+        }
+        if changed {
+            mp_apply_dm(h);
+        }
+    }
+    let Some(c) = h.choices.get_mut(i as usize) else { return None };
     if c.key == "MpLook" {
         c.help = mp_look_help(c.value < 0.5);
     }
@@ -5133,7 +5304,24 @@ fn mp_host_cycle(h: &mut MpHost, i: u8, dir: i32) -> Option<String> {
     } else {
         crate::online::update(mp_host_settings(h));
     }
+    mp_apply_dm(h);
     None
+}
+
+/// The room is a deathmatch (either kind).
+fn mp_host_versus(h: &MpHost) -> bool {
+    h.choices.iter().find(|c| c.key == "MpMode").is_some_and(|c| c.value > 0.5)
+}
+
+/// The host's deathmatch rules for his room (deathmatch.rs) from the mode, Friendly Fire and Match Settings.
+fn mp_apply_dm(h: &MpHost) {
+    let v = |k: &str| h.choices.iter().find(|c| c.key == k).map_or(0.0, |c| c.value);
+    let mode = match v("MpMode") as u8 {
+        1 => crate::deathmatch::Mode::Deathmatch,
+        2 => crate::deathmatch::Mode::Team,
+        _ => crate::deathmatch::Mode::Coop,
+    };
+    crate::deathmatch::set_rules(mode.versus().then(|| crate::deathmatch::rules_from_settings(mode, v("MpFriendly") > 0.5)));
 }
 
 /// The Host Room's own buttons: Copy Code, Kick on a player's row.
@@ -5409,11 +5597,57 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
             // the logo map: the host's story first (a save, or New Game on the same screen).
             // The host picks his game every time: a save (any character's), a new character (New Game: the
             // character creator), or, with a game up, carrying on with it.
+            if crate::deathmatch::versus() {
+                // A deathmatch room: the host's story isn't used - the chosen map loads for everyone, each
+                // player as his deathmatch character.
+                match crate::dmchar::blocked() {
+                    Some(why) => acts.push(Act::Msg("Host Room".into(), why.into(), false, MsgPurpose::Info)),
+                    None => match crate::dmchar::last() {
+                        None => {
+                            acts.push(Act::Push("MenuScreenDmCharacter".into()));
+                            acts.push(Act::Msg("Host Room".into(), "Make your deathmatch character first, then Start Game.".into(), false, MsgPurpose::Info));
+                        }
+                        Some(c) => {
+                            mp_apply_dm(h);
+                            let map = crate::deathmatch::rules().map(|r| r.map).unwrap_or_else(|| "DXMP_Cathedral".into());
+                            let was_on = crate::netplay::started();
+                            crate::dmchar::apply(&c);
+                            crate::netplay::start_game();
+                            let file = format!("{map}.dx");
+                            if was_on && !intro_map() {
+                                crate::netplay::host_travel(&map);
+                            }
+                            crate::loader::request(&file, crate::loader::Goal::NewGame(crate::dmchar::new_game(&c)));
+                            acts.push(Act::PopAll);
+                        }
+                    },
+                }
+                return false;
+            }
             crate::netplay::start_game();
             acts.push(Act::Push("MenuScreenLoadGame:mp".into()));
         }
         (ACT_MP_NEWGAME, _) => acts.push(Act::Push("MenuSelectDifficulty".into())),
         (ACT_MP_PLAYON, _) => acts.push(Act::PopAll),
+        (ACT_MATCH, _) => acts.push(Act::Push("MenuScreenMatchSettings".into())),
+        (ACT_DMCHAR, _) => match crate::dmchar::blocked() {
+            Some(why) => acts.push(Act::Msg("Deathmatch Character".into(), why.into(), false, MsgPurpose::Info)),
+            None => acts.push(Act::Push("MenuScreenDmCharacter".into())),
+        },
+        (ACT_DMCHAR_SAVE, Body::DmChar(d)) => match dm_char_save(d) {
+            Ok(()) => {
+                crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
+                acts.push(Act::Pop);
+            }
+            Err(m) => acts.push(Act::Msg("Deathmatch Character".into(), m, false, MsgPurpose::Info)),
+        },
+        (ACT_DMCHAR_DEL, Body::DmChar(d)) => {
+            if !d.c.id.is_empty() {
+                crate::dmchar::delete(&d.c.id);
+            }
+            let next = crate::dmchar::list().into_iter().next().unwrap_or_else(crate::dmchar::fresh);
+            *d = DmEdit::new(next);
+        }
         (ACT_ADDR, _) => {
             // From the connect-failed box: the box goes, the address screen comes.
             acts.push(Act::Pop);
@@ -5730,7 +5964,13 @@ fn mp_join_answer(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAsse
                 j.max_players,
                 if j.tough { ", tougher enemies" } else { "" },
             );
+            let versus = j.mode != Mode::Coop;
             st.mp.joined = Some(j);
+            if versus {
+                // A deathmatch room: in as the deathmatch character (story characters stay out of it).
+                mp_dm_join(st, hud, assets);
+                return;
+            }
             let mut w = open_window(hud, assets, "MenuScreenChooseCharacter");
             if let Some(Body::Chars(c)) = w.as_mut().map(|w| &mut w.body) {
                 c.room = room;
@@ -5744,10 +5984,33 @@ fn mp_join_answer(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAsse
     }
 }
 
+/// Joining a deathmatch room: Augmentique is needed; the last deathmatch character plays (a new one named after
+/// the story character when there's none yet; Deathmatch Character edits it).
+fn mp_dm_join(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    if let Some(why) = crate::dmchar::blocked() {
+        let w = msg_box(hud, assets, "Join Room", why, false, MsgPurpose::MpResult);
+        st.push(w);
+        return;
+    }
+    let c = crate::dmchar::last().unwrap_or_else(|| {
+        let mut c = crate::dmchar::fresh();
+        if let Some(n) = crate::travel::with_session(|s| s.name.clone()).filter(|n| !n.trim().is_empty()) {
+            c.name = n;
+        }
+        crate::dmchar::save(&mut c);
+        crate::dmchar::set_current(c.clone());
+        c
+    });
+    crate::dmchar::apply(&c);
+    crate::netplay::choose_character(crate::dmchar::new_game(&c), None);
+    mp_join_room(st, hud, assets);
+}
+
 fn mp_mode_name(m: Mode) -> &'static str {
     match m {
         Mode::Coop => "Co-op",
         Mode::Deathmatch => "Deathmatch",
+        Mode::TeamDeathmatch => "Team DM",
     }
 }
 
@@ -5760,6 +6023,16 @@ fn mp_look_name(l: Look) -> &'static str {
 
 /// The host's screen: the room's code and players, who found it.
 fn mp_poll_host(h: &mut MpHost) {
+    // Match Settings may have changed under the room: the rules, and the browser's line.
+    mp_apply_dm(h);
+    static DETAIL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let settings = mp_host_settings(h);
+    if let Ok(mut d) = DETAIL.lock() {
+        if *d != settings.detail {
+            d.clone_from(&settings.detail);
+            crate::online::update(settings);
+        }
+    }
     if let Some(hd) = crate::online::hosted() {
         if h.code.as_deref() != Some(hd.code.as_str()) {
             h.code = Some(hd.code);
@@ -5829,7 +6102,8 @@ fn mp_browse_rebuild(b: &mut MpBrowse) {
                 r.code.clone(),
                 r.name.clone(),
                 mp_mode_name(r.mode).into(),
-                mp_look_name(r.look).into(),
+                // Deathmatch rooms are always Modern: their map instead.
+                if r.mode == Mode::Coop || r.detail.is_empty() { mp_look_name(r.look).into() } else { r.detail.split('/').next().unwrap_or("").replace('_', " ") },
                 format!("{}/{}", r.players, r.max_players),
                 if r.tough { "+".into() } else { String::new() },
                 format!("{} ms", mp_ping(b, r)),
@@ -5899,6 +6173,137 @@ fn draw_menu_note(u: &mut Ui<W>, x: i32, w: i32, y: i32, text: &str, cx: i32, cy
 
 /// MenuScreenHostRoom: the choices, the room's box on the right (lobby code, direct code + Copy Code, the router
 /// note), and the players panel under them (ready, ping, Kick).
+/// The deathmatch character creator: the character being edited, its name field, the list's selection.
+struct DmEdit {
+    c: crate::dmchar::DmChar,
+    name: Edit,
+    sel: Option<usize>,
+    scroll: i32,
+    /// The saved characters (Character row cycles through them and a new one).
+    others: Vec<crate::dmchar::DmChar>,
+    /// The weapon rows (classes with Augmentique skins).
+    weapons: Vec<String>,
+}
+
+/// The creator's fixed rows before the weapons.
+const DM_ROWS: usize = 5;
+
+impl DmEdit {
+    fn new(c: crate::dmchar::DmChar) -> DmEdit {
+        let mut name = Edit::new(20);
+        name.text = c.name.chars().collect();
+        name.cur = name.text.len();
+        name.anchor = 0;
+        DmEdit { c, name, sel: Some(1), scroll: 0, others: crate::dmchar::list(), weapons: crate::dmchar::skin_weapons() }
+    }
+    fn rows(&self) -> Vec<Vec<String>> {
+        let c = &self.c;
+        let mut v = vec![
+            vec!["Character".into(), if c.id.is_empty() { "New character".into() } else { "Saved".into() }],
+            vec!["Body".into(), if c.female { "Female (Lay D Denton)".into() } else { "Male".into() }],
+            vec!["Face".into(), format!("{} of 5", c.skin.min(4) + 1)],
+            vec!["Augmentique Outfit".into(), crate::dmchar::outfit_name(c)],
+            vec!["Record".into(), format!("{} kills, {} deaths, {} wins", c.total_kills, c.deaths, c.wins)],
+        ];
+        for w in &self.weapons {
+            let skins = crate::dmchar::skins_for(c, w);
+            let cur = crate::dmchar::chosen_skin(c, w);
+            let name = skins.iter().find(|s| s.0 == cur).map_or_else(|| cur.clone(), |s| s.1.clone());
+            let locked = skins.iter().filter(|s| s.2 > 0).count();
+            let val = if locked > 0 { format!("{name} ({locked} locked)") } else { name };
+            v.push(vec![format!("{} skin", crate::dmchar::weapon_name(w)), val]);
+        }
+        v
+    }
+    /// Change the selected row (Enter / click / Right: next; Left: back). A message for a box.
+    fn step(&mut self, dir: i32) -> Option<String> {
+        let r = self.sel?;
+        self.c.name = self.name.get().trim().to_string();
+        match r {
+            0 => {
+                // Saved characters, then a new one.
+                let n = self.others.len() as i32 + 1;
+                let cur = self.others.iter().position(|o| o.id == self.c.id).map_or(n - 1, |i| i as i32);
+                let next = (cur + dir).rem_euclid(n) as usize;
+                let c = self.others.get(next).cloned().unwrap_or_else(|| crate::dmchar::DmChar { name: "Agent".into(), outfit: "default".into(), ..Default::default() });
+                *self = DmEdit { sel: Some(0), ..DmEdit::new(c) };
+            }
+            1 => {
+                if !self.c.female && !crate::dmchar::female_possible() {
+                    return Some("The female body is Lay D Denton's: add that mod on the launcher's Mods page.".into());
+                }
+                self.c.female = !self.c.female;
+                if !crate::augmentique::outfits_for(self.c.female).iter().any(|o| o.1 == self.c.outfit) {
+                    self.c.outfit = "default".into();
+                }
+            }
+            2 => self.c.skin = ((self.c.skin as i32 + dir).rem_euclid(5)) as u8,
+            3 => crate::dmchar::cycle_outfit(&mut self.c, dir),
+            4 => {}
+            i => {
+                if let Some(w) = self.weapons.get(i - DM_ROWS).cloned() {
+                    crate::dmchar::cycle_skin(&mut self.c, &w, dir);
+                }
+            }
+        }
+        None
+    }
+    fn move_sel(&mut self, d: i32) {
+        let n = (DM_ROWS + self.weapons.len()) as i32;
+        let next = (self.sel.map_or(-1, |s| s as i32) + d).clamp(0, n - 1);
+        self.sel = Some(next as usize);
+        let (y, h) = (next * ROW_H, 268 - 22);
+        if y < self.scroll {
+            self.scroll = y;
+        }
+        if y + ROW_H > self.scroll + h {
+            self.scroll = y + ROW_H - h;
+        }
+    }
+    fn help(&self) -> String {
+        let c = &self.c;
+        match self.sel {
+            Some(0) => "Your saved deathmatch characters (click to switch), or a new one. Kills and skins belong to each character.".into(),
+            Some(1) => if crate::dmchar::female_possible() { "Male, or Lay D Denton's female JC.".into() } else { "Male. The female body needs the Lay D Denton mod.".into() },
+            Some(2) => "Your face: the five new-game faces.".into(),
+            Some(3) => "Every Augmentique outfit for this body. The other players see you in it.".into(),
+            Some(4) => format!("{} matches played. Kills with each weapon earn its skins.", c.matches),
+            Some(i) if i >= DM_ROWS => {
+                let Some(w) = self.weapons.get(i - DM_ROWS) else { return String::new() };
+                let kills = crate::dmchar::kills_with(c, w);
+                let list: Vec<String> = crate::dmchar::skins_for(c, w)
+                    .into_iter()
+                    .skip(1)
+                    .map(|(_, n, need)| if need == 0 { n } else { format!("{n} ({need} more)") })
+                    .collect();
+                format!("{} kills with the {}. Skins: {}. Others see your skin on your weapon.", kills, crate::dmchar::weapon_name(w), list.join(", "))
+            }
+            _ => "Name your deathmatch character above.".into(),
+        }
+    }
+}
+
+/// The creator: Name field over the list's headers, the rows.
+fn draw_dm_char(u: &mut Ui<W>, d: &mut DmEdit, cx: i32, cy: i32) {
+    header_button(u, W::Header(0), cx + 10, cy + 3, 62, "Name");
+    u.c.fill(cx + 73, cy + 3, 262, 18, Style::Normal, BLACK);
+    edit_field(u, W::Edit(5), cx + 75, cy + 3, 257, &mut d.name, true, true);
+    let rows = d.rows();
+    list(u, 0, (cx + 11, cy + 23, 369, 268), &[170, 199], &rows, d.sel, &mut d.scroll, false);
+}
+
+/// Save Character: named, kept, played from now on.
+fn dm_char_save(d: &mut DmEdit) -> Result<(), String> {
+    let name = d.name.get().trim().to_string();
+    if name.is_empty() {
+        return Err("Give your character a name.".into());
+    }
+    d.c.name = name;
+    crate::dmchar::save(&mut d.c);
+    crate::dmchar::set_current(d.c.clone());
+    Ok(())
+}
+
 fn draw_mp_host(u: &mut Ui<W>, h: &MpHost, f: &Frame, drop: &mut Option<(u8, i32)>, cx: i32, cy: i32) {
     draw_choices(u, &h.choices, f, drop, cx, cy);
     draw_mp_host_codes(u, h, cx, cy);
@@ -6064,6 +6469,7 @@ fn draw_mp_browse(u: &mut Ui<W>, b: &mut MpBrowse, cx: i32, cy: i32) {
         y += fh.height + 3;
         let lines = [
             format!("{}, {} look", mp_mode_name(r.mode), mp_look_name(r.look)),
+            r.detail.replace('/', ", ").replace('_', " "),
             format!("{} / {} players", r.players, r.max_players),
             if r.tough { "Tougher enemies".to_string() } else { "Normal enemies".to_string() },
             format!("Ping about {} ms", mp_ping(b, r)),
@@ -6296,7 +6702,7 @@ mod tests {
             ("Secret Agent", Mode::Coop, Look::Modern, 2, false, false, 1),
         ] {
             let mut c = Client::connect(&addr, Duration::from_secs(2)).unwrap();
-            let s = RoomSettings { mode, public, max_players: max, look, tough, name: name.into() };
+            let s = RoomSettings { mode, public, max_players: max, look, tough, name: name.into(), detail: String::new() };
             let (code, token) = c.host(&s, 7790, &"ab".repeat(32), None).unwrap();
             c.update(&token, players, &s).unwrap();
             others.push((c, code));

@@ -1135,6 +1135,54 @@ fn look(carcass: bool) -> Option<(String, String, String, [String; 8])> {
     Some((mesh, cmesh, tex, skins))
 }
 
+/// What JC wears now, resolved to paths (mesh, Texture, MultiSkins): a deathmatch player sends it so the others
+/// dress his body the same (deathmatch.rs / dmchar.rs).
+pub fn worn_look() -> Option<(String, String, [String; 8])> {
+    look(false).map(|(m, _, t, s)| (m, t, s))
+}
+
+/// Every outfit for one body (male / female), whether found or not: (outfit index, id, name), by name with the
+/// default first. The deathmatch character creator offers them all.
+pub fn outfits_for(female: bool) -> Vec<(usize, String, String)> {
+    let Ok(g) = DATA.read() else { return Vec::new() };
+    let Some(d) = g.as_ref() else { return Vec::new() };
+    let mut v: Vec<(usize, String, String)> = d
+        .outfits
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, o)| d.groups.get(o.group).is_some_and(|g| g.correct_gender(female)))
+        .map(|(i, o)| (i, o.id.clone(), o.name.clone()))
+        .collect();
+    v.sort_by_key(|o| (o.1 != "default", o.2.to_ascii_lowercase()));
+    v
+}
+
+/// Every skin the mod has for a weapon class ("WeaponPistol"), in the mod's order: (skin id, name).
+pub fn weapon_skins(weapon_class: &str) -> Vec<(String, String)> {
+    let Ok(g) = DATA.read() else { return Vec::new() };
+    let Some(d) = g.as_ref() else { return Vec::new() };
+    let w = format!("DeusEx.{weapon_class}");
+    d.skins.iter().filter(|s| s.weapon.eq_ignore_ascii_case(&w)).map(|s| (s.id.clone(), s.name.clone())).collect()
+}
+
+/// The skin name the mod gives an id on a weapon ("default": the mod's word for none).
+pub fn weapon_skin_name(weapon_class: &str, id: &str) -> String {
+    if id == "default" || id.is_empty() {
+        return text("msgDefault");
+    }
+    weapon_skins(weapon_class).into_iter().find(|s| s.0 == id).map_or_else(|| id.to_string(), |s| s.1)
+}
+
+/// A deathmatch character's outfit and weapon skins on (the mod's state for this session: dmchar.rs).
+pub fn wear(outfit: Option<usize>, weapon_skins: Vec<(String, String)>) {
+    state(|s| {
+        s.equipped = outfit;
+        s.weapon_skins = weapon_skins;
+    });
+    applied();
+}
+
 /// The outfit's mesh for JC (third person, reflections, conversations).
 pub fn player_mesh() -> Option<String> {
     look(false).map(|l| l.0)

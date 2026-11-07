@@ -39,10 +39,13 @@ original scripts. Most of v2.0 is in as well, and co-op multiplayer is playable.
   the Parallax Occlusion addon, from the launcher's Mods page.
 - **Multiplayer**: co-op for up to 16 (the host drives the story, one shared world, own characters and saves), our
   own lobby server with room codes and a public browser, long codes that work without it, LAN discovery, router
-  port opening (UPnP), ready-up, chat and a news feed, mod parity (Classic without mods, Modern with the host's).
+  port opening (UPnP), ready-up, chat and a news feed, mod parity (Classic without mods, Modern with the host's),
+  healing each other; deathmatch and team deathmatch on the five original maps with balanced pickups, deathmatch
+  characters, weapon-skin unlocks, a scoreboard and match settings.
 
 ## v2.0: still to do
-1. **Multiplayer**: internet playtests; deathmatch proper (the original's rules and its five DXMP maps).
+1. **Multiplayer**: internet playtests; deathmatch playtests (kills by grenades and mines credited to their
+   thrower, outfit changes mid-match, the original's skill-buying screen).
 2. **Weapon mods shown on the weapon**: scope, laser sight and silencer on the view model and in third person.
 3. **Materials for weapons and items**: highlights from the material table (they're lit per vertex today).
 4. **Leftovers**: AI sees JC at his body while he peeks from cover; GMDX's commando melee and minimum ranges;

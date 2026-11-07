@@ -21,6 +21,9 @@ mod nullmask;
 mod online;
 mod netplay;
 mod nettags;
+mod deathmatch;
+mod dmchar;
+mod scoreboard;
 mod queue;
 mod util;
 mod uinode;
@@ -925,7 +928,10 @@ fn add_combat_systems(app: &mut App) {
                     netplay::player_list_key_system,
                     netplay::world_sync_system.after(actors::deco_physics),
                     netplay::item_sync_system.after(destruct::weapon_drop_system),
+                    netplay::device_sync_system.after(devices::device_system),
                     pickups::net_give_system.after(pickups::frob_system),
+                    deathmatch::pickups_system.after(pickups::frob_system),
+                    deathmatch::match_system.after(netplay::net_in_system).before(ai::npc_system),
                     nettags::nametag_system,
                 ),
                 ai::player_health_ui,
@@ -1022,7 +1028,7 @@ fn add_input_systems(app: &mut App) {
         .add_systems(Startup, sound::setup_sound)
         .init_resource::<keybinds::Bindings>()
         .add_systems(Startup, (gamepad::setup, || dualsense::setup(), || haptics::setup()))
-        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
+        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, scoreboard::scoreboard_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
         .init_resource::<inventory_screen::InvScreen>()
         .init_resource::<destruct::ItemThrows>()
         .add_systems(

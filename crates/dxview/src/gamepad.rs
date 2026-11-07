@@ -120,7 +120,7 @@ pub const PAD_ACTIONS: &[(&str, PadAction, Option<PadBtn>)] = &[
     ("Goals / notes screen", PadAction::Game("Goals / notes screen"), Some(PadBtn::Touch)),
     ("Quick Save", PadAction::Game("Quick Save"), None),
     ("Quick Load", PadAction::Game("Quick Load"), None),
-    ("Classic / Modern", PadAction::Game("Classic / Modern"), None),
+    ("Classic / Modern (scores in multiplayer)", PadAction::Game("Classic / Modern (scores in multiplayer)"), None),
     ("Melee bash", PadAction::Game("Melee bash"), None),
     ("Player list (multiplayer)", PadAction::Game("Player list (multiplayer)"), None),
 ];
@@ -375,6 +375,7 @@ pub fn bindings() -> Vec<Option<PadBtn>> {
             for line in t.lines() {
                 let Some((name, v)) = line.split_once('=') else { continue };
                 let (name, v) = (name.trim(), v.trim());
+                let name = if name == "Classic / Modern" { "Classic / Modern (scores in multiplayer)" } else { name };
                 let Some(i) = PAD_ACTIONS.iter().position(|a| a.0 == name) else { continue };
                 map[i] = if v == "None" { None } else { ALL_BTNS.iter().copied().find(|b| format!("{b:?}") == v) };
             }

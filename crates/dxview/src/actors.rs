@@ -759,6 +759,8 @@ pub fn apply_pushes(
         if let Some((v, scale)) = push_velocity(pusher_vel, d.mass, crate::carry::muscle_mult()) {
             if v.length_squared() > 0.0 {
                 d.body.velocity = v;
+                // Multiplayer: this player's push - his to report for a moment (netplay).
+                crate::netplay::deco_touched(*b);
                 if !d.floating && d.mass > 15.0 {
                     d.push_snd = 0.2;
                 }

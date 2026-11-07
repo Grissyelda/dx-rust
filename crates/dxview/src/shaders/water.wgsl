@@ -542,15 +542,10 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         let fade = (1.0 - smoothstep(0.6, 0.95, edge)) * near;
         wp.y += swell_h(wp.xz, globals.time) * water.far.w * fade;
         out.world_normal = vec3<f32>(0.0, 1.0, 0.0);
-    } else if (water.far.w > 0.0 && water.grid.x < 0.5 && abs(out.world_normal.y) > 0.7) {
-        // Full near the eye, flat far away (where a vertex is many waves apart and the far sea meets the map's).
-        let de = length(view.world_position.xz - wp.xz);
-        // In a storm the swell runs on much farther (flattened close by, the far flat sea showed in the troughs as
-        // pale triangles).
-        let st = water.m.z;
-        let k = 1.0 - smoothstep(90.0 + 400.0 * st, 220.0 + 700.0 * st, de);
-        wp.y += swell_h(wp.xz, globals.time) * water.far.w * k;
     }
+    // The flat sheets and the open sea stay flat: their triangles are tens to hundreds of metres across, so moving
+    // their corners with the swell (the old storm rule ran it out to 900 m) tilted whole faces - facets and lines
+    // across the far water. The wave grid carries the swell near the eye; out here the shading does.
 #endif
     out.world_position = wp;
     out.position = position_world_to_clip(wp.xyz);

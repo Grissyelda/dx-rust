@@ -37,7 +37,6 @@ pub const PRESET: &[(&str, f32)] = &[
     ("RemasteredLighting", 1.0),
     ("EmissiveSurfaces", 1.0),
     ("AugGlows", 1.0),
-    ("CoatCloth", 1.0),
     ("DiegeticHealing", 1.0),
     ("FirstPersonBody", 1.0),
     ("HurtPoses", 1.0),
@@ -153,6 +152,16 @@ pub fn is_modern() -> bool {
 /// until a menu saves), as it would have been had the switch been made after it existed. Only keys the file doesn't
 /// mention at all - a feature the player turned off stays off.
 pub fn fill_new_modern_keys() {
+    // Coat Cloth left the Modern mix (2026-11-06: the coats looked better swaying as one piece): switched off once
+    // for players who had it from the preset; a player who turns it back on keeps it.
+    if !crate::settings::has("CoatClothRetired") {
+        crate::settings::set("CoatClothRetired", 1.0);
+        crate::settings::set("CoatCloth", 0.0);
+        if crate::settings::has("Modern.CoatCloth") {
+            crate::settings::set("Modern.CoatCloth", 0.0);
+        }
+        crate::settings::save();
+    }
     if !crate::settings::has("ModernMode") || !is_modern() {
         return;
     }
@@ -441,10 +450,7 @@ pub fn wipe_system(
                 let _ = switch(!is_modern());
                 return;
             }
-            // Multiplayer: the room sets the look for everyone.
-            if keys.just_pressed(KeyCode::Tab) && free && crate::netplay::look_locked() {
-                crate::classic_hud::client_message("The room's host chose the look for everyone.");
-            }
+            // Multiplayer: the room sets the look for everyone, and Tab is the scoreboard there (scoreboard.rs).
             let free = free && !crate::netplay::look_locked();
             if (keys.just_pressed(KeyCode::Tab) && free) || auto {
                 eprintln!("REMASTER capture");

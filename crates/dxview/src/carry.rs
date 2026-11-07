@@ -150,6 +150,7 @@ pub fn carry_system(
             d.body.velocity = vel;
             d.body.physics = BodyPhysics::Falling;
             d.thrown_by_player = true;
+            crate::netplay::deco_touched(h.blocker);
             blockers.list[h.blocker].center = drop;
             blockers.list[h.blocker].radius = h.radius;
             blockers.list[h.blocker].height = h.height;
@@ -173,6 +174,7 @@ pub fn carry_system(
             + flat * (0.5 * player.params.radius + h.radius);
         d.body.location = at;
         d.body.velocity = DVec3::ZERO;
+        crate::netplay::deco_touched(h.blocker);
         // Not a blocker for the player while held, but pawns walk around it (ai.rs reads this centre).
         blockers.list[h.blocker].center = at;
         let yaw = (flat.y.atan2(flat.x) / std::f64::consts::TAU * 65536.0) as i32;

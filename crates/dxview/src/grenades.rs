@@ -50,6 +50,10 @@ pub struct Grenade {
     pub rot: [f64; 3],
     pub rot_rate: [f64; 3],
     pub elasticity: f64,
+    /// Multiplayer id (netplay: placed ones = actor + 1, others from the host; 0 = none).
+    pub net: u32,
+    /// A joiner's copy of the host's grenade: drawn, beeping, never deciding anything (no explosion, no trip).
+    pub remote: bool,
 }
 
 /// Grenades to create: thrown (class, pos, dir, thrower) or placed on a wall (pos, normal).
@@ -156,7 +160,52 @@ fn make(
             Some(Value::Str(s)) => s.clone(),
             _ => class.to_string(),
         },
+        net: 0,
+        remote: false,
     }
+}
+
+/// The state the host sends of a grenade (netplay::GrenState).
+fn net_state(g: &Grenade) -> crate::netplay::GrenState {
+    use crate::netplay::{GS_ARMED, GS_DISABLED, GS_STUCK, GS_TICKING};
+    let mut flags = 0;
+    if g.stuck {
+        flags |= GS_STUCK;
+    }
+    if g.armed {
+        flags |= GS_ARMED;
+    }
+    if g.disabled {
+        flags |= GS_DISABLED;
+    }
+    if g.skill_time > 0.0 {
+        flags |= GS_TICKING;
+    }
+    crate::netplay::GrenState {
+        id: g.net,
+        pos: [g.pos.x as f32, g.pos.y as f32, g.pos.z as f32],
+        vel: [g.vel.x as f32, g.vel.y as f32, g.vel.z as f32],
+        rot: [g.rot[0] as i32, g.rot[1] as i32, g.rot[2] as i32],
+        flags,
+    }
+}
+
+/// SpawnTearGas: blastRadius / 36 floating clouds that linger 30-40 s: (pos, scale, life).
+fn tear_gas_clouds(pos: DVec3, blast: f64) -> Vec<(DVec3, f32, f32)> {
+    let n = (blast / 36.0) as usize;
+    let mut seed = (pos.x as i64 as u64) ^ 0x7EA5_6A5;
+    let mut rnd = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((seed >> 33) as f64) / (1u64 << 31) as f64
+    };
+    let mut clouds = Vec::new();
+    for _ in 0..n {
+        if rnd() < 0.9 {
+            let p = pos + DVec3::new(rnd() * blast - blast * 0.5, rnd() * blast - blast * 0.5, 32.0);
+            clouds.push((p, rnd() as f32 * 0.5 + 2.0, rnd() as f32 * 10.0 + 30.0));
+        }
+    }
+    clouds
 }
 
 /// Level-placed grenades become live Grenades (their mesh entities already exist).
@@ -196,6 +245,9 @@ pub fn attach_grenades(
             prox,
         );
         g.armed = prox;
+        // Multiplayer: the same mine on every machine; a joiner's copy is the host's to run.
+        g.net = ma.actor as u32 + 1;
+        g.remote = crate::netplay::is_client();
         // Mission00.FirstFrame, 00_TRAININGCOMBAT: "fool a lam into thinking that the player set it"
         // (SetOwner(Player)) - an owned mine is set off by heavy pawns, so the patrolling bot walks into it.
         if crate::util::starts_with_ci(&level.0.name, "00_trainingcombat")
@@ -236,13 +288,25 @@ pub fn grenade_system(
     let lvl = &level.0;
     // New grenades (the player's, then pawns': those carry their own velocity and blast radius).
     let npc_throws = NPC_THROWS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-    let all = throws
-        .0
-        .drain(..)
-        .map(|(c, p, d, f, w)| (c, p, d, f, w, None))
-        .chain(npc_throws.into_iter().map(|t| (t.class.to_string(), t.pos, DVec3::ZERO, Some(t.from), None, Some((t.vel, t.blast)))))
+    // Multiplayer: grenades are the host's. A joiner's own throws go to him (and come back as his copies of the
+    // host's); the host also throws the joiners'; a joiner gets the host's grenades as copies that only show.
+    let client = crate::netplay::is_client();
+    let mut own = std::mem::take(&mut throws.0);
+    if client {
+        own.retain(|(c, p, d, _, w)| !crate::netplay::grenade_throw_out(c, *p, *d, *w));
+    }
+    let remote_in: Vec<crate::netplay::GrenNet> = if client { crate::netplay::take_grenade_spawns() } else { Vec::new() };
+    let all = own
+        .into_iter()
+        .chain(crate::netplay::take_grenade_throws())
+        .map(|(c, p, d, f, w)| (c, p, d, f, w, None, None))
+        .chain(npc_throws.into_iter().map(|t| (t.class.to_string(), t.pos, DVec3::ZERO, Some(t.from), None, Some((t.vel, t.blast)), None)))
+        .chain(remote_in.into_iter().map(|g| {
+            let v = |a: [f32; 3]| DVec3::new(a[0] as f64, a[1] as f64, a[2] as f64);
+            (g.class.clone(), v(g.pos), DVec3::ZERO, Some(usize::MAX), g.wall.map(v), Some((v(g.vel), g.blast as f64)), Some((g.id, g.fuse)))
+        }))
         .collect::<Vec<_>>();
-    for (class, pos, dir, from, wall, given) in all {
+    for (class, pos, dir, from, wall, given, net) in all {
         let mut d = assets.classes.defaults(&class);
         // Augmentique: the player's grenade skin (ApplyProjectileSkinFrom).
         if from.is_none() {
@@ -275,6 +339,14 @@ pub fn grenade_system(
         {
             // GMDX Short Fuse: the player's thrown grenades go off after 2 s.
             g.fuse = 2.0;
+        }
+        match net {
+            Some((id, fuse)) => {
+                g.net = id;
+                g.remote = true;
+                g.fuse = fuse;
+            }
+            None => g.net = crate::netplay::grenade_spawned(&class, pos, g.vel, wall, g.fuse, g.blast),
         }
         let m = rotator_to_bevy_mat3(rot);
         let root = commands
@@ -319,10 +391,48 @@ pub fn grenade_system(
     let dt = time.delta_secs();
     let remote = REMOTE.swap(false, std::sync::atomic::Ordering::Relaxed);
     let sonic = crate::perks::has("PerkSonicTransducerSensor");
+    // Multiplayer (joiner): what the host says of his grenades - where they are, armed or not, gone.
+    if client {
+        net_apply(&mut commands, &mut q, &mut booms);
+    }
+    // Host: grenades joiners used (disarmed / picked up), and their own blasts (rockets...) near grenades.
+    let net_frobs = if client { Vec::new() } else { crate::netplay::take_grenade_frobs() };
+    let net_blasts = if client { Vec::new() } else { crate::netplay::take_remote_blasts() };
+    // Host: players' bodies set off placed mines like the host himself (radar-cloaked ones only with the option).
+    let bodies: Vec<DVec3> = if client {
+        Vec::new()
+    } else {
+        crate::netplay::remote_bodies()
+            .into_iter()
+            .filter(|(id, _)| !(crate::optfixes::radar_cloak() && crate::netplay::body_state(*id).is_some_and(|b| b.2)))
+            .map(|(_, p)| p)
+            .collect()
+    };
     for (e, mut g, mut tf) in &mut q {
         let g = &mut *g;
         g.time += dt;
+        if g.remote {
+            remote_tick(g, &mut tf, lvl, &blockers, &mv, dt);
+            continue;
+        }
+        if g.net != 0 && net_frobs.contains(&g.net) {
+            let (_, take) = frob_grenade(g);
+            if take {
+                crate::netplay::grenade_gone(g.net, false);
+                commands.entity(e).despawn();
+                continue;
+            }
+        }
         let mut explode = false;
+        for (p, r, ty) in &net_blasts {
+            if p.distance(g.pos) < *r {
+                match *ty {
+                    "TearGas" | "PoisonGas" | "Radiation" | "NanoVirus" => {}
+                    "EMP" => g.disabled = true,
+                    _ => explode = true,
+                }
+            }
+        }
         // Remote Detonation: the player's own wall mines (bProximityTriggered, not EMP-disabled) go off.
         if remote && g.proximity && !g.placed && g.from.is_none() && !g.disabled {
             explode = true;
@@ -487,11 +597,21 @@ pub fn grenade_system(
                         g.skill_time =
                             (-20.0 * crate::abilities::skill("SkillDemolition")).clamp(1.0, 10.0);
                     }
+                    // Multiplayer: the other players walk into the map's mines too (their skill isn't known here:
+                    // the host's).
+                    if g.placed && g.skill_time == 0.0 && bodies.iter().any(|b| b.distance(g.pos) < g.prox_radius) {
+                        g.skill_time = (-20.0 * crate::abilities::skill("SkillDemolition")).clamp(1.0, 10.0);
+                    }
                 }
                 if !g.placed {
-                    // The player's mines: pawns of Mass >= 40 set them off.
+                    // The player's mines: pawns of Mass >= 40 set them off (in co-op not the players' own bodies,
+                    // unless friendly fire is on).
+                    let mates_safe = crate::netplay::rules().is_some_and(|r| r.coop && !r.friendly_fire);
                     for n in &npcs {
                         if n.state == crate::ai::NpcState::Dead || n.blocker == usize::MAX {
+                            continue;
+                        }
+                        if n.net_player.is_some() && mates_safe {
                             continue;
                         }
                         let c = blockers.list[n.blocker].center;
@@ -536,41 +656,122 @@ pub fn grenade_system(
             }
             if g.damage_type == "TearGas" {
                 // SpawnTearGas: blastRadius / 36 floating clouds that linger 30-40 s.
-                let n = (g.blast / 36.0) as usize;
-                let mut seed = (g.pos.x as i64 as u64) ^ 0x7EA5_6A5;
-                let mut rnd = || {
-                    seed = seed
-                        .wrapping_mul(6364136223846793005)
-                        .wrapping_add(1442695040888963407);
-                    ((seed >> 33) as f64) / (1u64 << 31) as f64
-                };
-                let mut clouds = Vec::new();
-                for _ in 0..n {
-                    if rnd() < 0.9 {
-                        let p = g.pos
-                            + DVec3::new(
-                                rnd() * g.blast - g.blast * 0.5,
-                                rnd() * g.blast - g.blast * 0.5,
-                                32.0,
-                            );
-                        clouds.push((
-                            p,
-                            rnd() as f32 * 0.5 + 2.0,
-                            rnd() as f32 * 10.0 + 30.0,
-                            g.from,
-                        ));
-                    }
-                }
-                gas.0.extend(clouds);
+                let from = g.from;
+                gas.0.extend(tear_gas_clouds(g.pos, g.blast).into_iter().map(|(p, s, l)| (p, s, l, from)));
             }
             println!(
                 "GRENADE {} exploded at ({:.0},{:.0},{:.0})",
                 g.class, g.pos.x, g.pos.y, g.pos.z
             );
+            crate::netplay::grenade_gone(g.net, true);
             commands.entity(e).despawn();
         }
     }
+    // Host: the grenades' states for the joiners (ten times a second, what changed).
+    crate::netplay::grenade_states_out(dt, || q.iter().filter(|(_, g, _)| g.net != 0 && !g.remote).map(|(_, g, _)| net_state(&g)).collect());
     let _ = &mut hud;
+}
+
+/// A joiner's copy of the host's grenade, each frame: it flies and beeps as the host's does (the host's states
+/// put it right), never trips or explodes here. A blast of this joiner's own near it goes to the host
+/// (netplay::blast_out, through security::blast), who decides.
+fn remote_tick(g: &mut Grenade, tf: &mut Transform, lvl: &dx_level::Level, blockers: &Blockers, mv: &crate::movers::Movers, dt: f32) {
+    if g.falling && !g.stuck {
+        g.vel.z -= 950.0 * dt as f64;
+        let world = ActWorld { level: lvl, blockers: &blockers.list, ignore: None, pushable: None, movers: Some(&mv.rt) };
+        let start = g.pos;
+        let end = start + g.vel * dt as f64;
+        let h = world.trace(start, end, DVec3::splat(2.0));
+        if h.fraction >= 1.0 {
+            g.pos = end;
+        } else {
+            g.pos = start + (end - start) * (h.fraction - 0.01).max(0.0) + h.normal * 0.1;
+            g.vel = (g.vel.dot(h.normal) * h.normal * -2.0 + g.vel) * g.elasticity;
+        }
+        for k in 0..3 {
+            g.rot[k] += g.rot_rate[k] * dt as f64;
+        }
+    }
+    let r = [g.rot[0] as i32, g.rot[1] as i32, g.rot[2] as i32];
+    let m = rotator_to_bevy_mat3(r);
+    tf.rotation = Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2])));
+    tf.translation = Vec3::from(ue_to_bevy(g.pos.as_vec3().to_array()));
+    if !g.disabled && g.time < g.fuse && !g.proximity {
+        g.beep_time += dt;
+        let left = g.fuse - g.time;
+        let rate = if left <= 0.75 { 0.1 } else if left <= g.fuse * 0.5 { 0.3 } else { 0.5 };
+        if g.beep_time > rate {
+            g.beep_time = 0.0;
+            crate::sound::play("DeusExSounds.Generic.Beep4", g.pos, 1.0, 1280.0, 1.0);
+        }
+    }
+    if g.skill_time > 0.0 && !g.disabled {
+        g.beep_phase -= dt;
+        if g.beep_phase <= 0.0 {
+            g.beep_phase = 0.3;
+            crate::sound::play("DeusExSounds.Generic.Beep4", g.pos, 1.0, 1280.0, 2.0);
+        }
+    }
+}
+
+/// Joiner: the host's word on his grenades this frame - states, and the ones gone (an explosion is drawn here
+/// with no harm in it: the host's blast already hurt whoever it reached, this player included).
+fn net_apply(
+    commands: &mut Commands,
+    q: &mut Query<(Entity, &mut Grenade, &mut Transform)>,
+    booms: &mut Explosions,
+) {
+    use crate::netplay::{GS_ARMED, GS_DISABLED, GS_STUCK, GS_TICKING};
+    let v = |a: [f32; 3]| DVec3::new(a[0] as f64, a[1] as f64, a[2] as f64);
+    for st in crate::netplay::take_grenade_states() {
+        for (_, mut g, _) in q.iter_mut() {
+            if g.net != st.id || !g.remote {
+                continue;
+            }
+            g.pos = v(st.pos);
+            g.vel = v(st.vel);
+            g.stuck = st.flags & GS_STUCK != 0;
+            if g.stuck {
+                g.vel = DVec3::ZERO;
+                g.rot = [st.rot[0] as f64, st.rot[1] as f64, st.rot[2] as f64];
+            }
+            g.armed = st.flags & GS_ARMED != 0;
+            g.disabled = st.flags & GS_DISABLED != 0;
+            let ticking = st.flags & GS_TICKING != 0;
+            if ticking && g.skill_time <= 0.0 {
+                g.skill_time = 1.0;
+            } else if !ticking {
+                g.skill_time = 0.0;
+            }
+        }
+    }
+    for (id, exploded) in crate::netplay::take_grenades_gone() {
+        for (e, g, _) in q.iter_mut() {
+            if g.net != id {
+                continue;
+            }
+            // (Disarmed here but gone off there - the host's copy hadn't heard yet - it still blew: his word counts.)
+            if exploded {
+                if let Some(s) = &g.impact_snd {
+                    crate::sound::play(s, g.pos, 2.0, (g.blast * 16.0) as f32, 1.0);
+                }
+                booms.0.push(Boom {
+                    pos: g.pos,
+                    damage: 0.0,
+                    radius: g.blast,
+                    damage_type: g.damage_type,
+                    from: None,
+                    rings: true,
+                    fireball: matches!(g.damage_type, "Exploded" | "EMP"),
+                    fx: if g.damage_type == "EMP" { 3 } else { 2 },
+                });
+                if g.damage_type == "TearGas" {
+                    crate::projectiles::harmless_clouds(tear_gas_clouds(g.pos, g.blast));
+                }
+            }
+            commands.entity(e).despawn();
+        }
+    }
 }
 
 /// Using a grenade (frob): an armed mine about to go is disarmed; a disarmed (or placed and unarmed) one is taken
@@ -594,7 +795,7 @@ pub fn danger_system(q: Query<&Grenade>) {
         d.clear();
         d.extend(
             q.iter()
-                .filter(|g| !g.proximity && !g.disabled && !g.placed)
+                .filter(|g| !g.proximity && !g.disabled && !g.placed && !g.remote)
                 .map(|g| (g.pos, g.blast, g.from)),
         );
     }

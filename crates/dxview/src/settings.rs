@@ -19,6 +19,12 @@ thread_local! {
 
 /// (key, default) for every setting; defaults are the original's (MenuChoice_* defaultValue, player defaults).
 pub const DEFAULTS: &[(&str, f32)] = &[
+    // Ours: the host's deathmatch match settings (Host Room > Match Settings; indices into deathmatch.rs lists).
+    ("DmFragLimit", 4.0),
+    ("DmTimeLimit", 2.0),
+    ("DmMap", 2.0),
+    ("DmAfter", 0.0),
+    ("DmAutoBalance", 1.0),
     // Game options (MenuScreenOptions). Enabled/Disabled enums: 0 = Enabled.
     ("ObjectNames", 0.0),
     ("WeaponAutoReload", 0.0),

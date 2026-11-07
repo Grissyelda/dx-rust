@@ -89,6 +89,11 @@ pub fn warren(center: DVec3, radius: f64) {
 /// A multitool bypass finished on the actor `actor`. AlarmUnit.HackAction: an alarm that is sounding goes quiet
 /// and is disabled for good; one that isn't sounding is left alone (the script never sets one off this way).
 pub fn hacked(actor: usize) {
+    // Multiplayer: a joiner's is the host's to do.
+    if crate::netplay::is_client() {
+        crate::netplay::alarm_hack_out(actor);
+        return;
+    }
     if let Ok(mut q) = HACKED.lock() {
         q.push(actor);
     }
@@ -228,10 +233,8 @@ pub fn alarm_system(
     mut alarms: ResMut<Alarms>,
     mut events: ResMut<crate::devices::GameEvents>,
 ) {
-    // Multiplayer: the host's to run (a joiner sees the results through him).
-    if crate::netplay::story_off() {
-        return;
-    }
+    // Multiplayer: the host's to run (a joiner sees and hears the ones the host says are sounding).
+    let client = crate::netplay::story_off();
     let _prof = crate::prof::scope("alarms::alarm_system");
     let lvl = &level.0;
     if !alarms.started {
@@ -290,6 +293,15 @@ pub fn alarm_system(
         }
         println!("alarms: {}", alarms.units.len());
     }
+    if client {
+        if let Some(on) = crate::netplay::take_alarms() {
+            for u in alarms.units.iter_mut().filter(|u| !u.external) {
+                u.active = on.contains(&(u.actor as u32));
+            }
+        }
+        sound_and_blink(&alarms, time.elapsed_secs_f64());
+        return;
+    }
     for actor in HACKED
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
@@ -323,8 +335,7 @@ pub fn alarm_system(
             u.confused -= dt;
         }
     }
-    let now = time.elapsed_secs_f64();
-    for (i, u) in alarms.units.iter_mut().enumerate() {
+    for u in alarms.units.iter_mut() {
         if !u.active || u.external {
             continue;
         }
@@ -335,6 +346,18 @@ pub fn alarm_system(
             u.t = 0.0;
             u.instigator = None;
             u.associated = None;
+        }
+    }
+    sound_and_blink(&alarms, time.elapsed_secs_f64());
+    // Multiplayer: the joiners hear the same alarms.
+    crate::netplay::alarms_out(alarms.units.iter().filter(|u| u.active && !u.external).map(|u| u.actor as u32).collect());
+    events.0.append(&mut alarms.events);
+}
+
+/// A sounding alarm unit: the klaxon, and its light blinking twice a second.
+fn sound_and_blink(alarms: &Alarms, now: f64) {
+    for (i, u) in alarms.units.iter().enumerate() {
+        if !u.active || u.external {
             continue;
         }
         let r = u.hear_radius() as f32;
@@ -357,7 +380,6 @@ pub fn alarm_system(
             );
         }
     }
-    events.0.append(&mut alarms.events);
 }
 
 /// A new map is going in (loader.rs): this module's state of the map being left.

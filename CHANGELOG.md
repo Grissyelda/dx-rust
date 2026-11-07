@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Deathmatch and co-op fixes (November 6, night)
+- **Deathmatch and Team Deathmatch** (up to 8 v 8) on the original's five multiplayer maps (Area 51 Bunker,
+  Cathedral, Vandenberg CMD, Missile Silo, Smuggler's Lair), Modern with Augmentique. The original's rules: spawns
+  away from enemies, the multiplayer start kit, scoring, frag and time limits, kill lines. Damage from a table
+  (headshots with a pistol or rifle kill). Balanced pickups per map: one GEP gun (back 2 minutes after it's taken),
+  at most one of each heavy weapon, the rest spread evenly; pickups are shared and respawn for everyone.
+- **Deathmatch Character** (Multiplayer screen): name, body (female with Lay D Denton), face, Augmentique outfit,
+  record, and a skin per weapon - kills with a weapon unlock its Augmentique skins (10, 25, 50... kills).
+- **Scoreboard** on Tab in any multiplayer session: kills, deaths, heals given, streak, ping; teams side by side.
+- **Match Settings** for the host: map, frag limit, time limit, what comes after a match, team auto-balance; a
+  results screen at the end of a match.
+- Co-op fixes: floating items no longer jitter; NPCs killed on the host die (and ragdoll) for everyone; mines and gas
+  grenades, turrets, cameras, alarms and hacking are one shared world run by the host; on Hard and Realistic a
+  fallen player waits 10 s to respawn and the level restarts if everyone is down at once.
+- Coat cloth is out of the Modern mix (switched off once); far water in storms no longer shows facets.
+
 ### Multiplayer fixes (November 6, evening)
 - **Classic rooms with mods installed**: hosting (or joining) a Classic room switches your mods off while you play
   instead of refusing; they come back when you leave. The Look choice says which mods are switched off.

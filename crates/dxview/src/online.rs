@@ -230,6 +230,7 @@ pub fn rules_of(s: &RoomSettings) -> crate::netplay::Rules {
         max_players: s.max_players,
         friendly_fire: old.friendly_fire,
         difficulty: crate::travel::combat_difficulty(),
+        dm: crate::deathmatch::rules(),
     }
 }
 

@@ -561,6 +561,22 @@ pub fn latest() -> Option<PathBuf> {
         .map(|x| x.1)
 }
 
+/// The newest save (manual, quick or auto) of the playing character made on `map` (multiplayer's level restart).
+pub fn latest_for_map(map: &str) -> Option<PathBuf> {
+    let want = map.trim_end_matches(".dx").to_ascii_lowercase();
+    let rd = std::fs::read_dir(active_dir()).ok()?;
+    let mut v: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("ron"))
+        .filter_map(|p| Some((std::fs::metadata(&p).and_then(|m| m.modified()).ok()?, p)))
+        .collect();
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v.into_iter()
+        .map(|(_, p)| p)
+        .find(|p| read(p).is_some_and(|s| s.map.trim_end_matches(".dx").eq_ignore_ascii_case(&want)))
+}
+
 pub fn read(path: &Path) -> Option<SaveGame> {
     let t = std::fs::read_to_string(path).ok()?;
     match ron::from_str::<SaveGame>(&t) {

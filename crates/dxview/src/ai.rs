@@ -3299,7 +3299,7 @@ pub fn npc_system(
                 crate::netplay::puppet_hits(npc.actor, npc.net_player, &list);
             }
             lazy_init(npc, &mut deco, lvl, &mut assets, &mut blockers);
-            puppet_step(npc, &mut deco, &mut an, &mut tf, &mut blockers, &level, &mut assets, dt);
+            puppet_step(npc, &mut deco, &mut an, &mut tf, &mut blockers, &level, &mut assets, (&mut gibs, &mut booms), dt);
             continue;
         }
         let state_before = std::mem::discriminant(&npc.state);
@@ -3449,6 +3449,7 @@ fn puppet_step(
     blockers: &mut Blockers,
     level: &LevelRes,
     assets: &mut RuntimeAssets,
+    (gibs, booms): (&mut crate::effects::Gibs, &mut crate::explosion::Explosions),
     dt: f32,
 ) {
     let Some(p) = npc.net.as_deref().cloned() else { return };
@@ -3500,10 +3501,21 @@ fn puppet_step(
             }
         }
     }
-    let dead = p.dead != 0;
+    // A placed pawn the host killed or knocked out (the host's news of how, or his pawn state saying so - a late
+    // joiner only gets the latter): dead here too - the fall, a searchable body, no blocking, no shadow.
+    let fx = if npc.net_player.is_none() && npc.state != NpcState::Dead { crate::netplay::take_pawn_fx(npc.actor) } else { None };
+    let dead = p.dead != 0 || fx.is_some();
+    if env_val!("DXVIEW_PAWNLOG").is_some_and(|n| level.0.actors[npc.actor].name.eq_ignore_ascii_case(n)) {
+        let t = p.anim.as_ref().map(|a| (a.0.as_str(), a.1)).unwrap_or(("", 0.0));
+        if (npc.weapon_timer * 2.0).floor() != ((npc.weapon_timer - dt) * 2.0).floor() {
+            println!("PUPPET {} state {:?} anim {} host {:?} dead {} at {:.0?}", level.0.actors[npc.actor].name, npc.state, npc.anim, t, p.dead, deco.body.location);
+        }
+    }
     if dead && npc.state != NpcState::Dead {
-        npc.state = NpcState::Dead;
-        npc.knocked_out = p.dead == 2;
+        if env_on!("DXVIEW_NETLOG") {
+            println!("NET puppet {} dies (fx {:?}, host anim {:?})", level.0.actors[npc.actor].name, fx.is_some(), p.anim.as_ref().map(|a| a.0.clone()));
+        }
+        puppet_dies(npc, deco, an, blockers, level, &p, fx, gibs, booms);
     } else if !dead && npc.state == NpcState::Dead && npc.net_player.is_some() {
         npc.state = NpcState::Idle;
     }
@@ -3585,6 +3597,75 @@ fn puppet_step(
         }
     }
     let _ = blockers;
+}
+
+/// Multiplayer (joiner): a pawn the host runs died there. `fx`: how (the hit, for the fall and the ragdoll; or
+/// blown apart); without it (a late joiner, the news still on its way) the pose the host sends says enough.
+#[allow(clippy::too_many_arguments)]
+fn puppet_dies(
+    npc: &mut Npc,
+    deco: &mut Deco,
+    an: &mut Animated,
+    blockers: &mut Blockers,
+    level: &LevelRes,
+    p: &crate::netplay::NetPose,
+    fx: Option<crate::netplay::PawnFx>,
+    gibs: &mut crate::effects::Gibs,
+    booms: &mut crate::explosion::Explosions,
+) {
+    let lvl = &level.0;
+    npc.state = NpcState::Dead;
+    npc.knocked_out = p.dead == 2;
+    npc.weapon_drawn = false;
+    npc.target = None;
+    npc.alert = None;
+    deco.body.physics = imsim_core::body::BodyPhysics::None;
+    deco.body.velocity = DVec3::ZERO;
+    let center = blockers.list.get(npc.blocker).map_or(deco.body.location, |c| c.center);
+    if let Some(c) = blockers.list.get_mut(npc.blocker) {
+        c.radius = 0.0;
+        c.height = 0.0;
+    }
+    let host_anim = p.anim.as_ref().map(|(n, t, ..)| (n.clone(), *t));
+    match fx {
+        Some(crate::netplay::PawnFx::Gibbed { at, r, h, robot, boom }) => {
+            npc.carried = true;
+            npc.searched = true;
+            gibs.0.push((at, r, h, robot));
+            if boom > 0.0 {
+                let snd = if robot { "DeusExSounds.Generic.MediumExplosion1" } else { "DeusExSounds.Generic.LargeExplosion1" };
+                crate::sound::play(snd, at, 2.0, (boom * 4.0) as f32, 1.0);
+                // Effects only: the host's blast already hurt whoever it reached.
+                booms.0.push(crate::explosion::Boom { pos: at, damage: 0.0, radius: boom, damage_type: "Exploded", from: None, rings: false, fireball: true, fx: 0 });
+            }
+        }
+        Some(crate::netplay::PawnFx::Died { hit, from, damage, vel }) => {
+            crate::ragdoll::request(crate::ragdoll::Death { blocker: npc.blocker, hit, from, damage, vel });
+            if let Some(snd) = crate::sound::prop(&lvl.actors[npc.actor].props, "Die") {
+                crate::sound::play(&snd, center, 1.0, 0.0, crate::sound::random_pitch());
+            }
+        }
+        None => {
+            // Only the pose: a fall just begun is still a fall here (ragdolled if that's on); an old one isn't.
+            if host_anim.as_ref().is_some_and(|(n, t)| n.starts_with("Death") && *t < 0.6) {
+                let facing = DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0);
+                let back = host_anim.as_ref().is_some_and(|(n, _)| n == "DeathBack");
+                let from = center + facing * if back { 200.0 } else { -200.0 };
+                crate::ragdoll::request(crate::ragdoll::Death { blocker: npc.blocker, hit: center + DVec3::Z * 20.0, from, damage: 20.0, vel: DVec3::ZERO });
+            }
+        }
+    }
+    // No death sequence in the mesh (Animal.bPlayDying False): the carcass comes at once, as on the host.
+    if !npc.carried {
+        if let Some(m) = lvl.mesh_actors[an.mesh_actor].anim.as_ref() {
+            let has_death = m.mesh.seqs.iter().any(|s| s.name.eq_ignore_ascii_case("DeathBack") || s.name.eq_ignore_ascii_case("DeathFront"));
+            if !has_death {
+                if let Some(Value::Path(c)) = find(&lvl.actors[npc.actor].props, "CarcassType") {
+                    npc.swap_carcass = Some(c.rsplit('.').next().unwrap_or("").to_string());
+                }
+            }
+        }
+    }
 }
 
 /// Everything heard since last frame, gathered into the kept buffer: the queued noises and Smarter AI's.
@@ -7083,9 +7164,13 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
             damage_type: h.damage_type,
         });
         crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
+        crate::netplay::credit_pawn_kill(h.attacker);
         if npc.important && !npc.bind_name.is_empty() {
             flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);
         }
+        // Multiplayer: the joiners' copy comes apart the same way (chunks, a robot's or MIB's blast).
+        let boom = if npc.hp_body.robot { 8.0 * r } else if self_destruct { 256.0 } else { 0.0 };
+        crate::netplay::pawn_gibbed(npc.actor, center, npc.params.radius, npc.params.height, npc.hp_body.robot, boom);
         npc.state = NpcState::Dead;
         npc.weapon_drawn = false;
         npc.carried = true; // gone: nothing left to search or carry
@@ -7119,6 +7204,8 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
     }
     npc.state = NpcState::Dead;
     npc.knocked_out = knocked_out;
+    // Multiplayer: the joiners' copy falls the same way (netplay; ai::puppet_step there).
+    crate::netplay::pawn_died(npc.actor, h.hit_loc, h.attacker_pos, h.damage, deco.body.velocity);
     // A rebuilt body goes limp at once (ragdoll.rs), pushed by the blow and carried by its run.
     crate::ragdoll::request(crate::ragdoll::Death {
         blocker: npc.blocker,
@@ -7158,6 +7245,7 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         damage_type: h.damage_type,
     });
     crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
+    crate::netplay::credit_pawn_kill(h.attacker);
     blockers.list[npc.blocker].radius = 0.0;
     blockers.list[npc.blocker].height = 0.0;
     deco.body.physics = imsim_core::body::BodyPhysics::None;
@@ -7443,9 +7531,13 @@ pub fn player_health_ui(
     }
     // Multiplayer: no loading or restarting - the dead get up again near the host (netplay).
     if ph.dead && crate::netplay::active() {
-        let t = match crate::netplay::respawn_in() {
-            Some(s) if s > 0.0 => format!("You are down. Back on your feet in {}.", s.ceil() as i32),
-            _ => "You are down.".to_string(),
+        let t = if crate::netplay::reset_pending() {
+            "You are down. Everyone is down: the level restarts.".to_string()
+        } else {
+            match crate::netplay::respawn_in() {
+                Some(s) if s > 0.0 => format!("You are down. Respawn in {}.", s.ceil() as i32),
+                _ => "You are down.".to_string(),
+            }
         };
         if hud.text != t || hud.time_left < 1.0e8 {
             hud.text = t;
@@ -7672,7 +7764,12 @@ pub fn npc_weapon_models(
         let mut d = assets.classes.defaults(&w.class);
         // Augmentique: a skin for this owner's weapon (WeaponSkinManager.SetDefaultSkin).
         let npc_class = level.0.actors.get(npc.actor).map(|a| a.class.clone()).unwrap_or_default();
-        crate::augmentique::apply_weapon_skin(&mut d, &w.class, &crate::augmentique::npc_skin(&npc_class, &w.class), false);
+        // A player's body: the skin he chose for that weapon (deathmatch characters).
+        let skin = match npc.net_player.and_then(|p| crate::deathmatch::remote_skin(p, &w.class)) {
+            Some(s) => s,
+            None => crate::augmentique::npc_skin(&npc_class, &w.class),
+        };
+        crate::augmentique::apply_weapon_skin(&mut d, &w.class, &skin, false);
         let root = commands
             .spawn((Transform::default(), Visibility::Hidden, HeldRoot))
             .id();

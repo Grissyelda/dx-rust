@@ -680,7 +680,9 @@ pub fn cinematic_system(
             evs.iter().any(|e| !x.tag.is_empty() && e.eq_ignore_ascii_case(&x.tag))
                 || (x.touch && x.armed && !letterbox() && inside(x))
         });
-        if let Some(x) = hit.cloned() {
+        // (A deathmatch map is never left by its exits: the original's DXMP maps keep a few single-player ones.)
+        let leaves = |x: &Exit| !x.teleporter || x.dest.contains('#') || x.dest.contains('/');
+        if let Some(x) = hit.cloned().filter(|x| !(crate::deathmatch::playing() && leaves(x))) {
             load_map(&level.0, &x, &mut player);
         }
     }

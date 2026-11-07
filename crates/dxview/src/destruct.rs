@@ -396,6 +396,16 @@ pub fn deco_damage_system(
         if client && !net_break && blockers.list[b].actor < placed && crate::netplay::deco_hit(blockers.list[b].actor, hit.damage, hit.damage_type) {
             continue;
         }
+        // ...and so is his hit on a turret's gun (spawned at play, named after its placed AutoTurret base).
+        if client && !net_break {
+            let a = &lvl.actors[blockers.list[b].actor];
+            if a.class.starts_with("AutoTurretGun") {
+                if let Ok(base) = a.name.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<usize>() {
+                    crate::netplay::turret_hit_out(base, hit.damage, hit.damage_type);
+                }
+                continue;
+            }
+        }
         let Ok(mut deco) = decos.get_mut(e) else {
             continue;
         };

@@ -70,6 +70,7 @@ pub fn valid_code(s: &str) -> bool {
 pub enum Mode {
     Coop,
     Deathmatch,
+    TeamDeathmatch,
 }
 
 impl Mode {
@@ -77,12 +78,14 @@ impl Mode {
         match self {
             Mode::Coop => "coop",
             Mode::Deathmatch => "dm",
+            Mode::TeamDeathmatch => "tdm",
         }
     }
     pub fn parse(s: &str) -> Option<Mode> {
         match s {
             "coop" => Some(Mode::Coop),
             "dm" => Some(Mode::Deathmatch),
+            "tdm" => Some(Mode::TeamDeathmatch),
             _ => None,
         }
     }
@@ -121,12 +124,36 @@ pub struct RoomSettings {
     pub tough: bool,
     /// The room's name in the browser (the host's name).
     pub name: String,
+    /// Deathmatch rooms: map and limits for the browser ("Cathedral/20_kills/10_min"; no spaces or colons). It
+    /// travels after the mode word ("dm:Cathedral/...").
+    pub detail: String,
 }
 
 impl Default for RoomSettings {
     fn default() -> Self {
-        RoomSettings { mode: Mode::Coop, public: true, max_players: 4, look: Look::Modern, tough: false, name: String::new() }
+        RoomSettings { mode: Mode::Coop, public: true, max_players: 4, look: Look::Modern, tough: false, name: String::new(), detail: String::new() }
     }
+}
+
+/// A mode word with the room's detail ("dm:Cathedral/20_kills").
+fn mode_field(mode: Mode, detail: &str) -> String {
+    let d = clean_detail(detail);
+    if d.is_empty() {
+        mode.word().to_string()
+    } else {
+        format!("{}:{d}", mode.word())
+    }
+}
+
+/// The mode and detail of a mode field.
+fn parse_mode_field(w: &str) -> Option<(Mode, String)> {
+    let (m, d) = w.split_once(':').unwrap_or((w, ""));
+    Some((Mode::parse(m)?, clean_detail(d)))
+}
+
+/// A detail as it travels: printable ASCII without spaces or colons, at most 40.
+pub fn clean_detail(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_graphic() && *c != ':').take(40).collect()
 }
 
 /// A room as the browser lists it.
@@ -141,6 +168,8 @@ pub struct RoomInfo {
     /// The host's round trip to the lobby (ms), for the browser's ping estimate.
     pub host_ms: u32,
     pub name: String,
+    /// See RoomSettings::detail.
+    pub detail: String,
 }
 
 /// Names travel as one field: spaces become underscores, anything outside printable ASCII is dropped, at most 24.
@@ -172,7 +201,7 @@ impl RoomInfo {
         format!(
             "R {} {} {} {} {} {} {} {}",
             self.code,
-            self.mode.word(),
+            mode_field(self.mode, &self.detail),
             self.look.word(),
             self.players,
             self.max_players,
@@ -187,9 +216,12 @@ impl RoomInfo {
         if w.next()? != "R" {
             return None;
         }
+        let code = w.next()?.to_string();
+        let (mode, detail) = parse_mode_field(w.next()?)?;
         Some(RoomInfo {
-            code: w.next()?.to_string(),
-            mode: Mode::parse(w.next()?)?,
+            code,
+            mode,
+            detail,
             look: Look::parse(w.next()?)?,
             players: w.next()?.parse().ok()?,
             max_players: w.next()?.parse().ok()?,
@@ -204,7 +236,7 @@ impl RoomInfo {
 pub fn settings_fields(s: &RoomSettings) -> String {
     format!(
         "{} {} {} {} {}",
-        s.mode.word(),
+        mode_field(s.mode, &s.detail),
         flag(s.public),
         s.max_players.clamp(2, MAX_PLAYERS),
         s.look.word(),
@@ -214,7 +246,7 @@ pub fn settings_fields(s: &RoomSettings) -> String {
 
 /// Parses `mode public max look tough` from a word iterator.
 pub fn parse_settings<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<RoomSettings> {
-    let mode = Mode::parse(w.next()?)?;
+    let (mode, detail) = parse_mode_field(w.next()?)?;
     let public = w.next()? == "1";
     let max_players: u8 = w.next()?.parse().ok()?;
     if !(2..=MAX_PLAYERS).contains(&max_players) {
@@ -222,7 +254,7 @@ pub fn parse_settings<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<RoomS
     }
     let look = Look::parse(w.next()?)?;
     let tough = w.next()? == "1";
-    Some(RoomSettings { mode, public, max_players, look, tough, name: String::new() })
+    Some(RoomSettings { mode, public, max_players, look, tough, name: String::new(), detail })
 }
 
 #[cfg(test)]
@@ -249,9 +281,10 @@ mod tests {
             tough: true,
             host_ms: 42,
             name: "JC Denton".into(),
+            detail: "Silo/10_kills".into(),
         };
         assert_eq!(RoomInfo::parse(&r.line()), Some(r));
-        let s = RoomSettings { mode: Mode::Deathmatch, public: false, max_players: 16, look: Look::Modern, tough: false, name: String::new() };
+        let s = RoomSettings { mode: Mode::Deathmatch, public: false, max_players: 16, look: Look::Modern, tough: false, name: String::new(), detail: "Cathedral/20_kills".into() };
         let f = settings_fields(&s);
         assert_eq!(parse_settings(&mut f.split_whitespace()), Some(s));
         assert_eq!(clean_name("  Paul \u{e9} Denton!  "), "Paul__Denton!");
