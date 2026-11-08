@@ -97,6 +97,12 @@ face, outfit); kills unlock weapon skins. The host sets the map and the frag and
 port itself, forward **UDP 27972** to the host (or turn on UPnP). Players on the same network find the host on their
 own. -- You can also use Radmin VPN or Hamachi to skip port forwarding, similar to playing Minecraft with friends.
 
+**Running your own lobby server:** `dxlobby` (the `dxlobby` crate) is the lobby with a small control window. For a
+server with no graphics stack, build it without the window (`cargo build --release --no-default-features` in
+`crates/dxlobby`): it then just runs the lobby (port 27962 TCP and UDP), logging to stderr and `dxlobby.log`.
+`dxlobby status`, `rooms`, `reset`, `stop` and `upnp` talk to a running server; `--port`, `--admin-port`, `--log PATH|none`,
+`--name` and `--key-file` set it up. Players point the game at it with `LobbyServer=host:port` in `launcher.txt`.
+
 ### Mods (optional)
 1. Unzip each mod into its own folder:
    [Lay D Denton Project](https://www.moddb.com/mods/the-lay-d-denton-project),
@@ -150,6 +156,7 @@ Then:
 | `imsim-net` | Multiplayer: the lobby server, encrypted game links, NAT punching and UPnP |
 | `dxview` | The game itself, on Bevy |
 | `dxlauncher` | The launcher (egui) |
+| `dxlobby` | The lobby server, with a control window (egui) or headless |
 | `dxbuilder` | The Release Builder (egui) |
 | `dxandroid` | The Android app around `dxview`; `vendor/winit` is winit with an Android controller hook |
 | `dxtool` | Command-line package inspector |

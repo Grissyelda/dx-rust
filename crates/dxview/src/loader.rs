@@ -795,7 +795,7 @@ fn dev_goto(world: &mut World) {
                 let v: Vec<f64> = map.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 let vel = if v.len() == 3 { glam::DVec3::new(v[0], v[1], v[2]) } else { glam::DVec3::new(300.0, 0.0, 220.0) };
                 let flat = glam::DVec3::new(vel.x, vel.y, 0.0).normalize_or_zero();
-                world.resource_mut::<crate::weapons::CorpseDrops>().0.push((e, ploc + flat * 16.0 + glam::DVec3::new(0.0, 0.0, 40.0), vel));
+                world.resource_mut::<crate::weapons::CorpseDrops>().0.push((e, ploc + flat * 16.0 + glam::DVec3::new(0.0, 0.0, 40.0), vel, flat.y.atan2(flat.x)));
                 *crate::actors::BODY_LOG.lock().unwrap() = Some(name.clone());
                 println!("GOTO threw {name}");
             }
@@ -869,6 +869,9 @@ fn dev_goto(world: &mut World) {
                     if let Some(b) = b {
                         if crate::fixtures::is_fixture(&class) {
                             crate::fixtures::frob(b);
+                        } else {
+                            // A pawn: talk to it (consys finds its conversation, if it has one).
+                            crate::consys::request_frob(b);
                         }
                     }
                     if !ev.is_empty() {

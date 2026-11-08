@@ -222,11 +222,18 @@ pub fn hear(level: &Level, ear: DVec3, n: &Noise) -> f32 {
 }
 
 /// AICanSee with bCheckVisibility: the target's visibility faded with distance, or 0 below the threshold.
+/// The fade is the square of (1 - distance / SightRadius): with the linear fade used before, anyone standing in
+/// the Island's night light was made out from nearly the whole 2,500 units (GitHub issue #47, "much more
+/// limited in the original"). Now someone in light 0.2 is picked out to about 1,900 units, in dim light 0.05 to
+/// about 1,400, and closer still crouched in the dark. AICanSee itself is native and unpublished, so this is a
+/// calibration against the original's play; DXVIEW_SIGHT_FALLOFF sets the exponent (1 = the old linear fade).
 pub fn sight_visibility(visibility: f32, dist: f64, sight_radius: f64, threshold: f32) -> f32 {
     if dist > sight_radius {
         return 0.0;
     }
-    let v = visibility * (1.0 - (dist / sight_radius) as f32);
+    static EXP: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let exp = *EXP.get_or_init(|| env_val!("DXVIEW_SIGHT_FALLOFF").and_then(|v| v.parse().ok()).unwrap_or(2.0));
+    let v = visibility * (1.0 - (dist / sight_radius) as f32).max(0.0).powf(exp);
     if v < threshold {
         0.0
     } else {

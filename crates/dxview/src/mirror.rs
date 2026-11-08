@@ -280,7 +280,9 @@ pub fn spawn_camera(commands: &mut Commands, mirrors: &Mirrors) {
                 Camera {
                     order: -20 + 2 * i as isize + if sky { 0 } else { 1 },
                     is_active: false,
-                    clear_color: if sky || crate::skyfollow::enabled() { ClearColorConfig::Custom(Color::BLACK) } else { ClearColorConfig::None },
+                    // Transparent black: texels nothing is drawn into keep alpha 0, so mirror.wgsl can tell them
+                    // from the reflection and fill them from their neighbours (#45).
+                    clear_color: if sky || crate::skyfollow::enabled() { ClearColorConfig::Custom(Color::NONE) } else { ClearColorConfig::None },
                     ..default()
                 },
                 RenderTarget::Image(image.clone().into()),

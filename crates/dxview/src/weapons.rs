@@ -928,9 +928,9 @@ pub struct Weapons {
     pub floor_use: Option<String>,
 }
 
-/// A carried body thrown or dropped: (pawn entity, where, velocity).
+/// A carried body thrown or dropped: (pawn entity, where, velocity, the thrower's yaw in radians).
 #[derive(Resource, Default)]
-pub struct CorpseDrops(pub Vec<(Entity, DVec3, DVec3)>);
+pub struct CorpseDrops(pub Vec<(Entity, DVec3, DVec3, f64)>);
 
 /// Damage taken by pawns (by blocker index).
 #[derive(Resource, Default)]
@@ -3216,9 +3216,10 @@ fn throw_corpse(
     cursor: &CursorOptions,
     corpse_drops: &mut ResMut<CorpseDrops>,
 ) -> bool {
-    // Carrying a body: either button throws it (DropItem): from 0.8 x radius ahead at eye height. The original
-    // halves view x 300 x AugMuscle + 220 up + 40 x VRand for a corpse, which barely leaves the hands; ours throws
-    // it at the full speed, like a crate (the user's call), and it slides on landing (actors::deco_physics).
+    // Carrying a body: either button throws it (DropItem): from 0.8 x radius ahead at eye height, view x 300 x
+    // AugMuscle + 220 up + 40 x VRand, and the carcass spawned there gets half of it (carc.Velocity = Velocity x
+    // 0.5), lying the way the player faces (Spawn takes the player's Rotation) - GitHub issue #53. Strong Body
+    // Throw (Modern): the full speed, like a crate, and it slides on landing (actors::deco_physics).
     let Some(body) = weapons.corpse else {
         return false;
     };
@@ -3246,13 +3247,16 @@ fn throw_corpse(
         ((*seed >> 33) as f64) / (1u64 << 31) as f64 * 2.0 - 1.0
     };
     let jitter = DVec3::new(rnd(), rnd(), rnd()).normalize_or_zero() * 40.0;
-    let vel = fw * 300.0 * crate::abilities::aug_level("AugMuscle").map_or(1.0, |l| 1.25 + 0.25 * l as f64) + DVec3::new(0.0, 0.0, 220.0) + jitter;
+    let mut vel = fw * 300.0 * crate::abilities::aug_level("AugMuscle").map_or(1.0, |l| 1.25 + 0.25 * l as f64) + DVec3::new(0.0, 0.0, 220.0) + jitter;
+    if !crate::carry::strong_body_throw() {
+        vel *= 0.5;
+    }
     let flat = DVec3::new(fw.x, fw.y, 0.0).normalize_or_zero();
     let player = cx.player;
     let pos = player.body.location
         + flat * (0.8 * player.params.radius)
         + DVec3::new(0.0, 0.0, player.eye_height);
-    corpse_drops.0.push((body, pos, vel));
+    corpse_drops.0.push((body, pos, vel, flat.y.atan2(flat.x)));
     weapons.corpse = None;
     weapons.held = None;
     true

@@ -237,7 +237,9 @@ pub fn swim_system(
             sw.pain_time = sw.timer;
         }
         ph.on_fire = None; // ExtinguishFire
-        ph.breath = Some((sw.timer / sw.duration) as f32);
+        // HUDHitDisplay shows the breathometer only while the head is in a water zone (bUnderwater); at the surface
+        // the timer still runs (PlayerSwimming.PlayerTick) but the bar is gone until the next dive refills it.
+        ph.breath = if sw.head_in { Some((sw.timer / sw.duration) as f32) } else { None };
         // Tread loop: one stroke sound per cycle (Swimming or Treading, volume x0.5, speed = WaterSpeed / 180).
         let cycle = 12.0 / 15.0;
         let before = sw.tread;

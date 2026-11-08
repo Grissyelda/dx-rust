@@ -288,6 +288,11 @@ const CARCASS_RADIUS: f64 = 20.0;
 const CARCASS_HEIGHT: f64 = 7.0;
 
 /// A thrown body becomes a carcass again: shown, falling from where it left our hands.
+/// Setting StrongBodyThrow (Modern): a thrown body flies at a crate's speed and slides on when it lands.
+pub fn strong_body_throw() -> bool {
+    setting!("StrongBodyThrow") > 0.5
+}
+
 pub fn corpse_drop_system(
     mut drops: ResMut<crate::weapons::CorpseDrops>,
     mut q: Query<(
@@ -298,7 +303,7 @@ pub fn corpse_drop_system(
     )>,
 ) {
     let _prof = crate::prof::scope("carry::corpse_drop_system");
-    for (e, pos, vel) in drops.0.drain(..) {
+    for (e, pos, vel, yaw) in drops.0.drain(..) {
         let Ok((mut npc, mut d, mut vis, mut tf)) = q.get_mut(e) else {
             continue;
         };
@@ -316,7 +321,12 @@ pub fn corpse_drop_system(
         d.body.location = pos;
         d.body.velocity = vel;
         d.body.physics = BodyPhysics::Falling;
-        d.thrown_body = true;
+        // The carcass is spawned with the player's Rotation: it lies the way he faces (#53).
+        npc.yaw = yaw;
+        d.rotation = [0, (yaw / std::f64::consts::TAU * 65536.0) as i32, 0];
+        tf.rotation = crate::movers::bevy_rotation(d.rotation);
+        // Strong Body Throw: it thuds and slides on (actors::deco_physics); else it lands where it falls.
+        d.thrown_body = strong_body_throw();
         d.thrown_by_player = true;
         d.last_lit = DVec3::splat(1.0e9);
         let draw = pos + d.pre;

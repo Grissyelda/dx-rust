@@ -9,8 +9,14 @@ description = "DX RUST online services: the lobby server (room codes, the public
 winresource = "0.1"
 
 [dependencies]
-eframe = { version = "0.31.1", default-features = false, features = ["glow", "default_fonts", "x11"] }
+eframe = { version = "0.31.1", default-features = false, features = ["glow", "default_fonts", "x11"], optional = true }
 imsim-net = { path = "../imsim-net" }
+
+[features]
+# The controller window. Without it (`--no-default-features`) dxlobby is the server alone, with no graphics
+# libraries linked: for headless Linux servers (GitHub issue #46).
+default = ["gui"]
+gui = ["dep:eframe"]
 
 [[bin]]
 name = "dxlobby"

@@ -64,6 +64,9 @@ pub struct Actor {
     pub bark_bind: String,
     /// Not in a state that can be interrupted by a conversation (fighting, fleeing, burning...).
     pub busy: bool,
+    /// When the pawn last went into a state of its own (attacking, alerting, seeking, fleeing, burning) - None while
+    /// it follows its orders. Leaving FirstPersonConversation for one aborts the conversation (its EndState).
+    pub engaged_at: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -464,6 +467,18 @@ pub fn look_targets(out: &mut Vec<(usize, DVec3)>) {
             out.push((b, t));
         }
     }
+}
+
+/// The eye points (Unreal) of the two people a third-person conversation shows: whoever speaks and whoever is
+/// spoken to (the player when nobody else is). None outside a third-person conversation.
+pub fn shot_subjects() -> Option<(DVec3, Option<DVec3>)> {
+    let g = lock();
+    let s = g.as_ref()?;
+    let p = s.play.as_ref().filter(|p| !p.first_person)?;
+    let eye = |w: Who| s.actors.get(&w).map(|a| a.pos + DVec3::Z * a.eye);
+    let a = p.speaker.and_then(eye).or_else(|| eye(p.invoke)).or_else(|| eye(Who::Player))?;
+    let b = p.speaking_to.and_then(eye).or_else(|| eye(Who::Player)).filter(|b| b.distance(a) > 1.0);
+    Some((a, b))
 }
 
 /// The conversation database, parsed once per session (every map used to parse all of DeusExConText.u again:
@@ -1178,6 +1193,16 @@ impl ConState {
 
     fn who(&self, bind: &str) -> Option<Who> {
         self.by_bind.get(&fold(bind)).copied()
+    }
+
+    /// A pawn in the conversation playing went into a state of its own after it started.
+    fn engaged_since_start(&self, con: usize) -> bool {
+        let Some(p) = self.play.as_ref() else { return false };
+        self.actors.iter().any(|(w, a)| {
+            a.pawn
+                && a.engaged_at.is_some_and(|t| t > p.started)
+                && (p.invoke == *w || p.speaker == Some(*w) || p.speaking_to == Some(*w) || self.speaks_in(con, *w))
+        })
     }
 
     fn speaks_in(&self, con: usize, w: Who) -> bool {
@@ -2760,6 +2785,7 @@ pub fn consys_system(
             }
         }
     }
+    let st_time = st.time;
     for n in &npcs {
         if let Some(a) = st.actors.get_mut(&Who::Actor(n.blocker)) {
             // Out of the world (bInWorld=False until EnterWorld) counts as absent, like a dead pawn.
@@ -2778,6 +2804,20 @@ pub fn consys_system(
                 NpcState::TakingHit(_) | NpcState::Stunned(_) | NpcState::RubbingEyes(_) | NpcState::Dead
             ) || fleeing_other
                 || n.on_fire.is_some();
+            let engaged = matches!(
+                n.state,
+                NpcState::Surprised(_)
+                    | NpcState::Attacking
+                    | NpcState::Alerting
+                    | NpcState::Seeking
+                    | NpcState::Fleeing
+                    | NpcState::Burning
+            );
+            if !engaged {
+                a.engaged_at = None;
+            } else if a.engaged_at.is_none() {
+                a.engaged_at = Some(st_time);
+            }
             a.yaw = n.yaw;
             if a.base_eye != 0.0 {
                 a.eye = if n.sitting { a.base_eye + a.ass * 0.5 } else { a.base_eye };
@@ -2911,6 +2951,11 @@ pub fn consys_system(
             } + inv_actor.radius;
             if me.distance(inv_actor.pos) > r || !inv_actor.alive || inv_actor.busy {
                 st.finish_play(fl, true);
+            } else if st.engaged_since_start(con) {
+                // ScriptedPawn FirstPersonConversation.EndState: a pawn in it that turns to fight, raise the alarm,
+                // look for someone or flee leaves the state without ending the conversation normally, and
+                // AbortConversation stops it - speech too (overheard chatter doesn't go on through a gunfight).
+                st.finish_play(fl, false);
             }
         } else if !first && (!inv_actor.alive || ph.dead) {
             st.finish_play(fl, false);
@@ -3242,6 +3287,9 @@ pub struct Puppet {
     seq: (usize, usize, f32),
     t: f32,
     face: crate::actors::Face,
+    /// Signature of the dynamic light last put on it (0 = lit by the level's lights only, as built).
+    lit: u64,
+    lit_t: f32,
 }
 
 #[derive(Default)]
@@ -3391,6 +3439,8 @@ pub fn con_view_system(
                 seq,
                 t: 0.0,
                 face: Default::default(),
+                lit: 0,
+                lit_t: 0.0,
             });
         } else {
             commands.entity(root).despawn();
@@ -3413,6 +3463,32 @@ pub fn con_view_system(
             .iter()
             .find(|s| s.name.eq_ignore_ascii_case("Still"))
             .map_or(0, |s| s.start_frame.max(0) as usize);
+        // Dynamic light on JC too (the conversation key light, a muzzle flash): relit while one reaches him, and
+        // back to the level's light when none does.
+        p.lit_t -= time.delta_secs();
+        if p.lit_t <= 0.0 {
+            p.lit_t = 0.1;
+            let at = loc.as_vec3().to_array();
+            let near = crate::dynlight::dynamic_near(at, 64.0);
+            if near || p.lit != 0 {
+                crate::dynlight::with_lights_at(lvl, at, 40.0, |lights| {
+                    let sig = if near { crate::dynlight::light_sig(lights, at, rot[1] as u64 & 0xffff).max(1) } else { 0 };
+                    if sig != p.lit {
+                        p.lit = sig;
+                        for (pi, h) in p.handles.iter().enumerate() {
+                            if let Some(mut m) = meshes.get_mut(h) {
+                                let c = if near {
+                                    dx_level::actors::light_part(&p.parts[pi], at, rot, 1.0, lights)
+                                } else {
+                                    dx_level::actors::light_part(&p.parts[pi], at, rot, 1.0, &lvl.lights)
+                                };
+                                m.insert_attribute(Mesh::ATTRIBUTE_COLOR, c);
+                            }
+                        }
+                    }
+                });
+            }
+        }
         for (pi, h) in p.handles.iter().enumerate() {
             if let Some(mut m) = meshes.get_mut(h) {
                 let pos: Vec<[f32; 3]> = p.parts[pi]

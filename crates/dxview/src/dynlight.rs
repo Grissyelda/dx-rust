@@ -314,6 +314,14 @@ pub fn flashlight() -> Option<(Vec3, Vec3, f32)> {
 
 /// Lights for the vertex-lit meshes only (the flashlight beam while the cone lights the world).
 static CPU_ONLY: Mutex<Vec<LightInfo>> = Mutex::new(Vec::new());
+/// The conversation key light (conlight.rs): lights the people (meshes) only, never the walls or the stealth reading.
+static FILL: Mutex<Option<LightInfo>> = Mutex::new(None);
+
+pub fn set_fill(l: Option<LightInfo>) {
+    if let Ok(mut f) = FILL.lock() {
+        *f = l;
+    }
+}
 
 /// The dynamic lights on right now.
 pub fn current() -> Vec<LightInfo> {
@@ -560,6 +568,9 @@ pub fn dynlight_system(
         c.extend(active.iter().filter(|(l, _)| beam_pos.is_none_or(|b| l.pos != b)).map(|(l, _)| *l));
         if let Ok(x) = CPU_ONLY.lock() {
             c.extend(x.iter().copied());
+        }
+        if let Some(f) = FILL.lock().ok().and_then(|f| *f) {
+            c.push(f);
         }
     }
 
@@ -929,6 +940,7 @@ pub fn brightness_key_system(
 
 /// A new map is going in (loader.rs): this module's state of the map being left.
 pub fn reset_level() {
+    set_fill(None);
     if let Ok(mut v) = PENDING.lock() {
         v.clear();
     }

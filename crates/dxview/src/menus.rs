@@ -467,6 +467,17 @@ pub fn start_window_mode(v: f32) -> WindowMode {
     }
 }
 
+/// Where the window opens. Linux (X11): centred on the primary monitor - left to itself the window opened at 0,0,
+/// on the leftmost monitor of a multi-monitor desktop (GitHub issue #50). Wayland ignores positions; the
+/// compositor places it. Elsewhere the system's own placement (already the primary monitor).
+pub fn start_window_position() -> bevy::window::WindowPosition {
+    if cfg!(target_os = "linux") {
+        bevy::window::WindowPosition::Centered(MonitorSelection::Primary)
+    } else {
+        bevy::window::WindowPosition::Automatic
+    }
+}
+
 /// Linux: the saved full-screen mode, applied once Bevy knows of a monitor (see `start_window_mode`). If none ever
 /// shows up the window stays windowed, maximized, instead of crashing.
 pub fn fullscreen_when_ready_system(
@@ -498,7 +509,10 @@ pub fn window_mode(v: f32) -> WindowMode {
     #[cfg(target_os = "linux")]
     {
         match v.round() as i32 {
-            0 | 2 => WindowMode::BorderlessFullscreen(MonitorSelection::Index(0)),
+            // The monitor the window is on (it was opened centred on the primary one, `start_window_position`):
+            // monitor 0 is the leftmost on a multi-monitor desktop (GitHub issue #50). Applied only once the window
+            // exists, where an unknown current monitor means winit's own choice (Borderless(None)), never a panic.
+            0 | 2 => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
             _ => WindowMode::Windowed,
         }
     }
@@ -923,9 +937,11 @@ impl Enhance {
             ("SmarterAI", "AI", "Smarter AI", "GMDX's AI work plus our stealth: guards see better by difficulty and may open fire at once when they spot or hear you close by, wait a moment before shooting after losing you, lay down suppressive fire where you vanished, miss more against a moving target, strafe across your aim and pick new firing spots between shots, throw grenades when you're dug in, answer alarms from much farther away; cameras see farther and tell guards where you are. Ours: true darkness hides you beyond arm's reach, guards that searched in vain stay on edge, call each other over, and notice lights going out and doors opening."),
             ("HudFade", "Interface", "Combat HUD", "Out of combat the crosshair and the status displays (health, compass, ammo, belt, active augs) fade away; they come back at once in a fight, when you aim down the sights or at an enemy, fire, get hurt, are badly hurt or change weapons."),
             ("AlertIndicators", "AI", "Alert Indicators", "A small marker over a hostile guard's head: an eye filling as they grow suspicious, a question mark while they search, an exclamation mark in a fight."),
+            ("StrongBodyThrow", "Gameplay", "Strong Body Throw", "A body you throw flies like a thrown crate and slides on when it lands. Off, it drops as in the original: half the throw speed, lying the way you face."),
             ("ThrownNoise", "AI", "Thrown Objects Make Noise", "Anything you throw is heard where it lands or bounces - further for heavy things - and armed guards in earshot go to look. Good for distractions."),
             ("SurfaceFootsteps", "AI", "Footsteps Louder On Hard Floors", "Carpet and grass muffle your steps, metal and water give you away; guards hear you by what you walk on."),
             ("WeaponInertia", "Visuals", "Weapon Inertia", "The weapon in your hands trails a little behind when you turn (GMDX's Viewmodel Inertia)."),
+            ("ConversationLight", "Visuals", "Conversation Key Light", "A conversation held somewhere dark gets a soft light on the people in it, so you can see their faces. It lights only the people, fades in with the darkness and out when the talk ends, and guards don't see by it."),
             ("ModernGlass", "Visuals", "Modern Glass", "Window panes are frosted glass you can see, with their streaks catching the light, instead of a faint additive smear that leaves an empty-looking hole (the UNATCO HQ doors). Takes effect when the map loads."),
             ("MaterialSheen", "Visuals", "Material Properties", "Weapons and items in your hands catch the light by what they are made of: gun metal shines, plastic less, gloves and skin hardly at all."),
             ("FlashlightCone", "Visuals", "Flashlight Cone", "The flashlight augmentation casts a soft-edged cone with shadows from your shoulder instead of a pool of light where you look."),

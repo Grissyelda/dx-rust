@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Fixes from GitHub issues #45-#53 (November 8)
+- Guards don't see as far (#47): how visible you are now fades with the square of the distance instead of in a
+  straight line, so someone in the Island's night light is picked out from about 1,900 units rather than nearly the
+  whole 2,500 of a guard's sight, and from less in the dark. Guards also have the vertical field of view the game
+  gives them (160 degrees across, 70 from top to bottom, looking level: they don't see you on a ledge high above them) and
+  its smallest size they can make out (one degree across). Set `DXVIEW_SIGHT_FALLOFF=1` for the old fade.
+- Guards move during a gunfight (#48): after each shot a guard picks where to stand, as the original does
+  (ScriptedPawn.ComputeBestFiringPosition, which only Smarter AI ran before): one farther off than its weapon's range
+  (at most 1,000-1,200 units) steps closer, one in your aim may side-step it, and those that sprint (UNATCO troops
+  often, NSF now and then) dash sideways - instead of standing and firing until the clip ran out.
+- Overheard conversations stop when someone in them turns to fight, raise the alarm, look for someone or flee (#51):
+  the original's FirstPersonConversation ends with an AbortConversation when the pawn leaves it, speech included.
+- The O2 meter shows only while your head is under water (#52): at the surface it kept counting down (the timer runs
+  there, but the original draws the meter only under water).
+- A thrown body drops as in the original (#53): half the throw speed, lying the way you face, and it stays where it
+  lands. The old strong throw that slides on is the new Modern option "Strong Body Throw" (Enhancements > Gameplay).
+- Linux: the window opens centred on the primary monitor and goes full screen on the monitor it is on (#50); it used
+  to open at 0,0 (the leftmost monitor) and full screen always went to the first monitor.
+- Mirrors: the last of the outside showing along floor / wall corners is gone (#45). Reflections are drawn smaller
+  than the screen, so the smooth sampling mixed in a little of what lies past the mirror's clip plane; that empty part
+  is now left out and filled from the reflection next to it.
+- The lobby server runs headless (#46): `dxlobby` built with `--no-default-features` has no window code (no egui,
+  OpenGL or X11) and just serves; `dxlobby status`, `rooms`, `reset`, `stop` and `upnp` control a running server, and
+  `--log PATH|none`, `--name` and `--key-file` set it up.
+
+### Conversation Key Light (November 8)
+- New in Modern (Settings > Enhancements > Visuals, "Conversation Key Light"): a third-person conversation held
+  somewhere dark gets a soft, warm light on the people in it, set on the camera's side, above and a little to one
+  side, so faces can be read. It fades in with how dark the spot is (measured like your visibility to guards) and out
+  when the talk ends, follows the camera's cuts smoothly, and lights only the people - not the walls - and guards
+  don't see by it. JC's own body in Classic conversations now takes dynamic light too (muzzle flashes, this light).
+- Talking to someone through the test aid `DXVIEW_GOTO "secs;<Pawn>;frob"`.
+
 ### Performance and memory (November 7)
 - wgpu's check of every indirect draw is off where it isn't needed: the game names Vulkan outright (Windows when a
   Vulkan GPU answers, Linux, Steam Deck, Android) or Metal (macOS), so Bevy turns the check off as it means to. With

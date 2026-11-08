@@ -45,6 +45,7 @@ mod perf;
 mod skyfollow;
 mod glow;
 mod gpuinit;
+mod conlight;
 mod vision;
 mod shafts;
 mod postfx;
@@ -846,6 +847,7 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
                     .unwrap_or((1600, 900))
                     .into(),
                 mode: menus::start_window_mode(setting!("DisplayMode")),
+                position: menus::start_window_position(),
                 present_mode: menus::present_mode(setting!("VSync")),
                 ..default()
             }),
@@ -1271,6 +1273,7 @@ fn add_hud_light_systems(app: &mut App) {
                 dynlight::aug_light_system.after(fly),
                 dynlight::brightness_key_system,
                 dynlight::glow_lights_system.before(dynlight::dynlight_system),
+                conlight::con_light_system.before(dynlight::dynlight_system),
                 dynlight::dynlight_system
                     .after(dynlight::aug_light_system)
                     .after(projectiles::projectile_system)

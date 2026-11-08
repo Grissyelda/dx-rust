@@ -69,6 +69,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("DiegeticScreens", 1.0),
     ("AlertIndicators", 1.0),
     ("HudFade", 1.0),
+    ("ConversationLight", 1.0),
     ("Grass", 2.0),
     ("Trees", 1.0),
     ("BulletPenetration", 1.0),
@@ -91,6 +92,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("ThirdPerson", 1.0),
     ("ThirdPersonCover", 1.0),
     ("ThrownNoise", 1.0),
+    ("StrongBodyThrow", 1.0),
     // Interface.
     ("AmmoMaxCyan", 1.0),
     ("AmmoTotal", 1.0),

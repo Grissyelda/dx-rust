@@ -26,7 +26,7 @@
 //! - Disturbances: guards that see a light go out, or a door opened by someone, go and look.
 //!
 //! Combat movement, grenades and alarms (ROADMAP 38, GMDX again):
-//! - Firing positions (ScriptedPawn.ComputeBestFiringPosition, which the classic setting doesn't run yet): a pawn in
+//! - Firing positions (ScriptedPawn.ComputeBestFiringPosition - classic runs it too, once per shot): a pawn in
 //!   range keeps re-picking where to stand - holding its weapon's range, side-stepping out of the enemy's aim
 //!   (bAvoidAim / AvoidAccuracy, CloseCombatMult within 512), sprinting sideways (bSprint / SprintRate), backing
 //!   off from someone with a melee weapon - and strafes there facing the enemy and firing (ShouldStrafe: GMDX's
@@ -106,6 +106,8 @@ pub struct SmartState {
     pub nade_roll: bool,
     /// A shot since the last picked move (each move ends at the Fire label, which shoots before the next pick).
     pub shot_since_move: bool,
+    /// HumanMilitary.PostBeginPlay (GMDX): bAvoidAim for strafers that don't defend home - only with the setting on.
+    pub gmdx_avoid_aim: bool,
     pub nade: Option<NadeThrow>,
     /// bAlarmStatIncrease: had the one-time edge from an alarm.
     pub alarm_boost: bool,
@@ -285,9 +287,7 @@ fn class_rules(npc: &mut Npc, class: &str) {
         .any(|c| isa(c));
     let no_defence = ["MIB", "MJ12Commando", "AnnaNavarre", "WaltonSimons"].iter().any(|c| isa(c));
     npc.smart.defensive = (mil || thug) && !no_defence && crate::sound::frand() < 0.4;
-    if mil && npc.can_strafe && !npc.defend_home {
-        npc.smart.props.avoid_aim = true;
-    }
+    npc.smart.gmdx_avoid_aim = mil && npc.can_strafe && !npc.defend_home;
 }
 
 /// HandleAlarm (GMDX): military pawns, thugs and robots answer an alarm whoever set it off.
@@ -330,6 +330,8 @@ pub struct FirePosIn {
     pub self_max: f64,
     pub can_strafe: bool,
     pub reloading: bool,
+    /// Smarter AI: GMDX's version (CloseCombatMult within 512 rather than 180).
+    pub gmdx: bool,
 }
 
 pub enum FirePos {
@@ -345,7 +347,7 @@ fn yaw_dir(yaw: f64) -> DVec3 {
     DVec3::new(yaw.cos(), yaw.sin(), 0.0)
 }
 
-/// ScriptedPawn.ComputeBestFiringPosition (GMDX's: CloseCombatMult applies within 512, not 180). `try_loc(pos, min)`
+/// ScriptedPawn.ComputeBestFiringPosition (with `gmdx`, GMDX's: CloseCombatMult applies within 512, not 180). `try_loc(pos, min)`
 /// is TryLocation (AIDirectionReachable that way, bDefendHome), returning where the pawn can actually get to;
 /// `random_dest(yaw, max)` is the AIPickRandomDestination fallback (biased toward `yaw`).
 pub fn best_firing_position(
@@ -421,7 +423,8 @@ pub fn best_firing_position(
     away = away.clamp(dist - max_dist, dist + max_dist);
     // Used to determine whether NPCs should sprint / avoid aim.
     let mut move_mult = 1.0f32;
-    if dist <= 512.0 && i.enemy_is_player && i.enemy_armed && enemy_max < 180.0 {
+    let close = if i.gmdx { 512.0 } else { 180.0 };
+    if dist <= close && i.enemy_is_player && i.enemy_armed && enemy_max < 180.0 {
         move_mult = p.close_combat_mult;
     }
     if p.avoid_aim && rand() <= p.avoid_accuracy * move_mult && away < enemy_max + max_dist + 50.0 && away < 800.0 && i.enemy_armed {
@@ -873,6 +876,7 @@ mod tests {
             self_max: 1000.0,
             can_strafe: true,
             reloading: false,
+            gmdx: true,
         }
     }
 

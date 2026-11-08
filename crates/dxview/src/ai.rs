@@ -735,6 +735,12 @@ pub struct Npc {
     pub last_rendered: f32,
     pub render_check: f32,
     pub fov_cos: f64,
+    /// Pawn.AspectRatio (horizontal / vertical): the vertical field of view is AIHorizontalFov / AspectRatio
+    /// (160 / 2.3 = 70 degrees for ScriptedPawns) - tangent of half of it, looking level.
+    pub vfov_tan: f64,
+    /// Pawn.MinAngularSize = tan(AngularResolution / 2): the smallest a target may look (its radius over the
+    /// distance) to be made out at all - one degree across, about 2,300 units for a 20-unit-wide person.
+    pub min_ang_tan: f64,
     pub base_accuracy: f32,
     pub surprise: f32,
     pub enemy_timeout: f32,
@@ -1139,6 +1145,11 @@ impl Npc {
             fov_cos: (fv(p, "AIHorizontalFov", 160.0) as f64 / 2.0)
                 .to_radians()
                 .cos(),
+            vfov_tan: (fv(p, "AIHorizontalFov", 160.0) as f64 / fv(p, "AspectRatio", 2.3).max(0.1) as f64 / 2.0)
+                .clamp(1.0, 89.0)
+                .to_radians()
+                .tan(),
+            min_ang_tan: (fv(p, "AngularResolution", 1.0).max(0.0) as f64 * 0.5).to_radians().tan(),
             base_accuracy: fv(p, "BaseAccuracy", 0.2),
             surprise: fv(p, "SurprisePeriod", 2.0),
             enemy_timeout: fv(p, "EnemyTimeout", 5.0),
@@ -3349,10 +3360,22 @@ pub fn npc_system(
         );
         reaction_level_tick(npc, dt);
         let facing = DVec3::new(npc.yaw.cos(), npc.yaw.sin(), 0.0);
-        let (sight_radius, fov_cos) = (npc.sight_radius, npc.fov_cos);
+        let (sight_radius, fov_cos, vfov_tan, min_ang_tan) = (npc.sight_radius, npc.fov_cos, npc.vfov_tan, npc.min_ang_tan);
         // AICanSee: within SightRadius, inside the field of view (when checked), and a clear line from the eyes
         // to the head, middle or feet. Returns the distance.
-        let senses = Senses { world: &world, pawns, my_eye, radius: me.radius, facing, sight_radius, fov_cos, player_dead: ph.dead };
+        let senses = Senses {
+            world: &world,
+            pawns,
+            my_eye,
+            radius: me.radius,
+            facing,
+            sight_radius,
+            fov_cos,
+            vfov_tan,
+            min_ang_tan,
+            player_radius: player.params.radius,
+            player_dead: ph.dead,
+        };
         npc.alliances.tick(dt);
         npc.cycle += dt;
         npc.think -= dt;
@@ -5857,9 +5880,12 @@ fn attack_close_in(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, dt: f32,
     Some((wish, running))
 }
 
-/// Smarter AI's combat moves (enhancement #38; GMDX on top of ScriptedPawn's PickDestination): a dash for cover to
-/// reload (ours), a picked move under way, holding ground (bDefensiveStyle), and while the enemy is in range and in
-/// sight ComputeBestFiringPosition every half second or so. None = the usual RunToRange (attack_close_in).
+/// Attacking's PickDestination while the enemy is in range and in sight: ScriptedPawn.ComputeBestFiringPosition
+/// after each shot (the Fire label shoots, then picks) - holding the weapon's range (MaxRange, at most 1200: a
+/// pawn farther off steps in after its shots, GitHub issue #48), stepping out of the enemy's aim (bAvoidAim /
+/// AvoidAccuracy), sprinting sideways (bSprint / SprintRate) - and a picked move under way. Smarter AI adds GMDX's
+/// rules on top: a dash for cover to reload (ours), holding ground (bDefensiveStyle), picks ten times a second
+/// after a shot, GMDX's strafing rule. None = the usual RunToRange (attack_close_in).
 fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bool)> {
     let (lvl, me, dt) = (cx.lvl, cx.me, cx.dt);
     let reloading = npc.reload_timer > 0.0;
@@ -5868,13 +5894,14 @@ fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bo
     if !reloading {
         npc.smart.in_cover = false;
     }
-    if !crate::smartai::on() || e.melee || e.suppress || npc.animal {
+    let smart = crate::smartai::on();
+    if e.melee || e.suppress || npc.animal {
         npc.smart.repos = None;
         return None;
     }
     let flat = |v: DVec3| DVec3::new(v.x, v.y, 0.0);
     // Ours: a reload started close to the enemy in sight - duck round the nearest corner to do it.
-    if started_reload && e.seen_recently && e.dist < 1500.0 && npc.can_strafe {
+    if smart && started_reload && e.seen_recently && e.dist < 1500.0 && npc.can_strafe {
         let eye = e.target_pos + DVec3::new(0.0, 0.0, 30.0);
         if let Some(at) = find_cover(lvl, npc, &me, eye) {
             let d = flat(at - me.center).length();
@@ -5912,7 +5939,8 @@ fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bo
     let class = cx.npc_class;
     let w = npc.weapon.clone()?;
     // bDefensiveStyle: early in a close fight a long gun holds its ground (EnemyTimer < EnemyTimeout x 0.3).
-    if npc.smart.defensive
+    if smart
+        && npc.smart.defensive
         && e.dist < 768.0
         && npc.smart.engage_t > 0.0
         && npc.smart.engage_t < npc.enemy_timeout * 0.3
@@ -5932,11 +5960,16 @@ fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bo
     if !npc.smart.shot_since_move {
         return None;
     }
-    npc.smart.pick_t -= dt;
-    if npc.smart.pick_t > 0.0 {
-        return None;
+    if smart {
+        npc.smart.pick_t -= dt;
+        if npc.smart.pick_t > 0.0 {
+            return None;
+        }
+        npc.smart.pick_t = 0.1;
+    } else {
+        // Classic: one pick per shot (the Fire label's PickDestination after FinishAnim).
+        npc.smart.shot_since_move = false;
     }
-    npc.smart.pick_t = 0.1;
     let Some(t) = npc.target else { return None };
     let (enemy_radius, enemy_yaw, enemy_is_player, enemy_armed, enemy_max) = match t {
         Target::Player => {
@@ -5969,9 +6002,13 @@ fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bo
         self_max: accurate.min(w.max_range as f64),
         can_strafe: npc.can_strafe,
         reloading,
+        gmdx: smart,
     };
     let params = npc.params.clone();
-    let props = npc.smart.props.clone();
+    let mut props = npc.smart.props.clone();
+    if smart && npc.smart.gmdx_avoid_aim {
+        props.avoid_aim = true;
+    }
     // FRand (the shared generator: the pawn's own seed, stepped a fixed number of times between picks, came out
     // nearly the same every time).
     let mut rand = crate::sound::frand;
@@ -6010,8 +6047,13 @@ fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bo
     }
     // ShouldStrafe: the spot must see the enemy (GMDX), and there's a shot from here.
     let sees_enemy = lvl.collision.trace(e.target_pos, dest + DVec3::new(0.0, 0.0, 16.0), DVec3::ZERO).fraction >= 0.98;
-    let strafe = npc.can_strafe && crate::smartai::strafe_ok(npc, class, sees_enemy, e.seen_recently, e.dist);
-    if strafe {
+    let strafe = if smart {
+        npc.can_strafe && crate::smartai::strafe_ok(npc, class, sees_enemy, e.seen_recently, e.dist)
+    } else {
+        // ShouldStrafe: AICanShoot(enemy) from where it stands.
+        npc.can_strafe && e.seen_recently
+    };
+    if strafe && smart {
         npc.smart.nade_roll = true;
     }
     if log {
@@ -6789,6 +6831,9 @@ struct Senses<'a> {
     facing: DVec3,
     sight_radius: f64,
     fov_cos: f64,
+    vfov_tan: f64,
+    min_ang_tan: f64,
+    player_radius: f64,
     player_dead: bool,
 }
 
@@ -6807,18 +6852,37 @@ impl Senses<'_> {
 
     /// AICanSee: within SightRadius, inside the field of view (when checked), and a clear line from the eyes to the
     /// head, middle or feet. Returns the distance.
+    /// With the direction checked (a first sighting: bCheckDir + bCheckCylinder) the view is a cone AIHorizontalFov
+    /// wide and AIHorizontalFov / AspectRatio high, looking level - a pawn doesn't see someone on a ledge high above
+    /// it or right below - and the target has to look at least AngularResolution across (MinAngularSize).
     fn sees(&self, center: DVec3, height: f64, check_dir: bool, other: Option<usize>) -> Option<f64> {
         let my_eye = self.my_eye;
         let dist = (center - my_eye).length();
         if dist > self.sight_radius {
             return None;
         }
-        let flat = DVec3::new(center.x - my_eye.x, center.y - my_eye.y, 0.0).normalize_or_zero();
-        if check_dir && dist > self.radius + 8.0 && flat.dot(self.facing) < self.fov_cos {
+        let near = dist <= self.radius + 8.0;
+        let flat_v = DVec3::new(center.x - my_eye.x, center.y - my_eye.y, 0.0);
+        let flat_len = flat_v.length();
+        let flat = flat_v.normalize_or_zero();
+        if check_dir && !near && flat.dot(self.facing) < self.fov_cos {
             return None;
         }
+        if check_dir && !near {
+            let radius = match other {
+                Some(b) => self.world.blockers.get(b).map_or(self.player_radius, |c| c.radius),
+                None => self.player_radius,
+            };
+            if radius < dist * self.min_ang_tan {
+                return None;
+            }
+        }
         let clear = [height * 0.8, 0.0, -height * 0.8].iter().any(|&dz| {
-            let h = self.world.sight(my_eye, center + DVec3::new(0.0, 0.0, dz), DVec3::splat(1.0));
+            let p = center + DVec3::new(0.0, 0.0, dz);
+            if check_dir && !near && (p.z - my_eye.z).abs() > flat_len * self.vfov_tan {
+                return false;
+            }
+            let h = self.world.sight(my_eye, p, DVec3::splat(1.0));
             h.fraction >= 0.999 || (other.is_some() && h.actor == other)
         });
         clear.then_some(dist)

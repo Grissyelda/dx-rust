@@ -6,14 +6,25 @@
 //! `dxlobby --serve` runs the server alone (no window; also how it runs on a Linux box). Files beside the exe:
 //! dxlobby.log (what the server did) and dxlobby_admin.key (the key the controller proves itself with; the admin
 //! port only answers on this PC).
-#![cfg_attr(windows, windows_subsystem = "windows")]
+//!
+//! Headless (GitHub issue #46): built without the `gui` feature (`cargo build --release --no-default-features`)
+//! there is no window code at all - no egui, OpenGL or X11 - and `dxlobby` just runs the server, logging to stderr
+//! and dxlobby.log. Either build also takes these commands, which talk to a running server over its admin port:
+//! `dxlobby status`, `dxlobby rooms`, `dxlobby reset` (close every room, disconnect everyone), `dxlobby stop`, and
+//! `dxlobby upnp` (ask the router to forward the port). Options: `--port N`, `--admin-port N`, `--log PATH`
+//! (`--log none` for no file), `--name TEXT` (the name players are shown), `--key-file PATH`.
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
 
+#[cfg(feature = "gui")]
 use eframe::egui;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
+#[cfg(feature = "gui")]
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "gui")]
+use std::time::Instant;
 
 fn exe_dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())).unwrap_or_else(|| PathBuf::from("."))
@@ -23,30 +34,83 @@ fn arg_port(args: &[String], name: &str, default: u16) -> u16 {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+fn arg_str<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(|s| s.as_str())
+}
+
+/// Runs the lobby server in this process until a `stop` (blocks).
+fn serve(args: &[String], port: u16, admin_port: u16, key: String) -> ! {
+    let dir = exe_dir();
+    let log = match arg_str(args, "--log") {
+        Some("none") | Some("-") => None,
+        Some(p) => Some(PathBuf::from(p)),
+        None => Some(dir.join("dxlobby.log")),
+    };
+    let cfg = imsim_net::server::Config {
+        port,
+        admin_port,
+        name: arg_str(args, "--name").unwrap_or("DX RUST Online").into(),
+        log: log.clone(),
+        admin_key: key,
+    };
+    if let Err(e) = imsim_net::server::run(cfg) {
+        eprintln!("could not start: {e}");
+        if let Some(l) = log {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(l)
+                .and_then(|mut f| writeln!(f, "could not start: {e}"));
+        }
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
+/// `dxlobby status | rooms | reset | stop | upnp`: tell a running server (or the router) and print the answer.
+fn command(cmd: &str, port: u16, admin_port: u16, key: &str) -> ! {
+    let answer = match cmd {
+        "upnp" => Ok(vec![open_router_port(port)]),
+        _ => admin(admin_port, key, &cmd.to_ascii_uppercase()),
+    };
+    match answer {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("no answer from the server on admin port {admin_port}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let port = arg_port(&args, "--port", imsim_net::DEFAULT_PORT);
     let admin_port = arg_port(&args, "--admin-port", imsim_net::ADMIN_PORT);
     let dir = exe_dir();
-    let key = imsim_net::server::admin_key(&dir.join("dxlobby_admin.key"));
-    if args.iter().any(|a| a == "--serve") {
-        let cfg = imsim_net::server::Config {
-            port,
-            admin_port,
-            name: "DX RUST Online".into(),
-            log: Some(dir.join("dxlobby.log")),
-            admin_key: key,
-        };
-        if let Err(e) = imsim_net::server::run(cfg) {
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("dxlobby.log"))
-                .and_then(|mut f| writeln!(f, "could not start: {e}"));
-            std::process::exit(1);
-        }
+    let key_file = arg_str(&args, "--key-file").map(PathBuf::from).unwrap_or_else(|| dir.join("dxlobby_admin.key"));
+    let key = imsim_net::server::admin_key(&key_file);
+    if let Some(cmd) = args.iter().skip(1).find(|a| matches!(a.as_str(), "status" | "rooms" | "reset" | "stop" | "upnp")) {
+        command(cmd, port, admin_port, &key);
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("dxlobby [--serve] [--port N] [--admin-port N] [--log PATH|none] [--name TEXT] [--key-file PATH]");
+        println!("dxlobby status | rooms | reset | stop | upnp   (talk to a running server)");
         return;
     }
+    if !cfg!(feature = "gui") || args.iter().any(|a| a == "--serve") {
+        serve(&args, port, admin_port, key);
+    }
+    #[cfg(feature = "gui")]
+    run_gui(port, admin_port, key);
+}
+
+#[cfg(feature = "gui")]
+fn run_gui(port: u16, admin_port: u16, key: String) {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([720.0, 520.0]).with_title("DX RUST Online Services"),
         ..Default::default()
@@ -64,6 +128,7 @@ fn main() {
     );
 }
 
+#[cfg(feature = "gui")]
 /// What the controller last heard from the server.
 #[derive(Default, Clone)]
 struct Seen {
@@ -105,6 +170,7 @@ fn admin(admin_port: u16, key: &str, cmd: &str) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
+#[cfg(feature = "gui")]
 fn poll_loop(shared: Arc<Mutex<Seen>>, admin_port: u16, key: String) {
     loop {
         let mut seen = Seen { checked: Some(Instant::now()), ..Default::default() };
@@ -126,6 +192,7 @@ fn poll_loop(shared: Arc<Mutex<Seen>>, admin_port: u16, key: String) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// Start `dxlobby --serve` in the background (no window, not tied to this one).
 fn start_server(port: u16, admin_port: u16) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -150,6 +217,7 @@ fn lan_ip() -> String {
         .unwrap_or_else(|_| "?".into())
 }
 
+#[cfg(feature = "gui")]
 /// The Windows Startup folder entry that starts the server at sign-in.
 #[allow(dead_code)]
 fn startup_file() -> Option<PathBuf> {
@@ -157,6 +225,7 @@ fn startup_file() -> Option<PathBuf> {
     Some(PathBuf::from(appdata).join("Microsoft").join("Windows").join("Start Menu").join("Programs").join("Startup").join("DX RUST Online Services.bat"))
 }
 
+#[cfg(feature = "gui")]
 struct Controller {
     shared: Arc<Mutex<Seen>>,
     key: String,
@@ -198,6 +267,7 @@ fn open_router_port(port: u16) -> String {
     }
 }
 
+#[cfg(feature = "gui")]
 impl eframe::App for Controller {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(500));
