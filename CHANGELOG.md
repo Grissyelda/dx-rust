@@ -14,6 +14,9 @@
   lab and Area 51, EMP fields and the Vandenberg drops. Valves, switches and panels that turn them off now do
   (UnTrigger actors were missing too), and their state is kept in saves.
 - Burning barrels burn you when you bump into them or stand on them (5 a second), as the original's do.
+- Mirrored floors no longer show the outside of the level in a thin line along the corners where they meet walls
+  and steps (#45): the reflection cut away the bottom 2 cm of every wall standing on the mirror; it now cuts half a
+  millimetre.
 
 ## v0.12.0
 
