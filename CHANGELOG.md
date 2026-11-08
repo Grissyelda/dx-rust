@@ -17,6 +17,11 @@
 - Mirrored floors no longer show the outside of the level in a thin line along the corners where they meet walls
   and steps (#45): the reflection cut away the bottom 2 cm of every wall standing on the mirror; it now cuts half a
   millimetre.
+- Battery Park's harbour shows its water again with Modern Water: the moving surface was see-through over water the
+  original draws solid, so the bare harbour bed showed through by the docks. Water by an open-air zone that has no
+  sky of its own counts as outdoors (a trace up to the sky decides).
+- A chair with someone sitting in it is "too heavy to lift", as in the original (nothing is lifted while something
+  rests on it); you could pick up the receptionist with her chair and never put her down.
 
 ## v0.12.0
 

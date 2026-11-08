@@ -459,7 +459,12 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     col += moon_col * (pow(nh, 900.0) * 0.6 + pow(nh, 90.0) * 0.02) * water.moon.w * (0.3 + 0.7 * fine);
     // See-through by how much water there is: clear in the shallows, its own colour once deep (and always by
     // the reflection at grazing angles).
-    let absorb = 1.0 - exp(-depth * 0.55);
+    var absorb = 1.0 - exp(-depth * 0.55);
+    // Over water that was solid in the original (bit 6 of the mask: the Battery Park harbour) the grid never shows
+    // through: the bed under it was never meant to be seen.
+    if (water.grid.x > 1.5 && (mask_at(p) & 64u) != 0u) {
+        absorb = 1.0;
+    }
     let alpha = clamp(max(absorb, k_refl + foam * 0.4), 0.0, 1.0);
     var out: FragmentOutput;
     out.color = vec4<f32>(col, alpha);

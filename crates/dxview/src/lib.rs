@@ -2030,6 +2030,24 @@ fn spawn_open_sea(
     (ocean_geom, ring_mat)
 }
 
+/// Whether water at `p` (just above its surface) is under the open sky: its zone holds sky faces, or a trace
+/// straight up leaves the world or ends in a zone that does. A zone set off by portals for its own ambience (the
+/// Battery Park dock's) has no sky faces of its own but is still outdoors, so the sky test alone left the harbour
+/// beside the dock as an "indoor" flat sheet.
+fn water_under_sky(level: &Level, p: glam::DVec3) -> bool {
+    let sky = |z: i32| z <= 0 || level.zone_sky.get(z as usize).copied().unwrap_or(false);
+    if sky(level.collision.zone_at(p)) {
+        return true;
+    }
+    let end = p + glam::DVec3::Z * 32768.0;
+    let h = level.collision.trace(p, end, glam::DVec3::splat(1.0));
+    if !h.blocked() {
+        return true;
+    }
+    let hit = p + (end - p) * h.fraction - glam::DVec3::Z * 8.0;
+    sky(level.collision.zone_at(hit))
+}
+
 /// Modern Water's wave grid over the map's water (water::grid_mesh), cut to it by the mask.
 fn spawn_wave_grid(
     commands: &mut Commands,
@@ -2042,7 +2060,7 @@ fn spawn_wave_grid(
     // Only water under the open sky gets the waves: indoor water (the pool under Castle Clinton, the subway's)
     // stays a flat sheet, which the water shader draws with its own lit picture (water::is_indoor) - under the
     // grid there it came out black (a dark room's reflection over an unlit body).
-    let outdoor: Vec<(Vec<[f32; 3]>, Vec<u32>)> = level
+    let outdoor: Vec<(Vec<[f32; 3]>, Vec<u32>, bool)> = level
         .batches
         .iter()
         .filter(|b| b.class == SurfaceClass::Water && !b.sky)
@@ -2056,17 +2074,16 @@ fn spawn_wave_grid(
                         [a[0] + p[0] / 3.0, a[1] + p[1] / 3.0, a[2] + p[2] / 3.0]
                     });
                     let u = dx_level::bevy_to_ue(c);
-                    let z = level.collision.zone_at(glam::DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64 + 8.0));
-                    z <= 0 || level.zone_sky.get(z as usize).copied().unwrap_or(false)
+                    water_under_sky(level, glam::DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64 + 8.0))
                 })
                 .flatten()
                 .copied()
                 .collect();
-            (b.positions.clone(), idx)
+            (b.positions.clone(), idx, b.water_opaque)
         })
-        .filter(|(_, i)| !i.is_empty())
+        .filter(|(_, i, _)| !i.is_empty())
         .collect();
-    let sheets: Vec<(&[[f32; 3]], &[u32])> = outdoor.iter().map(|(p, i)| (&p[..], &i[..])).collect();
+    let sheets: Vec<(&[[f32; 3]], &[u32], bool)> = outdoor.iter().map(|(p, i, o)| (&p[..], &i[..], *o)).collect();
     let ring = ocean_geom.map(|(p, i)| (&p[..], &i[..]));
     if let Some((img, rect, heights)) = water::build_mask(&sheets, ring) {
         let mask = ast.images.add(img);

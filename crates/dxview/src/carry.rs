@@ -77,6 +77,7 @@ pub fn carry_system(
         ResMut<Assets<Mesh>>,
         Local<u64>,
     ),
+    npcs: Query<&crate::ai::Npc>,
 ) {
     let _prof = crate::prof::scope("carry::carry_system");
     let carrying = &mut *carrying_res;
@@ -226,7 +227,11 @@ pub fn carry_system(
         return;
     }
     carrying.consumed = true;
-    if !d.pushable || d.mass > max_lift() {
+    // DeusExPlayer.CanBeLifted: nothing is lifted while something stands on it (StandingCount > 0) - a chair with
+    // someone sitting in it (Sitting = SetBase(SeatActor)) is "too heavy to lift".
+    let seat_actor = blockers.list[b].actor;
+    let occupied = npcs.iter().any(|n| n.seat.is_some_and(|(s, _, _)| s == seat_actor));
+    if !d.pushable || d.mass > max_lift() || occupied {
         hud.text = if d.pushable {
             "It's too heavy to lift".into()
         } else {

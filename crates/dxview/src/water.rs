@@ -382,12 +382,16 @@ pub fn mask_placeholder(images: &mut Assets<Image>) -> Handle<Image> {
 
 /// The water mask over the map's flat water faces and the open sea's triangles (Bevy space): the image, its
 /// corner + texel + width (WaterParams.mask) and the heights. None when the map has no flat water.
-pub fn build_mask(sheets: &[(&[[f32; 3]], &[u32])], ring: Option<(&[[f32; 3]], &[u32])>) -> Option<(Image, Vec4, [Vec4; 4])> {
+/// Texels: bit 7 = water, bit 6 = the face was solid in the original (Batch::water_opaque: the Battery Park
+/// harbour - the wave grid over it is never see-through, or the bare harbour bed under it shows), bits 0-4 = the
+/// height's index + 1.
+pub fn build_mask(sheets: &[(&[[f32; 3]], &[u32], bool)], ring: Option<(&[[f32; 3]], &[u32])>) -> Option<(Image, Vec4, [Vec4; 4])> {
     let mut heights: Vec<f32> = Vec::new();
     let mut lo = Vec2::splat(f32::MAX);
     let mut hi = Vec2::splat(f32::MIN);
     let mut tris: Vec<([Vec2; 3], u8)> = Vec::new();
-    for (pos, idx) in sheets {
+    for (pos, idx, solid) in sheets {
+        let solid = if *solid { 0x40u8 } else { 0 };
         for t in idx.chunks_exact(3) {
             let p = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
             // Flat faces only (the grid is level water).
@@ -408,7 +412,7 @@ pub fn build_mask(sheets: &[(&[[f32; 3]], &[u32])], ring: Option<(&[[f32; 3]], &
                 lo = lo.min(q);
                 hi = hi.max(q);
             }
-            tris.push((v, k as u8 + 1));
+            tris.push((v, (k as u8 + 1) | solid));
         }
     }
     if tris.is_empty() {
