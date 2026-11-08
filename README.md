@@ -5,6 +5,11 @@
 **The original Deus Ex, rebuilt in Rust on the Bevy engine and played with your own copy of the game. Now with co-op
 and deathmatch multiplayer.**
 
+<p align="center"><a href="https://discord.gg/cY9kJ7fETm"><img src="https://img.shields.io/badge/Discord-Join%20the%20DX%20RUST%20community-5865F2?logo=discord&logoColor=white" alt="Join the DX RUST Discord"></a></p>
+
+**[Join the DX RUST Discord](https://discord.gg/cY9kJ7fETm)** to report bugs, suggest enhancements and find
+multiplayer matches.
+
 DX RUST is a from-scratch reimplementation of *Deus Ex* (Ion Storm, 2000). It reads the maps, textures, sounds,
 music, conversations and class defaults straight from your install and plays the whole game the way it shipped:
 every mission, all three endings, the AI, stealth, skills, augmentations, computers, saves, and the original menus
