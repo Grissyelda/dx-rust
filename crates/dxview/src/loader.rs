@@ -116,6 +116,7 @@ fn prefetch_tick(world: &mut World) {
                     Ok(Ok(l)) => {
                         p.ready = Some(l);
                         p.rx = None;
+                        crate::prof::mem_mark("read-ahead ready");
                     }
                     Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         p.rx = None;
@@ -127,6 +128,12 @@ fn prefetch_tick(world: &mut World) {
         }
     }
     if env_on!("DXVIEW_NO_PREFETCH") || crate::menus::intro_map() {
+        return;
+    }
+    // Not until the map in play has settled and a few seconds more: while it builds, its upload copies (texture
+    // pixels, relief maps, meshes) are still in memory, and a read-ahead started then stacked a second level on top
+    // (Liberty Island's start, beside the boat: about 400 MB more at the peak).
+    if settled_for().is_none_or(|s| s < 4.0) {
         return;
     }
     let Some(level) = world.get_resource::<crate::LevelRes>() else { return };
@@ -162,6 +169,23 @@ fn prefetch_tick(world: &mut World) {
             best = Some((d, dest.clone()));
         }
     }
+    // Walked well away from the exit a read-ahead copy is for: let it go (a whole level - its textures with their
+    // mips, lightmaps, collision - held in RAM for nothing). Coming back within 1500 reads it ahead again.
+    let held = PREFETCH.lock().ok().and_then(|p| p.as_ref().filter(|p| p.rx.is_none() && !p.failed).map(|p| p.map.clone()));
+    if let Some(held) = held {
+        let near = ex.1.iter().any(|(at, dest)| norm(dest) == held && pc.distance(*at) < 3000.0);
+        if !near {
+            let gone = PREFETCH.lock().ok().and_then(|mut p| if p.as_ref().is_some_and(|x| x.map == held) { p.take() } else { None });
+            if let Some(gone) = gone {
+                println!("loader: dropped the read-ahead of {held} (far from its exit)");
+                // Freed on a thread of its own (hundreds of MB), then its emptied pages go back to the OS.
+                let _ = std::thread::Builder::new().name("level-drop".into()).spawn(move || {
+                    drop(gone);
+                    crate::alloc::collect();
+                });
+            }
+        }
+    }
     drop(ex);
     if let Some((_, dest)) = best {
         let root = world.resource::<crate::pickups::GameRoot>().0.clone();
@@ -193,6 +217,9 @@ pub fn request(map: &str, goal: Goal) {
         m.push_str(".dx");
     }
     println!("loader: going to {m}");
+    if env_on!("DXVIEW_LOADERLOG") {
+        println!("{}", std::backtrace::Backtrace::force_capture());
+    }
     if let Ok(mut r) = REQUEST.lock() {
         *r = Some((m, goal));
     }
@@ -288,6 +315,7 @@ pub fn loader_system(world: &mut World) {
                     a.images.clear();
                     a.materials.clear();
                 }
+                dx_level::actors::clear_mesh_cache();
             }
             *last = key;
         }
@@ -579,6 +607,13 @@ pub fn loading_screen_system(
 /// held) until its render pipelines have compiled and its textures are up: without this the intro's first room
 /// popped in surface by surface. Ends after 6 calm frames (and at least 0.35 s), or 6 s at most.
 static SETTLE: Mutex<Option<(std::time::Instant, u32)>> = Mutex::new(None);
+/// When the map in play last finished settling (None while it hasn't).
+static SETTLED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Seconds since the map in play settled (None while loading / settling).
+fn settled_for() -> Option<f32> {
+    SETTLED_AT.lock().ok().and_then(|g| g.map(|t| t.elapsed().as_secs_f32()))
+}
 
 pub fn settling() -> bool {
     SETTLE.lock().map(|s| s.is_some()).unwrap_or(false)
@@ -587,7 +622,11 @@ pub fn settling() -> bool {
 pub fn settle_system(mut seen: Local<u64>, mut paused_by_us: Local<bool>, mut time: ResMut<Time<Virtual>>) {
     if generation() != *seen {
         *seen = generation();
-        if !env_on!("DXVIEW_NO_SETTLE") {
+        let settle = !env_on!("DXVIEW_NO_SETTLE");
+        if let Ok(mut a) = SETTLED_AT.lock() {
+            *a = (!settle).then(std::time::Instant::now);
+        }
+        if settle {
             if let Ok(mut s) = SETTLE.lock() {
                 *s = Some((std::time::Instant::now(), 0));
             }
@@ -599,6 +638,14 @@ pub fn settle_system(mut seen: Local<u64>, mut paused_by_us: Local<bool>, mut ti
         let age = t0.elapsed().as_secs_f32();
         if (*calm >= 6 && age >= 0.35) || age >= 6.0 || busy() {
             *g = None;
+            // The old level's buffers are freed by now: give the emptied heap pages back to the OS. mimalloc
+            // collects the calling thread's heap and the abandoned ones, so this runs here on the main thread
+            // (a few ms while the screen is still black).
+            crate::alloc::collect();
+            if let Ok(mut a) = SETTLED_AT.lock() {
+                *a = Some(std::time::Instant::now());
+            }
+            crate::prof::mem_mark("map settled");
         }
     }
     let on = g.is_some();

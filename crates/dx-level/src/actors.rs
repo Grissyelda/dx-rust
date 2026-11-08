@@ -582,12 +582,29 @@ pub fn anim_mesh(m: &LodMesh) -> AnimMesh {
     AnimMesh { frame_verts: fv, frames: m.anim_frames, verts, seqs: m.anim_seqs.clone(), weapon_tri }
 }
 
+/// Meshes decoded at run time (weapons, fragments, spawned things), by path: decoding a dense mod mesh took
+/// several ms each time a pawn drew a weapon. Cleared when the mod switches change (clear_mesh_cache).
+static MESH_CACHE: std::sync::Mutex<Option<HashMap<String, std::sync::Arc<(LodMesh, String)>>>> = std::sync::Mutex::new(None);
+
+pub fn clear_mesh_cache() {
+    if let Ok(mut g) = MESH_CACHE.lock() {
+        *g = None;
+    }
+}
+
 /// Load a mesh by path (e.g. `DeusExItems.Glock`) from the code packages.
 pub fn load_mesh(classes: &ClassDb, full: &str) -> Option<(LodMesh, String)> {
+    if let Some(c) = MESH_CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(full).cloned())) {
+        return Some((c.0.clone(), c.1.clone()));
+    }
     let (pk, rest) = full.split_once('.')?;
     let pkg = classes.package(pk)?;
     let e = pkg.find_export_of_class(rest, "Mesh")?;
-    Some((mesh::read_lod_mesh(&pkg, e).ok()?, pk.to_string()))
+    let got = std::sync::Arc::new((mesh::read_lod_mesh(&pkg, e).ok()?, pk.to_string()));
+    if let Ok(mut g) = MESH_CACHE.lock() {
+        g.get_or_insert_with(HashMap::new).insert(full.to_string(), got.clone());
+    }
+    Some((got.0.clone(), got.1.clone()))
 }
 
 /// Unreal-style actor lighting for one part placed at `location`/`rotation`: per-vertex distance falloff

@@ -12,16 +12,33 @@ use std::sync::{Arc, Mutex};
 
 pub use xmrs::prelude::Module;
 
-/// Decoded PCM, stored as f32 frames (interleaved when stereo).
+/// Decoded PCM, stored as 16-bit samples (interleaved when stereo): the game's sounds are 16-bit (8-bit for a few),
+/// and its speech is MP3 decoded to that depth - f32 took twice the memory for nothing (sound effects warmed at
+/// start plus up to 128 MB of speech). `at` reads a sample as f32.
 pub struct Clip {
-    pub data: Vec<f32>,
+    pub data: Vec<i16>,
     pub channels: u16,
     pub rate: u32,
     /// Loop points in frames from a WAV `smpl` chunk (start, end exclusive).
     pub loop_range: Option<(usize, usize)>,
 }
 
+/// f32 sample (-1..1) to 16 bits, rounded and clamped.
+#[inline]
+pub fn to_i16(v: f32) -> i16 {
+    (v * 32768.0).round().clamp(-32768.0, 32767.0) as i16
+}
+
 impl Clip {
+    /// From f32 samples (-1..1).
+    pub fn from_f32(data: &[f32], channels: u16, rate: u32, loop_range: Option<(usize, usize)>) -> Self {
+        Clip { data: data.iter().map(|&v| to_i16(v)).collect(), channels, rate, loop_range }
+    }
+    /// Sample `i` as f32 (-1..1).
+    #[inline(always)]
+    pub fn at(&self, i: usize) -> f32 {
+        self.data[i] as f32 * (1.0 / 32768.0)
+    }
     pub fn frames(&self) -> usize {
         self.data.len() / self.channels.max(1) as usize
     }
@@ -79,7 +96,7 @@ pub fn decode_mp3(b: &[u8]) -> Option<Clip> {
         rate = spec.rate;
         let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
         sb.copy_interleaved_ref(buf);
-        data.extend_from_slice(sb.samples());
+        data.extend(sb.samples().iter().map(|&v| to_i16(v)));
     }
     if data.is_empty() {
         return None;
@@ -224,12 +241,9 @@ pub fn decode_wav(b: &[u8]) -> Option<Clip> {
         return None;
     }
     let d = data?;
-    let samples: Vec<f32> = match bits {
-        8 => d.iter().map(|&v| (v as f32 - 128.0) / 128.0).collect(),
-        16 => d
-            .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-            .collect(),
+    let samples: Vec<i16> = match bits {
+        8 => d.iter().map(|&v| ((v as i16) - 128) << 8).collect(),
+        16 => d.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect(),
         _ => return None,
     };
     let frames = samples.len() / channels as usize;
@@ -603,24 +617,23 @@ impl State {
                     let prev = if i > ls { i - 1 } else if v.p.looping && le > ls { le - 1 } else { i };
                     let next = if j + 1 < le { j + 1 } else if v.p.looping { ls } else { j };
                     if ch == 1 {
-                        let s = hermite(t, c.data[prev], c.data[i], c.data[j], c.data[next]);
+                        let s = hermite(t, c.at(prev), c.at(i), c.at(j), c.at(next));
                         (s, s)
                     } else {
-                        let at = |k: usize, o: usize| c.data[k * ch + o];
+                        let at = |k: usize, o: usize| c.at(k * ch + o);
                         (
                             hermite(t, at(prev, 0), at(i, 0), at(j, 0), at(next, 0)),
                             hermite(t, at(prev, 1), at(i, 1), at(j, 1), at(next, 1)),
                         )
                     }
                 } else if ch == 1 {
-                    let s = c.data[i] + (c.data[j] - c.data[i]) * t;
+                    let (x, y) = (c.at(i), c.at(j));
+                    let s = x + (y - x) * t;
                     (s, s)
                 } else {
                     let (a, b) = (i * ch, j * ch);
-                    (
-                        c.data[a] + (c.data[b] - c.data[a]) * t,
-                        c.data[a + 1] + (c.data[b + 1] - c.data[a + 1]) * t,
-                    )
+                    let (xa, xb, ya, yb) = (c.at(a), c.at(b), c.at(a + 1), c.at(b + 1));
+                    (xa + (xb - xa) * t, ya + (yb - ya) * t)
                 };
                 v.lpk += (k_want - v.lpk) * smooth;
                 if v.lpk < 0.999 {
@@ -1248,7 +1261,7 @@ mod tests {
         let c = decode_wav(&wav(&[0, 16384, -16384, 32767], 22050)).unwrap();
         assert_eq!(c.frames(), 4);
         assert_eq!(c.rate, 22050);
-        assert!((c.data[1] - 0.5).abs() < 1e-4);
+        assert!((c.at(1) - 0.5).abs() < 1e-4);
     }
 
     #[test]
@@ -1281,7 +1294,7 @@ mod tests {
             sendbuf: Vec::new(),
         };
         let clip = Arc::new(Clip {
-            data: vec![0.5; 100],
+            data: vec![16384; 100],
             channels: 1,
             rate: 22050,
             loop_range: None,
@@ -1322,7 +1335,7 @@ mod tests {
             mixbuf: Vec::new(),
             sendbuf: Vec::new(),
         };
-        let clip = Arc::new(Clip { data: vec![0.5; 100], channels: 1, rate: 22050, loop_range: None });
+        let clip = Arc::new(Clip { data: vec![16384; 100], channels: 1, rate: 22050, loop_range: None });
         let voice = |id: VoiceId, looping: bool, volume: f32| {
             Box::new(Voice {
                 id,

@@ -8,6 +8,8 @@ version.workspace = true
 winresource = "0.1"
 
 [dependencies]
+# The renderer's own crate (the version Bevy uses), for the start-up adapter probe in gpuinit.rs.
+wgpu = { version = "29.0.4", default-features = false }
 bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "experimental_pbr_pcss"] }
 dx-level = { path = "../dx-level" }
 imsim-core = { path = "../imsim-core" }
@@ -39,6 +41,8 @@ cpal = "0.15"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
 # The heap (alloc.rs): faster than the system allocators for many small allocations.
 mimalloc = { version = "0.1", default-features = false }
+# mi_process_info (resident / committed memory, CPU time for the profiler) and mi_collect (returning freed pages).
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"] }
 
 # Android (crates/dxandroid builds the APK): NativeActivity, JNI for permissions / clipboard / keyboard, sensors
 # for gyro aim, and winit for its controller hook (our patched copy in vendor/winit).

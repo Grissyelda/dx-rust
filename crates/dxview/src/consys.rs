@@ -880,7 +880,7 @@ pub fn phonemes(c: &imsim_audio::Clip) -> Vec<u8> {
     let ch = c.channels.max(1) as usize;
     let win = (c.rate as usize / 20).max(1);
     let frames = c.data.len() / ch;
-    let mono = |i: usize| c.data[i * ch..i * ch + ch].iter().sum::<f32>() / ch as f32;
+    let mono = |i: usize| (0..ch).map(|o| c.at(i * ch + o)).sum::<f32>() / ch as f32;
     let mut stats = Vec::new();
     let mut i = 0;
     while i < frames {

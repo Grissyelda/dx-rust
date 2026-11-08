@@ -321,15 +321,15 @@ static WORKER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 /// playing; a line needed again is decoded again (in the background, as conversations prefetch theirs).
 static SPEECH_ORDER: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
 static SPEECH_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-/// About 25 minutes of speech.
-const SPEECH_BUDGET: usize = 128 << 20;
+/// About 25 minutes of speech (16-bit samples).
+const SPEECH_BUDGET: usize = 64 << 20;
 
 fn is_speech(path: &str) -> bool {
     path.len() >= 14 && path[..14].eq_ignore_ascii_case("DeusExConAudio")
 }
 
 fn clip_bytes(c: &Option<Arc<Clip>>) -> usize {
-    c.as_ref().map_or(0, |c| c.data.len() * std::mem::size_of::<f32>())
+    c.as_ref().map_or(0, |c| c.data.len() * std::mem::size_of::<i16>())
 }
 
 /// An already-decoded sound (Some(None) = known not to decode).

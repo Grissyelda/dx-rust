@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Performance and memory (November 7)
+- wgpu's check of every indirect draw is off where it isn't needed: the game names Vulkan outright (Windows when a
+  Vulkan GPU answers, Linux, Steam Deck, Android) or Metal (macOS), so Bevy turns the check off as it means to. With
+  the default list of graphics APIs, which includes DirectX 12 everywhere, it stayed on: a compute pass per render
+  pass, about 200 MB of video memory for its buffers and extra work on the render thread each frame. DirectX 12 (no
+  Vulkan GPU, or `WGPU_BACKEND=dx12`) keeps it, as wgpu needs it there.
+- The read-ahead copy of the next map (loaded in the background near an exit) waits until the map in play has
+  finished loading: started at once, it stacked a second level on top of the first one's upload copies (Liberty
+  Island starts beside the boat: the peak dropped from about 1.2 GB of heap to 0.76 GB here). It is let go once you
+  walk well away from that exit, and read ahead again when you come back.
+- The lightmap's pixels are freed after they go to the GPU, like the textures' (32 MB on Liberty Island), and freed
+  memory goes back to the system after each map load.
+- Decoded sounds and speech are kept as 16-bit samples, the depth the game's audio has, instead of 32-bit floats:
+  half the memory for the same sound (the cache of recent speech holds the same 25 minutes in 64 MB).
+- Weapon and debris meshes are decoded once per session instead of each time a character draws a weapon (a dense
+  modded model took several milliseconds each time).
+- Profiling (`DXVIEW_PROF=1`) reports memory (resident and committed), CPU use in cores, video memory (the
+  driver allocator's total and largest allocations, Bevy's textures), what the CPU side keeps of images and meshes,
+  and each map's memory. `PROFILE_RESOURCES.bat` runs Liberty Island and the boat to Battery Park with your settings
+  and writes it all to `prof_res.log`.
+
 ### GitHub fixes (November 7)
 - Locks, doors and devices that can't be picked, broken or hacked show a full green bar beside INF, as the original's
   do (their strength is 1.0) (#43).

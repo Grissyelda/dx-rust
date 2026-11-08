@@ -155,8 +155,8 @@ fn fill<T: Copy>(out: &mut [T], ch: usize, conv: impl Fn(f32) -> T) {
             let i = *pos as usize;
             if i + 1 < clip.frames() {
                 let f = (*pos - i as f64) as f32;
-                let a = clip.data[i * chans];
-                let b = clip.data[(i + 1) * chans];
+                let a = clip.at(i * chans);
+                let b = clip.at((i + 1) * chans);
                 sp = (a + (b - a) * f) * *vol;
                 *pos += clip.rate as f64 / RATE as f64;
             } else {

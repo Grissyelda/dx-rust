@@ -304,7 +304,7 @@ fn thunder_clip(seed: u64, near: bool) -> imsim_audio::Clip {
         }
         data.push((v * (1.0 - (t / secs).powi(4))).clamp(-1.0, 1.0));
     }
-    imsim_audio::Clip { data, channels: 1, rate, loop_range: None }
+    imsim_audio::Clip::from_f32(&data, 1, rate, None)
 }
 
 #[allow(clippy::too_many_arguments)]

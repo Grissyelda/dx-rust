@@ -24,6 +24,9 @@ pub fn init() {
     ON.store(env_on!("DXVIEW_PROF"), Ordering::Relaxed);
     if ON.load(Ordering::Relaxed) {
         crate::alloc::enable();
+        if env_on!("DXVIEW_HEAPPROF") {
+            crate::alloc::enable_heap_profile();
+        }
     }
     HITCH.store(!env_on!("DXVIEW_NO_HITCHLOG"), Ordering::Relaxed);
 }
@@ -31,24 +34,91 @@ pub fn init() {
 /// Note a slow piece of work outside the per-frame scopes (a level load, a view model build) in hitch.log.
 /// Load breakdown: time since the previous mark, per step of building a map (setup and the first frames' heavy
 /// systems), reported once to stdout and hitch.log by load_report().
-static LOAD: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+static LOAD: std::sync::Mutex<Option<(std::time::Instant, String, f64)>> = std::sync::Mutex::new(None);
 
 pub fn load_mark(label: &str) {
+    // With DXVIEW_PROF also the heap each step added ("+N MB").
+    let heap = if on() { crate::alloc::process().map_or(0.0, |p| p.commit as f64 / 1048576.0) } else { 0.0 };
     if let Ok(mut g) = LOAD.lock() {
         let now = std::time::Instant::now();
         match g.as_mut() {
-            Some((t, s)) if label != "start" => {
+            Some((t, s, h)) if label != "start" => {
                 s.push_str(&format!(" {label} {:.0}", now.duration_since(*t).as_secs_f64() * 1000.0));
+                if on() {
+                    s.push_str(&format!(" (+{:.0} MB)", heap - *h));
+                }
                 *t = now;
+                *h = heap;
             }
-            _ => *g = Some((now, String::new())),
+            _ => *g = Some((now, String::new(), heap)),
         }
     }
 }
 
+/// With DXVIEW_PROF: the heap's committed size at a point of start-up / loading ("PROF heap <what>: N MB").
+pub fn mem_mark(what: &str) {
+    if !on() {
+        return;
+    }
+    if let Some(p) = crate::alloc::process() {
+        println!(
+            "PROF heap {what}: {:.0} MB live, {:.0} MB committed, {:.0} MB resident",
+            crate::alloc::live_bytes() as f64 / 1048576.0,
+            p.commit as f64 / 1048576.0,
+            p.rss as f64 / 1048576.0
+        );
+    }
+    crate::alloc::heap_report(what);
+}
+
+/// With DXVIEW_PROF: what a built level holds in RAM (the larger parts), once per map as "PROF level-mem".
+pub fn level_memory(l: &dx_level::Level) {
+    if !on() {
+        return;
+    }
+    fn v<T>(x: &Vec<T>) -> usize {
+        x.capacity() * std::mem::size_of::<T>()
+    }
+    const MB: f64 = 1024.0 * 1024.0;
+    let tex: usize = l.textures.iter().map(|t| t.mips.iter().map(|m| m.capacity()).sum::<usize>()).sum();
+    let batches: usize = l
+        .batches
+        .iter()
+        .map(|b| v(&b.positions) + v(&b.normals) + v(&b.uvs) + v(&b.uvs1) + v(&b.colors) + v(&b.light_ids) + v(&b.indices))
+        .sum();
+    let parts: usize = l
+        .mesh_actors
+        .iter()
+        .flat_map(|m| m.parts.iter())
+        .map(|p| v(&p.positions) + v(&p.normals) + v(&p.uvs) + v(&p.indices) + v(&p.vert_ids) + v(&p.slots))
+        .sum();
+    let mut seen = std::collections::HashSet::new();
+    let mut anim = 0usize;
+    let mut anim_n = 0usize;
+    for m in &l.mesh_actors {
+        if let Some(a) = &m.anim {
+            if seen.insert(std::sync::Arc::as_ptr(&a.mesh) as usize) {
+                anim += v(&a.mesh.verts) + v(&a.mesh.weapon_tri);
+                anim_n += 1;
+            }
+        }
+    }
+    let lm = l.lightmap.as_ref().map_or(0, |a| v(&a.rgba) + v(&a.mask));
+    println!(
+        "PROF level-mem {}: textures {:.1} MB, surface batches {:.1} MB, mesh parts {:.1} MB, vertex animation {:.1} MB ({anim_n} meshes), lightmap {:.1} MB, {} actors",
+        l.name,
+        tex as f64 / MB,
+        batches as f64 / MB,
+        parts as f64 / MB,
+        anim as f64 / MB,
+        lm as f64 / MB,
+        l.actors.len()
+    );
+}
+
 pub fn load_report() {
     if let Ok(mut g) = LOAD.lock() {
-        if let Some((_, s)) = g.take() {
+        if let Some((_, s, _)) = g.take() {
             println!("PROF load:{s}");
             hitch_write(&format!("load breakdown (ms):{s}\n"));
         }
@@ -238,6 +308,29 @@ pub fn prof_report_system(
             *l = (a, b);
         }
     }
+    // Process memory and CPU (mi_process_info): resident / committed and how many cores' worth of CPU time.
+    static LAST_PROC: Mutex<Option<crate::alloc::ProcInfo>> = Mutex::new(None);
+    if let (Some(p), Ok(mut l)) = (crate::alloc::process(), LAST_PROC.lock()) {
+        const MB: f64 = 1024.0 * 1024.0;
+        let cores = l.map(|o| {
+            let wall = p.elapsed_ms.saturating_sub(o.elapsed_ms).max(1) as f64;
+            (
+                p.user_ms.saturating_sub(o.user_ms) as f64 / wall,
+                p.system_ms.saturating_sub(o.system_ms) as f64 / wall,
+            )
+        });
+        out.push_str(&format!(
+            "PROF memory: heap {:.0} MB live, resident {:.0} MB (peak {:.0}), committed {:.0} MB (peak {:.0}){}\n",
+            crate::alloc::live_bytes() as f64 / MB,
+            p.rss as f64 / MB,
+            p.peak_rss as f64 / MB,
+            p.commit as f64 / MB,
+            p.peak_commit as f64 / MB,
+            cores.map(|(u, s)| format!(", CPU {:.2} cores user + {:.2} system of {}", u, s,
+                std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))).unwrap_or_default()
+        ));
+        *l = Some(p);
+    }
     if let Ok(mut g) = STATS.lock() {
         let mut v: Vec<(&'static str, (f64, u32, f64, u64))> = g.take().unwrap_or_default().into_iter().collect();
         v.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
@@ -266,7 +359,11 @@ pub fn prof_report_system(
     print!("{out}");
     dump_spans(n);
     static REPORTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    timeline_report(REPORTS.fetch_add(1, Ordering::Relaxed) + 1);
+    let nrep = REPORTS.fetch_add(1, Ordering::Relaxed) + 1;
+    timeline_report(nrep);
+    if nrep % 6 == 3 {
+        crate::alloc::heap_report("in play");
+    }
 }
 
 /// With DXVIEW_PROF set: Bevy's per-pass render timings (CPU and GPU).
@@ -280,7 +377,9 @@ impl bevy::app::Plugin for ProfRenderPlugins {
                 use bevy::prelude::IntoScheduleConfigs;
                 render.add_systems(
                     bevy::render::Render,
-                    draw_count_system.in_set(bevy::render::RenderSystems::Cleanup).before(bevy::render::RenderSystems::PostCleanup),
+                    (draw_count_system, gpu_memory_system)
+                        .in_set(bevy::render::RenderSystems::Cleanup)
+                        .before(bevy::render::RenderSystems::PostCleanup),
                 );
             }
         }
@@ -334,6 +433,59 @@ fn draw_count_system(
         total += items;
     }
     println!("PROF draws total: about {total} draw calls a frame");
+}
+
+/// GPU memory every 300 frames: the device allocator's report (allocated / reserved, biggest allocations by label)
+/// and a census of the textures Bevy holds (theoretical size by format, mips and layers), as "PROF gpu-mem".
+fn gpu_memory_system(
+    device: bevy::prelude::Res<bevy::render::renderer::RenderDevice>,
+    images: bevy::prelude::Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
+    mut frame: bevy::prelude::Local<u32>,
+) {
+    *frame += 1;
+    if *frame % 300 != 160 {
+        return;
+    }
+    const MB: f64 = 1024.0 * 1024.0;
+    if let Some(r) = device.wgpu_device().generate_allocator_report() {
+        println!(
+            "PROF gpu-mem: allocator {:.0} MB in use, {:.0} MB reserved, {} allocations, {} blocks",
+            r.total_allocated_bytes as f64 / MB,
+            r.total_reserved_bytes as f64 / MB,
+            r.allocations.len(),
+            r.blocks.len()
+        );
+        let mut by: HashMap<String, (u64, u32)> = HashMap::new();
+        for a in &r.allocations {
+            let e = by.entry(a.name.clone()).or_default();
+            e.0 += a.size;
+            e.1 += 1;
+        }
+        let mut v: Vec<_> = by.into_iter().collect();
+        v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        for (k, (b, n)) in v.iter().take(16) {
+            println!("PROF   gpu-mem {:<48} {:8.1} MB  x{n}", if k.is_empty() { "(unlabelled)" } else { k }, *b as f64 / MB);
+        }
+    } else {
+        println!("PROF gpu-mem: no allocator report on this backend");
+    }
+    let (mut tex, mut count, mut biggest) = (0u64, 0usize, Vec::new());
+    for (_, g) in images.iter() {
+        let d = &g.texture_descriptor;
+        let mut bytes = 0u64;
+        for m in 0..d.mip_level_count {
+            let e = d.mip_level_size(m).unwrap_or(d.size);
+            bytes += d.format.theoretical_memory_footprint(e);
+        }
+        tex += bytes;
+        count += 1;
+        biggest.push((bytes, d.size.width, d.size.height, d.size.depth_or_array_layers, d.format));
+    }
+    biggest.sort_by(|a, b| b.0.cmp(&a.0));
+    println!("PROF gpu-mem: {count} images, {:.0} MB of texels", tex as f64 / MB);
+    for (b, w, h, l, f) in biggest.iter().take(8) {
+        println!("PROF   gpu-mem image {w}x{h}x{l} {f:?} {:.1} MB", *b as f64 / MB);
+    }
 }
 
 pub fn render_plugins() -> ProfRenderPlugins {
@@ -460,6 +612,68 @@ pub struct SceneStats {
     mat_mod: u64,
     since: f64,
     last: Option<Instant>,
+}
+
+/// With DXVIEW_PROF set: every 20 seconds, what the main world keeps on the CPU side - images still holding their
+/// pixels and meshes' attribute / index bytes (assets made RENDER_WORLD-only have none here), biggest first.
+pub fn cpu_asset_report_system(
+    images: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Image>>,
+    meshes: bevy::prelude::Res<bevy::prelude::Assets<bevy::prelude::Mesh>>,
+    mut last: bevy::prelude::Local<Option<Instant>>,
+) {
+    if !on() {
+        return;
+    }
+    // First after 20 s (assets made RENDER_WORLD-only give their data up when first extracted).
+    let t0 = *last.get_or_insert_with(Instant::now);
+    if t0.elapsed().as_secs_f32() < 20.0 {
+        return;
+    }
+    *last = Some(Instant::now());
+    const MB: f64 = 1024.0 * 1024.0;
+    let (mut ib, mut ic, mut big) = (0usize, 0usize, Vec::new());
+    for (_, im) in images.iter() {
+        if let Some(d) = &im.data {
+            ib += d.len();
+            ic += 1;
+            big.push((d.len(), im.texture_descriptor.size.width, im.texture_descriptor.size.height));
+        }
+    }
+    big.sort_by(|a, b| b.0.cmp(&a.0));
+    let (mut mb, mut mc, mut mbig) = (0usize, 0usize, Vec::new());
+    for (id, m) in meshes.iter() {
+        // Extracted RENDER_WORLD-only meshes have no data here (and panic on the plain accessors).
+        let Ok(attrs) = m.try_attributes() else { continue };
+        let mut b = 0usize;
+        for (_, v) in attrs {
+            b += v.get_bytes().len();
+        }
+        if let Ok(Some(i)) = m.try_indices_option() {
+            b += match i {
+                bevy::mesh::Indices::U16(v) => v.len() * 2,
+                bevy::mesh::Indices::U32(v) => v.len() * 4,
+            };
+        }
+        if b > 0 {
+            mb += b;
+            mc += 1;
+            mbig.push((b, m.count_vertices(), id));
+        }
+    }
+    mbig.sort_by(|a, b| b.0.cmp(&a.0));
+    println!(
+        "PROF cpu-assets: {ic} of {} images keep pixels ({:.1} MB), {mc} of {} meshes keep data ({:.1} MB)",
+        images.len(),
+        ib as f64 / MB,
+        meshes.len(),
+        mb as f64 / MB
+    );
+    for (b, w, h) in big.iter().take(6) {
+        println!("PROF   cpu-assets image {w}x{h} {:.2} MB", *b as f64 / MB);
+    }
+    for (b, v, id) in mbig.iter().take(8) {
+        println!("PROF   cpu-assets mesh {id:?} {v} verts {:.2} MB", *b as f64 / MB);
+    }
 }
 
 /// With DXVIEW_PROF set: every five seconds, every active camera (order, target, its components) - each one is a
@@ -1278,6 +1492,39 @@ static MODIFIED: Mutex<(Vec<bevy::asset::AssetId<bevy::prelude::Mesh>>, Vec<bevy
 /// With DXVIEW_PROF: which kinds of entity have their GlobalTransform changed each frame (what Bevy's transform
 /// propagation, visibility and render extraction redo), grouped by archetype and named by its dxview components.
 #[allow(clippy::too_many_arguments)]
+/// Names for the census without Bevy's debug feature (component names are hidden then): by TypeId.
+fn known_name(t: std::any::TypeId) -> Option<&'static str> {
+    use std::any::TypeId as T;
+    macro_rules! k {
+        ($($ty:ty => $n:expr),* $(,)?) => {{
+            $(if t == T::of::<$ty>() { return Some($n); })*
+            None
+        }};
+    }
+    k!(
+        bevy::prelude::Name => "Name",
+        bevy::prelude::Mesh3d => "Mesh3d",
+        bevy::mesh::skinning::SkinnedMesh => "SkinnedMesh",
+        bevy::prelude::MeshMaterial3d<bevy::prelude::StandardMaterial> => "Mat<Std>",
+        bevy::prelude::MeshMaterial3d<crate::skeletal::ActorMaterial> => "Mat<Actor>",
+        bevy::prelude::Camera => "Camera",
+        bevy::prelude::PointLight => "PointLight",
+        bevy::prelude::SpotLight => "SpotLight",
+        bevy::prelude::DirectionalLight => "DirectionalLight",
+        bevy::prelude::Node => "Node",
+        bevy::camera::visibility::RenderLayers => "RenderLayers",
+        bevy::camera::primitives::Aabb => "Aabb",
+        bevy::light::NotShadowCaster => "NotShadowCaster",
+        crate::skeletal::SkelBody => "SkelBody",
+        crate::ai::Npc => "Npc",
+        crate::ai::HeldModel => "HeldModel",
+        crate::ai::HeldRoot => "HeldRoot",
+        crate::actors::EnvMapped => "EnvMapped",
+        crate::weapons::MuzzleFlashPart => "MuzzleFlashPart",
+        crate::FlyCam => "FlyCam",
+    )
+}
+
 pub fn transform_census_system(
     moved: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::GlobalTransform>>,
     vis: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::ViewVisibility>>,
@@ -1322,7 +1569,11 @@ pub fn transform_census_system(
             .components()
             .iter()
             .filter_map(|id| components.get_info(*id))
-            .map(|i| i.name().to_string())
+            .map(|i| match i.type_id().and_then(known_name) {
+                // Without Bevy's debug feature names are hidden: ours and Bevy's usual ones by type.
+                Some(n) => n.to_string(),
+                None => i.name().to_string(),
+            })
             .map(|s| {
                 // Short names: the last path segment (inside a generic: its argument's).
                 let base = s.split('<').next().unwrap_or(&s).rsplit("::").next().unwrap_or("").to_string();

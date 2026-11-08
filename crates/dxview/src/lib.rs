@@ -44,6 +44,7 @@ mod android;
 mod perf;
 mod skyfollow;
 mod glow;
+mod gpuinit;
 mod vision;
 mod shafts;
 mod postfx;
@@ -780,7 +781,9 @@ pub fn run() {
     let root = android_root;
     #[cfg(not(target_os = "android"))]
     let root = game_root(&args);
+    prof::mem_mark("start");
     setup_mods(&root);
+    prof::mem_mark("mods set up");
     if platform::android() {
         remaster::force_classic();
     } else {
@@ -791,13 +794,16 @@ pub fn run() {
     dx_level::emissive::set_switch(relight::emissive_on);
     unreal_pkg::paths::set_hd_textures_on(setting!("HDTextures") > 0.5);
     init_game_data(&root);
+    prof::mem_mark("game data (classes, mod layers)");
     let map = startup_map(&args);
     // The chosen face on Paul and JC's stand-ins (DeusExPlayer.UpdatePlayerSkin).
     dx_level::actors::set_overrides(travel::skin_overrides(&map));
     hdtp::build_layer();
     visattach::apply();
     augmentique::build_layer();
+    prof::mem_mark("mod layers built");
     let level = load_first_level(&root, &map);
+    prof::mem_mark("first level loaded");
     // The App, one group of plugins / resources / systems at a time, in the order they were always added (plugin
     // build order and the schedules' .before / .after depend on it).
     let mut app = App::new();
@@ -825,6 +831,7 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
             custom_layer: prof::span_layer,
             ..default()
         }).set(threads::task_pools())
+        .set(bevy::render::RenderPlugin { render_creation: gpuinit::wgpu_settings().into(), ..default() })
         // Not used: gamepads are read by our own gilrs / HID code (gamepad.rs), characters are animated by our own
         // systems (actors.rs, gpuanim.rs, skeletal.rs). Bevy's would poll and tick for nothing every frame.
         .disable::<bevy::gilrs::GilrsPlugin>()
@@ -1072,7 +1079,7 @@ fn add_input_systems(app: &mut App) {
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
         .add_plugins(PlatformPlugin)
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system, prof::transform_census_system));
+        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system, prof::transform_census_system, prof::cpu_asset_report_system));
 }
 
 /// Conversation / trigger / logic resources and the mission-script side systems.
@@ -1617,6 +1624,8 @@ fn setup(
     spawn_cameras(&mut commands, level, shot.as_deref());
     prof::load_mark("cameras");
     prof::load_report();
+    prof::level_memory(level);
+    prof::mem_mark("level built");
 }
 
 /// The lightmap image (and Lean Rendering's lit copy), and the level textures' GPU images.
@@ -2390,6 +2399,13 @@ fn drop_texture_pixels(mut level: ResMut<LevelRes>) {
         }
     }
     let mut freed = 0usize;
+    // The lightmap's pixels and per-texel light reach went to the GPU at setup (level_images, relight::mask_image);
+    // nothing reads them on the CPU after that. Its size, lights and patches stay.
+    if let Some(a) = lvl.lightmap.as_mut() {
+        freed += a.rgba.capacity() + a.mask.capacity();
+        a.rgba = Vec::new();
+        a.mask = Vec::new();
+    }
     for (t, k) in lvl.textures.iter_mut().zip(keep) {
         if !k && !t.mips.is_empty() {
             freed += t.mips.iter().map(|m| m.capacity()).sum::<usize>();
@@ -2397,7 +2413,7 @@ fn drop_texture_pixels(mut level: ResMut<LevelRes>) {
         }
     }
     if freed > 0 {
-        println!("dxview: {} MB of texture pixels freed after upload", freed >> 20);
+        println!("dxview: {} MB of texture and lightmap pixels freed after upload", freed >> 20);
     }
 }
 
