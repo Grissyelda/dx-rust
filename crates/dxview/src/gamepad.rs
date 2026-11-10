@@ -387,6 +387,9 @@ fn finish_frame(mut f: PadFrame, any_event: bool, prev: &mut Vec<PadBtn>) {
         f.pad_last = true;
     }
     f.just = f.held.iter().copied().filter(|b| !prev.contains(b)).collect();
+    if !f.held.is_empty() || f.ls.length() > 0.3 || f.rs.length() > 0.3 {
+        PAD_BUSY_AT.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
     let was_pad = FRAME.lock().ok().and_then(|x| x.as_ref().map(|x| x.pad_last)).unwrap_or(false);
     f.pad_last = if !f.just.is_empty() || f.ls.length() > 0.3 || f.rs.length() > 0.3 { true } else { was_pad && !any_kbm() };
     let _ = any_event;
@@ -394,6 +397,39 @@ fn finish_frame(mut f: PadFrame, any_event: bool, prev: &mut Vec<PadBtn>) {
     if let Ok(mut x) = FRAME.lock() {
         *x = Some(f);
     }
+}
+
+/// When a pad button was last held or a stick pushed (ms since start).
+static PAD_BUSY_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// Started by Steam (it sets these for what it launches, non-Steam games too).
+fn under_steam() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| ["SteamGameId", "SteamAppId", "SteamClientLaunch", "SteamOverlayGameId"].iter().any(|k| std::env::var_os(k).is_some()))
+}
+
+/// GitHub issue #54: launched from Steam with a DualSense, Steam Input also turns the pad into keys (its template's
+/// arrows / Enter / Escape and scrolling) while we read the pad itself over HID - every menu step came twice. Under
+/// Steam, while the HID DualSense is in use (pressed or pushed in the last 0.3 s), keyboard navigation keys and
+/// wheel scrolling are taken to be Steam's copy and dropped.
+pub fn steam_echo() -> bool {
+    under_steam()
+        && crate::dualsense::input().is_some()
+        && now_ms().saturating_sub(PAD_BUSY_AT.load(std::sync::atomic::Ordering::Relaxed)) < 300
+}
+
+/// Keys Steam Input's templates send for a pad's navigation buttons.
+pub fn steam_nav_key(k: bevy::input::keyboard::KeyCode) -> bool {
+    use bevy::input::keyboard::KeyCode as C;
+    matches!(
+        k,
+        C::ArrowUp | C::ArrowDown | C::ArrowLeft | C::ArrowRight | C::Enter | C::NumpadEnter | C::Escape | C::Space | C::Tab | C::Backspace | C::PageUp | C::PageDown
+    )
 }
 
 /// Keyboard / mouse activity this frame (set by keybinds) hands the glyphs back to the keyboard.
@@ -616,6 +652,9 @@ pub fn outputs(key_map: &[Input], dt: f32, ui: bool, snap_ok: bool) -> PadOut {
             if let Some(k) = bound(key_map, "Inventory screen") {
                 h.taps.push((k, 2));
             }
+            // The screen closes on the press; the release then comes in play, where a tap of Select opens the
+            // inventory - it closed and opened again. Select means nothing more until it is let go.
+            h.suppress.push(PadBtn::Select);
         }
         if held(PadBtn::Touch) {
             out.inputs.push(Input::Mouse(MouseButton::Left));

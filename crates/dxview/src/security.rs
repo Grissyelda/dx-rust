@@ -1201,6 +1201,7 @@ fn turret_pawns(npcs: &Query<&Npc>, lvl: &dx_level::Level, blockers: &Blockers) 
 }
 
 /// SecurityCamera.Tick: destroyed check, state (off / EMP'd / watching), turning, lens, light, hum, alarm.
+/// uc: SecurityCamera.Tick
 fn camera_tick(
     c: &mut Cam,
     cx: &mut DevCx,
@@ -1297,6 +1298,7 @@ fn camera_tick(
 
 /// An active camera that isn't EMP'd: CheckPlayerVisibility every 0.1 s, the trigger delay with its beeps, memory,
 /// swinging. Returns the lens skin, the light hue and the held sound.
+/// uc: SecurityCamera.CheckPlayerVisibility, SecurityCamera.Tick
 #[allow(clippy::type_complexity)]
 fn camera_watch(c: &mut Cam, cx: &mut DevCx) -> (&'static str, Option<u8>, Option<(&'static str, f32, f32, f32)>) {
     let dt = cx.f.dt;
@@ -1389,6 +1391,7 @@ fn camera_watch(c: &mut Cam, cx: &mut DevCx) -> (&'static str, Option<u8>, Optio
 
 /// AutoTurret.Tick: destroyed check, skins, AlarmHeard, EMP confusion, targeting, then turning / firing.
 /// Returns true when the turret was found destroyed (removed after the lasers).
+/// uc: AutoTurret.Tick, AutoTurret.AlarmHeard
 #[allow(clippy::too_many_arguments)]
 fn turret_tick(
     t: &mut Turret,
@@ -1458,6 +1461,7 @@ fn turret_tick(
 
 /// AutoTurret target selection (bTrackPlayersOnly / bTrackPawnsOnly) and the DesiredRotation toward it. Returns
 /// where the gun would point at the target (unclamped), for the fire check.
+/// uc: AutoTurret.Tick
 fn turret_target(t: &mut Turret, cx: &mut DevCx, pawns: &[(usize, DVec3, bool)], on: bool) -> (f64, f64) {
     let (lvl, blockers, movers, me) = (cx.lvl, cx.blockers, cx.movers, cx.f.me);
     let (detectable, radar_trans) = (cx.f.detectable, cx.f.radar_trans);
@@ -1625,6 +1629,7 @@ fn turret_turn_and_fire(
 
 /// LaserTrigger / BeamTrigger Tick: destroyed check, lens, alarm timeout, EMP flicker, the beam trace and what
 /// breaking it does, beam visuals, hum / klaxon and the alarm.
+/// uc: LaserTrigger.Tick, BeamTrigger.Tick
 #[allow(clippy::too_many_arguments)]
 fn laser_tick(
     l: &mut Laser,
@@ -1687,6 +1692,9 @@ fn laser_tick(
     let mut spot_at: Vec<(DVec3, DVec3)> = Vec::new();
     if beam_on && near {
         let hit_now = laser_trace(l, cx, &mut segs, &mut spot_at);
+        // LaserTrigger / BeamTrigger.Tick return while bConfused, before any check: the flickering beam is only
+        // drawn and trips nothing until the EMP wears off (GitHub issue #61 - it set the alarm off).
+        let hit_now = if l.confused { None } else { hit_now };
         if !view_only {
             laser_broken(l, cx, ph, hit_now);
         }
@@ -1758,6 +1766,7 @@ fn laser_trace(l: &Laser, cx: &DevCx, segs: &mut Vec<(DVec3, DVec3)>, spot_at: &
 
 /// LaserTrigger / BeamTrigger Tick: a newly broken beam by something that counts beeps and sounds the alarm (or
 /// triggers Event).
+/// uc: LaserTrigger.BeginAlarm, BeamTrigger.Tick
 fn laser_broken(l: &mut Laser, cx: &DevCx, ph: &PlayerHealth, hit_now: Option<Broke>) {
     let (lvl, blockers, me, me_h) = (cx.lvl, cx.blockers, cx.f.me, cx.f.me_h);
     // Tick: a newly broken beam by something that counts sounds the alarm.
@@ -1962,6 +1971,7 @@ fn cam_untrigger(c: &mut Cam, by_player: bool) {
 }
 
 /// SecurityCamera.TriggerEvent.
+/// uc: SecurityCamera.TriggerEvent
 fn cam_event(c: &mut Cam, on: bool) {
     c.triggered = on;
     c.track = on;
@@ -2009,6 +2019,7 @@ fn remove_turret(t: &mut Turret, commands: &mut Commands, blockers: &mut Blocker
 }
 
 /// AutoTurret.Fire: one trace from the gun along where it points, spread by gunAccuracy.
+/// uc: AutoTurret.Fire
 #[allow(clippy::too_many_arguments)]
 fn fire(
     t: &mut Turret,

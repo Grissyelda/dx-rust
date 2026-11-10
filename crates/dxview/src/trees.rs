@@ -179,7 +179,7 @@ fn plant_mesh(m: &MeshData, scale: Vec3, foot: Vec3, fit: &[f32; DIRS], root: &G
                 let dn = (to[0] * un[0] + to[1] * un[1] + to[2] * un[2]) / d.max(1e-3);
                 let ndl = if leaves { (dn * 0.65 + 0.35).max(0.0) } else { dn.max(0.0) };
                 for ch in 0..3 {
-                    c[ch] += l.color[ch] * (1.0 - d / l.radius) * ndl;
+                    c[ch] += l.color[ch] * dx_level::lighting::mesh_falloff(d, l.radius) * dx_level::lighting::MESH_GLOW * ndl;
                 }
             }
             // Never darker than the original (unlit, at its ScaleGlow).

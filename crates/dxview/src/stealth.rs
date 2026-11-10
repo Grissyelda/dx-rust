@@ -59,6 +59,7 @@ pub struct PlayerLight {
 /// Brightness (0..1) of the light reaching `pos` (AIVisibility's lighting): static and dynamic lights in range
 /// with a clear line to them, each brightness x (1 - distance / radius). The engine's AIVisibility is native
 /// and undocumented; this is calibrated by play-testing (env DXVIEW_VIS_GAIN scales it, default 1).
+/// uc: ScriptedPawn.ComputeActorVisibility
 pub fn light_at(level: &Level, pos: DVec3) -> f32 {
     let gain = vis_gain();
     crate::dynlight::with_current_copy(|dynamic| light_sum(level, pos, gain, dynamic))
@@ -115,6 +116,7 @@ pub fn player_light_system(
 
 /// AIVisibility(bIncludeVelocity=true) for the player: light plus a little for moving (running counts, creeping
 /// hardly at all).
+/// uc: ScriptedPawn.ComputeActorVisibility
 pub fn player_visibility(pl: &PlayerLight, velocity: DVec3) -> f32 {
     let speed = (DVec3::new(velocity.x, velocity.y, 0.0).length() as f32 / 320.0).min(1.5);
     (pl.brightness + 0.15 * speed * speed).clamp(0.0, 1.0)
@@ -227,6 +229,7 @@ pub fn hear(level: &Level, ear: DVec3, n: &Noise) -> f32 {
 /// limited in the original"). Now someone in light 0.2 is picked out to about 1,900 units, in dim light 0.05 to
 /// about 1,400, and closer still crouched in the dark. AICanSee itself is native and unpublished, so this is a
 /// calibration against the original's play; DXVIEW_SIGHT_FALLOFF sets the exponent (1 = the old linear fade).
+/// uc: ScriptedPawn.ComputeActorVisibility
 pub fn sight_visibility(visibility: f32, dist: f64, sight_radius: f64, threshold: f32) -> f32 {
     if dist > sight_radius {
         return 0.0;

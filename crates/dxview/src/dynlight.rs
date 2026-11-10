@@ -635,7 +635,7 @@ pub fn relight_system(
     time: Res<Time>,
     level: Res<LevelRes>,
     blockers: Res<crate::actors::Blockers>,
-    decos: Query<(Entity, &Deco)>,
+    decos: Query<(Entity, &Deco, Has<crate::interp::Rotating>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut map_gen: Local<u64>,
     mut lit: Local<HashMap<Entity, u64>>,
@@ -653,19 +653,22 @@ pub fn relight_system(
         return;
     }
     *timer = 1.0 / 30.0;
+    let spinning = decos.iter().any(|(_, _, r)| r);
     with_current_copy(|dyn_lights| {
-    if dyn_lights.is_empty() && lit.is_empty() {
+    if dyn_lights.is_empty() && lit.is_empty() && !spinning {
         return;
     }
     let lvl = &level.0;
     let mut now = HashMap::new();
     let mut pre_now = HashMap::new();
-    for (e, d) in &decos {
+    for (e, d, rotating) in &decos {
         let draw = d.body.location + d.pre;
         let p = draw.as_vec3().to_array();
         // The dynamic lights in reach, and a signature of them before any trace: while they, the deco and its
         // pose are as they were, nothing can have changed (the held lamps of a map keep this running all the time).
-        let mut near = false;
+        // A deco spinning on its own (PHYS_Rotating: the main menu's logo) is relit as it turns, static lights or
+        // not - lit once at spawn, the same half of it stayed lit all the way round (GitHub issue #59).
+        let mut near = rotating;
         let pre = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();

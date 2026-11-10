@@ -14,8 +14,31 @@
 
 use bevy::render::settings::{Backends, InstanceFlags, WgpuSettings};
 
+/// The binding-array features Bevy's bindless materials need.
+const BINDLESS_FEATURES: bevy::render::settings::WgpuFeatures = bevy::render::settings::WgpuFeatures::TEXTURE_BINDING_ARRAY
+    .union(bevy::render::settings::WgpuFeatures::BUFFER_BINDING_ARRAY)
+    .union(bevy::render::settings::WgpuFeatures::STORAGE_RESOURCE_BINDING_ARRAY)
+    .union(bevy::render::settings::WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)
+    .union(bevy::render::settings::WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY);
+
+/// Texture array elements a bindless StandardMaterial asks for per shader stage. Bevy only checks the sampler
+/// count before going bindless, so a driver with the features but a smaller texture-array limit fails every
+/// material's bind group layout (nothing of the level drawn).
+#[cfg(target_os = "android")]
+const BINDLESS_TEXTURES: u32 = 4096;
+
 pub fn wgpu_settings() -> WgpuSettings {
     let mut s = WgpuSettings::default();
+    // Test aid: no binding arrays, so every material takes its non-bindless path (what phones without them get).
+    if env_on!("DXVIEW_NO_BINDLESS") || !bindless_fits() {
+        s.disabled_features = Some(BINDLESS_FEATURES);
+        println!("gpu: binding arrays off");
+    }
+    // Test aid: the WebGPU baseline limits (16 sampled textures / samplers per stage...), what small GPUs offer.
+    if env_on!("DXVIEW_BASE_LIMITS") {
+        s.constrained_limits = Some(bevy::render::settings::WgpuLimits::default());
+        println!("gpu: baseline limits (DXVIEW_BASE_LIMITS)");
+    }
     if std::env::var_os("WGPU_BACKEND").is_some() || env_on!("DXVIEW_INDIRECT_VALIDATION") {
         return s;
     }
@@ -26,6 +49,37 @@ pub fn wgpu_settings() -> WgpuSettings {
     s.instance_flags = s.instance_flags.with_env();
     println!("gpu: {b:?} only, indirect draw validation off");
     s
+}
+
+/// Android: does the GPU's texture-array limit fit Bevy's bindless materials? Also prints what the device offers
+/// (for bug reports). Elsewhere assumed (desktop drivers allow far more).
+#[cfg(target_os = "android")]
+fn bindless_fits() -> bool {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::VULKAN;
+    desc.flags = wgpu::InstanceFlags::empty();
+    let inst = wgpu::Instance::new(desc);
+    let adapters = bevy::tasks::block_on(inst.enumerate_adapters(wgpu::Backends::VULKAN));
+    let Some(a) = adapters.iter().find(|a| a.get_info().device_type != wgpu::DeviceType::Cpu).or(adapters.first()) else {
+        return true;
+    };
+    let (info, l, f) = (a.get_info(), a.limits(), a.features());
+    let has = f.contains(BINDLESS_FEATURES);
+    let fits = !has || l.max_binding_array_elements_per_shader_stage >= BINDLESS_TEXTURES;
+    let line = format!(
+        "gpu: {} ({}) binding arrays {} / {} elements, storage textures {}, storage buffers {}, compute x {}, 2D {}",
+        info.name, info.driver_info, has, l.max_binding_array_elements_per_shader_stage,
+        l.max_storage_textures_per_shader_stage, l.max_storage_buffers_per_shader_stage,
+        l.max_compute_workgroup_size_x, l.max_texture_dimension_2d
+    );
+    println!("{line}");
+    crate::platform::note(&line);
+    fits
+}
+
+#[cfg(not(target_os = "android"))]
+fn bindless_fits() -> bool {
+    true
 }
 
 #[cfg(target_os = "macos")]

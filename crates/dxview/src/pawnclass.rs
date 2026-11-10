@@ -3,13 +3,15 @@
 //! * ShieldDamage / ModifyDamage / IgnoreDamageType: MJ12Commando ignores tear and poison gas, takes half from fire
 //!   and poison; GuntherHermann and WaltonSimons take nothing from fire, stun and knockout and a tenth from gases,
 //!   radiation, shocks and poison; AnnaNavarre takes nothing from stun, knockout and poison; RiotCops shrug off tear
-//!   gas and halon (GotoDisabledState: no RubbingEyes).
+//!   gas and halon (GotoDisabledState: no RubbingEyes); PaulDenton takes Gunther's scales; Paul, Anna, Gunther, Walton and
+//!   commandos are never stunned or gassed into a disabled state.
 //! * SpawnCarcass -> Explode: MIB, WIB, AnnaNavarre and GuntherHermann blow up when killed, unless stunned.
 //! (Robot skin colours and female cries are applied to the props at load: dx_level::actors::class_begin_play.)
 
 use crate::classtree::is_a;
 
 /// Damage multiplier a class applies before HandleDamage (0 = ignored).
+/// uc: MJ12Commando.ShieldDamage, MJ12Commando.IgnoreDamageType, GuntherHermann.ShieldDamage, WaltonSimons.ShieldDamage, PaulDenton.ShieldDamage, AnnaNavarre.ModifyDamage
 pub fn damage_scale(class: &str, damage_type: &str) -> f32 {
     if is_a(class, "MJ12Commando") {
         return match damage_type {
@@ -18,9 +20,9 @@ pub fn damage_scale(class: &str, damage_type: &str) -> f32 {
             _ => 1.0,
         };
     }
-    if is_a(class, "GuntherHermann") || is_a(class, "WaltonSimons") {
+    if is_a(class, "GuntherHermann") || is_a(class, "WaltonSimons") || is_a(class, "PaulDenton") {
         // Optional (setting BossResist): no tear gas or halon, a third of explosions.
-        if crate::optfixes::boss_resist() {
+        if crate::optfixes::boss_resist() && !is_a(class, "PaulDenton") {
             match damage_type {
                 "TearGas" | "HalonGas" => return 0.0,
                 "Exploded" => return 0.33,
@@ -42,17 +44,27 @@ pub fn damage_scale(class: &str, damage_type: &str) -> f32 {
     1.0
 }
 
-/// RiotCop.GotoDisabledState: tear gas and halon don't make it rub its eyes.
+/// RiotCop.GotoDisabledState: tear gas and halon don't make it rub its eyes (nor anyone below without disabled states).
+/// uc: RiotCop.GotoDisabledState, MJ12Commando.GotoDisabledState
 pub fn ignores_gas_reaction(class: &str) -> bool {
-    is_a(class, "RiotCop") || is_a(class, "MJ12Commando")
+    is_a(class, "RiotCop") || no_disabled_states(class)
+}
+
+/// GotoDisabledState with no RubbingEyes / Stunned branch: a prod or gas is a plain TakeHit (pain) for Paul, Anna,
+/// Gunther, Walton and MJ12 commandos.
+/// uc: PaulDenton.GotoDisabledState, AnnaNavarre.GotoDisabledState, GuntherHermann.GotoDisabledState, WaltonSimons.GotoDisabledState, MJ12Commando.GotoDisabledState
+pub fn no_disabled_states(class: &str) -> bool {
+    ["PaulDenton", "AnnaNavarre", "GuntherHermann", "WaltonSimons", "MJ12Commando"].iter().any(|c| is_a(class, c))
 }
 
 /// SpawnCarcass explodes instead of leaving a body (when not stunned).
+/// uc: MIB.SpawnCarcass, WIB.SpawnCarcass, AnnaNavarre.SpawnCarcass, GuntherHermann.SpawnCarcass
 pub fn explodes_on_death(class: &str) -> bool {
     ["MIB", "WIB", "AnnaNavarre", "GuntherHermann"].iter().any(|c| is_a(class, c))
 }
 
 /// MJ12Commando.PlayShoot / TweenToShoot: the wrist-gun pose (Shoot2), never the reload or idle anims.
+/// uc: MJ12Commando.PlayShoot, MJ12Commando.TweenToShoot
 pub fn shoot_anim(class: &str) -> Option<&'static str> {
     is_a(class, "MJ12Commando").then_some("Shoot2")
 }

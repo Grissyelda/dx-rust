@@ -350,6 +350,7 @@ fn yaw_dir(yaw: f64) -> DVec3 {
 /// ScriptedPawn.ComputeBestFiringPosition (with `gmdx`, GMDX's: CloseCombatMult applies within 512, not 180). `try_loc(pos, min)`
 /// is TryLocation (AIDirectionReachable that way, bDefendHome), returning where the pawn can actually get to;
 /// `random_dest(yaw, max)` is the AIPickRandomDestination fallback (biased toward `yaw`).
+/// uc: ScriptedPawn.ComputeBestFiringPosition
 pub fn best_firing_position(
     p: &CombatProps,
     i: &FirePosIn,

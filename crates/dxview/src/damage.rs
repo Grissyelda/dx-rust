@@ -39,6 +39,7 @@ pub enum HitLoc {
 
 impl HitLoc {
     /// ScriptedPawn.PlayTakingHit animation for this hit location.
+    /// uc: ScriptedPawn.PlayTakingHit
     pub fn anim(self) -> Option<&'static str> {
         Some(match self {
             HitLoc::None => return None,
@@ -68,6 +69,8 @@ pub struct Body {
     /// ScriptedPawn.bInvincible: GenerateTotalHealth leaves Health alone, so it never dies (MIBs until Mission04
     /// lets them die, Gunther until the killphrase, scripted bosses).
     pub invincible: bool,
+    /// Animal.HandleDamage: damage comes straight off Health (no parts), hit location TorsoFront / TorsoBack.
+    pub animal: bool,
 }
 
 fn fv(p: &[Property], n: &str, d: f32) -> f32 {
@@ -102,6 +105,7 @@ pub enum Outcome {
 }
 
 impl Body {
+    /// uc: ScriptedPawn.InitializePawn
     pub fn new(p: &[Property]) -> Body {
         let health = fv(p, "Health", 50.0);
         let part = |n: &str| fv(p, n, health);
@@ -123,9 +127,16 @@ impl Body {
             radius: fv(p, "CollisionRadius", 20.0) as f64,
             height: fv(p, "CollisionHeight", 47.5) as f64,
             invincible: matches!(find(p, "bInvincible"), Some(Value::Bool(true))),
+            animal: false,
         }
     }
 
+    pub fn animal(mut self, animal: bool) -> Body {
+        self.animal = animal;
+        self
+    }
+
+    /// uc: ScriptedPawn.GenerateTotalHealth
     pub fn total(&mut self) {
         if self.invincible {
             return;
@@ -143,6 +154,7 @@ impl Body {
     }
 
     /// Apply one hit. `center`/`yaw` are the pawn's location and facing; `stunned` whether it is stunned now.
+    /// uc: ScriptedPawn.HandleDamage, ScriptedPawn.ModifyDamage, ScriptedPawn.CanShowPain, Robot.TakeDamageBase, Animal.HandleDamage, Animal.ModifyDamage
     pub fn take(
         &mut self,
         hit: &PawnHit,
@@ -207,6 +219,31 @@ impl Body {
         }
         if matches!(dt, "TearGas" | "EMP" | "NanoVirus") {
             dmg = 0.0;
+        }
+
+        if self.animal {
+            // Animal.ModifyDamage: no 'Stunned' damage. Animal.HandleDamage: Health -= Damage.
+            if dt == "Stunned" {
+                dmg = 0.0;
+            }
+            let loc = if dmg <= 0.0 {
+                HitLoc::None
+            } else if off.x < 0.0 {
+                HitLoc::TorsoBack
+            } else {
+                HitLoc::TorsoFront
+            };
+            if !self.invincible {
+                self.health -= dmg;
+            }
+            if self.health <= 0.0 {
+                let fwd = DVec3::new(c, s, 0.0);
+                return Outcome::Died {
+                    knocked_out: matches!(dt, "KnockedOut" | "Poison" | "PoisonEffect"),
+                    fall_back: (center - hit.hit_loc).dot(fwd) < 0.0,
+                };
+            }
+            return Outcome::Hurt { hit: loc, pain: self.show_pain && pain_ready && loc != HitLoc::None, stunned: false };
         }
 
         // HandleDamage.

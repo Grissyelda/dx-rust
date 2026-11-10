@@ -66,6 +66,7 @@ pub fn trace_birds(start: DVec3, end: DVec3) -> Option<(Entity, f64)> {
 const CRY_RADIUS: f32 = 640.0;
 
 /// HurtRadius: every bird inside the blast takes damage falling off with distance.
+/// uc: Bird.TakeDamage
 pub fn blast_birds(center: DVec3, radius: f64, damage: f32) {
     let mut list = TARGETS.lock().map(|t| t.clone()).unwrap_or_default();
     if let Ok(f) = crate::fish::TARGETS.lock() {
@@ -80,6 +81,7 @@ pub fn blast_birds(center: DVec3, radius: f64, damage: f32) {
 }
 
 /// A bird was hit (Pawn.TakeDamage on a Bird); handled at the next critter update.
+/// uc: Bird.TakeDamage, Bird.Wandering.TakeDamage
 pub fn hit_bird(e: Entity, damage: f32) {
     if crate::fish::is_fish(e) {
         if let Ok(mut h) = crate::fish::HITS.lock() {
@@ -234,6 +236,7 @@ pub fn in_water(level: &dx_level::Level, p: DVec3) -> bool {
     )
 }
 
+/// uc: Bird.Tick, Bird.MakeFrightened, Bird.FleeFromPawn, Bird.Wandering.PickDestination, Bird.Wandering.HeardNoise, Bird.Wandering.Tick, Bird.Flying.Tick, Bird.Flying.HitWall, Bird.Flying.ReadyToLand, Bird.Flying.HeardNoise
 #[allow(clippy::too_many_arguments)]
 pub fn critter_system(
     mut commands: Commands,
@@ -833,6 +836,7 @@ pub fn critter_system(
 
 /// Flying.PickDestination: ~1200 units in a random direction that's clear (halving down to 100), trying four
 /// directions (and their mirror below/above); failing that, keep going the way it's flying.
+/// uc: Bird.Flying.PickDestination, Bird.Flying.PickInitialDestination
 fn pick_leg(
     level: &dx_level::Level,
     pos: DVec3,
@@ -877,6 +881,7 @@ fn pick_leg(
 
 /// Flying.PickFinalDestination: up to three tries at the ground below a point within 100 units, reachable in a
 /// straight line and not in water.
+/// uc: Bird.Flying.PickFinalDestination
 fn pick_landing(
     level: &dx_level::Level,
     pos: DVec3,

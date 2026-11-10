@@ -132,6 +132,22 @@ fn global_path() -> std::path::PathBuf {
     crate::save::dir().join("achievements_global.txt")
 }
 
+/// Settings > Achievements > Reset All: every character's unlocks and progress and the shared ones go (the files are
+/// removed; the next unlock starts them again).
+pub fn reset_all() {
+    let _ = std::fs::remove_file(crate::save::dir().join("achievements.txt"));
+    let _ = std::fs::remove_file(global_path());
+    if let Ok(rd) = std::fs::read_dir(crate::save::dir().join("Characters")) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path().join("achievements.txt"));
+        }
+    }
+    if let Ok(mut s) = STORE.lock() {
+        *s = Store::default();
+    }
+    println!("achievements: reset");
+}
+
 /// The character changed (a new game, a load): the next look reads that character's file.
 pub fn character_changed() {
     if let Ok(mut s) = STORE.lock() {
@@ -241,8 +257,24 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// Achievements are for the story: none in a deathmatch room or on a deathmatch map (GitHub issue #57 - spawning
+/// in, with the match's augmentations and skills handed out, unlocked a row of them).
+fn earning() -> bool {
+    !(crate::deathmatch::versus() || crate::deathmatch::playing() || DM_MAP.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+static DM_MAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The map just loaded (loader.rs): a deathmatch map earns nothing, whoever plays it.
+pub fn set_map(name: &str) {
+    DM_MAP.store(crate::deathmatch::is_dm_map(name), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Unlocks an achievement (once per character; GLOBAL ones also for every character).
 pub fn unlock(id: &str) {
+    if !earning() {
+        return;
+    }
     let Ok(mut s) = STORE.lock() else { return };
     load(&mut s);
     if s.unlocked.contains_key(id) || !LIST.iter().any(|a| a.0 == id) {
@@ -267,6 +299,9 @@ pub fn unlock(id: &str) {
 
 /// Adds to a counted achievement's progress; unlocks it at the target.
 pub fn add_progress(id: &str, n: u32) {
+    if !earning() {
+        return;
+    }
     let target = COUNTED.iter().find(|c| c.0 == id).map_or(1, |c| c.1);
     let reached = {
         let Ok(mut s) = STORE.lock() else { return };

@@ -756,9 +756,10 @@ fn load_first_level(root: &String, map: &String) -> Level {
     };
     prof::hitch_note("first level load", t0.elapsed().as_secs_f64() * 1000.0);
     println!(
-        "loaded in {:.1}s: {} triangles, {} textures ({} missing), {} backdrop / {} invisible faces skipped",
+        "loaded in {:.1}s: {} triangles ({} faces mended at T-junctions), {} textures ({} missing), {} backdrop / {} invisible faces skipped",
         t0.elapsed().as_secs_f32(),
         level.stats.triangles,
+        level.stats.tjunction_faces,
         level.stats.textures,
         level.stats.missing_textures,
         level.stats.skipped_backdrop,
@@ -846,7 +847,13 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
                     .copied()
                     .unwrap_or((1600, 900))
                     .into(),
-                mode: menus::start_window_mode(setting!("DisplayMode")),
+                // Android: the whole screen, as Bevy's mobile example has it (exclusive full screen means nothing
+                // there).
+                mode: if platform::android() {
+                    bevy::window::WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+                } else {
+                    menus::start_window_mode(setting!("DisplayMode"))
+                },
                 position: menus::start_window_position(),
                 present_mode: menus::present_mode(setting!("VSync")),
                 ..default()
@@ -874,6 +881,7 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
         .insert_resource(pickups::GameRoot(PathBuf::from(&root)))
         .insert_resource({
             dx_level::actors::set_zone_ambient(level.collision.zone_tree(), level.zone_ambient.clone());
+            achievements::set_map(&level.name);
             LevelRes(level)
         });
 }
@@ -1055,7 +1063,7 @@ fn add_input_systems(app: &mut App) {
         .add_systems(Startup, sound::setup_sound)
         .init_resource::<keybinds::Bindings>()
         .add_systems(Startup, (gamepad::setup, || dualsense::setup(), || haptics::setup()))
-        .add_systems(Update, (touch::draw_system, platform::lifecycle_system))
+        .add_systems(Update, (touch::draw_system, platform::lifecycle_system, platform::window_log_system))
         .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, scoreboard::scoreboard_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
         .init_resource::<inventory_screen::InvScreen>()
         .init_resource::<destruct::ItemThrows>()
@@ -1208,6 +1216,7 @@ fn add_material_plugins(app: &mut App) {
     app
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<classic_hud::HudLayer>::default())
         .add_plugins(remaster::RemasterPlugin)
+        .add_plugins(gpudrive::GpuDrivePlugin)
         .add_plugins(ragdoll::RagdollPlugin)
         .add_plugins(actors::SmoothTurnPlugin)
         .add_systems(
@@ -1598,6 +1607,7 @@ fn setup(
     for b in &level.batches {
         spawn_batch(&mut commands, &mut ast, level, b, &mut lb, &mut bs);
     }
+    mirror::mark_covered(&mut lb.mirrors, &level.batches);
     if relight::relief_level() > 0 {
         println!("relight: {} textures with relief maps ({} ms)", bs.relief_mats.len(), bs.relief_t0.elapsed().as_millis());
     }

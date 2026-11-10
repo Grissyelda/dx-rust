@@ -43,6 +43,7 @@ impl LookingFor {
     /// BlockReactions(bBlockInjury): nothing, injuries too only when `block_injury` (Attacking, Fleeing, Alerting,
     /// Burning, TakingHit, Stunned, RubbingEyes, BackingOff, OpeningDoor block all but injuries; Idle, Paralyzed,
     /// Conversation and Dying block injuries as well).
+    /// uc: ScriptedPawn.BlockReactions
     pub fn blocked(block_injury: bool) -> LookingFor {
         LookingFor {
             enemy: false,
@@ -101,6 +102,7 @@ impl Fear {
 
     /// IncreaseFear(instigator, added, newFearTimer): the timer is raised to FearSustainTime - newFearTimer, then
     /// the level grows (capped at 1) while the timer runs.
+    /// uc: ScriptedPawn.IncreaseFear
     pub fn increase(&mut self, added: f32, new_timer: f32) {
         if self.timer < self.sustain_time - new_timer {
             self.timer = self.sustain_time - new_timer;
@@ -111,6 +113,7 @@ impl Fear {
     }
 
     /// UpdateFear: the timer runs down; once it's out the level drains at FearDecayRate.
+    /// uc: ScriptedPawn.UpdateFear
     pub fn tick(&mut self, dt: f32) {
         if dt <= 0.0 {
             return;
@@ -133,6 +136,7 @@ impl Fear {
     }
 
     /// IsFearful.
+    /// uc: ScriptedPawn.IsFearful
     pub fn fearful(&self) -> bool {
         self.level >= 1.0
     }
@@ -140,6 +144,7 @@ impl Fear {
 
 /// IsPrimaryDamageType: direct harm (bullets, blows, fire, stuns) as opposed to indirect (gas, explosions,
 /// radiation, EMP, drowning) - bHateInjury / bFearInjury react to the first, bHate/FearIndirectInjury to the second.
+/// uc: ScriptedPawn.IsPrimaryDamageType
 pub fn is_primary_damage(damage_type: &str) -> bool {
     !matches!(
         damage_type,
@@ -148,6 +153,7 @@ pub fn is_primary_damage(damage_type: &str) -> bool {
 }
 
 /// ShouldReactToInjuryType.
+/// uc: ScriptedPawn.ShouldReactToInjuryType
 pub fn reacts_to_injury(damage_type: &str, primary: bool, secondary: bool) -> bool {
     let p = is_primary_damage(damage_type);
     (primary && p) || (secondary && !p)

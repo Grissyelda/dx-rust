@@ -127,6 +127,22 @@ fn byte(ps: &[props::Property], name: &str) -> Option<u8> {
     }
 }
 
+/// How much of a light reaches a mesh vertex at distance `d` (radius `r`): Unreal's curve as SurrealEngine
+/// reproduces it - (1 + 2v^3 - 3v^2) / v for v = d / r, capped at 1, so a light is at full strength out to half its
+/// radius and falls off smoothly beyond. Meshes also take each light at 1.5 x their ScaleGlow (MESH_GLOW). With the
+/// straight-line falloff used before, people and props under a few dim lamps came out dark and brownish (the
+/// Liberty Island dock at night: JC's and Paul's faces).
+pub fn mesh_falloff(d: f32, r: f32) -> f32 {
+    if d >= r || r <= 0.0 {
+        return 0.0;
+    }
+    let v = (d / r).max(1e-3);
+    ((1.0 + 2.0 * v * v * v - 3.0 * v * v) / v).min(1.0)
+}
+
+/// Unreal's mesh lighting takes each light at 1.5 x the actor's ScaleGlow (SurrealEngine VertexLight).
+pub const MESH_GLOW: f32 = 1.5;
+
 pub fn hsv_white(hue: u8, whiteness: u8) -> [f32; 3] {
     // Unreal's LightSaturation is inverted: 255 means white, 0 means a fully saturated color.
     let h = hue as f32 / 255.0 * 6.0;

@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### AI checked against the original, part one (#48, November 10)
+- Every ported piece of the pawn AI now carries a marker naming the original function or state label it follows,
+  and `tools/ucaudit/ucaudit.py` lines the original UnrealScript (extracted from your own install) up with the Rust
+  code: what is ported, what is missing, and which numbers in the original never appear in the port. See the README.
+- Gunfights follow the original Attacking state code: a guard asks where to stand after every leg and every shot,
+  and keeps asking while its gun isn't ready (between shots, reloading), so it repositions, closes in along the paths
+  or takes a random step toward you the way the original does, instead of standing still until it runs dry.
+- Guards check the line of fire before shooting (AICanShoot / AISafeToShoot): no shots through a friend, an
+  explosive barrel, a tough crate or a solid door; projectile weapons lead a moving target and respect their
+  projectile's own ranges (a rocket isn't fired at point blank); they keep shooting at where you really are for the
+  few seconds before they lose track of you, as long as the shot is clear.
+- Guards reload every clip, as in the original (NPCs still have endless ammo unless "NPC Finite Ammo" is on); the
+  reload is when they move.
+- Animals take damage like the original's: straight off their health, with no head shots or lost limbs.
+- Knocked-out people give the unconscious groan instead of a death scream, and nobody hears it.
+- Alarms: a guard who answered one alarm answers the next, a search ends before the klaxon calls it again, and
+  unarmed people react to alarms and loud noises too.
+- A gassed or stunned guard who is shot snaps out of it and fights; a second prod doesn't stun again; no flinch
+  animation plays while gassed, stunned or burning. Paul takes no fire, stun or knockout damage and little from gas;
+  Paul, Anna, Gunther, Walton and MJ12 commandos are never gassed or stunned into helplessness.
+- Civilians who find a body run away from it (and from the killer) instead of walking up to look.
+- Followers (orders Following) keep following: within about 180 units, stepping back after a second when you stand
+  right on them, instead of stopping for good the first time they reach you.
+
+### Android: starts minimized (#62)
+- On Android the game window now asks for full screen outright, and a log of the start-up (`startup.log`) and any
+  crash (`crash.log`) is written to `Android/data/com.dxrust.game/files/` to find out why it minimizes on some phones.
+
+### Fixes from GitHub issues #54-#61 and the list (November 8-10)
+- Achievements no longer unlock in deathmatch (#57): nothing is earned in a versus match or on a DXMP map.
+- Reset All on the achievements screen (main menu > Achievements) clears every character's achievements, after a
+  yes / no box.
+- Throw the item in hand with the middle mouse button (#58), as in the original ("Drop item" in Customize Keys): it
+  is thrown forward (harder with Microfibral Muscle). The key ring and a carried body can't be dropped this way.
+- Dying with an item in hand (medkit, lockpick...) no longer lets you use it with Fire (#60).
+- EMP disables tripwires and laser beams (#61): a confused laser or beam trigger trips nothing.
+- The spinning logo on the main menu is lit all round (#59): it was lit once as it stood when the menu opened and
+  never again as it turned.
+- Classic faces aren't dark brown any more: mesh lighting uses Unreal's falloff (bright close in, then a smooth curve
+  to the light's edge) and its x1.5 glow, instead of a straight-line fade that left people half as bright.
+- Controller: Select closes the inventory instead of closing and reopening it. Under Steam (#54), the arrow / Enter /
+  Escape keys Steam Input sends for a DualSense the game already reads directly are ignored while the pad is in use,
+  so menu entries no longer skip.
+- Android (#55): on phones whose GPU drivers can't cull on the GPU (older Mali and Adreno drivers) the level is culled
+  on the CPU as usual - it wasn't drawn at all there - and binding arrays are turned off when the GPU's limit is too
+  small for them. The log now prints the GPU's name, driver and limits.
+- Mirrored stairs: clipping a reflection a hair past the mirror cut a sliver off the foot of each step standing on it.
+  Mirrors with nothing else in their plane are now clipped a hair short of it. BSP faces with a neighbour's corner in
+  the middle of an edge (a T-junction) are drawn as a fan round their centre, so the edge can't crack open.
+
 ### Fixes from GitHub issues #45-#53 (November 8)
 - Guards don't see as far (#47): how visible you are now fades with the square of the distance instead of in a
   straight line, so someone in the Island's night light is picked out from about 1,900 units rather than nearly the

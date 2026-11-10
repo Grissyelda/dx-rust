@@ -1606,7 +1606,7 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
     for (_, l) in best.iter().skip(16) {
         let d = Vec3::from(l.pos).distance(Vec3::from(ue));
         if d < l.radius {
-            amb += Vec3::from(l.color) * (1.0 - d / l.radius) * 0.5;
+            amb += Vec3::from(l.color) * dx_level::lighting::mesh_falloff(d, l.radius) * dx_level::lighting::MESH_GLOW * 0.5;
         }
     }
     best.truncate(16);

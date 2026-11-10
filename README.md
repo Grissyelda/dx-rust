@@ -166,6 +166,18 @@ Then:
 | `dxandroid` | The Android app around `dxview`; `vendor/winit` is winit with an Android controller hook |
 | `dxtool` | Command-line package inspector |
 
+### Checking the AI against the original
+The original game's packages carry their UnrealScript source, so nothing needs decompiling: `dxtool extract-src`
+writes it out, and `tools/ucaudit/ucaudit.py` lines it up with our Rust AI. Every ported function, state function and
+state-code label carries a marker comment (`// uc: ScriptedPawn.Attacking:ContinueFire`), and the tool reports, per
+class and state, what is ported, what isn't, and numbers in the original that the port never mentions:
+
+    cargo run --release -p dxtool -- extract-src "C:\path\to\Deus Ex\System" dx_src
+    python tools/ucaudit/ucaudit.py dx_src crates/dxview/src,crates/imsim-core/src --out ai_audit.md
+    python tools/ucaudit/ucaudit.py dx_src crates/dxview/src --classes ScriptedPawn --state Attacking
+
+The extracted source and the reports stay on your machine (they are the game's own files).
+
 ## Status
 The whole game is implemented. Before 1.0: a full playthrough with fixes, tuning by eye, more render-thread
 performance work (Modern with every mod runs about 70 fps on a Ryzen 5 3600 and RTX 3050), Steam Deck tuning, and

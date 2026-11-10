@@ -174,6 +174,7 @@ fn swimmable(level: &dx_level::Level, p: DVec3, height: f64) -> bool {
     crate::critters::in_water(level, p) && crate::critters::in_water(level, p + DVec3::new(0.0, 0.0, height + 2.0))
 }
 
+/// uc: Fishes.Wandering.PickDirection, Fishes.Wandering.Tick, Fishes.Wandering.HitWall, Fishes.ReactToInjury, Fishes.IsNearHome, FishGenerator.GenerateRandomVelocity, FishGenerator.GenerateCoastPeriod
 #[allow(clippy::too_many_arguments)]
 pub fn fish_system(
     mut commands: Commands,

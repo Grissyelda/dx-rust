@@ -50,6 +50,7 @@ impl AlarmRt {
 
     /// How far this alarm's 'Alarm' event carries (GMDX widens the alarm boxes' only; cameras, lasers and computers
     /// keep theirs).
+    /// uc: ScriptedPawn.HandleAlarm
     pub fn hear_radius(&self) -> f64 {
         if !self.external && crate::smartai::on() {
             Self::HEAR_RADIUS_SMART
@@ -59,11 +60,13 @@ impl AlarmRt {
     }
 
     /// FindAlarmPosition: in front of the unit by both radii.
+    /// uc: ScriptedPawn.Alerting.FindAlarmPosition
     pub fn push_spot(&self, pawn_radius: f64) -> DVec3 {
         self.pos + DVec3::new(self.yaw.cos(), self.yaw.sin(), 0.0) * (pawn_radius + self.radius)
     }
 
     /// IsAlarmInRange.
+    /// uc: ScriptedPawn.Alerting.IsAlarmInRange
     pub fn in_range(&self, at: DVec3, pawn_radius: f64, pawn_height: f64) -> bool {
         DVec3::new(self.pos.x - at.x, self.pos.y - at.y, 0.0).length()
             < pawn_radius + self.radius + 24.0
@@ -71,6 +74,7 @@ impl AlarmRt {
     }
 
     /// IsAlarmReady for `who`.
+    /// uc: ScriptedPawn.Alerting.IsAlarmReady
     pub fn ready_for(&self, who: usize) -> bool {
         !self.active && !self.disabled && self.associated.is_none_or(|a| a == who)
     }
@@ -125,6 +129,7 @@ impl Alarms {
     /// AlarmUnit.Trigger: switch on (and every unit sharing its Tag), raise Event. alarmLocation is the unit
     /// itself; GMDX puts back the commented-out line that makes it where the instigator stands (`at`, Smarter AI):
     /// pawns that hear it search there.
+    /// uc: ScriptedPawn.Alerting.TriggerAlarm, AlarmUnit.Trigger
     pub fn trigger(&mut self, i: usize, instigator: Option<Target>, at: Option<DVec3>) {
         let Some(u) = self.units.get(i) else { return };
         if u.disabled || u.active || u.confused > 0.0 {
@@ -207,6 +212,7 @@ impl Alarms {
 
     /// The nearest alarm a pawn could run to (Alerting.FindTarget): within 2400 (3200 with Smarter AI; a squashed
     /// sphere), not belonging to an alliance it hates, not already going off or claimed by someone else.
+    /// uc: ScriptedPawn.Alerting.FindTarget
     pub fn find_target(&self, me: usize, at: DVec3, hates: impl Fn(&str) -> bool) -> Option<usize> {
         let reach = if crate::smartai::on() { 3200.0 } else { 2400.0 };
         let mut best: Option<(usize, f64)> = None;

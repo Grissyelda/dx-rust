@@ -54,8 +54,17 @@ pub fn startup() -> String {
         use bevy::android::android_activity::WindowManagerFlags as F;
         a.set_window_flags(F::KEEP_SCREEN_ON | F::FULLSCREEN, F::empty());
     }
+    crate::platform::note(&format!("DX RUST {} starting (Android SDK {})", env!("CARGO_PKG_VERSION"), sdk()));
+    // A crash from here on leaves crash.log in the app's folder (the release build aborts on a panic, so the hook
+    // is the only trace).
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("dxview crashed: {info}\n{}\n", std::backtrace::Backtrace::force_capture());
+        crate::platform::note(&format!("PANIC {info}"));
+        let _ = std::fs::write(unreal_pkg::paths::data_dir().join("crash.log"), &msg);
+    }));
     winit::platform::android::gamepad::set_hook(pad_event);
     if let Some(p) = saved_game_path().filter(|p| can_read(p)) {
+        crate::platform::note(&format!("game folder {}", p.display()));
         return p.display().to_string();
     }
     if has_storage_access() {
@@ -64,6 +73,7 @@ pub fn startup() -> String {
             return p.display().to_string();
         }
     }
+    crate::platform::note("no game folder yet: setup screen");
     run_setup_app();
     // The setup screen restarts the app; if that ever fails, quit rather than load nothing.
     std::process::exit(0);
@@ -152,6 +162,7 @@ pub fn request_storage_access() {
 /// Start the app again from scratch (after the setup screen found the game): the launch intent in a fresh task,
 /// then this process ends and Android starts a new one for it.
 pub fn relaunch() -> ! {
+    crate::platform::note("relaunching after setup");
     with_env(|env, act| {
         let pm = env.call_method(act, "getPackageManager", "()Landroid/content/pm/PackageManager;", &[])?.l()?;
         let pkg = env.call_method(act, "getPackageName", "()Ljava/lang/String;", &[])?.l()?;

@@ -635,6 +635,8 @@ enum MsgPurpose {
     MpResult,
     /// "Leave the multiplayer game?" (the main menu's Leave Multiplayer).
     MpLeave,
+    /// Ours: the Achievements screen's Reset All.
+    AchReset,
 }
 
 /// Open the controller layout picture (paddiagram).
@@ -923,7 +925,7 @@ impl Enhance {
     /// The on / off enhancements: gameplay, interface, AI, visuals, fixes, quality of life, sound.
     fn toggle_items(items: &mut Vec<Choice>) {
         for (key, group, lbl, help) in [
-            ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo, reload every clip and switch weapons (or to melee) when they run dry, as the original scripts say."),
+            ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo and switch weapons (or to melee) when they run dry, as the original scripts say. They reload every clip either way."),
             ("FloorConsumables", "Gameplay", "Use Consumables From The Floor", "With no room in your inventory, a medkit, bioelectric cell, food or drink you pick up is used on the spot."),
             ("LadderGrab", "Gameplay", "Grab Ladders", "Use takes hold of a ladder and Jump lets go; on it, forward and back climb up and down."),
             ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab (pad: Y) types a keypad code or fills in a login."),
@@ -1651,7 +1653,7 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             f.title = "Achievements".into();
             // One button: back to the main menu.
             let prev = f.actions.iter().find(|a| a.1 == 4).map(|a| a.2.clone()).unwrap_or_else(|| "Previous Menu".into());
-            f.actions = vec![(2, 4, prev, String::new())];
+            f.actions = vec![(0, 22, "Reset All".into(), String::new()), (2, 4, prev, String::new())];
             let (chars, global) = crate::achievements::all_characters();
             Body::Achieve(AchieveView { scroll: 0, chars, global })
         }
@@ -4623,6 +4625,16 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
                 }
             }
         }
+        MsgPurpose::AchReset => {
+            if yes {
+                crate::achievements::reset_all();
+                // The screen under the box shows the empty list.
+                if let Some(w) = st.stack.iter_mut().rev().find(|w| matches!(w.body, Body::Achieve(_))) {
+                    let (chars, global) = crate::achievements::all_characters();
+                    w.body = Body::Achieve(AchieveView { scroll: 0, chars, global });
+                }
+            }
+        }
         MsgPurpose::Delete => {
             if yes {
                 if let Some((p, _)) = st.box_save.take() {
@@ -4792,6 +4804,16 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                     if mp_action(win, action, acts) {
                         st.mp.hosting = false;
                     }
+                }
+                // The Achievements screen's Reset All: asked first.
+                22 => {
+                    crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+                    acts.push(Act::Msg(
+                        "Reset Achievements".into(),
+                        "Reset every achievement for every character? This can't be undone.".into(),
+                        true,
+                        MsgPurpose::AchReset,
+                    ));
                 }
                 // The welcome window: OK, or Don't Show Again (welcome.rs).
                 20 | 21 => {

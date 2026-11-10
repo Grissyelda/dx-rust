@@ -88,7 +88,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 shade = mix(1.0, spot_shadows::spots[k].shadow, 0.85);
             }
         }
-        c = c + lights.col[i].rgb * (1.0 - d / r) * max(ndl, 0.0) * shade;
+        // Unreal's mesh falloff (dx_level::lighting::mesh_falloff) x MESH_GLOW 1.5.
+        let v = max(d / r, 1e-3);
+        let fall = min((1.0 + 2.0 * v * v * v - 3.0 * v * v) / v, 1.0);
+        c = c + lights.col[i].rgb * fall * 1.5 * max(ndl, 0.0) * shade;
     }
     c = c + lights.amb.rgb;
     var lin = pow(clamp(c * lights.misc.y, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.2));

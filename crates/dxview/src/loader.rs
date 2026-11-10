@@ -396,6 +396,7 @@ fn protected(world: &World, e: Entity) -> bool {
 }
 
 fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, params: (imsim_core::movement::MoveParams, f64, f64)) {
+    crate::platform::note(&format!("map {map}"));
     // What travels with the player, from the map being left.
     if matches!(goal, Goal::Travel(_)) {
         // MissionScript.PreTravel of the map being left.
@@ -475,6 +476,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
     // ---- the new map
     let player = crate::make_player(&level, params);
     world.insert_resource(player);
+    crate::achievements::set_map(&level.name);
     world.insert_resource(crate::LevelRes(level));
     crate::sound::relevel(world);
     GEN.fetch_add(1, Ordering::Relaxed);
@@ -818,6 +820,23 @@ fn dev_goto(world: &mut World) {
         }
         Some("use") => {
             world.resource_mut::<crate::pickups::FrobRequest>().0 = true;
+            return;
+        }
+        // "secs;;gunshot": a pistol shot's noise from the player (AI fight tests: wakes the guards that hear it).
+        Some("gunshot") => {
+            let at = world.resource::<crate::Player>().body.location;
+            let n = crate::stealth::Noise {
+                pos: at,
+                volume: 1.0,
+                radius: 800.0,
+                maker: Some(crate::ai::Target::Player),
+                instigator: Some(crate::ai::Target::Player),
+                kind: crate::stealth::NoiseKind::WeaponFire,
+            };
+            let mut q = world.resource_mut::<crate::stealth::Noises>();
+            q.0.push(n.clone());
+            q.0.push(crate::stealth::Noise { kind: crate::stealth::NoiseKind::Loud, ..n });
+            println!("GOTO gunshot at {at:?}");
             return;
         }
         // "secs;x,y,z;tp": the player is moved there (trigger tests).

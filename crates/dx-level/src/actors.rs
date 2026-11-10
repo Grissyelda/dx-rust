@@ -702,7 +702,7 @@ pub fn light_part(part: &MeshPart, location: [f32; 3], rotation: [i32; 3], scale
                 if out <= 0.0 {
                     continue;
                 }
-                let att = (1.0 - d / l.radius) * ndl * spot * out;
+                let att = crate::lighting::mesh_falloff(d, l.radius) * crate::lighting::MESH_GLOW * ndl * spot * out;
                 for ch in 0..3 {
                     c[ch] += l.color[ch] * att;
                 }

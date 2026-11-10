@@ -114,7 +114,25 @@ pub struct WeaponStats {
     /// AIFireDelay: once a pawn fires this weapon it drops out of SwitchToBestWeapon (fallback level 0) until the
     /// pawn's FireTimer runs out (WeaponKarkianBump: 8 s), so the Karkian rams once and then bites.
     pub ai_fire_delay: f32,
+    /// ProjectileSpeed: AICanShoot leads a moving target by it (ComputeTargetLead).
+    pub projectile_speed: f32,
+    /// The projectile class's defaults (GetWeaponRanges, AICanShoot's extent, IsThrownWeapon); set by
+    /// `fill_projectile` where pawns' arsenals are built.
+    pub proj: Option<ProjInfo>,
     pub snd: crate::sound::WeaponSounds,
+}
+
+/// A projectile class's defaults that the AI reads.
+#[derive(Debug, Clone, Copy)]
+pub struct ProjInfo {
+    /// DeusExProjectile.blastRadius (GetWeaponRanges: the minimum range), AccurateRange, MaxRange.
+    pub blast_radius: f32,
+    pub accurate: f32,
+    pub max: f32,
+    pub radius: f32,
+    pub height: f32,
+    /// IsThrownWeapon: the projectile is a ThrownProjectile (grenades).
+    pub thrown: bool,
 }
 
 /// Mods fitted to one of the player's weapons (DeusExWeapon.Mod* travel vars), applied whenever it's drawn.
@@ -245,6 +263,47 @@ impl WeaponStats {
 }
 
 impl WeaponStats {
+    /// Reads the projectile class's defaults into `proj` (instant-hit weapons have none).
+    pub fn fill_projectile(&mut self, classes: &mut unreal_pkg::classes::ClassDb) {
+        if self.instant {
+            return;
+        }
+        let Some(pc) = self.projectile.clone() else { return };
+        let d = classes.defaults(&pc);
+        if d.is_empty() {
+            return;
+        }
+        self.proj = Some(ProjInfo {
+            blast_radius: fp(&d, "blastRadius", 0.0),
+            accurate: fp(&d, "AccurateRange", 800.0),
+            max: fp(&d, "MaxRange", 1600.0),
+            radius: fp(&d, "CollisionRadius", 0.0),
+            height: fp(&d, "CollisionHeight", 0.0),
+            thrown: crate::classtree::is_a(&pc, "ThrownProjectile"),
+        });
+    }
+
+    /// IsThrownWeapon.
+    pub fn thrown(&self) -> bool {
+        self.proj.is_some_and(|p| p.thrown)
+    }
+
+    /// GetPawnWeaponRanges: (min, max accurate, max) - the projectile class's blastRadius / AccurateRange / MaxRange
+    /// for projectile weapons, else 0 / AccurateRange / MaxRange; thrown weapons have no minimum.
+    /// uc: DeusExWeapon.GetWeaponRanges, ScriptedPawn.GetPawnWeaponRanges
+    pub fn ranges(&self) -> (f32, f32, f32) {
+        let (mut min, mut acc, max) = match self.proj {
+            Some(p) => (p.blast_radius, p.accurate, p.max),
+            None => (0.0, self.accurate_range, self.max_range),
+        };
+        if self.thrown() {
+            min = 0.0;
+        }
+        acc = acc.min(max);
+        min = min.min(max);
+        (min, acc, max)
+    }
+
     /// The projectile class this weapon fires with the given ammo loaded.
     pub fn projectile_for(&self, ammo: Option<&str>) -> Option<String> {
         if self.instant {
@@ -377,6 +436,8 @@ pub fn weapon_stats(class: &str, p: &[Property]) -> Option<WeaponStats> {
         can_track: matches!(find(p, "bCanTrack"), Some(Value::Bool(true))),
         lock_time: fp(p, "LockTime", 2.0),
         ai_fire_delay: fp(p, "AIFireDelay", 0.0),
+        projectile_speed: fp(p, "ProjectileSpeed", 0.0),
+        proj: None,
         snd: crate::sound::WeaponSounds::from_props(p),
     })
 }
@@ -2705,6 +2766,11 @@ pub fn weapon_system(
         return;
     }
     if weapons.held.is_none() {
+        return;
+    }
+    // Dead: nothing in hand is used, fired or reloaded any more (GitHub issue #60 - a medkit or a
+    // grenade still worked from the death screen).
+    if cx.ph.dead {
         return;
     }
     let locked = cursor.grab_mode == CursorGrabMode::Locked || injected_fire;

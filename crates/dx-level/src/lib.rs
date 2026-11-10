@@ -24,6 +24,7 @@ pub mod watertex;
 pub mod skincolor;
 pub mod dds;
 pub mod relief;
+pub mod tjunc;
 
 pub const METERS_PER_UNIT: f32 = 1.0 / 52.5;
 
@@ -171,6 +172,8 @@ pub struct PlayerStart {
 pub struct LevelStats {
     pub nodes: usize,
     pub triangles: usize,
+    /// Faces drawn as a fan round their centre for a neighbour's vertex on an edge (tjunc.rs).
+    pub tjunction_faces: usize,
     pub textures: usize,
     pub missing_textures: usize,
     pub skipped_invisible: usize,
@@ -1180,6 +1183,7 @@ pub fn build_level(
     let emit_on = emissive::on();
     let mut glow_faces: Vec<emissive::GlowFace> = Vec::new();
     let mut glow_color: HashMap<usize, Option<[f32; 3]>> = HashMap::new();
+    let tjunctions = tjunc::TJunctions::new(&model);
     for node in &model.nodes {
         if node.num_vertices < 3 {
             continue;
@@ -1487,9 +1491,34 @@ pub fn build_level(
 
         let first = b.positions.len() as u32;
         let mut ok = true;
-        for k in 0..node.num_vertices as usize {
-            let Some(v) = model.vertices.get(node.vert_pool as usize + k) else { ok = false; break };
-            let Some(p) = model.points.get(v.vertex as usize).copied() else { ok = false; break };
+        // The outline as point indices, with neighbours' vertices on its edges put in (tjunc.rs); such a face gets
+        // its centre as one more vertex and is drawn as a fan around it.
+        let outline: Vec<u32> = (0..node.num_vertices as usize)
+            .map_while(|k| model.vertices.get(node.vert_pool as usize + k).map(|v| v.vertex.max(0) as u32))
+            .collect();
+        let split = if is_sky || outline.len() < node.num_vertices as usize { None } else { tjunctions.split(&outline) };
+        if split.is_some() {
+            stats.tjunction_faces += 1;
+        }
+        let centre: Option<[f32; 3]> = split.as_ref().map(|_| {
+            let mut c = [0f32; 3];
+            for &i in &outline {
+                let p = model.points.get(i as usize).copied().unwrap_or_default();
+                for a in 0..3 {
+                    c[a] += p[a] / outline.len() as f32;
+                }
+            }
+            c
+        });
+        let loop_pts: Vec<Option<[f32; 3]>> = split
+            .as_deref()
+            .unwrap_or(&outline)
+            .iter()
+            .map(|&i| model.points.get(i as usize).copied())
+            .chain(centre.map(Some))
+            .collect();
+        for p in &loop_pts {
+            let Some(p) = *p else { ok = false; break };
             let d = [p[0] - base[0], p[1] - base[1], p[2] - base[2]];
             let u = (d[0] * tu[0] + d[1] * tu[1] + d[2] * tu[2] + surf.pan_u as f32) / tw;
             let vv = (d[0] * tv[0] + d[1] * tv[1] + d[2] * tv[2] + surf.pan_v as f32) / th;
@@ -1517,7 +1546,7 @@ pub fn build_level(
         // Bevy front faces are counter-clockwise around the normal; Unreal's polys mostly run the other way.
         let flip = {
             // Newell's normal over the whole polygon (BSP splits leave collinear vertices).
-            let cnt = node.num_vertices as u32;
+            let cnt = loop_pts.len() as u32 - centre.is_some() as u32;
             let mut w = [0.0f32; 3];
             for k in 0..cnt {
                 let a = b.positions[(first + k) as usize];
@@ -1528,9 +1557,20 @@ pub fn build_level(
             }
             w[0] * n[0] + w[1] * n[1] + w[2] * n[2] < 0.0
         };
-        for k in 1..node.num_vertices as u32 - 1 {
-            b.indices.extend_from_slice(&if flip { [first, first + k + 1, first + k] } else { [first, first + k, first + k + 1] });
-            stats.triangles += 1;
+        if centre.is_some() {
+            // Fan around the centre (the last vertex).
+            let ring = loop_pts.len() as u32 - 1;
+            let c = first + ring;
+            for k in 0..ring {
+                let (x, y) = (first + k, first + (k + 1) % ring);
+                b.indices.extend_from_slice(&if flip { [c, y, x] } else { [c, x, y] });
+                stats.triangles += 1;
+            }
+        } else {
+            for k in 1..node.num_vertices as u32 - 1 {
+                b.indices.extend_from_slice(&if flip { [first, first + k + 1, first + k] } else { [first, first + k, first + k + 1] });
+                stats.triangles += 1;
+            }
         }
     }
     // Detail textures: loaded beside the level's own; each surface texture knows its detail's index and how many of

@@ -1235,6 +1235,27 @@ pub fn inventory_screen_system(
     let (canvas_img, canvas_e, _) = st.canvas.clone().unwrap();
     let (cursor_img, cursor_e, _) = st.cursor.clone().unwrap();
     if !st.open {
+        // Drop item (the original's DropItem exec, mouse wheel click): throw what is in hand.
+        if cx.binds.action_just_pressed("Drop item")
+            && !cx.ph.dead
+            && !crate::menus::open()
+            && !crate::computers::open()
+            && !crate::consys::third_person()
+        {
+            if let Some(c) = cx.weapons.held.as_ref().map(|h| h.stats.class.clone()) {
+                let key = cx.inv.0.items.iter().find(|i| class_of(&i.key()) == c).map(|i| i.key());
+                if let Some(key) = key {
+                    let InvCx { st, inv, weapons, assets, player, cam, drops, msg, .. } = &mut *cx;
+                    st.status.clear();
+                    drop_item(st, &key, inv, weapons, assets, player, cam, drops, msg, true);
+                    // Only a refusal is worth a line ("... cannot be dropped here").
+                    if st.status.contains("cannot") {
+                        msg.text = st.status.clone();
+                        msg.time_left = 3.0;
+                    }
+                }
+            }
+        }
         for e in [canvas_e, cursor_e] {
             if let Ok((_, mut v, _)) = nodes.get_mut(e) {
                 if *v != Visibility::Hidden {
@@ -2104,6 +2125,7 @@ fn run_action(cx: &mut InvCx, action: Option<Btn>, sel_class: &Option<String>) -
                             cam,
                             drops,
                             msg,
+                            false,
                         );
                     }
                 }
@@ -2586,12 +2608,18 @@ fn drop_item(
     cam: &Transform,
     throws: &mut crate::destruct::ItemThrows,
     msg: &mut crate::movers::HudMessage,
+    // DropItem(bDrop = False): thrown from the hand along the view; the inventory screen's Drop lets it fall.
+    throw: bool,
 ) {
     let key = class;
     let Some(idx) = inv.0.items.iter().position(|i| i.key() == key) else {
         return;
     };
     let class = class_of(key);
+    // "don't let us throw away the nanokeyring"
+    if class == "NanoKeyRing" || class == "POVCorpse" {
+        return;
+    }
     let d = assets.classes.defaults(class);
     let name = str_p(&d, "ItemName");
     // A canister keeps what it holds when it leaves the inventory.
@@ -2681,7 +2709,14 @@ fn drop_item(
             .wrapping_add(1442695040888963407);
         ((seed >> 33) as f64 / (1u64 << 31) as f64) * 2.0 - 1.0
     };
-    let vel = DVec3::new(rnd(), rnd(), rnd()).normalize_or_zero() * 30.0;
+    let vel = if throw {
+        // Vector(ViewRotation) x AugMuscle x 300 + 220 up + 40 x VRand.
+        let v = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero();
+        let mult = crate::abilities::aug_level("AugMuscle").map_or(1.0, |l| 1.25 + 0.25 * l as f64);
+        v * mult * 300.0 + DVec3::new(0.0, 0.0, 220.0) + DVec3::new(rnd(), rnd(), rnd()).normalize_or_zero() * 40.0
+    } else {
+        DVec3::new(rnd(), rnd(), rnd()).normalize_or_zero() * 30.0
+    };
     throws.0.push((class.to_string(), at, vel, pickup_ammo, extra));
     crate::sound::play_player("DeusExSounds.Generic.Pickup", 0.0, 0.0);
     st.set_status(format!("{name} dropped"));

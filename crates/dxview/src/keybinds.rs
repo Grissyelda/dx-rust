@@ -41,6 +41,8 @@ pub const ACTIONS: &[(&str, Input)] = &[
     ("Change ammo", K(KeyCode::KeyT)),
     ("Change ammo (alt)", K(KeyCode::Quote)),
     ("Melee bash", K(KeyCode::KeyF)),
+    // DeusExPlayer.DropItem: throws what is in hand (the original's mouse wheel click).
+    ("Drop item", M(MouseButton::Middle)),
     ("Belt 1", K(KeyCode::Digit1)),
     ("Belt 2", K(KeyCode::Digit2)),
     ("Belt 3", K(KeyCode::Digit3)),
@@ -360,7 +362,11 @@ pub fn remap_system(
     b.kb_buttons.clear();
     b.typed.clear();
     let mut kbm = false;
+    let steam_echo = crate::gamepad::steam_echo();
     for e in kb.read() {
+        if steam_echo && crate::gamepad::steam_nav_key(e.key_code) {
+            continue;
+        }
         kbm = true;
         // Android's Back button (gesture or key) is Escape.
         let code = if e.key_code == KeyCode::BrowserBack { KeyCode::Escape } else { e.key_code };
@@ -401,6 +407,10 @@ pub fn remap_system(
     UI_MODE.store(ui, std::sync::atomic::Ordering::Relaxed);
     let snap_ok = crate::snap::swap_frame();
     let pad = crate::gamepad::outputs(&b.map, time.delta_secs().min(0.1), ui, snap_ok && ui);
+    // Steam Input's own scrolling for the pad (issue #54): only ours counts while the pad is in use.
+    if steam_echo {
+        scroll.delta = Vec2::ZERO;
+    }
     if pad.scroll != 0.0 {
         scroll.delta.y += pad.scroll;
     }

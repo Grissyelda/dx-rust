@@ -111,6 +111,7 @@ impl AllianceTable {
     }
 
     /// ChangeAlly (AllianceTrigger, scripted events). The own alliance stays friendly and permanent.
+    /// uc: ScriptedPawn.ChangeAlly
     pub fn change_ally(&mut self, name: &str, level: f32, permanent: bool, honor_permanence: bool) {
         let (level, permanent) = if name.eq_ignore_ascii_case(&self.own) { (1.0, true) } else { (level.clamp(-1.0, 1.0), permanent) };
         if honor_permanence && self.find(name).is_some_and(|e| e.permanent) {
@@ -129,6 +130,7 @@ impl AllianceTable {
     }
 
     /// GetAllianceType.
+    /// uc: ScriptedPawn.GetAllianceType
     pub fn attitude(&self, name: &str) -> Attitude {
         if name.is_empty() {
             return Attitude::Neutral;
@@ -160,6 +162,7 @@ impl AllianceTable {
 
     /// IncreaseAgitation + AgitateAlliance: a provocation by a member of `name` (hurting this character).
     /// `amount` None uses 1 / (MaxProvocations + 1). Returns true if the alliance is now hostile.
+    /// uc: ScriptedPawn.IncreaseAgitation
     pub fn provoke(&mut self, name: &str, amount: Option<f32>) -> bool {
         if name.is_empty() || name.eq_ignore_ascii_case(&self.own) {
             return false;
@@ -175,6 +178,7 @@ impl AllianceTable {
 
     /// AgitateAlliance: raise the agitation toward `name` (not the own alliance, not permanent entries).
     /// Returns true if the alliance is now hostile.
+    /// uc: ScriptedPawn.AgitateAlliance, ScriptedPawn.DecreaseAgitation
     pub fn agitate(&mut self, name: &str, amount: f32) -> bool {
         if name.is_empty() || name.eq_ignore_ascii_case(&self.own) || amount <= 0.0 {
             return self.hostile_to(name);
@@ -193,6 +197,7 @@ impl AllianceTable {
     }
 
     /// UpdateAgitation: after AgitationSustainTime without provocation, agitation drains at AgitationDecayRate.
+    /// uc: ScriptedPawn.UpdateAgitation
     pub fn tick(&mut self, dt: f32) {
         self.check_timer = (self.check_timer - dt).max(0.0);
         let decrement = if self.sustain_timer > 0.0 {

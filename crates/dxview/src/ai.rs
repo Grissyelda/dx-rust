@@ -578,6 +578,9 @@ pub enum Orders {
     GoingTo,
     /// WaitingFor: stand until the player is in sight, then run to him.
     WaitingFor,
+    /// Following: keep within 180 of the order actor (the player when untagged) for good, backing off when closer
+    /// than 60 for a second.
+    Following,
 }
 
 /// A target: the player or another pawn (blocker index).
@@ -645,6 +648,7 @@ pub struct Afflictions {
 
 impl Afflictions {
     /// One frame: the doses that fall due, as hits on the pawn (`at` is its centre).
+    /// uc: ScriptedPawn.UpdatePoison
     pub fn tick(&mut self, dt: f32, blocker: usize, at: DVec3, out: &mut Vec<crate::damage::PawnHit>) {
         if self.poison_counter > 0 {
             self.poison_timer += dt;
@@ -682,6 +686,7 @@ impl Afflictions {
 }
 
 /// Poison and bleeding doses on living pawns in the world, queued as hits for npc_system (which runs after).
+/// uc: ScriptedPawn.UpdatePoison
 pub fn afflictions_system(
     time: Res<Time>,
     blockers: Res<crate::actors::Blockers>,
@@ -914,6 +919,15 @@ pub struct Npc {
     /// Where Attacking's state code is: RunToRange's opening TurnToward, running to range, the Fire label's
     /// TweenToShoot (0.15 s) + TurnToward before the first shot, or ContinueFire.
     pub atk_phase: AtkPhase,
+    /// Classic Attacking (attack_classic): the RunToRange leg under way is a FindPathToward walk over the path
+    /// network (npc.route; else a point leg in smart.repos), the route's node count when it began, and the
+    /// ContinueFire tick clock (PickDestination is asked once a game tick, here 30 times a second).
+    pub atk_chase: bool,
+    pub atk_nodes: usize,
+    pub atk_tick: f32,
+    /// Following: BackpedalTimer (< 0 = off) and the spot being walked to.
+    pub backpedal: f32,
+    pub follow_dest: Option<DVec3>,
     pub crouch_rate: f32,
     pub crouching: bool,
     pub crouch_timer: f32,
@@ -1017,6 +1031,7 @@ fn name_of(p: &[Property], n: &str) -> String {
 
 impl Npc {
     /// ScriptedPawn.SetOrders(orderName, newOrderTag, bImmediate=true).
+    /// uc: ScriptedPawn.SetOrders, ScriptedPawn.FindTaggedActor, ScriptedPawn.FollowOrders
     pub fn set_orders(
         &mut self,
         lvl: &dx_level::Level,
@@ -1057,17 +1072,22 @@ impl Npc {
                     "patrolling" => Orders::Patrolling,
                     "wandering" => Orders::Wandering,
                     "sitting" => Orders::Sitting,
-                    "runningto" | "following" => Orders::RunningTo,
+                    "runningto" => Orders::RunningTo,
+                    "following" => Orders::Following,
                     "goingto" => Orders::GoingTo,
                     "waitingfor" => Orders::WaitingFor,
                     _ => Orders::Standing,
                 };
                 self.order_tag = orders_tag.to_string();
-                self.order_goal = if orders_tag.is_empty() {
+                // (The player's own tag - JCDenton, Player - means the player, followed where he is now.)
+                let player_tag = ["JCDenton", "Player", "DeusExPlayer"].iter().any(|t| t.eq_ignore_ascii_case(orders_tag));
+                self.order_goal = if orders_tag.is_empty() || player_tag {
                     None
                 } else {
                     tagged()
                 };
+                self.backpedal = -1.0;
+                self.follow_dest = None;
                 self.route = None;
                 self.patrol_dest = None;
                 self.wander_goal = None;
@@ -1080,6 +1100,7 @@ impl Npc {
         }
     }
 
+    /// uc: ScriptedPawn.InitializePawn, ScriptedPawn.InitializeAlliances, ScriptedPawn.InitializeHomeBase, ScriptedPawn.PreBeginPlay
     pub fn new(actor: usize, blocker: usize, p: &[Property], yaw_units: i32, home: DVec3) -> Npc {
         let initial: Vec<(String, f32, bool)> = p
             .iter()
@@ -1115,6 +1136,8 @@ impl Npc {
             "patrolling" => Orders::Patrolling,
             "wandering" => Orders::Wandering,
             "sitting" => Orders::Sitting,
+            // Placed followers of the player (an OrderTag naming a pawn stays Standing for now).
+            "following" if { let t = name_of(p, "OrderTag"); t.is_empty() || t.eq_ignore_ascii_case("None") || t.eq_ignore_ascii_case("JCDenton") || t.eq_ignore_ascii_case("Player") } => Orders::Following,
             _ => Orders::Standing,
         };
         let yaw = yaw_units as f64 / 65536.0 * std::f64::consts::TAU;
@@ -1188,7 +1211,7 @@ impl Npc {
             sitting: false,
             seat: None,
             orders_failed: false,
-            hp_body: crate::damage::Body::new(p),
+            hp_body: crate::damage::Body::new(p).animal(find(p, "FoodHealth").is_some()),
             take_hit_timer: 0.0,
             knocked_out: false,
             searched: false,
@@ -1273,6 +1296,11 @@ impl Npc {
             must_face: flag(p, "bMustFaceTarget"),
             fire_angle: fv(p, "FireAngle", 360.0),
             atk_phase: AtkPhase::TurnFirst,
+            atk_chase: false,
+            atk_nodes: 0,
+            atk_tick: 0.0,
+            backpedal: -1.0,
+            follow_dest: None,
             crouch_rate: fv(p, "CrouchRate", 0.25),
             crouching: false,
             crouch_timer: 0.0,
@@ -1318,6 +1346,7 @@ impl Npc {
     }
 
     /// ScriptedPawn's Play<Mode>Sound calls (StartAIBarkConversation), from the state changes they sit on.
+    /// uc: ScriptedPawn.PlayIdleSound, ScriptedPawn.PlaySurpriseSound, ScriptedPawn.PlayTargetAcquiredSound, ScriptedPawn.PlayAreaSecureSound, ScriptedPawn.PlayTargetLostSound, ScriptedPawn.PlaySearchGiveUpSound, ScriptedPawn.PlayPreAttackSearchingSound, ScriptedPawn.PlayPreAttackSightingSound, ScriptedPawn.PlayPostAttackSearchingSound, ScriptedPawn.PlayCarcassSound, ScriptedPawn.PlayGoingForAlarmSound, ScriptedPawn.PlayOutOfAmmoSound, ScriptedPawn.PlayCriticalDamageSound, ScriptedPawn.PlayOnFireSound, ScriptedPawn.PlayTearGasSound, ScriptedPawn.Standing:Fidget
     fn barks(&mut self, dt: f32, standing_still: bool) {
         use crate::consys::BarkMode as B;
         let prev = self.bark_prev;
@@ -1390,6 +1419,7 @@ impl Npc {
     }
 
     /// SetSeekLocation: forget the enemy and remember where to look.
+    /// uc: ScriptedPawn.SetSeekLocation
     fn set_seek_location(&mut self, pos: DVec3, kind: SeekKind, post_combat: bool) {
         self.target = None;
         let s = self.seek.get_or_insert(Seek {
@@ -1412,6 +1442,7 @@ impl Npc {
     }
 
     /// GotoState('Seeking'): stand up, draw the weapon, start at Begin.
+    /// uc: ScriptedPawn.Seeking.BeginState, ScriptedPawn.HandlingEnemy.BeginState
     fn enter_seeking(&mut self) {
         self.stand_up();
         self.state = NpcState::Seeking;
@@ -1425,6 +1456,7 @@ impl Npc {
 
     /// A new place to look while already seeking (Seeking.HandleSighting / HandleLoudNoise): interrupts
     /// GoToLocation/TurnToLocation; during the wait it cuts the look-around short.
+    /// uc: ScriptedPawn.Seeking.HandleSighting, ScriptedPawn.Seeking.HandleLoudNoise
     fn reseek(&mut self, pos: DVec3, kind: SeekKind) {
         self.set_seek_location(pos, kind, false);
         if let Some(s) = self.seek.as_mut() {
@@ -1440,6 +1472,7 @@ impl Npc {
     }
 
     /// Leave Seeking and go back to orders (DoneSeek -> FollowOrders).
+    /// uc: ScriptedPawn.Seeking:DoneSeek, ScriptedPawn.Seeking.EndState
     fn finish_seek(&mut self) {
         if self.state == NpcState::Seeking {
             crate::smartai::search_failed(self);
@@ -1454,6 +1487,7 @@ impl Npc {
 
     /// SetEnemy + HandleEnemy: attack, after the surprise pause that ReactionLevel hasn't covered yet.
     /// HandleEnemy: HandlingEnemy -> Attacking, or fleeing for a pawn with nothing to fight with.
+    /// uc: ScriptedPawn.HandleEnemy, ScriptedPawn.HandlingEnemy.BeginState
     fn handle_enemy(&mut self, t: Target, pos: DVec3, seen_at: f32, now: f32) {
         // HandlingEnemy.BeginState: RAISEALARM_BeforeAttacking goes for the alarm whatever the pawn holds (the
         // training stealth maze's unarmed soldiers); Attacking then finds no weapon and flees.
@@ -1464,6 +1498,7 @@ impl Npc {
         }
     }
 
+    /// uc: ScriptedPawn.SetEnemy, ScriptedPawn.Attacking:Surprise, ScriptedPawn.Attacking:BeginAttack
     fn begin_attack(&mut self, t: Target, pos: DVec3, seen_at: f32) {
         self.target = Some(t);
         self.fear_flee = false;
@@ -1488,6 +1523,7 @@ impl Npc {
         }
     }
 
+    /// uc: ScriptedPawn.StandUp
     fn stand_up(&mut self) {
         if self.sitting {
             self.sitting = false;
@@ -1500,6 +1536,7 @@ impl Npc {
 
     /// GetAllianceType == ALLIANCE_Hostile.
     /// GetAllianceType with bReverseAlliances (a scrambled robot): friends are enemies and enemies friends.
+    /// uc: Robot.Tick
     pub fn hates(&self, alliance: &str) -> bool {
         if self.crazed > 0.0 {
             self.alliances.friendly_to(alliance)
@@ -1558,6 +1595,7 @@ impl Npc {
     /// ScriptedPawn.SwitchToBestWeapon: score every usable weapon by how far the enemy is from the middle of its
     /// best range (lower is better), prefer non-fallback weapons (knives) while there's ammo, and stick with a new
     /// choice for a while. `enemy` = (distance, radius, is_robot, is_player).
+    /// uc: ScriptedPawn.SwitchToBestWeapon, ScriptedPawn.GetWeaponBestRange
     fn switch_to_best_weapon(&mut self, enemy: Option<(f64, f64, bool, bool)>) {
         let (enemy_range, enemy_radius, robot, player) =
             enemy.unwrap_or((400.0, 0.0, false, false));
@@ -1640,7 +1678,7 @@ impl Npc {
             self.reload_timer = 0.0;
             self.weapon = new;
             if let Some(w) = self.weapon.clone() {
-                let left = self.weapon_ammo().unwrap_or(i32::MAX);
+                let left = if npc_finite_ammo() { self.weapon_ammo().unwrap_or(i32::MAX) } else { i32::MAX };
                 self.loaded = (w.reload_count.max(1) as i32).min(left).max(0) as u32;
                 if let Some(a) = self.ammo_class_for(&w).map(str::to_owned) {
                     if w.reload_count > 0 {
@@ -1652,6 +1690,7 @@ impl Npc {
     }
 
     /// ScriptedPawn.ShouldFlee: at or below MinHealth, or any limb gone (only for pawns with a MinHealth).
+    /// uc: ScriptedPawn.ShouldFlee
     fn should_flee(&self) -> bool {
         let b = &self.hp_body;
         self.min_health > 0.0
@@ -1659,6 +1698,7 @@ impl Npc {
     }
 
     /// ShouldDropWeapon: an arm is gone.
+    /// uc: ScriptedPawn.ShouldDropWeapon
     fn should_drop_weapon(&self) -> bool {
         let b = &self.hp_body;
         (b.parts[2] <= 0.0 || b.parts[3] <= 0.0) && b.health > 0.0
@@ -1669,6 +1709,7 @@ impl Npc {
     /// AvoidingProjectiles ignores projectiles, a conversation blocks everything, and the busy states (Attacking,
     /// Fleeing, Alerting, Burning, TakingHit, Stunned, RubbingEyes, the surprise before HandlingEnemy) only notice
     /// being hurt.
+    /// uc: ScriptedPawn.SetReactions, ScriptedPawn.BlockReactions, ScriptedPawn.ResetReactions, ScriptedPawn.UpdateReactionCallbacks
     pub fn looking_for(&self, conversing: bool, first_person: bool) -> imsim_core::reactions::LookingFor {
         use imsim_core::reactions::LookingFor as L;
         if conversing {
@@ -1685,6 +1726,7 @@ impl Npc {
 
     /// SetEnemy(pawn, , true) + GotoState('Fleeing'): run from `t`; `fear` when it's fright rather than harm (the
     /// flight then ends once no longer fearful, hostile or not).
+    /// uc: ScriptedPawn.Fleeing.BeginState
     fn flee_from(&mut self, t: Target, pos: DVec3, now: f32, fear: bool) {
         self.stand_up();
         self.target = Some(t);
@@ -1697,6 +1739,7 @@ impl Npc {
     }
 
     /// ReactToFutz: a futz bark, at most every 2 s, not while distressed.
+    /// uc: ScriptedPawn.ReactToFutz, ScriptedPawn.PlayFutzSound
     fn react_to_futz(&mut self) {
         if self.react_futz && self.futz_timer <= 0.0 && !matches!(self.state, NpcState::Fleeing | NpcState::Attacking) {
             self.futz_timer = 2.0;
@@ -1704,6 +1747,7 @@ impl Npc {
         }
     }
 
+    /// uc: ScriptedPawn.Fleeing.BeginState, ScriptedPawn.Fleeing:Begin
     fn enter_fleeing(&mut self) {
         self.state = NpcState::Fleeing;
         self.route = None;
@@ -1713,6 +1757,7 @@ impl Npc {
         self.seek = None;
     }
 
+    /// uc: ScriptedPawn.HasTwoHandedWeapon
     fn two_handed(&self) -> bool {
         self.weapon_drawn
             && self
@@ -1732,6 +1777,7 @@ impl Npc {
 }
 
 /// Give every pawn an `Npc` brain (run once after spawning).
+/// uc: ScriptedPawn.PostBeginPlay, ScriptedPawn.StartUp:Begin
 pub fn attach_npcs(
     mut commands: Commands,
     level: Res<LevelRes>,
@@ -1887,6 +1933,7 @@ pub fn sel_hit(sel: &Sel, class: &str, bind: &str, tag: &str) -> bool {
     sel_matches_tag(sel, class, bind, tag)
 }
 
+/// uc: ScriptedPawn.EnterWorld, ScriptedPawn.LeaveWorld, ScriptedPawn.PutInWorld, ScriptedPawn.SetHomeBase
 #[allow(clippy::type_complexity)]
 pub fn world_system(
     mut commands: Commands,
@@ -2285,6 +2332,7 @@ fn follow_route(level: &dx_level::Level, r: &mut Route, me: DVec3, radius: f64, 
 }
 
 /// ScriptedPawn.IsNearHome: within HomeExtent of home and with a clear line to it.
+/// uc: ScriptedPawn.IsNearHome
 fn is_near_home(level: &dx_level::Level, npc: &Npc, pos: DVec3) -> bool {
     !npc.use_home
         || (npc.home.distance(pos) <= npc.home_extent
@@ -2292,6 +2340,7 @@ fn is_near_home(level: &dx_level::Level, npc: &Npc, pos: DVec3) -> bool {
 }
 
 /// Ordinary behavior: patrol, wander, stand or sit. Returns (wish direction, walking).
+/// uc: ScriptedPawn.FollowOrders
 fn do_orders(
     level: &dx_level::Level,
     npc: &mut Npc,
@@ -2300,7 +2349,7 @@ fn do_orders(
     player: DVec3,
     sees_player: bool,
 ) -> (DVec3, bool) {
-    let run = matches!(npc.orders, Orders::RunningTo | Orders::WaitingFor);
+    let run = matches!(npc.orders, Orders::RunningTo | Orders::WaitingFor | Orders::Following);
     (
         do_orders_inner(level, npc, me, dt, player, sees_player),
         run,
@@ -2308,6 +2357,7 @@ fn do_orders(
 }
 
 /// do_orders' wish direction: a pause (turning to its yaw), else the current orders' step.
+/// uc: ScriptedPawn.WaitingFor:Wait
 fn do_orders_inner(
     level: &dx_level::Level,
     npc: &mut Npc,
@@ -2332,6 +2382,7 @@ fn do_orders_inner(
             DVec3::ZERO
         }
         Orders::RunningTo | Orders::GoingTo | Orders::WaitingFor => orders_follow(level, npc, me, dt, player, &p),
+        Orders::Following => orders_following(level, npc, me, dt, player, &p),
         Orders::Standing => orders_standing(level, npc, me, dt, &p),
         Orders::Wandering if npc.cleaner => orders_cleaner_wander(level, npc, me, dt, &p),
         Orders::Wandering if npc.animal => orders_animal_wander(level, npc, me, &p),
@@ -2341,6 +2392,7 @@ fn do_orders_inner(
 
 /// RunningTo / GoingTo / WaitingFor: follow the order actor (or the player) until touching it (IsOverlapping),
 /// then Standing where we are.
+/// uc: ScriptedPawn.RunningTo:Follow, ScriptedPawn.RunningTo:Done, ScriptedPawn.GoingTo:Follow, ScriptedPawn.GoingTo:Done, ScriptedPawn.WaitingFor:Follow, ScriptedPawn.WaitingFor:Done
 fn orders_follow(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, player: DVec3, p: &MoveParams) -> DVec3 {
     if env_on!("DXVIEW_ORDERLOG") {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -2397,7 +2449,78 @@ fn orders_follow(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, pla
     w
 }
 
+/// Following: PickDestination after every leg - beyond 180 (past both radii) or out of sight, a step of up to 80
+/// toward the order actor (or the path to it); closer than 60 for over a second (time to talk), back off to 60..120
+/// from it; else wait, facing it.
+/// uc: ScriptedPawn.Following.PickDestination, ScriptedPawn.Following.Tick, ScriptedPawn.Following:Follow, ScriptedPawn.Following:Wait, ScriptedPawn.Following:WaitLoop
+fn orders_following(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, player: DVec3, p: &MoveParams) -> DVec3 {
+    let goal = npc.order_goal.unwrap_or(player);
+    let flat = |v: DVec3| DVec3::new(v.x, v.y, 0.0);
+    if npc.backpedal >= 0.0 {
+        npc.backpedal += dt;
+    }
+    // A leg under way.
+    if let Some(d) = npc.follow_dest {
+        let to = flat(d - me);
+        if to.length() > 12.0 && npc.route.as_ref().is_none_or(|r| r.stuck < 4) {
+            let w = if npc.route.is_some() {
+                let r = npc.route.as_mut().unwrap();
+                follow(level, r, me, p, dt)
+            } else {
+                to.normalize()
+            };
+            if w.length_squared() > 1e-6 {
+                npc.yaw = turn_toward(npc.yaw, w.y.atan2(w.x), npc.yaw_rate * dt as f64);
+            }
+            return w;
+        }
+        npc.follow_dest = None;
+        npc.route = None;
+    }
+    let extra = p.radius + 20.0;
+    let dist = ((goal - me).length() - extra).max(0.0);
+    let eye = DVec3::new(0.0, 0.0, p.height * 0.75);
+    let sees = !level.collision.trace(me + eye, goal, DVec3::ZERO).blocked();
+    if dist > 180.0 || !sees {
+        npc.backpedal = -1.0;
+        if clear_line(level, me, goal, p.radius) {
+            // AIDirectionReachable(Location, toward it, 0, min((dist - 180) + 45, 80)).
+            let len = ((dist - 180.0) + 45.0).clamp(16.0, 80.0);
+            if let Some(d) = direction_reachable_v(level, me, p, goal - me, 0.0, len) {
+                npc.follow_dest = Some(d);
+            }
+        } else {
+            let r = plan_route(level, me, goal, p, None);
+            if let Some(&n) = r.nodes.first() {
+                let q = level.nav.points[n].pos;
+                npc.follow_dest = Some(DVec3::new(q[0], q[1], q[2]));
+                npc.route = Some(r);
+            }
+        }
+    } else if dist < 60.0 {
+        if npc.backpedal < 0.0 {
+            npc.backpedal = 0.0;
+        }
+        if npc.backpedal > 1.0 {
+            // AIDirectionReachable(orderActor.Location, away from it, 60 + extra, 120 + extra).
+            if let Some(d) = direction_reachable_v(level, goal, p, me - goal, 60.0 + extra, 120.0 + extra) {
+                npc.follow_dest = Some(d);
+            }
+        }
+    } else {
+        npc.backpedal = -1.0;
+    }
+    if npc.follow_dest.is_some() {
+        return DVec3::ZERO; // the leg starts next frame
+    }
+    // Wait: LookAtActor(orderActor).
+    let to = goal - me;
+    npc.yaw = turn_toward(npc.yaw, to.y.atan2(to.x), npc.yaw_rate * dt as f64 * 0.5);
+    DVec3::ZERO
+}
+
 /// Standing: back to where we were placed, then face the way we were facing.
+/// uc: ScriptedPawn.Standing:MoveToBase, ScriptedPawn.Standing:StartStand, ScriptedPawn.Standing:Stand
 fn orders_standing(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, p: &MoveParams) -> DVec3 {
     // Go back to where we were placed, then face the way we were facing.
     if flat_dist(me, npc.home) > 48.0 && !npc.orders_failed {
@@ -2421,6 +2544,7 @@ fn orders_standing(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, p
 }
 
 /// CleanerBot.Wandering: lawnmower strips (PickDestination via AIDirectionReachable), MoveTo at walking speed.
+/// uc: CleanerBot.Wandering.PickDestination
 fn orders_cleaner_wander(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, p: &MoveParams) -> DVec3 {
     // CleanerBot.Wandering: PickDestination, MoveTo at walking speed, a second's pause if it gave up.
     if npc.wander_goal.is_none() {
@@ -2477,6 +2601,7 @@ fn orders_cleaner_wander(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: 
 }
 
 /// Animal / Rat Wandering: a random reachable spot near home, then a short pause.
+/// uc: Animal.Wandering.PickDestination, Rat.Wandering.PickDestination
 fn orders_animal_wander(level: &dx_level::Level, npc: &mut Npc, me: DVec3, p: &MoveParams) -> DVec3 {
     // Animal / Rat Wandering.PickDestination: a random reachable spot 80-250 (rats) or 100-400 away,
     // kept within HomeExtent and in sight of home; then a short pause.
@@ -2533,6 +2658,7 @@ fn orders_animal_wander(level: &dx_level::Level, npc: &mut Npc, me: DVec3, p: &M
 }
 
 /// Patrolling (along the PatrolPoint chain) / Wandering (to random path points near home), pausing on arrival.
+/// uc: ScriptedPawn.Patrolling.PickStartPoint, ScriptedPawn.Patrolling.PickDestination, ScriptedPawn.Patrolling:Patrol, ScriptedPawn.Patrolling:Moving, ScriptedPawn.Patrolling:Pausing, ScriptedPawn.Wandering.PickDestination, ScriptedPawn.Wandering:Wander, ScriptedPawn.Wandering:Moving, ScriptedPawn.Wandering:Pausing
 fn orders_patrol(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, p: &MoveParams) -> DVec3 {
     if npc.patrol_dest.is_none() {
         npc.patrol_dest = if npc.orders == Orders::Patrolling {
@@ -2601,6 +2727,7 @@ fn orders_patrol(level: &dx_level::Level, npc: &mut Npc, me: DVec3, dt: f32, p: 
 /// ScriptedPawn state Seeking: go to where the enemy was seen or heard (sight: just turn to look), look around
 /// for 3 to 4.5 seconds and then a little longer, poke around nearby (SeekLevel more times), then give up and go
 /// back to orders. Returns (wish direction, running).
+/// uc: ScriptedPawn.Seeking.PickDestination, ScriptedPawn.Seeking.GetNextLocation, ScriptedPawn.Seeking.GetOvershootDestination, ScriptedPawn.Seeking:Begin, ScriptedPawn.Seeking:GoToLocation, ScriptedPawn.Seeking:TurnToLocation, ScriptedPawn.Seeking:LookAround, ScriptedPawn.Seeking:FindAnotherPlace
 fn do_seek(
     level: &dx_level::Level,
     npc: &mut Npc,
@@ -2831,6 +2958,7 @@ fn direction_reachable_v(
 pub static CLEANERS: std::sync::Mutex<Vec<(DVec3, f64, f64)>> = std::sync::Mutex::new(Vec::new());
 
 /// Sitting orders: move onto the seat tagged `OrderTag` (ScriptedPawn Sitting.SitPosition).
+/// uc: ScriptedPawn.Sitting.FindBestSeat, ScriptedPawn.Sitting:MoveToPosition, ScriptedPawn.Sitting:Sit, ScriptedPawn.Sitting:ContinueSitting, ScriptedPawn.GetSitHeight, ScriptedPawn.SetBasedPawnSize
 fn sit_down(level: &dx_level::Level, npc: &mut Npc, deco: &mut Deco, p: &[Property]) {
     let ordered = level.actors.iter().position(|a| {
         !npc.order_tag.is_empty()
@@ -2938,6 +3066,7 @@ pub struct NpcScratch {
 }
 
 /// Burning: running about on fire (Panic), for water within reach for a pawn that can swim.
+/// uc: ScriptedPawn.Burning.PickDestination, ScriptedPawn.Burning:Run, ScriptedPawn.Burning:Done
 fn burning_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
     let ActCx { lvl, blockers, .. } = *cx;
     let player_center = cx.player_center;
@@ -3005,6 +3134,7 @@ fn burning_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
 
 /// Fleeing (ScriptedPawn state Fleeing): running from the enemy to hiding points until unseen long enough or no
 /// longer afraid.
+/// uc: ScriptedPawn.Fleeing.Tick, ScriptedPawn.Fleeing.FinishFleeing, ScriptedPawn.Fleeing:Flee, ScriptedPawn.Fleeing:Moving, ScriptedPawn.Fleeing:Pausing, ScriptedPawn.Fleeing:Cower
 fn fleeing_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
     let ActCx { lvl, blockers, hp, .. } = *cx;
     let player_center = cx.player_center;
@@ -3102,6 +3232,7 @@ fn fleeing_state(npc: &mut Npc, _an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
 }
 
 /// Alerting (ScriptedPawn state Alerting): running to an alarm unit and pushing its button, then attacking or fleeing.
+/// uc: ScriptedPawn.Alerting:Moving, ScriptedPawn.Alerting:SoundAlarm, ScriptedPawn.Alerting:Done, ScriptedPawn.Alerting.TriggerAlarm, ScriptedPawn.Alerting.GetNextAlarmPoint
 fn alerting_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
     let ActCx { lvl, .. } = *cx;
     let dt = cx.dt;
@@ -3219,6 +3350,7 @@ fn alerting_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
     (wish, running, firing)
 }
 
+/// uc: ScriptedPawn.Tick
 #[allow(clippy::too_many_arguments)]
 pub fn npc_system(
     time: Res<Time>,
@@ -3502,7 +3634,8 @@ fn puppet_step(
         } else if want.starts_with("Weapon") {
             // A player's weapon (bodies carry nothing of their own).
             let d = assets.classes.defaults(want);
-            if let Some(w) = weapon_stats(want, &d) {
+            if let Some(mut w) = weapon_stats(want, &d) {
+                w.fill_projectile(&mut assets.classes);
                 let w = std::sync::Arc::new(w);
                 npc.arsenal.push(w.clone());
                 npc.weapon = Some(w);
@@ -3874,6 +4007,7 @@ fn killswitch_step(
 
 /// Barks, and the conversation's hold on the pawn: who it looks at (if conversing), whether a third-person
 /// conversation holds it, and its lip sync. Returns (con_look, con_hold).
+/// uc: ScriptedPawn.Conversation.Tick, ScriptedPawn.FirstPersonConversation.Tick, ScriptedPawn.LoopBaseConvoAnim
 fn conversation_face(npc: &mut Npc, an: &mut Animated, dt: f32) -> (Option<Option<DVec3>>, bool) {
     let con_look = crate::consys::conversing(npc.blocker);
     let standing = npc.orders == Orders::Standing && npc.route.is_none() && con_look.is_none();
@@ -3931,6 +4065,7 @@ fn player_burn_tick(ph: &mut PlayerHealth, dt: f32) {
 
 /// LastRenderTime for bTickVisibleOnly, and what that lets the pawn check this frame: returns (check_other,
 /// check_player).
+/// uc: ScriptedPawn.Tick
 #[allow(clippy::too_many_arguments)]
 fn render_check(
     npc: &mut Npc,
@@ -3976,6 +4111,7 @@ fn render_check(
 }
 
 /// FireTimer, the NanoVirus scramble wearing off (Sensor Burnout), and Gray.Tick's radiation aura.
+/// uc: Robot.Tick, Gray.Tick
 fn pawn_timers(npc: &mut Npc, ph: &mut PlayerHealth, world: &World, me: &Cylinder, player_center: DVec3, dt: f32) {
     npc.fire_timer = (npc.fire_timer - dt).max(0.0);
     if npc.crazed > 0.0 {
@@ -4036,6 +4172,7 @@ fn smart_tick(npc: &mut Npc, npc_class: &str, me: &Cylinder, new_noises: &mut Ve
 }
 
 /// UpdateReactionLevel: ReactionLevel climbs while anything is up and ebbs otherwise.
+/// uc: ScriptedPawn.UpdateReactionLevel
 fn reaction_level_tick(npc: &mut Npc, dt: f32) {
     // Senses. ReactionLevel climbs while anything is up (UpdateReactionLevel) and the surprise pause on
     // attacking is what it hasn't covered yet; it ebbs over 7 seconds otherwise.
@@ -4076,6 +4213,7 @@ struct ReactCx<'a> {
 
 /// The reaction callbacks in order: disturbances, noises (hear_noises), the player's doings, alarms, bodies,
 /// grenades, animal startles, then bleeding and burning.
+/// uc: ScriptedPawn.UpdateReactionCallbacks
 fn reaction_steps(
     npc: &mut Npc,
     cx: &ReactCx,
@@ -4138,6 +4276,7 @@ fn react_disturbances(npc: &mut Npc, cx: &ReactCx, disturbances: &[(DVec3, crate
 }
 
 /// HandleWeapon / HandleHacking / HandleFutz: the continuous sights of the player's doings.
+/// uc: ScriptedPawn.HandleWeapon, ScriptedPawn.HandleHacking, ScriptedPawn.HandleFutz, ScriptedPawn.WeaponDrawnScore
 fn react_stimuli(npc: &mut Npc, cx: &ReactCx, stim: &crate::reactions::Stimuli, dt: f32) {
     let (lf, now, player_center) = (cx.lf, cx.now, cx.player_center);
     let sees = |center: DVec3, height: f64, check_dir: bool, other: Option<usize>| cx.senses.sees(center, height, check_dir, other);
@@ -4199,6 +4338,7 @@ fn react_stimuli(npc: &mut Npc, cx: &ReactCx, stim: &crate::reactions::Stimuli, 
 
 /// The alarm and potential-enemy timers, then HandleAlarm. Returns whether the pawn is `looking` (idle or seeking
 /// and not stunned, as it was before the alarm), which the carcass check uses too.
+/// uc: ScriptedPawn.HandleAlarm
 fn react_alarms(npc: &mut Npc, cx: &ReactCx, alarms: &crate::alarms::Alarms, dt: f32) -> bool {
     let (my_eye, now) = (cx.my_eye, cx.now);
     let valid_enemy = |npc: &Npc, t: Target| cx.senses.valid_enemy(npc, t);
@@ -4217,14 +4357,16 @@ fn react_alarms(npc: &mut Npc, cx: &ReactCx, alarms: &crate::alarms::Alarms, dt:
     // answer any alarm they hear, whoever set it off. Deviation: not one belonging to an alliance they're at war
     // with (Liberty Island's UNATCO troops would otherwise walk into the NSF's klaxons).
     let any_alarm = crate::smartai::answers_any_alarm(cx.npc_class) && npc.weapon.is_some();
-    if looking && cx.lf.alarm && (npc.react_alarm || npc.fear_alarm || any_alarm) && npc.alarm_timer <= 0.0 {
+    // (AlarmTimer = 120 only keeps a pawn from pushing another alarm button; HandleAlarm itself always answers, and
+    // needs no weapon. Seeking doesn't look for alarms, so a search runs its course first.)
+    if looking && cx.lf.alarm && (npc.react_alarm || npc.fear_alarm || any_alarm) {
         for u in alarms.units.iter().filter(|u| u.active) {
             let d = u.pos.distance(my_eye);
             let r = u.hear_radius();
             if d >= r || (128.0 / 255.0) < npc.hear_threshold {
                 continue;
             }
-            if any_alarm && !(npc.hates(&u.alliance) && !u.alliance.is_empty()) {
+            if any_alarm && npc.alarm_timer <= 0.0 && !(npc.hates(&u.alliance) && !u.alliance.is_empty()) {
                 npc.alarm_timer = 120.0;
                 crate::smartai::alarm_boost(npc, cx.npc_class);
                 // 40%: a post-combat search there (SEEKTYPE_Guess, bSeekPostCombat); else as a sound.
@@ -4247,7 +4389,7 @@ fn react_alarms(npc: &mut Npc, cx: &ReactCx, alarms: &crate::alarms::Alarms, dt:
                 }
             }
             if let Some(t) = u.instigator {
-                if valid_enemy(npc, t) && npc.weapon.is_some() {
+                if valid_enemy(npc, t) {
                     npc.alarm_timer = 120.0;
                     if npc.state == NpcState::Idle {
                         npc.set_seek_location(u.seek, SeekKind::Sound, false);
@@ -4264,6 +4406,7 @@ fn react_alarms(npc: &mut Npc, cx: &ReactCx, alarms: &crate::alarms::Alarms, dt:
 }
 
 /// CheckCarcassPresence (and the Bodies Raise Alarms enhancement).
+/// uc: ScriptedPawn.CheckCarcassPresence, ScriptedPawn.GetCarcassData, ScriptedPawn.AddCarcass
 fn check_carcass(
     npc: &mut Npc,
     cx: &ReactCx,
@@ -4279,6 +4422,7 @@ fn check_carcass(
     // an enemy on sight for 15 s. Unconscious bodies don't count (bEmitCarcass).
     npc.carcass_check -= dt;
     if looking
+        && cx.lf.carcass
         && (npc.hate_carcass || npc.react_carcass || npc.fear_carcass)
         && npc.carcasses_seen.len() < 4
         && npc.carcass_check <= 0.0
@@ -4303,7 +4447,24 @@ fn check_carcass(
             if npc.hate_carcass && !p.killer_alliance.is_empty() {
                 npc.potential_enemy = Some((p.killer_alliance.clone(), 15.0));
             }
-            if npc.state == NpcState::Idle {
+            // The killer: the player, or the nearest pawn of the killer's alliance.
+            let killer = if p.killer_alliance.eq_ignore_ascii_case("Player") || p.killer_alliance.is_empty() {
+                Some(Target::Player)
+            } else {
+                pawns
+                    .iter()
+                    .filter(|k| !k.dead && k.alliance.eq_ignore_ascii_case(&p.killer_alliance))
+                    .min_by(|a, b| a.pos.distance(me.center).total_cmp(&b.pos.distance(me.center)))
+                    .map(|k| Target::Pawn(k.blocker))
+            };
+            if npc.fear_carcass {
+                npc.fear.increase(2.0, 0.0);
+            }
+            let flee = npc.fear_carcass && npc.fear.fearful() && !killer.is_some_and(|k| cx.senses.valid_enemy(npc, k));
+            if flee {
+                // SetEnemy(killer, , true); GotoState('Fleeing').
+                npc.flee_from(killer.unwrap_or(Target::Player), p.pos, cx.now, true);
+            } else if npc.state == NpcState::Idle {
                 npc.set_seek_location(p.pos, SeekKind::Carcass, false);
                 npc.enter_seeking();
             } else {
@@ -4337,6 +4498,7 @@ fn check_carcass(
 
 /// ReactToProjectiles: a live grenade in view. If whoever threw it is an enemy, fight them; otherwise
 /// (bAvoidHarm) get away from it (AvoidingProjectiles).
+/// uc: ScriptedPawn.ReactToProjectiles, ScriptedPawn.HandleProjectiles, ScriptedPawn.IsProjectileDangerous, ScriptedPawn.GetProjectileList
 fn react_projectiles(npc: &mut Npc, cx: &ReactCx, danger: &[(DVec3, f64, Option<usize>)]) {
     let (blockers, me, now, player_center) = (cx.blockers, cx.me, cx.now, cx.player_center);
     if (npc.react_projectiles || npc.avoid_harm)
@@ -4376,6 +4538,7 @@ fn react_projectiles(npc: &mut Npc, cx: &ReactCx, danger: &[(DVec3, f64, Option<
 }
 
 /// Cleaner bots' spots for the blood wiping, animals startled by pawns (startle_check), rat squeaks.
+/// uc: Animal.Wandering.Tick, Rat.Tick, CleanerBot.Tick
 fn animal_tick(npc: &mut Npc, cx: &ReactCx, player_vel: DVec3, dt: f32) {
     let (lvl, me) = (cx.lvl, cx.me);
     if npc.cleaner && npc.state != NpcState::Dead {
@@ -4408,6 +4571,7 @@ fn animal_tick(npc: &mut Npc, cx: &ReactCx, player_vel: DVec3, dt: f32) {
 }
 
 /// Bleeding (ScriptedPawn.Tick): blood drops while bleedRate lasts.
+/// uc: ScriptedPawn.Tick, ScriptedPawn.SpurtBlood
 fn bleed_tick(npc: &mut Npc, me: &Cylinder, drips: &mut crate::effects::BloodDrips, dt: f32) {
     // Bleeding (ScriptedPawn.Tick): drops every ((1 - rate) + 0.1) / clamp(speed / 512, 0.05, 1) seconds.
     if npc.bleed_rate > 0.0 && npc.can_bleed {
@@ -4428,6 +4592,7 @@ fn bleed_tick(npc: &mut Npc, me: &Cylinder, drips: &mut crate::effects::BloodDri
 }
 
 /// Burning (ScriptedPawn.Tick / Timer UpdateFire): fire damage, going out, and state Burning.
+/// uc: ScriptedPawn.UpdateFire, ScriptedPawn.ExtinguishFire, ScriptedPawn.ZoneChange, ScriptedPawn.Timer
 fn burn_tick(
     npc: &mut Npc,
     lvl: &dx_level::Level,
@@ -4487,6 +4652,7 @@ fn burn_tick(
 /// The pawn's state code for this frame: the passive states' timers (TakingHit, RubbingEyes, Stunned, Surprised),
 /// orders or a conversation when Idle, Seeking, and the Burning / Fleeing / Alerting / Attacking states.
 /// Returns (wish, running, firing).
+/// uc: ScriptedPawn.TakingHit:Begin, ScriptedPawn.RubbingEyes:RubEyes, ScriptedPawn.Stunned:Begin, ScriptedPawn.Attacking:Surprise, ScriptedPawn.Seeking.Tick, ScriptedPawn.Conversation:Begin
 fn act_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx, con_look: Option<Option<DVec3>>) -> (DVec3, bool, bool) {
     let (lvl, me, my_eye, player_center, now, dt) = (cx.lvl, cx.me, cx.my_eye, cx.player_center, cx.now, cx.dt);
     let mut wish = DVec3::ZERO;
@@ -4652,6 +4818,7 @@ fn service_pause_step(npc: &mut Npc, an: &mut Animated, lvl: &dx_level::Level, m
 
 /// AvoidingProjectiles: run clear of a live grenade first. Returns the wish (running, not firing) while the pawn
 /// is running from one.
+/// uc: ScriptedPawn.AvoidingProjectiles:RunAway, ScriptedPawn.AvoidingPawn:Avoid
 fn avoid_projectiles_step(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, dt: f32) -> Option<DVec3> {
     let mut out = None;
     if npc.avoiding > 0.0 {
@@ -4694,6 +4861,7 @@ fn avoid_projectiles_step(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, d
 }
 
 /// What the state leaves behind: no crouch outside Attacking, holstering when idle, a stale seek dropped.
+/// uc: ScriptedPawn.SetupWeapon
 fn state_cleanup(npc: &mut Npc) {
     if npc.state != NpcState::Attacking {
         npc.crouching = false;
@@ -4753,6 +4921,7 @@ fn pawn_logs(
 }
 
 /// StartCrouch / EndCrouch: the collision height follows the crouch.
+/// uc: ScriptedPawn.Attacking.StartCrouch, ScriptedPawn.Attacking.EndCrouch, ScriptedPawn.SetBasedPawnSize, ScriptedPawn.ResetBasedPawnSize, ScriptedPawn.GetCrouchHeight
 fn crouch_resize(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, blockers: &mut Blockers) {
     // StartCrouch / EndCrouch: SetBasedPawnSize keeps the feet where they are, so the centre moves by the change
     // in height; standing back up needs headroom.
@@ -4790,6 +4959,7 @@ fn crouch_resize(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, blockers
 }
 
 /// The move's tuning this frame: walking pace for orders, full speed in combat, a limp on crippled legs.
+/// uc: ScriptedPawn.GetWalkingSpeed
 fn move_params(npc: &Npc, running: bool) -> MoveParams {
     let mut params = npc.params.clone();
     if !running {
@@ -4881,6 +5051,7 @@ fn tick_body(
 
 /// After the move: HitWall -> CheckOpenDoor, the stall watchdog, and facing the way we walk. Returns the speed
 /// the animation goes by (ground actually covered).
+/// uc: ScriptedPawn.HitWall
 #[allow(clippy::too_many_arguments)]
 fn after_move(
     npc: &mut Npc,
@@ -4989,6 +5160,7 @@ fn nav_log(npc: &Npc, lvl: &dx_level::Level, test_clock: f32, dt: f32, moved: DV
 }
 
 /// The pawn's animation for its state and movement (the Play* / TweenTo* functions).
+/// uc: ScriptedPawn.PlayWalking, ScriptedPawn.PlayRunning, ScriptedPawn.PlayRunningAndFiring, ScriptedPawn.PlayWaiting, ScriptedPawn.PlaySitting, ScriptedPawn.PlayCowering, ScriptedPawn.PlayPanicRunning, ScriptedPawn.PlayStunned, ScriptedPawn.PlayRubbingEyes, ScriptedPawn.PlayReload, ScriptedPawn.TweenToWalking, ScriptedPawn.TweenToRunning
 #[allow(clippy::too_many_arguments)]
 fn animate_pawn(
     npc: &mut Npc,
@@ -5069,6 +5241,7 @@ fn animate_pawn(
 
 /// Whether a pawn in a fight is moving more across than toward / away from the way it faces (it faces its enemy
 /// while strafing).
+/// uc: ScriptedPawn.PlayRunningAndFiring
 fn strafing_sideways(npc: &Npc) -> bool {
     let Some(b) = npc.body.as_ref() else { return false };
     let v = DVec3::new(b.velocity.x, b.velocity.y, 0.0).normalize_or_zero();
@@ -5076,6 +5249,7 @@ fn strafing_sideways(npc: &Npc) -> bool {
 }
 
 /// PlayShoot / TweenToShoot: once per shot, and the aim held (the Shoot sequence's first frame) between shots.
+/// uc: ScriptedPawn.PlayShoot, ScriptedPawn.TweenToShoot, ScriptedPawn.PlayAttack, ScriptedPawn.TweenToAttack, ScriptedPawn.PlayCrouchShoot, ScriptedPawn.TweenToCrouchShoot
 fn shoot_anim(npc: &mut Npc, an: &mut Animated, lvl: &dx_level::Level, melee_w: bool, two: bool) {
     // In a fight the pawn never drops back to its idle pose: PlayShoot once per shot, and between shots it
     // holds the aim (TweenToShoot: the Shoot sequence's first frame).
@@ -5121,6 +5295,7 @@ fn shoot_anim(npc: &mut Npc, an: &mut Animated, lvl: &dx_level::Level, melee_w: 
 }
 
 /// Standing about: the breathing idle, and a speaking pawn's gestures (LoopBaseConvoAnim).
+/// uc: ScriptedPawn.LoopBaseConvoAnim, ScriptedPawn.PlayWaiting
 fn idle_anim(npc: &mut Npc, an: &mut Animated, level: &LevelRes, two: bool, dt: f32) {
     let lvl = &level.0;
     // LoopBaseConvoAnim: a speaking pawn gestures now and then (every 2.5 s, 30%), at 0.35 rate.
@@ -5172,6 +5347,7 @@ fn idle_anim(npc: &mut Npc, an: &mut Animated, level: &LevelRes, two: bool, dt: 
 }
 
 /// Lazy setup on the pawn's first frame: weapon from InitialInventory, ammo, seat, the walking body once landed.
+/// uc: ScriptedPawn.InitializeInventory, ScriptedPawn.AddInitialInventory, ScriptedPawn.SetupWeapon
 fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut RuntimeAssets, blockers: &mut Blockers) {
     if !npc.inited {
         npc.inited = true;
@@ -5200,7 +5376,8 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
                 if class.starts_with("Weapon") && !npc.arsenal.iter().any(|w| w.class == class)
                 {
                     let d = assets.classes.defaults(class);
-                    if let Some(w) = weapon_stats(class, &d) {
+                    if let Some(mut w) = weapon_stats(class, &d) {
+                        w.fill_projectile(&mut assets.classes);
                         npc.arsenal.push(std::sync::Arc::new(w));
                     }
                 }
@@ -5222,10 +5399,7 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
         }
         // SetupWeapon: the first weapon given is the one drawn until a fight picks the best.
         if let Some(w) = npc.arsenal.first().cloned() {
-            let left = npc
-                .ammo_class_for(&w)
-                .map(|a| npc.ammo_count(a))
-                .unwrap_or(i32::MAX);
+            let left = if npc_finite_ammo() { npc.ammo_class_for(&w).map(|a| npc.ammo_count(a)).unwrap_or(i32::MAX) } else { i32::MAX };
             npc.loaded = if w.reload_count == 0 {
                 1
             } else {
@@ -5252,6 +5426,7 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
 
 /// Every 0.1 s with a weapon: CheckEnemyPresence (sight of enemies, the readiness to attack, CheckCycle) and the
 /// surprise / seeking that follows.
+/// uc: ScriptedPawn.CheckEnemyPresence, ScriptedPawn.CheckCycle, ScriptedPawn.HandleSighting, ScriptedPawn.UpdateActorVisibility, ScriptedPawn.ComputeActorVisibility, ScriptedPawn.Attacking.Tick, ScriptedPawn.Fleeing.Tick
 fn sight_check(npc: &mut Npc, cx: &SightCx) {
     let SightCx { senses, blockers, ph, player, plight, me, my_eye, now, npc_class, player_center, check_other, check_player, stunned_now } = *cx;
     let pawns = senses.pawns;
@@ -5430,6 +5605,7 @@ fn net_body_vis(npc: &Npc, id: u8, dist: f64) -> Option<f32> {
 }
 
 /// Hearing (ScriptedPawn's HearNoise / HandleLoudNoise): what this pawn makes of the noises heard since last frame.
+/// uc: ScriptedPawn.HandleShot, ScriptedPawn.HandleLoudNoise, ScriptedPawn.HandleDistress, ScriptedPawn.LoudNoiseScore, ScriptedPawn.DistressScore
 fn hear_noises(npc: &mut Npc, cx: &HearCx) {
     let HearCx { senses, lvl, blockers, heard, lf, me, my_eye, now, npc_class, player_center, stunned_now } = *cx;
     let sees = |center: DVec3, height: f64, check_dir: bool, other: Option<usize>| senses.sees(center, height, check_dir, other);
@@ -5486,9 +5662,11 @@ fn hear_noises(npc: &mut Npc, cx: &HearCx) {
                     if !(lf.loud_noise && npc.react_loud) {
                         continue;
                     }
+                    // (HandleLoudNoise needs no weapon.)
                     if let Some(t) = n.instigator {
-                        if valid_enemy(npc, t) && npc.weapon.is_some() {
+                        if valid_enemy(npc, t) {
                             if t == Target::Player
+                                && npc.weapon.is_some()
                                 && matches!(npc.state, NpcState::Idle | NpcState::Seeking)
                                 && n.maker == Some(Target::Player)
                                 && crate::smartai::quick_reflex(npc, npc_class, (player_center - me.center).length(), true)
@@ -5594,6 +5772,7 @@ struct ActCx<'a> {
 
 /// Attacking: the pawn's fight with its target (ScriptedPawn state Attacking: RunToRange / Fire / ContinueFire,
 /// weapon choice, crouching, strafing, melee, reloading, alarms and fleeing on the way).
+/// uc: ScriptedPawn.Attacking.Tick, ScriptedPawn.HasEnemyTimedOut, ScriptedPawn.Attacking.CheckAttack, ScriptedPawn.Attacking:Begin
 fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
     let ActCx { lvl, blockers, hp, .. } = *cx;
     let (player_center, now, me) = (cx.player_center, cx.now, cx.me);
@@ -5639,6 +5818,7 @@ fn attack_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, boo
 
 /// RAISEALARM: the nearest alarm this pawn can reach and wants to sound becomes its errand (state Alerting).
 /// Returns true when there was one.
+/// uc: ScriptedPawn.Alerting.FindTarget, ScriptedPawn.Alerting.PickDestination, ScriptedPawn.Alerting.IsAlarmReady, ScriptedPawn.Alerting:Begin, ScriptedPawn.Alerting:Alert
 fn run_for_alarm(npc: &mut Npc, alarms: &mut crate::alarms::Alarms, me: Cylinder) -> bool {
     let me_b = npc.blocker;
     let al = npc.alliances.clone();
@@ -5654,6 +5834,7 @@ fn run_for_alarm(npc: &mut Npc, alarms: &mut crate::alarms::Alarms, me: Cylinder
 
 /// HandleEnemy for a pawn that can't fight on: drop the gun if an arm is gone, then run (an alarm first with
 /// RAISEALARM_BeforeFleeing).
+/// uc: ScriptedPawn.Attacking.CheckAttack, ScriptedPawn.DropWeapon
 fn attack_disarmed(npc: &mut Npc, cx: &mut ActCx) {
     let (lvl, me) = (cx.lvl, cx.me);
     // HandleEnemy: drop the gun if an arm is gone (ShouldDropWeapon), then run if badly hurt
@@ -5696,10 +5877,14 @@ struct Engage {
     melee: bool,
     /// The range to hold: melee weapons close right in, guns hold off at a fraction of their range.
     accurate: f64,
+    /// Classic pawns (attack_classic): AICanShoot(enemy, true, ...) this frame - where to aim when it's Some.
+    classic: bool,
+    clear: Option<DVec3>,
 }
 
 /// Attacking with an enemy in mind: weapon choice, crouching, closing in, the RunToRange / Fire labels, the
 /// Karkian's ram and ContinueFire. Returns (wish, running, firing).
+/// uc: ScriptedPawn.Attacking:RunToRange, ScriptedPawn.Attacking:Fire
 fn attack_engage(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bool, bool) {
     let ActCx { lvl, blockers, npc_class, .. } = *cx;
     let (player_center, now, dt, me) = (cx.player_center, cx.now, cx.dt, cx.me);
@@ -5737,22 +5922,33 @@ fn attack_engage(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bo
         Some(w) => w.max_range as f64 * 0.4,
         None => 600.0,
     };
-    let e = Engage { target_pos, chase_to, to, dist, seen_recently, react_ok, suppress, melee, accurate };
+    let classic = !crate::smartai::on() && !npc.animal && !env_on!("DXVIEW_OLD_ATTACK");
+    let clear = if classic { ai_can_shoot(npc, cx, true, false) } else { None };
+    let e = Engage { target_pos, chase_to, to, dist, seen_recently, react_ok, suppress, melee, accurate, classic, clear };
     // Smarter AI: a grenade throw under way (or starting) holds everything else.
     if let Some(r) = grenade_step(npc, an, cx, &e, target_is_player) {
         return r;
     }
     attack_crouch(npc, lvl, &me, dt, &e);
-    let smart = smart_combat_move(npc, cx, &e);
-    let Some((wish, running)) = smart.or_else(|| attack_close_in(npc, lvl, &me, dt, &e)) else {
-        return (DVec3::ZERO, false, false);
+    // Classic pawns move by Attacking's state code (attack_classic); Smarter AI keeps its GMDX moves on top of the
+    // old per-frame chase. Animals keep the chase (their tiny steps and bites don't fit ComputeBestFiringPosition's
+    // ranges well).
+    let shoot_playing = npc.anim == "ShootOnce" && an.clip.as_ref().is_some_and(|c| !c.done());
+    let (wish, running) = if e.classic {
+        attack_classic(npc, cx, &e, shoot_playing)
+    } else {
+        let smart = smart_combat_move(npc, cx, &e);
+        let Some((wish, running)) = smart.or_else(|| attack_close_in(npc, lvl, &me, dt, &e)) else {
+            return (DVec3::ZERO, false, false);
+        };
+        // RunToRange's bSmartStrafe roll on each new chase.
+        let chasing = smart.is_none() && npc.route.is_some();
+        if chasing && !npc.smart.chasing {
+            crate::smartai::roll_smart_strafe(npc, now - npc.last_seen);
+        }
+        npc.smart.chasing = chasing;
+        (wish, running)
     };
-    // RunToRange's bSmartStrafe roll on each new chase.
-    let chasing = smart.is_none() && npc.route.is_some();
-    if chasing && !npc.smart.chasing {
-        crate::smartai::roll_smart_strafe(npc, now - npc.last_seen);
-    }
-    npc.smart.chasing = chasing;
     let moving = wish.length_squared() > 1e-6;
     let (wish, running, fire_ok) = attack_phase_step(npc, &me, dt, &e, moving, wish, running);
     karkian_bump(npc, cx);
@@ -5762,6 +5958,7 @@ fn attack_engage(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, bo
 }
 
 /// Every half second (and when the gun runs dry) pick the best weapon for this range (SwitchToBestWeapon).
+/// uc: ScriptedPawn.Attacking.CheckAttack, ScriptedPawn.SwitchToBestWeapon
 fn pick_weapon_for_range(npc: &mut Npc, cx: &ActCx, dist: f64) {
     let (lvl, blockers, player) = (cx.lvl, cx.blockers, cx.player);
     // Every half second (and when the gun runs dry) pick the best weapon for this range.
@@ -5786,6 +5983,7 @@ fn pick_weapon_for_range(npc: &mut Npc, cx: &ActCx, dist: f64) {
 }
 
 /// ShouldCrouch / StartCrouch / EndCrouch in Attacking's Fire label.
+/// uc: ScriptedPawn.Attacking.ShouldCrouch, ScriptedPawn.Attacking:Fire
 fn attack_crouch(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, dt: f32, e: &Engage) {
     let (melee, dist, seen_recently, accurate) = (e.melee, e.dist, e.seen_recently, e.accurate);
     // ShouldCrouch: a ranged weapon, out of the water, the enemy more than 300 away.
@@ -5819,6 +6017,7 @@ fn attack_crouch(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, dt: f32, e
 
 /// RunToRange: close in on the enemy over the path network (held while suppressing or crouched, kept home with
 /// bDefendHome). Returns (wish, running), or None when a stuck melee pawn gives up and flees.
+/// uc: ScriptedPawn.Attacking:RunToRange
 fn attack_close_in(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, dt: f32, e: &Engage) -> Option<(DVec3, bool)> {
     let (chase_to, dist, seen_recently, accurate, melee) = (e.chase_to, e.dist, e.seen_recently, e.accurate, e.melee);
     let (mut wish, mut running) = (DVec3::ZERO, false);
@@ -5886,6 +6085,7 @@ fn attack_close_in(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, dt: f32,
 /// AvoidAccuracy), sprinting sideways (bSprint / SprintRate) - and a picked move under way. Smarter AI adds GMDX's
 /// rules on top: a dash for cover to reload (ours), holding ground (bDefensiveStyle), picks ten times a second
 /// after a shot, GMDX's strafing rule. None = the usual RunToRange (attack_close_in).
+/// uc: ScriptedPawn.ComputeBestFiringPosition
 fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bool)> {
     let (lvl, me, dt) = (cx.lvl, cx.me, cx.dt);
     let reloading = npc.reload_timer > 0.0;
@@ -5970,7 +6170,288 @@ fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bo
         // Classic: one pick per shot (the Fire label's PickDestination after FinishAnim).
         npc.smart.shot_since_move = false;
     }
-    let Some(t) = npc.target else { return None };
+    let pick = firing_position(npc, cx, e, &w, smart)?;
+    let log = env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n));
+    if log && matches!(pick, crate::smartai::FirePos::Fail) {
+        println!("PAWNPICK t={:.2} {}: nowhere to go", cx.now, lvl.actors[npc.actor].name);
+    }
+    let crate::smartai::FirePos::New(dest) = pick else { return None };
+    npc.smart.shot_since_move = false;
+    // RunToRange: EndCrouch.
+    npc.crouching = false;
+    npc.crouch_timer = 0.0;
+    let d = flat(dest - me.center).length();
+    if d < 16.0 {
+        return None;
+    }
+    // ShouldStrafe: the spot must see the enemy (GMDX), and there's a shot from here.
+    let sees_enemy = lvl.collision.trace(e.target_pos, dest + DVec3::new(0.0, 0.0, 16.0), DVec3::ZERO).fraction >= 0.98;
+    let strafe = if smart {
+        npc.can_strafe && crate::smartai::strafe_ok(npc, class, sees_enemy, e.seen_recently, e.dist)
+    } else {
+        // ShouldStrafe: AICanShoot(enemy) from where it stands.
+        npc.can_strafe && e.seen_recently
+    };
+    if strafe && smart {
+        npc.smart.nade_roll = true;
+    }
+    if log {
+        println!(
+            "PAWNMOVE t={:.2} {} from ({:.0},{:.0}) to ({:.0},{:.0}) strafe={strafe} enemy dist {:.0}",
+            cx.now, lvl.actors[npc.actor].name, me.center.x, me.center.y, dest.x, dest.y, e.dist
+        );
+    }
+    npc.smart.repos = Some(crate::smartai::Repos {
+        dest,
+        t: 0.0,
+        max_t: (d / npc.params.ground_speed.max(1.0)) as f32 * 1.5 + 0.4,
+        strafe,
+        cover: false,
+    });
+    npc.route = None;
+    Some((flat(dest - me.center).normalize(), true))
+}
+
+/// What Attacking's PickDestination chose (DEST_*).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Dest {
+    /// DEST_SameLocation.
+    Same,
+    /// DEST_NewLocation: a spot (ComputeBestFiringPosition / AIPickRandomDestination: MoveTo destLoc).
+    Spot(DVec3),
+    /// DEST_NewLocation: the next path node toward the enemy (FindPathToward: MoveToward destPoint).
+    Path,
+    /// DEST_Failure.
+    Failure,
+}
+
+/// uc: ScriptedPawn.Attacking.PickDestination - crouching holds still while CrouchTimer runs; an enemy in the
+/// line of fire gets ComputeBestFiringPosition; else (or when that fails) FindPathToward(enemy) over the path
+/// network, unless that leaves home (bDefendHome); else "so they don't just stand there", AIPickRandomDestination
+/// 60-150 units, biased toward the enemy. A Path answer leaves the route in npc.route.
+fn pick_destination(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Dest {
+    let (lvl, me) = (cx.lvl, cx.me);
+    if npc.target.is_none() {
+        return Dest::Failure;
+    }
+    if npc.crouching && npc.crouch_timer > 0.0 {
+        return Dest::Same;
+    }
+    // AICanShoot(enemy, true, false, 0.025) || ActorReachable(enemy) (a straight walk to it).
+    let can_shoot = e.clear.is_some() || {
+        let goal = match npc.target {
+            Some(Target::Pawn(b)) => cx.blockers.list[b].center,
+            _ => cx.player_center,
+        };
+        goal.distance(me.center) < 1600.0 && clear_line(lvl, me.center, goal, me.radius)
+    };
+    let mut dest = Dest::Failure;
+    if can_shoot {
+        if let Some(w) = npc.weapon.clone() {
+            dest = match firing_position(npc, cx, e, &w, false) {
+                Some(crate::smartai::FirePos::New(p)) => Dest::Spot(p),
+                Some(crate::smartai::FirePos::Same) => Dest::Same,
+                _ => Dest::Failure,
+            };
+        }
+    }
+    if dest == Dest::Failure {
+        // FindPathToward(enemy): the enemy where it really is (Unreal's path search knows), not where it was seen.
+        let goal = match npc.target {
+            Some(Target::Pawn(b)) => cx.blockers.list[b].center,
+            _ => cx.player_center,
+        };
+        let r = plan_route(lvl, me.center, goal, &npc.params, None);
+        let next = r.nodes.first().map(|&n| {
+            let q = lvl.nav.points[n].pos;
+            DVec3::new(q[0], q[1], q[2])
+        });
+        let ok = match next {
+            Some(q) => {
+                let home_ok = !npc.defend_home || is_near_home(lvl, npc, q);
+                // Ours: robots stay within HomeExtent of where the fight began (3zz37).
+                let anchor = npc.combat_anchor.unwrap_or(me.center);
+                let robot_ok = !(npc.emp_hp > 0.0 && !npc.animal) || q.distance(anchor) <= npc.home_extent || q.distance(anchor) <= me.center.distance(anchor);
+                home_ok && robot_ok
+            }
+            None => false,
+        };
+        if ok {
+            npc.atk_nodes = r.nodes.len();
+            npc.route = Some(r);
+            dest = Dest::Path;
+        }
+    }
+    if dest == Dest::Failure {
+        // AIPickRandomDestination(60, 150, enemyDir.Yaw, 0.5, enemyDir.Pitch, 0.5, 2, FRand()*0.4+0.35).
+        let yaw = e.to.y.atan2(e.to.x);
+        for _ in 0..2 {
+            let y = yaw + (crate::sound::frand() as f64 * 2.0 - 1.0) * std::f64::consts::PI * 0.5;
+            let len = 60.0 + 90.0 * crate::sound::frand() as f64;
+            let v = DVec3::new(y.cos(), y.sin(), 0.0);
+            if let Some(p) = direction_reachable_v(lvl, me.center, &npc.params, v, 60.0, len) {
+                if !npc.defend_home || is_near_home(lvl, npc, p) {
+                    dest = Dest::Spot(p);
+                    break;
+                }
+            }
+        }
+    }
+    dest
+}
+
+/// Start the RunToRange leg PickDestination chose (EndCrouch; the strafe is decided as the leg begins:
+/// bCanStrafe && ShouldStrafe = AICanShoot(enemy)). False when there's nowhere to go.
+/// uc: ScriptedPawn.Attacking:RunToRange, ScriptedPawn.ShouldStrafe
+fn begin_leg(npc: &mut Npc, me: &Cylinder, strafe_ok: bool, d: Dest) -> bool {
+    let flat = |v: DVec3| DVec3::new(v.x, v.y, 0.0);
+    match d {
+        Dest::Spot(p) => {
+            let len = flat(p - me.center).length();
+            if len < 16.0 {
+                return false;
+            }
+            npc.smart.repos = Some(crate::smartai::Repos {
+                dest: p,
+                t: 0.0,
+                max_t: (len / npc.params.ground_speed.max(1.0)) as f32 * 1.5 + 0.4,
+                strafe: npc.can_strafe && strafe_ok,
+                cover: false,
+            });
+            npc.atk_chase = false;
+            npc.route = None;
+        }
+        Dest::Path => npc.atk_chase = true,
+        _ => return false,
+    }
+    // RunToRange: EndCrouch; the next stop to fire rolls for a crouch again (the Fire label).
+    npc.crouching = false;
+    npc.crouch_timer = 0.0;
+    npc.crouch_rolled = false;
+    true
+}
+
+/// uc: ScriptedPawn.Attacking:RunToRange / Attacking:Fire / Attacking:ContinueFire / Attacking:ContinueAttack - where
+/// a classic pawn goes in a fight, in the state code's order:
+/// - RunToRange: `while (PickDestination() == DEST_NewLocation)` - each leg (MoveTo / MoveToward) done, CheckAttack and
+///   ask again; anything else falls through to Fire.
+/// - ContinueFire: `while (!ReadyForWeapon())` (the weapon not ready: between shots, reloading) PickDestination every
+///   tick, and anything but DEST_SameLocation goes back to RunToRange - which asks again before it moves.
+/// - after each shot: PickDestination, and DEST_NewLocation means RunToRange (asked again there).
+/// - ContinueAttack (no clear shot): DEST_NewLocation means RunToRange, else Fire.
+///
+/// Returns (wish, running).
+/// uc: ScriptedPawn.Attacking:RunToRange, ScriptedPawn.Attacking:Fire, ScriptedPawn.Attacking:ContinueFire, ScriptedPawn.Attacking:ContinueAttack, ScriptedPawn.Attacking.ReadyForWeapon, ScriptedPawn.Attacking.FireIfClearShot
+fn attack_classic(npc: &mut Npc, cx: &ActCx, e: &Engage, shoot_playing: bool) -> (DVec3, bool) {
+    let (lvl, me, dt) = (cx.lvl, cx.me, cx.dt);
+    let flat = |v: DVec3| DVec3::new(v.x, v.y, 0.0);
+    let log = env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n));
+    // A leg under way.
+    let mut arrived = false;
+    let turning = npc.atk_phase == AtkPhase::TurnFirst;
+    if let Some(r) = npc.smart.repos.as_mut() {
+        // (RunToRange turns to the enemy before it moves: the leg's time starts after that.)
+        if !turning {
+            r.t += dt;
+        }
+        let to = flat(r.dest - me.center);
+        if to.length() < 12.0 || r.t > r.max_t {
+            npc.smart.repos = None;
+            arrived = true;
+        } else {
+            return (to.normalize(), true);
+        }
+    } else if npc.atk_chase {
+        match npc.route.as_mut() {
+            Some(r) if r.age < 3.0 && r.nodes.len() >= npc.atk_nodes && !(r.nodes.is_empty() && flat(r.goal - me.center).length() < 64.0) => {
+                let wish = follow(lvl, r, me.center, &npc.params, dt);
+                // MoveToward(destPoint): one node, then ask again.
+                if r.nodes.len() < npc.atk_nodes {
+                    npc.atk_chase = false;
+                    arrived = true;
+                } else {
+                    return (wish, true);
+                }
+            }
+            _ => {
+                npc.atk_chase = false;
+                arrived = true;
+            }
+        }
+    }
+    let ask_twice = |npc: &mut Npc| -> bool {
+        // RunToRange's while (PickDestination() == DEST_NewLocation).
+        let d = pick_destination(npc, cx, e);
+        // ShouldStrafe = AICanShoot(enemy, false, false, 0.025, true).
+        let strafe_ok = matches!(d, Dest::Spot(_)) && npc.can_strafe && ai_can_shoot(npc, cx, false, true).is_some();
+        let moved = begin_leg(npc, &me, strafe_ok, d);
+        if log {
+            println!("PAWNPICK t={:.2} {} RunToRange -> {d:?} (dist {:.0})", cx.now, lvl.actors[npc.actor].name, e.dist);
+        }
+        moved
+    };
+    let mut moving = false;
+    if arrived {
+        // The leg's done: CheckAttack, then RunToRange asks again.
+        moving = ask_twice(npc);
+    } else {
+        let reloading = npc.reload_timer > 0.0;
+        let can_shoot = e.clear.is_some();
+        let weapon_ready = npc.shot_timer <= 0.0 && !reloading && !shoot_playing && npc.melee_wait.is_none();
+        npc.atk_tick += dt;
+        let tick = npc.atk_tick >= 1.0 / 30.0;
+        if tick {
+            npc.atk_tick = 0.0;
+        }
+        if npc.smart.shot_since_move && !shoot_playing {
+            // After the shot (FinishAnim): `if (PickDestination() != DEST_NewLocation) ... Goto('ContinueFire')`,
+            // else RunToRange.
+            npc.smart.shot_since_move = false;
+            if matches!(pick_destination(npc, cx, e), Dest::Spot(_) | Dest::Path) {
+                npc.route = None;
+                npc.atk_chase = false;
+                moving = ask_twice(npc);
+            }
+        } else if tick && npc.atk_phase == AtkPhase::Firing && (!weapon_ready && can_shoot) {
+            // ContinueFire: while (!ReadyForWeapon()) { if (PickDestination() != DEST_SameLocation) Goto('RunToRange'); }
+            let d = pick_destination(npc, cx, e);
+            if d != Dest::Same {
+                npc.route = None;
+                npc.atk_chase = false;
+                moving = ask_twice(npc);
+            }
+        } else if tick && matches!(npc.atk_phase, AtkPhase::Firing) && !can_shoot {
+            // ReadyForWeapon is true with no shot to take: FireIfClearShot fails -> ContinueAttack:
+            // DEST_NewLocation -> RunToRange (which asks again), else Fire.
+            if matches!(pick_destination(npc, cx, e), Dest::Spot(_) | Dest::Path) {
+                npc.route = None;
+                npc.atk_chase = false;
+                moving = ask_twice(npc);
+            } else {
+                npc.atk_phase = AtkPhase::Settle(0.15);
+            }
+        }
+    }
+    if !moving {
+        return (DVec3::ZERO, false);
+    }
+    // The first step of the new leg.
+    if let Some(r) = npc.smart.repos.as_ref() {
+        return (flat(r.dest - me.center).normalize_or_zero(), true);
+    }
+    if let Some(r) = npc.route.as_mut() {
+        return (follow(lvl, r, me.center, &npc.params, dt), true);
+    }
+    (DVec3::ZERO, false)
+}
+
+/// ScriptedPawn.ComputeBestFiringPosition for the pawn's enemy and weapon (uc: ScriptedPawn.ComputeBestFiringPosition;
+/// the numbers are in smartai::best_firing_position). `smart` = Smarter AI's GMDX additions. None = no enemy.
+fn firing_position(npc: &Npc, cx: &ActCx, e: &Engage, w: &crate::weapons::WeaponStats, smart: bool) -> Option<crate::smartai::FirePos> {
+    let (lvl, me) = (cx.lvl, cx.me);
+    let reloading = npc.reload_timer > 0.0;
+    let flat = |v: DVec3| DVec3::new(v.x, v.y, 0.0);
+    let t = npc.target?;
     let (enemy_radius, enemy_yaw, enemy_is_player, enemy_armed, enemy_max) = match t {
         Target::Player => {
             let held = crate::perks::in_hand();
@@ -6031,46 +6512,7 @@ fn smart_combat_move(npc: &mut Npc, cx: &ActCx, e: &Engage) -> Option<(DVec3, bo
         }
         None
     };
-    let pick = crate::smartai::best_firing_position(&props, &input, &mut rand, &mut try_loc, &mut random_dest);
-    let log = env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n));
-    if log && matches!(pick, crate::smartai::FirePos::Fail) {
-        println!("PAWNPICK t={:.2} {}: nowhere to go", cx.now, lvl.actors[npc.actor].name);
-    }
-    let crate::smartai::FirePos::New(dest) = pick else { return None };
-    npc.smart.shot_since_move = false;
-    // RunToRange: EndCrouch.
-    npc.crouching = false;
-    npc.crouch_timer = 0.0;
-    let d = flat(dest - me.center).length();
-    if d < 16.0 {
-        return None;
-    }
-    // ShouldStrafe: the spot must see the enemy (GMDX), and there's a shot from here.
-    let sees_enemy = lvl.collision.trace(e.target_pos, dest + DVec3::new(0.0, 0.0, 16.0), DVec3::ZERO).fraction >= 0.98;
-    let strafe = if smart {
-        npc.can_strafe && crate::smartai::strafe_ok(npc, class, sees_enemy, e.seen_recently, e.dist)
-    } else {
-        // ShouldStrafe: AICanShoot(enemy) from where it stands.
-        npc.can_strafe && e.seen_recently
-    };
-    if strafe && smart {
-        npc.smart.nade_roll = true;
-    }
-    if log {
-        println!(
-            "PAWNMOVE t={:.2} {} from ({:.0},{:.0}) to ({:.0},{:.0}) strafe={strafe} enemy dist {:.0}",
-            cx.now, lvl.actors[npc.actor].name, me.center.x, me.center.y, dest.x, dest.y, e.dist
-        );
-    }
-    npc.smart.repos = Some(crate::smartai::Repos {
-        dest,
-        t: 0.0,
-        max_t: (d / npc.params.ground_speed.max(1.0)) as f32 * 1.5 + 0.4,
-        strafe,
-        cover: false,
-    });
-    npc.route = None;
-    Some((flat(dest - me.center).normalize(), true))
+    Some(crate::smartai::best_firing_position(&props, &input, &mut rand, &mut try_loc, &mut random_dest))
 }
 
 /// Ours (Smarter AI): the nearest spot within a second and a half's run that the enemy can't see (its eyes to our
@@ -6227,6 +6669,7 @@ fn check_nade_throw(npc: &Npc, cx: &ActCx, e: &Engage) -> Option<DVec3> {
 }
 
 /// Attacking's labels (atk_phase) and facing: turn first, settle, fire. Returns (wish, running, fire_ok).
+/// uc: ScriptedPawn.Attacking.Tick, ScriptedPawn.Attacking:RunToRange, ScriptedPawn.Attacking:Fire
 fn attack_phase_step(
     npc: &mut Npc,
     me: &Cylinder,
@@ -6293,6 +6736,7 @@ fn attack_phase_step(
 }
 
 /// Karkian.Bump: the ram into the player.
+/// uc: Karkian.Bump
 fn karkian_bump(npc: &mut Npc, cx: &mut ActCx) {
     let (lvl, player) = (cx.lvl, cx.player);
     let (player_center, player_yaw, me) = (cx.player_center, cx.player_yaw, cx.me);
@@ -6334,6 +6778,7 @@ fn karkian_bump(npc: &mut Npc, cx: &mut ActCx) {
 }
 
 /// ContinueFire: the shot timer, the reload running out, else a frame of fire_weapon.
+/// uc: ScriptedPawn.Attacking:ContinueFire, ScriptedPawn.Reloading, ScriptedPawn.DoneReloading, ScriptedPawn.IsWeaponReloading
 fn continue_fire(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx, e: &Engage, fire_ok: bool, moving: bool) {
     let (dt, me) = (cx.dt, cx.me);
     npc.shot_timer -= dt;
@@ -6349,7 +6794,7 @@ fn continue_fire(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx, e: &Engage, f
             {
                 crate::sound::play(&snd, me.center, 1.0, 1024.0, 1.0);
             }
-            let left = npc.weapon_ammo().unwrap_or(i32::MAX);
+            let left = if npc_finite_ammo() { npc.weapon_ammo().unwrap_or(i32::MAX) } else { i32::MAX };
             npc.loaded = npc
                 .weapon
                 .as_ref()
@@ -6357,13 +6802,14 @@ fn continue_fire(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx, e: &Engage, f
                 .unwrap_or(1);
         }
     } else if let Some(w) = npc.weapon.clone() {
-        let Engage { target_pos, dist, melee, react_ok, suppress, seen_recently, .. } = *e;
-        fire_weapon(npc, an, &w, cx, FireArgs { target_pos, dist, fire_ok, shoot_playing, melee, react_ok, suppress, seen_recently, moving });
+        let Engage { target_pos, dist, melee, react_ok, suppress, seen_recently, classic, clear, .. } = *e;
+        fire_weapon(npc, an, &w, cx, FireArgs { target_pos, dist, fire_ok, shoot_playing, melee, react_ok, suppress, seen_recently, moving, classic, clear });
     }
 }
 
 /// Animal.Wandering.Tick / FrightenedByPawn: every 0.5 s, look for a big pawn within 500 heading this way
 /// (ShouldBeStartled) and keep out of its path (AvoidingPawn: ~100 units away from where it's going).
+/// uc: Animal.FrightenedByPawn, Animal.ShouldBeStartled, Rat.ShouldBeStartled, CleanerBot.ShouldBeStartled, CleanerBot.FrightenedByPawn, Animal.FleeFromPawn, ScriptedPawn.AvoidingPawn.PickDestination, ScriptedPawn.AvoidingPawn:Avoid
 fn startle_check(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, pawns: &[Snap], player: Option<(DVec3, DVec3)>, dt: f32) {
     npc.startle_timer += dt;
     if npc.startle_timer <= 0.5 {
@@ -6431,6 +6877,7 @@ fn startle_check(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, pawns: &[S
 /// State OpeningDoor: back off out of the door's swing (StrafeTo(destLoc)), frob it (before backing up when it
 /// doesn't encroach, after when it does), then wait for it to finish opening (StopWaiting) or 5 s. Returns the move
 /// (wish, running) while it has one.
+/// uc: ScriptedPawn.OpeningDoor:BeginHitNormal, ScriptedPawn.OpeningDoor:DoorOpened, ScriptedPawn.OpeningDoor.StopWaiting
 fn door_wait_step(npc: &mut Npc, lvl: &dx_level::Level, mv: &Movers, dt: f32, deco_at: DVec3) -> Option<(DVec3, bool)> {
     let here = npc.body.as_ref().map_or(deco_at, |b| b.location);
     let dw = npc.door.as_mut()?;
@@ -6460,6 +6907,7 @@ fn door_wait_step(npc: &mut Npc, lvl: &dx_level::Level, mv: &Movers, dt: f32, de
 /// HitWall -> CheckOpenDoor: walking into a mover. Glass that isn't a door gets broken (TakeDamage 200); a door (more
 /// than one key and bIsDoor) is opened - by its button if a decoration triggers it, else by Frob, which lets any
 /// pawn but the player through any door, locked or not.
+/// uc: ScriptedPawn.CheckOpenDoor, ScriptedPawn.OpeningDoor.DoorEncroaches
 fn check_open_door(npc: &mut Npc, lvl: &dx_level::Level, mv: &Movers, moved: DVec3, wish: DVec3) {
     let dir = DVec3::new(wish.x, wish.y, 0.0).normalize_or_zero();
     let ext = DVec3::new(npc.params.radius - 1.0, npc.params.radius - 1.0, npc.params.height - 1.0);
@@ -6516,6 +6964,7 @@ fn check_open_door(npc: &mut Npc, lvl: &dx_level::Level, mv: &Movers, moved: DVe
 
 /// OrdersTrigger / AllianceTrigger / mission-script orders for this pawn (by Tag, class or BindName); orders for a
 /// pawn in a conversation wait (`busy_tags`).
+/// uc: ScriptedPawn.SetOrders, ScriptedPawn.ChangeAlly, ScriptedPawn.SetAlliance
 fn apply_pawn_orders(
     npc: &mut Npc,
     lvl: &dx_level::Level,
@@ -6587,10 +7036,15 @@ struct FireArgs {
     suppress: bool,
     seen_recently: bool,
     moving: bool,
+    /// Classic pawns fire only with a clear shot (FireIfClearShot: AICanShoot(enemy, true, true, 0.025)) - at an
+    /// enemy out of sight too, while it hasn't timed out - and aim projectiles at the led spot.
+    classic: bool,
+    clear: Option<DVec3>,
 }
 
 /// Attacking.Fire / ContinueFire: one frame of shooting at the target with weapon `w` (shot timing with the Shoot
 /// animation, reloading, ammo, melee blows, projectiles, traced shots, what they hit).
+/// uc: ScriptedPawn.Attacking.FireIfClearShot, ScriptedPawn.AdjustAim
 fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats, cx: &mut ActCx, f: FireArgs) {
     let in_reach = !f.melee || f.dist <= w.max_range as f64 + cx.me.radius;
     let has_ammo = npc.weapon_ammo().is_none_or(|n| n > 0);
@@ -6604,7 +7058,8 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
             strike_now = in_reach;
         }
     }
-    let ready = (f.seen_recently || (f.suppress && !f.melee))
+    let sighted = if f.classic { f.clear.is_some() } else { f.seen_recently || (f.suppress && !f.melee) };
+    let ready = sighted
         && (f.react_ok || f.suppress)
         && f.fire_ok
         && in_reach
@@ -6634,7 +7089,11 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
     }
     use_shot_ammo(npc, w, cx.me.center);
     // Aim at the target's chest with weapon + pawn inaccuracy.
-    let aim_at = f.target_pos + DVec3::new(0.0, 0.0, 10.0);
+    let aim_at = match f.clear {
+        // A projectile goes where the target will be (ComputeTargetLead).
+        Some(p) if f.classic && !w.instant => p,
+        _ => f.target_pos + DVec3::new(0.0, 0.0, 10.0),
+    };
     let fwd = (aim_at - cx.my_eye).normalize_or_zero();
     let player_mod = match npc.target {
         Some(Target::Player) => crate::smartai::accuracy_mod(cx.player.body.velocity, cx.player.body.physics == Physics::Falling, &w.class),
@@ -6672,6 +7131,7 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
 
 /// The start of a shot or swing (Fire): shot timer, fire sound, AIFireDelay; a melee weapon only starts its swing
 /// (the blow waits for the Attack animation's notify). False when nothing more happens this frame.
+/// uc: ScriptedPawn.Attacking.FireIfClearShot, ScriptedPawn.HandToHandAttack
 fn begin_shot(npc: &mut Npc, an: &Animated, w: &crate::weapons::WeaponStats, cx: &ActCx, moving: bool) -> bool {
     let lvl = cx.lvl;
     npc.shot_timer = w.shot_time.max(0.1);
@@ -6705,20 +7165,20 @@ fn begin_shot(npc: &mut Npc, an: &Animated, w: &crate::weapons::WeaponStats, cx:
     false
 }
 
-/// A shot's ammo and the reload it may start. NPC ammo (user decision 2026-10-12): pawns never run dry and only the
-/// mini-crossbow (and any ReloadCount 1 weapon) reloads, every ReloadCount darts; the NPCFiniteAmmo setting /
-/// DXVIEW_NPC_FINITE_AMMO=1 restores the script's behaviour (UseAmmo per shot, ReloadAmmo every ClipCount shots).
+/// A shot's ammo and the reload it may start (uc: DeusExWeapon.Fire / ReloadAmmo): every weapon with a clip reloads
+/// every ReloadCount shots, as the script does - the reload pause is when Attacking's ContinueFire keeps asking
+/// PickDestination and a pawn moves (#48). NPC ammo (user decision 2026-10-12): pawns never run dry unless the
+/// NPCFiniteAmmo setting / DXVIEW_NPC_FINITE_AMMO=1 (UseAmmo per shot).
 fn use_shot_ammo(npc: &mut Npc, w: &crate::weapons::WeaponStats, at: DVec3) {
     let finite = npc_finite_ammo();
-    let reloads = finite || w.reload_count == 1 || w.class == "WeaponMiniCrossbow";
-    if w.reload_count == 0 || !reloads {
+    if w.reload_count == 0 || w.hand_to_hand {
         return;
     }
     if finite {
         npc.use_ammo();
     }
     npc.loaded = npc.loaded.saturating_sub(1);
-    if npc.weapon_ammo() == Some(0) {
+    if finite && npc.weapon_ammo() == Some(0) {
         // Out of ammo: switch to something else (a knife) straight away.
         npc.switch_check = 0.0;
     } else if npc.loaded == 0 {
@@ -6728,6 +7188,187 @@ fn use_shot_ammo(npc: &mut Npc, w: &crate::weapons::WeaponStats, at: DVec3) {
             crate::sound::play(snd, at, 1.0, 1024.0, 1.0);
         }
     }
+}
+
+/// ComputeTargetLead: where a projectile of `speed` fired from `from` meets a target at `pos` moving at `vel` (a
+/// falling target's own fall isn't led), within `max_time` seconds.
+/// uc: ScriptedPawn.ComputeTargetLead
+fn compute_target_lead(pos: DVec3, vel: DVec3, falling: bool, from: DVec3, speed: f64, max_time: f64) -> Option<DVec3> {
+    let loc = pos - from;
+    let v = if falling { DVec3::new(vel.x, vel.y, 0.0) } else { vel };
+    let mut a = v.length_squared() - speed * speed;
+    let b = 2.0 * loc.dot(v);
+    let c = loc.length_squared();
+    if a.abs() < 0.000001 {
+        a = 0.000001;
+    }
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let base = -b / (2.0 * a);
+    let range = disc.sqrt() / (2.0 * a);
+    let (mut t1, t2) = (base + range, base - range);
+    if t1 > t2 || t1 < 0.0 {
+        t1 = t2;
+    }
+    if t1 < 0.0 || t1 >= max_time {
+        return None;
+    }
+    // (The script leads by the target's whole velocity here, falling or not.)
+    Some(pos + vel * t1)
+}
+
+/// AISafeToShoot: nothing on the line from `start` to `end` that the pawn mustn't hit - the first pawn met ends the
+/// check (unsafe if friendly), weak decorations are shot through, explosive / invincible / tough ones and solid or
+/// strong movers make it unsafe, and so does the level unless `ignore_level` (instant-hit weapons).
+/// uc: ScriptedPawn.AISafeToShoot
+fn ai_safe_to_shoot(npc: &Npc, cx: &ActCx, start: DVec3, end: DVec3, extent: DVec3, ignore_level: bool) -> bool {
+    let lvl = cx.lvl;
+    let level_f = lvl.collision.trace(start, end, extent).fraction;
+    // What the line meets before the level, nearest first: (fraction, what).
+    enum Met {
+        Pawn(bool),
+        Deco(usize),
+        Mover(usize),
+    }
+    let mut met: Vec<(f64, Met)> = Vec::new();
+    for (i, c) in cx.blockers.list.iter().enumerate() {
+        if i == npc.blocker || c.radius <= 0.0 || c.height <= 0.0 || lvl.players_only.contains(&c.actor) {
+            continue;
+        }
+        let Some(h) = trace_cylinder(c, start, end, extent) else { continue };
+        if h.fraction >= level_f {
+            continue;
+        }
+        if let Some(p) = cx.senses.snap_of(i) {
+            if !p.dead {
+                met.push((h.fraction, Met::Pawn(npc.friendly(&p.alliance))));
+            }
+        } else if cx.blockers.deco.contains_key(&i) {
+            met.push((h.fraction, Met::Deco(c.actor)));
+        }
+    }
+    if !cx.ph.dead {
+        if let Some(h) = trace_cylinder(cx.player_cyl, start, end, extent) {
+            if h.fraction < level_f {
+                met.push((h.fraction, Met::Pawn(npc.friendly("Player"))));
+            }
+        }
+    }
+    if let Some(rts) = cx.world.movers {
+        for (i, (info, rt)) in lvl.movers.iter().zip(rts).enumerate() {
+            if rt.destroyed {
+                continue;
+            }
+            // (A mover reaches at most info.reach from its Location.)
+            let seg = end - start;
+            let t = ((rt.location - start).dot(seg) / seg.length_squared().max(1e-9)).clamp(0.0, 1.0);
+            if (start + seg * t - rt.location).length() > info.reach + extent.length() {
+                continue;
+            }
+            if let Some(h) = crate::movers::trace_mover(info, rt, start, end, extent) {
+                if h.fraction < level_f {
+                    met.push((h.fraction, Met::Mover(i)));
+                }
+            }
+        }
+    }
+    met.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, m) in &met {
+        match *m {
+            Met::Pawn(friendly) => return !friendly,
+            Met::Deco(a) => {
+                let p = &lvl.actors[a].props;
+                let flag = |n: &str| matches!(find(p, n), Some(Value::Bool(true)));
+                if flag("bExplosive")
+                    || flag("bInvincible")
+                    || crate::sound::fprop(p, "HitPoints", 20.0) > 20.0
+                    || crate::sound::fprop(p, "minDamageThreshold", 0.0) > 4.0
+                {
+                    return false;
+                }
+            }
+            Met::Mover(i) => {
+                let (info, rt) = (&lvl.movers[i], &cx.world.movers.unwrap()[i]);
+                let p = &lvl.actors[info.actor].props;
+                let breakable = rt.breakable.unwrap_or(matches!(find(p, "bBreakable"), Some(Value::Bool(true))));
+                return breakable && rt.door_strength <= 0.2 && crate::sound::fprop(p, "minDamageThreshold", 10.0) <= 8.0;
+            }
+        }
+    }
+    level_f >= 1.0 || ignore_level
+}
+
+/// AICanShoot(enemy, bLeadTarget, ...): the weapon can reach the enemy where it really is (or will be: projectiles
+/// lead it, thrown weapons aim 1.5 s ahead at its feet), the level doesn't stand between them (FastTrace, and for
+/// the player a second try at eye height) and nothing unsafe is in the way (AISafeToShoot, three times the
+/// projectile's size for projectiles). Returns the spot to aim at. FireElevation is 0 for every shipped pawn and
+/// readiness (bReadyToFire) is checked by the callers.
+/// uc: ScriptedPawn.AICanShoot, ScriptedPawn.IsThrownWeapon
+fn ai_can_shoot(npc: &Npc, cx: &ActCx, lead: bool, discount_min: bool) -> Option<DVec3> {
+    let w = npc.weapon.as_deref()?;
+    let (pos, vel, radius, height, falling, eye) = match npc.target? {
+        Target::Player => {
+            if crate::computers::player_ignored() || cx.ph.dead {
+                return None;
+            }
+            let b = &cx.player.body;
+            (cx.player_center, b.velocity, cx.player_cyl.radius, cx.player_cyl.height, b.physics == Physics::Falling, Some(cx.player.eye_height))
+        }
+        Target::Pawn(b) => {
+            let c = cx.blockers.list.get(b)?;
+            let p = cx.senses.snap_of(b)?;
+            (c.center, p.vel, c.radius, c.height, !p.on_ground, p.net_player.map(|_| c.height * 0.75))
+        }
+    };
+    if w.reload_count > 0 && npc_finite_ammo() && npc.weapon_ammo() == Some(0) {
+        return None;
+    }
+    let thrown = w.thrown();
+    let (min, _, max) = w.ranges();
+    let min = if discount_min { 0.0 } else { min as f64 };
+    let max = max as f64;
+    if min >= max {
+        return None;
+    }
+    let start = cx.my_eye;
+    let mut end = if lead && !w.instant && w.projectile_speed > 0.0 {
+        if thrown {
+            pos + vel * 1.5
+        } else {
+            compute_target_lead(pos, vel, falling, start, w.projectile_speed as f64, 5.0)?
+        }
+    } else {
+        pos
+    };
+    if thrown {
+        end.z -= height - 5.0;
+    }
+    let dist = (end - cx.me.center).length();
+    if dist < min || dist - radius > max {
+        return None;
+    }
+    if !thrown {
+        let mut clear = !cx.lvl.collision.trace(pos, start, DVec3::ZERO).blocked();
+        if !clear {
+            if let Some(e) = eye {
+                end.z += e;
+                clear = !cx.lvl.collision.trace(pos + DVec3::new(0.0, 0.0, e), start, DVec3::ZERO).blocked();
+            }
+        }
+        if !clear {
+            return None;
+        }
+    }
+    let safe = if w.instant {
+        ai_safe_to_shoot(npc, cx, start, end, DVec3::ZERO, true)
+    } else {
+        let p = w.proj.unwrap_or(crate::weapons::ProjInfo { blast_radius: 0.0, accurate: 0.0, max: 0.0, radius: 0.0, height: 0.0, thrown });
+        let ext = DVec3::new(p.radius as f64, p.radius as f64, p.height as f64) * 3.0;
+        ai_safe_to_shoot(npc, cx, start, end, ext, false)
+    };
+    safe.then_some(end)
 }
 
 /// One traced slug (TraceFire / TraceHitSpawner): what it meets first - a carried crate held as cover, the player,
@@ -6964,6 +7605,7 @@ struct HitCx<'a> {
 
 /// Damage taken since last frame (ScriptedPawn.TakeDamage / HandleDamage and the reaction to it): the hits on this
 /// pawn, applied in order. Returns true when the pawn died (or was knocked out) from them.
+/// uc: ScriptedPawn.TakeDamage, ScriptedPawn.TakeDamageBase, ScriptedPawn.FilterDamageType, ScriptedPawn.GotoDisabledState, Robot.TakeDamageBase, Robot.IgnoreDamageType, Animal.ModifyDamage, Animal.GotoDisabledState, Karkian.FilterDamageType, Greasel.FilterDamageType, Gray.FilterDamageType
 #[allow(clippy::too_many_arguments)]
 fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco, an: &mut Animated, aff: &mut Afflictions, cx: &mut HitCx) -> bool {
     let HitCx { lvl, pawns, .. } = *cx;
@@ -7137,6 +7779,7 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
 
 /// A hit that killed the pawn or knocked it out (ScriptedPawn.Died / SpawnCarcass): self-destructing MIB and robots,
 /// gibbing, the death or knock-out animation, the body, dropped weapons, takedown records and flags.
+/// uc: ScriptedPawn.Died, ScriptedPawn.SpawnCarcass, ScriptedPawn.PlayDying, ScriptedPawn.PlayDyingSound, Robot.Explode, Robot.SpawnCarcass, ScriptedPawn.Dying:Begin, MIB.SpawnCarcass, AnnaNavarre.SpawnCarcass, GuntherHermann.SpawnCarcass
 #[allow(clippy::too_many_arguments)]
 fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damage::PawnHit, knocked_out: bool, fall_back: bool, stunned: bool, center: DVec3, cx: &mut HitCx) {
     let HitCx { lvl, pawns, .. } = *cx;
@@ -7340,7 +7983,22 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         if knocked_out { "knocked out" } else { "killed" },
         h.damage_type
     );
-    // PlayDyingSound: the Die cry, a LoudNoise and a Distress call (friends only answer it if this
+    // PlayDying: no scream when stunned ('Stunned' / 'KnockedOut' / poison): Male- / FemaleUnconscious, and no
+    // noise for anyone to hear.
+    if matches!(h.damage_type, "Stunned" | "KnockedOut" | "Poison" | "PoisonEffect") {
+        let female = matches!(find(&lvl.actors[npc.actor].props, "bIsFemale"), Some(Value::Bool(true)));
+        crate::sound::play_owned(
+            crate::sound::npc_owner(npc.blocker),
+            crate::sound::slot::PAIN,
+            if female { "DeusExSounds.Player.FemaleUnconscious" } else { "DeusExSounds.Player.MaleUnconscious" },
+            Some(center),
+            crate::sound::fprop(&lvl.actors[npc.actor].props, "TransientSoundVolume", 1.0),
+            0.0,
+            crate::sound::random_pitch(),
+        );
+        return;
+    }
+    // PlayDyingSound: the Die cry, a LoudNoise and a Distress call (bEmitDistress; friends only answer it if this
     // pawn had an enemy it had seen, so a silent takedown from behind stays silent).
     if let Some(snd) = crate::sound::prop(&lvl.actors[npc.actor].props, "Die") {
         crate::sound::play_owned(
@@ -7366,18 +8024,21 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         instigator: me,
         kind: NoiseKind::Loud,
     });
-    new_noises.push(Noise {
-        pos: center,
-        volume: 1.0,
-        radius: 800.0,
-        maker: me,
-        instigator: me,
-        kind: NoiseKind::Distress,
-    });
+    if !matches!(find(&lvl.actors[npc.actor].props, "bEmitDistress"), Some(Value::Bool(false))) {
+        new_noises.push(Noise {
+            pos: center,
+            volume: 1.0,
+            radius: 800.0,
+            maker: me,
+            instigator: me,
+            kind: NoiseKind::Distress,
+        });
+    }
 }
 
 /// A hit the pawn lived through: catching fire, bleeding, poison, the pain / stun reaction and what it makes of who
 /// did it (ReactToInjury).
+/// uc: ScriptedPawn.ReactToInjury, ScriptedPawn.GotoDisabledState, ScriptedPawn.TakeHit, ScriptedPawn.PlayTakeHitSound, ScriptedPawn.PlayTakingHit, ScriptedPawn.CatchFire, ScriptedPawn.StartPoison, ScriptedPawn.ShouldReactToInjuryType, ScriptedPawn.Attacking.ReactToInjury, ScriptedPawn.Fleeing.ReactToInjury, ScriptedPawn.Burning.ReactToInjury, ScriptedPawn.RubbingEyes.ReactToInjury, ScriptedPawn.Stunned.ReactToInjury, ScriptedPawn.TakingHit.TakeDamage
 #[allow(clippy::too_many_arguments)]
 fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate::damage::PawnHit, hit: crate::damage::HitLoc, pain: bool, stunned: bool, center: DVec3, cx: &mut HitCx) {
     let HitCx { lvl, pawns, .. } = *cx;
@@ -7466,9 +8127,18 @@ fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate:
         instigator: me,
         kind: NoiseKind::Distress,
     });
-    // RubbingEyes: BlockReactions - no ReactToInjury (no new enemy, no fear, no pain animation),
-    // and TakeDamageBase without bPlayAnim.
-    if !matches!(npc.state, NpcState::RubbingEyes(_)) {
+    // RubbingEyes / Stunned.ReactToInjury: gas and the prod are shrugged off (a second prod doesn't re-stun);
+    // anything else goes to Global.ReactToInjury, whose GotoDisabledState -> TakeHit(HITLOC_None) ends the state
+    // (GotoNextState). Those states and Burning call TakeDamageBase without bPlayAnim: no hit animation.
+    let disabled = matches!(npc.state, NpcState::RubbingEyes(_) | NpcState::Stunned(_));
+    let shrugged = disabled && matches!(h.damage_type, "TearGas" | "HalonGas" | "Stunned");
+    let pain = pain && !disabled && !matches!(npc.state, NpcState::Burning);
+    let stunned = stunned && !disabled;
+    if disabled && !shrugged {
+        npc.state = NpcState::Idle;
+        npc.anim = "";
+    }
+    if !shrugged {
         // ReactToInjury: IncreaseAgitation toward the attacker's alliance (members of the own alliance
         // never count), then SetEnemy only succeeds if that alliance is now hostile. Friendly fire just
         // hurts.
@@ -7523,7 +8193,7 @@ fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate:
                 b.physics = Physics::Falling;
             }
         }
-        if stunned && !npc.hp_body.robot {
+        if stunned && !npc.hp_body.robot && !crate::pawnclass::no_disabled_states(&lvl.actors[npc.actor].class) {
             npc.state = NpcState::Stunned(15.0);
             npc.weapon_drawn = false;
             npc.anim = "";
@@ -7724,6 +8394,7 @@ pub struct HeldModel {
 /// Fleeing.PickDestination: up to three HidePoints the enemy can't see, scored by how directly they lead away
 /// from the enemy (4 - |toEnemy + toPoint|^2) and picked at random weighted by score; failing that, a spot about
 /// 400 units away roughly opposite the enemy that we can get to in a straight line.
+/// uc: ScriptedPawn.Fleeing.PickDestination, Robot.Fleeing.PickDestination, Animal.Fleeing.PickDestination
 fn pick_flee_dest(
     lvl: &dx_level::Level,
     me: DVec3,
@@ -8172,6 +8843,7 @@ fn me_center_of(blockers: &Blockers, b: usize) -> DVec3 {
 
 /// Pawns killed without a death animation (Animal.bPlayDying False): hide the pawn and drop its carcass mesh
 /// (CarcassType's Mesh) where it was.
+/// uc: ScriptedPawn.SpawnCarcass, Animal.PlayDying
 #[allow(clippy::too_many_arguments)]
 pub fn carcass_swap_system(
     mut commands: Commands,
@@ -8262,12 +8934,14 @@ pub fn carcass_swap_system(
 
 /// A new map is going in (loader.rs): this module's state of the map being left.
 /// ScriptedPawn.IsDoor: a DeusExMover with more than one keyframe and bIsDoor.
+/// uc: ScriptedPawn.IsDoor
 fn is_door(lvl: &dx_level::Level, i: usize) -> bool {
     lvl.movers[i].num_keys > 1 && lvl.movers[i].is_door
 }
 
 /// ScriptedPawn.FrobDoor: a decoration whose Event is the door's Tag (its button) triggers every mover with that tag;
 /// otherwise a frobbable door is frobbed, unless another pawn is already waiting on it. False = nothing done.
+/// uc: ScriptedPawn.FrobDoor
 fn frob_door(lvl: &dx_level::Level, mv: &Movers, i: usize, me: usize) -> bool {
     let info = &lvl.movers[i];
     let tag = info.tag.clone();
@@ -8305,6 +8979,7 @@ fn door_cooling(i: usize) -> bool {
 /// OpeningDoor.FindBackupPoint: inside the door's movement area (grown by our radius + 30), back away along the
 /// normal of the door face we walked into until we're out of it (45..700 units) if that way is clear; else stay.
 /// The area here is the circle the door sweeps around its pivot.
+/// uc: ScriptedPawn.OpeningDoor.FindBackupPoint
 fn backup_point(lvl: &dx_level::Level, mv: &Movers, i: usize, at: DVec3, normal: DVec3, radius: f64, height: f64) -> DVec3 {
     let info = &lvl.movers[i];
     let reach = info

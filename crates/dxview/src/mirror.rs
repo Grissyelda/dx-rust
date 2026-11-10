@@ -27,7 +27,7 @@ pub const WORLD_LAYER: usize = 16;
 /// The layers a reflection camera draws: everything for a mirror, the level's surfaces for water.
 fn reflect_layers(water: bool) -> RenderLayers {
     let first = if water { WORLD_LAYER } else { 0 };
-    if crate::skyfollow::enabled() {
+    if crate::skyfollow::enabled() && !env_on!("DXVIEW_MIRROR_NOSKY") {
         RenderLayers::from_layers(&[first, BODY_LAYER, crate::skyfollow::LAYER])
     } else {
         RenderLayers::from_layers(&[first, BODY_LAYER])
@@ -79,6 +79,11 @@ pub struct Plane {
     /// A water surface (reflects only with Modern Water on), and its water materials.
     pub water: bool,
     pub water_mats: Vec<Handle<crate::water::WaterMaterial>>,
+    /// An ordinary (opaque / masked) face lies in the same plane under a mirrored one (the intro's globe-room
+    /// walkway): the reflection is clipped just past the plane so that face isn't seen from behind. Elsewhere it's
+    /// clipped just short of the plane, so the feet of walls and steps standing on the mirror are drawn whole (a
+    /// clip past the plane cut a sliver off them, a dotted line of what lies behind along every step, #45).
+    pub covered: bool,
 }
 
 impl Mirrors {
@@ -225,9 +230,51 @@ pub fn material(
             tris,
             water: false,
             water_mats: Vec::new(),
+            covered: false,
         }),
     }
     h
+}
+
+/// Sets `Plane::covered`: ordinary faces lying in a mirror's plane over its mirrored faces.
+pub fn mark_covered(mirrors: &mut Mirrors, batches: &[dx_level::Batch]) {
+    use dx_level::SurfaceClass as C;
+    for b in batches {
+        if b.mirror.is_some() || b.sky || !matches!(b.class, C::Opaque | C::Masked) {
+            continue;
+        }
+        for t in b.indices.chunks_exact(3) {
+            let (Some(a), Some(c), Some(e)) = (b.positions.get(t[0] as usize), b.positions.get(t[1] as usize), b.positions.get(t[2] as usize)) else {
+                continue;
+            };
+            let (a, c, e) = (Vec3::from(*a), Vec3::from(*c), Vec3::from(*e));
+            let mid = (a + c + e) / 3.0;
+            for pl in mirrors.planes.iter_mut() {
+                if pl.covered || pl.water {
+                    continue;
+                }
+                if [a, c, e].iter().all(|p| (pl.n.dot(*p) - pl.d).abs() < 0.002) {
+                    // Any corner or the middle on a mirrored face.
+                    let on = |p: Vec3| {
+                        pl.tris.iter().any(|t| {
+                            let c0 = (t[1] - t[0]).cross(p - t[0]).dot(pl.n);
+                            let c1 = (t[2] - t[1]).cross(p - t[1]).dot(pl.n);
+                            let c2 = (t[0] - t[2]).cross(p - t[2]).dot(pl.n);
+                            (c0 > 1e-6 && c1 > 1e-6 && c2 > 1e-6) || (c0 < -1e-6 && c1 < -1e-6 && c2 < -1e-6)
+                        })
+                    };
+                    if on(mid) || on((a + mid) * 0.5) || on((c + mid) * 0.5) || on((e + mid) * 0.5) {
+                        pl.covered = true;
+                    }
+                }
+            }
+        }
+    }
+    if env_on!("DXVIEW_MIRRORLOG") {
+        for (i, p) in mirrors.planes.iter().enumerate() {
+            println!("MIRROR plane {i}: n {:?} d {:.3} covered {}", p.n, p.d, p.covered);
+        }
+    }
 }
 
 /// The placeholder reflection image (made once).
@@ -266,6 +313,8 @@ pub fn add_water(mirrors: &mut Mirrors, h: &Handle<crate::water::WaterMaterial>,
             tris: Vec::new(),
             water: true,
             water_mats: vec![h.clone()],
+            // (Water keeps the clip just past its surface.)
+            covered: true,
         }),
     }
 }
@@ -481,7 +530,7 @@ pub fn mirror_system(
             let size = if water {
                 (full / 3).max(UVec2::ONE)
             } else if mirrors.slots[k].plane.is_some() && mirrors.slots[k].plane == nearest {
-                (full * 2 / 3).max(UVec2::ONE)
+                if env_on!("DXVIEW_MIRROR_FULLRES") { full } else { (full * 2 / 3).max(UVec2::ONE) }
             } else {
                 (full / 3).max(UVec2::ONE)
             };
@@ -574,10 +623,11 @@ pub fn mirror_system(
             near_clip_plane: if env_on!("DXVIEW_MIRROR_NOCLIP") {
                 main_proj.near_clip_plane
             } else {
-                // Half a millimetre past the mirror, so faces lying in its plane (the floor around a mirrored patch,
-                // the intro's globe-room walkway) are clipped away for good instead of flickering in and out in
-                // stripes along the clip plane.
-                nv.extend(-(dist + MIRROR_CLIP_EPS))
+                // Half a millimetre past the mirror where an ordinary face lies in its plane under the mirrored one
+                // (the intro's globe-room walkway: clipped away for good instead of flickering in stripes along the
+                // clip plane); elsewhere half a millimetre short of it, so what stands on the mirror is drawn to
+                // its foot (`Plane::covered`).
+                nv.extend(-(dist + if p.covered { MIRROR_CLIP_EPS } else { -MIRROR_CLIP_EPS }))
             },
             // A mirror shows the room it's in: nothing past 60 m behind it is drawn (water reflects the sky line,
             // so keeps the full distance).
