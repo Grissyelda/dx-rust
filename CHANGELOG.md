@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Display settings in the Display menu (November 10)
+- Settings > Display now has Frame Rate Cap, Field of View and Upscaling beside Vertical Sync, and an Advanced...
+  button for Anti-Aliasing, HDR Rendering, Real-Time Shadows, Lean Rendering, Lean Updates, CPU Worker Threads and
+  the FPS Counter. They're the same settings as on the Enhancements list, which still has them too.
+
 ### AI checked against the original, part one (#48, November 10)
 - Every ported piece of the pawn AI now carries a marker naming the original function or state label it follows,
   and `tools/ucaudit/ucaudit.py` lines the original UnrealScript (extracted from your own install) up with the Rust

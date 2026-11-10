@@ -879,6 +879,32 @@ fn split_group(label: &str) -> (&str, &str) {
 }
 
 /// A "Group: Label" item of the Enhancements list.
+/// Ours: the graphics options of the Enhancements list on the Display screen (DISPLAY_EXTRA) and its Advanced
+/// screen (DISPLAY_ADVANCED), so they're found where players look for them. They stay on the Enhancements list too
+/// (same setting, same choice), without the "Group: " prefix here.
+const DISPLAY_EXTRA: [&str; 3] = ["FPSLimit", "FOV", "Upscaling"];
+const DISPLAY_ADVANCED: [&str; 7] =
+    ["AntiAliasing", "HDRRendering", "RealtimeShadows", "LeanRendering", "LeanUpdates", "WorkerThreads", "FPSCounter"];
+
+/// The Enhancements list's choices for these keys, in this order (missing ones - hidden on this platform - left out).
+fn enhancement_picks(keys: &[&str]) -> Vec<Choice> {
+    let en = Enhance::new();
+    keys.iter()
+        .filter_map(|k| en.items.iter().find(|c| c.key == *k))
+        .map(|c| {
+            let mut c = c.clone();
+            if let Some((_, rest)) = c.label.split_once(": ") {
+                c.label = format!("|&{rest}");
+            }
+            c.info_w = c.info_w.max(110);
+            c
+        })
+        .collect()
+}
+
+/// The Display screen's Advanced button (action 23 in its bar).
+const ACT_DISPLAY_ADVANCED: u8 = 23;
+
 fn tag(mut c: Choice, group: &str) -> Choice {
     c.label = format!("{group}: {}", label(&c.label));
     c
@@ -1692,6 +1718,16 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             cut_empty_rows(&mut f, choices.len(), slots);
             Body::Choices { choices }
         }
+        "MenuScreenDisplayAdvanced" => {
+            // Ours, on the Display screen's frame: the performance side of the display options.
+            f = frame(assets, "MenuScreenDisplay");
+            f.class = class.to_string();
+            f.title = "Advanced Display".into();
+            let choices = enhancement_picks(&DISPLAY_ADVANCED);
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, choices.len(), slots);
+            Body::Choices { choices }
+        }
         "MenuScreenDualSense" | "MenuScreenPadOptions" => {
             // Ours, on the Controls screen's frame: features beyond the original (the v2.0 options go here).
             // (The Display screen's frame: room for nine rows.)
@@ -1751,7 +1787,15 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 choices.insert(at, display_mode_choice());
                 let at = choices.iter().position(|c| c.key == "Resolution").map_or(choices.len(), |i| i + 1);
                 choices.insert(at, vsync_choice());
+                // The graphics options from Enhancements: frame rate cap, field of view, upscaling.
+                let at = choices.iter().position(|c| c.key == "VSync").map_or(choices.len(), |i| i + 1);
+                for (i, c) in enhancement_picks(&DISPLAY_EXTRA).into_iter().enumerate() {
+                    choices.insert(at + i, c);
+                }
                 choices.push(hud_scale_choice());
+                // Advanced... (left, after Reset to Defaults): the rest of them.
+                let at = f.actions.iter().rposition(|a| a.0 != 2).map_or(0, |i| i + 1);
+                f.actions.insert(at, (0, ACT_DISPLAY_ADVANCED, "Advanced...".into(), "MenuScreenDisplayAdvanced".into()));
             }
             for c in choices.iter_mut().filter(|c| c.key == "Resolution") {
                 c.info_w = 110;
@@ -2486,6 +2530,12 @@ fn draw_choices(u: &mut Ui<W>, choices: &[Choice], f: &Frame, open_drop: &mut Op
                     let st = if open_drop.map(|d| d.0) == Some(i as u8) { "Pressed" } else { "Normal" };
                     u.draw(&format!("MenuVScrollDownButton_{st}"), cx + 7 + c.info_x + c.info_w - 17, y + 2, 15, 15, Style::Masked, m_col(3));
                 }
+                u.hit(W::ChoiceVal(i as u8), (cx + 7 + c.info_x, y, c.info_w, 19), true);
+            }
+            // Ours: a slider with no room for its bar on this frame (Field of View on the Display screen) is a
+            // value box that steps through its ticks on click, like an enum.
+            ChoiceKind::Slider { .. } if 7 + c.control_x + 177 > f.cw => {
+                info_button(u, cx + 7 + c.info_x, y, c.info_w, &c.value_text(), m_btn(0));
                 u.hit(W::ChoiceVal(i as u8), (cx + 7 + c.info_x, y, c.info_w, 19), true);
             }
             ChoiceKind::Slider { .. } => {
@@ -4805,6 +4855,7 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                         st.mp.hosting = false;
                     }
                 }
+                ACT_DISPLAY_ADVANCED => acts.push(Act::Push(key.clone())),
                 // The Achievements screen's Reset All: asked first.
                 22 => {
                     crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
@@ -6662,6 +6713,7 @@ mod tests {
             "MenuScreenNewGame",
             "MenuScreenOptions",
             "MenuScreenDisplay",
+            "MenuScreenDisplayAdvanced",
             "MenuScreenSound",
             "MenuScreenControls",
             "MenuScreenAdjustColors",
