@@ -209,7 +209,7 @@ pub fn augdisplay_system(
             // ParseLeftClick: fire detonates it.
             if !busy && binds.buttons.just_pressed(MouseButton::Left) {
                 let lv = ds.level_value;
-                booms.0.push(crate::explosion::Boom {
+                booms.0.push(crate::explosion::Boom { world: false,
                     pos: *pos,
                     damage: 5.0 * lv,
                     radius: 8.0 * lv as f64,

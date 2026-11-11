@@ -23,6 +23,9 @@ mod online;
 mod netplay;
 mod nettags;
 mod deathmatch;
+mod classicmp;
+mod matchmode;
+mod mphud;
 mod dmchar;
 mod scoreboard;
 mod queue;
@@ -1064,7 +1067,7 @@ fn add_input_systems(app: &mut App) {
         .init_resource::<keybinds::Bindings>()
         .add_systems(Startup, (gamepad::setup, || dualsense::setup(), || haptics::setup()))
         .add_systems(Update, (touch::draw_system, platform::lifecycle_system, platform::window_log_system))
-        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, scoreboard::scoreboard_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
+        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, scoreboard::scoreboard_system, mphud::mphud_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
         .init_resource::<inventory_screen::InvScreen>()
         .init_resource::<destruct::ItemThrows>()
         .add_systems(

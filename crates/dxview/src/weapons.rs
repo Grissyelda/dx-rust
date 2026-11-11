@@ -102,6 +102,8 @@ pub struct WeaponStats {
     pub ai_max_range: f32,
     /// bFallbackWeapon: only used by pawns when nothing else will do (knives, crowbars).
     pub fallback: bool,
+    /// bUseAsDrawnWeapon: chosen without an enemy too (SwitchToBestWeapon's fallback level 1 otherwise).
+    pub use_as_drawn: bool,
     /// recoilStrength: view kick while the Shoot animation plays.
     pub recoil: f32,
     /// Which weapon mods fit (bCanHaveModBaseAccuracy, ReloadCount, AccurateRange, ReloadTime, RecoilStrength,
@@ -133,6 +135,8 @@ pub struct ProjInfo {
     pub height: f32,
     /// IsThrownWeapon: the projectile is a ThrownProjectile (grenades).
     pub thrown: bool,
+    /// The projectile class's DamageType (WeaponDamageType for projectile weapons).
+    pub damage_type: &'static str,
 }
 
 /// Mods fitted to one of the player's weapons (DeusExWeapon.Mod* travel vars), applied whenever it's drawn.
@@ -262,6 +266,22 @@ impl WeaponStats {
     }
 }
 
+/// The player's held weapon's (min, accurate) range - what SwitchToBestWeapon reads as the enemy's weapon ranges.
+static PLAYER_RANGES: std::sync::Mutex<Option<(f32, f32)>> = std::sync::Mutex::new(None);
+
+fn set_player_ranges(r: Option<(f32, f32)>) {
+    if let Ok(mut g) = PLAYER_RANGES.lock() {
+        if *g != r {
+            *g = r;
+        }
+    }
+}
+
+/// The player's held weapon's (min, accurate) range, None empty-handed.
+pub fn player_ranges() -> Option<(f32, f32)> {
+    PLAYER_RANGES.lock().ok().and_then(|g| *g)
+}
+
 impl WeaponStats {
     /// Reads the projectile class's defaults into `proj` (instant-hit weapons have none).
     pub fn fill_projectile(&mut self, classes: &mut unreal_pkg::classes::ClassDb) {
@@ -280,7 +300,28 @@ impl WeaponStats {
             radius: fp(&d, "CollisionRadius", 0.0),
             height: fp(&d, "CollisionHeight", 0.0),
             thrown: crate::classtree::is_a(&pc, "ThrownProjectile"),
+            damage_type: match d.iter().find(|x| x.name == "DamageType").map(|x| &x.value) {
+                Some(Value::Name(n)) | Some(Value::Str(n)) => crate::util::intern(n),
+                _ => "None",
+            },
         });
+    }
+
+    /// ScriptedPawn's WeaponDamageType: instant-hit = 'Stunned' with a StunDuration, 'Sabot' with sabot shells, else
+    /// 'Shot' (the baton too); a projectile weapon = its projectile's DamageType.
+    /// uc: ScriptedPawn.WeaponDamageType
+    pub fn ai_damage_type(&self, ammo: Option<&str>) -> &'static str {
+        if self.instant {
+            if self.stun {
+                "Stunned"
+            } else if ammo == Some("AmmoSabot") {
+                "Sabot"
+            } else {
+                "Shot"
+            }
+        } else {
+            self.proj.map(|p| p.damage_type).unwrap_or("None")
+        }
     }
 
     /// IsThrownWeapon.
@@ -420,6 +461,7 @@ pub fn weapon_stats(class: &str, p: &[Property]) -> Option<WeaponStats> {
         ai_min_range: fp(p, "AIMinRange", 0.0),
         ai_max_range: fp(p, "AIMaxRange", 0.0),
         fallback: matches!(find(p, "bFallbackWeapon"), Some(Value::Bool(true))),
+        use_as_drawn: !matches!(find(p, "bUseAsDrawnWeapon"), Some(Value::Bool(false))),
         recoil: fp(p, "recoilStrength", 0.0),
         can_mod: [
             "bCanHaveModBaseAccuracy",
@@ -1076,6 +1118,9 @@ pub fn spawn_view_camera(commands: &mut Commands) {
 #[derive(Component)]
 pub struct LockText;
 
+/// The view is zoomed (a scope or binoculars): multiplayer damage reads it (the sniper rifle's mpNoScopeMult).
+pub static ZOOMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A zoomed view (binoculars: 20 degrees), or None.
 #[derive(Resource, Default)]
 pub struct Zoom(pub Option<f32>);
@@ -1090,6 +1135,7 @@ pub fn fov_system(
     mut cams: Query<(&mut Projection, Has<ViewModelCam>), (With<Camera3d>, Without<crate::computers::FeedCam>, Without<crate::scope::ScopeCam>)>,
 ) {
     let _prof = crate::prof::scope("weapons::fov_system");
+    ZOOMED.store(zoom.0.is_some(), std::sync::atomic::Ordering::Relaxed);
     let Some(w) = windows.iter().next() else {
         return;
     };
@@ -1845,8 +1891,8 @@ pub fn select_system(
     ),
 ) {
     let _prof = crate::prof::scope("weapons::select_system");
-    if hacking.keypad.is_some() {
-        return; // digits go to the keypad
+    if hacking.keypad.is_some() || crate::mphud::skills_open() {
+        return; // digits go to the keypad / HUDMultiSkills
     }
     const KEYS: [(KeyCode, usize); 10] = [
         (KeyCode::Digit1, 1),
@@ -2360,7 +2406,7 @@ fn melee_blow(stats: &WeaponStats, cx: &mut ShotCx, eye: DVec3, fw: DVec3, dmg_t
         if let Some(snd) = &stats.snd.misc[0] {
             crate::sound::play_player(snd, 1.0, 1024.0);
         }
-        cx.pawn_hits.push(crate::damage::PawnHit { blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
+        cx.pawn_hits.push(crate::damage::PawnHit { world: false, blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
     }
 }
 
@@ -2396,7 +2442,7 @@ fn melee_hit(stats: &WeaponStats, cx: &mut ShotCx, hit: &imsim_core::movement::H
     if stats.penetrating && !robot {
         cx.blood.push((at - fw, fw));
     }
-    cx.pawn_hits.push(crate::damage::PawnHit {
+    cx.pawn_hits.push(crate::damage::PawnHit { world: false,
         blocker: b,
         damage: base_dmg * crate::perks::piercing_mult(cls, robot),
         damage_type: dmg_type,
@@ -2565,7 +2611,7 @@ fn trace_fire(stats: &WeaponStats, cx: &mut ShotCx, aim: Aim3, acc: f64, scoped:
         }
         // ProcessTraceHit: damage scaled by skill (1 - 2 * skill value); GMDX Hollow Points on animals.
         let dmg = base_dmg * crate::perks::hollow_points_mult(stats.ammo_class.as_deref(), &a.class);
-        cx.pawn_hits.push(crate::damage::PawnHit { blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
+        cx.pawn_hits.push(crate::damage::PawnHit { world: false, blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
     }
     // GMDX Stopping Power (TraceFire bDoExtraSlugDamage): every slug of a shotgun blast into one pawn, and the last does
     // extra. GMDX's 8 slugs get two slugs' worth (+25%); with the original's 5 the last slug does 1 + 0.25 x slugs so
@@ -2605,7 +2651,7 @@ fn through_wall(cx: &mut ShotCx, world: &World, at: DVec3, dir: DVec3, end: DVec
     if find(&a.props, "EMPHitPoints").is_none() {
         cx.blood.push((at2 - dir, dir));
     }
-    cx.pawn_hits.push(crate::damage::PawnHit { blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at2, attacker: None, attacker_pos: cx.player_at });
+    cx.pawn_hits.push(crate::damage::PawnHit { world: false, blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at2, attacker: None, attacker_pos: cx.player_at });
 }
 
 /// What weapon_system's steps read and write, besides `Weapons` (the held weapon is borrowed from it). Resources
@@ -2829,6 +2875,7 @@ fn report_hands(
     hacking: &crate::devices::Hacking,
 ) {
     crate::perks::set_in_hand(weapons.held.as_ref().map(|h| (h.stats.class.as_str(), h.stats.hand_to_hand)));
+    set_player_ranges(weapons.held.as_ref().map(|h| { let (a, b, _) = h.stats.ranges(); (a, b) }));
     // GMDX Remote Detonation (DeusExPlayer.SwitchAmmo): Change Ammo with empty hands sets off the player's mines.
     if weapons.held.is_none()
         && (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT))

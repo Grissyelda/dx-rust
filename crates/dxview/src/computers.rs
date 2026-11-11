@@ -903,7 +903,8 @@ impl Term {
             }
             Which::Security => {
                 let special = self.specials_available(wx, false);
-                let turret_disabled = self.skill < 2 && self.hacked;
+                // (ComputerScreenSecurity in a net game: the turret choice always works.)
+                let turret_disabled = self.skill < 2 && self.hacked && !crate::deathmatch::mp_body();
                 let mut s = Sec { sel: 0, values: [0; 4], fov: [90.0; 3], tick: 0, turret_disabled, special };
                 sync_choices(&mut s, wx.data.get(&self.actor).unwrap(), wx.sec, wx.lvl, wx.movers);
                 Screen::Security(s)

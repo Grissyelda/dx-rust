@@ -59,7 +59,7 @@ pub fn shock_system(
             }
             let k = (1.0 - d / SHOCK_RANGE) as f32 * 0.7 + 0.3;
             crate::fx::sparks(o.center - DVec3::new(0.0, 0.0, o.height - 4.0), 10, 180.0);
-            extra.push(PawnHit {
+            extra.push(PawnHit { world: false,
                 blocker: n.blocker,
                 damage: h.damage * k,
                 damage_type: h.damage_type,
@@ -141,7 +141,7 @@ pub fn fire_system(
             }
             let Some(c) = blockers.list.get(n.blocker) else { continue };
             if c.center.distance(at) <= r + c.radius + 10.0 && rnd() < 0.5 {
-                hits.0.push(PawnHit {
+                hits.0.push(PawnHit { world: false,
                     blocker: n.blocker,
                     damage: 2.0,
                     damage_type: "Flamed",

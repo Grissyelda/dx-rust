@@ -84,7 +84,6 @@ pub const PRESET: &[(&str, f32)] = &[
     ("MeleeBash", 1.0),
     ("ModernAim", 1.0),
     ("DiegeticScope", 1.0),
-    ("NPCFiniteAmmo", 1.0),
     ("NotesAutofill", 1.0),
     ("SmartBinoculars", 1.0),
     ("SmoothLean", 1.0),
@@ -175,6 +174,13 @@ pub fn fill_new_modern_keys() {
         if crate::settings::has("Modern.CoatCloth") {
             crate::settings::set("Modern.CoatCloth", 0.0);
         }
+        crate::settings::save();
+    }
+    // NPC Ammo Runs Out is the original's rule, so it is on in Classic too (2026-11-10: guards never ran dry or
+    // went to their knives): it left the Classic / Modern switch and is switched on once for everyone.
+    if !crate::settings::has("NPCFiniteAmmoDefault") {
+        crate::settings::set("NPCFiniteAmmoDefault", 1.0);
+        crate::settings::set("NPCFiniteAmmo", 1.0);
         crate::settings::save();
     }
     if !crate::settings::has("ModernMode") || !is_modern() {

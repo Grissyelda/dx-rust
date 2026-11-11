@@ -229,7 +229,7 @@ pub fn emitter_system(
             } else if let Some(b) = h.actor {
                 let a = &lvl.actors[blockers.list[b].actor];
                 if find(&a.props, "GroundSpeed").is_some() {
-                    pawn_hits.0.push(crate::damage::PawnHit {
+                    pawn_hits.0.push(crate::damage::PawnHit { world: false,
                         blocker: b,
                         damage: e.damage,
                         damage_type: "Shocked",

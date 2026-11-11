@@ -63,6 +63,98 @@ pub enum After {
     Room,
 }
 
+/// Which deathmatch: the original multiplayer patch as it was (Classic: no mods, its own rules, maps and HUD), or
+/// ours (Modern: the Modern look, Augmentique characters, balanced pickups and the damage table).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
+pub enum Family {
+    Classic,
+    #[default]
+    Modern,
+}
+
+/// The original's game types (menuchoice_gametype).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
+pub enum ClassicGame {
+    /// DeathMatchGame (customizable).
+    #[default]
+    Deathmatch,
+    /// BasicTeamDMGame: every augmentation and every skill at Master from the start.
+    BasicTeam,
+    /// AdvTeamDMGame: a few skill points and augmentations at the start, more for each kill.
+    AdvancedTeam,
+    /// TeamDMGame: "Custom Team Deathmatch" (customizable).
+    CustomTeam,
+}
+
+impl ClassicGame {
+    pub const ALL: [ClassicGame; 4] = [ClassicGame::Deathmatch, ClassicGame::BasicTeam, ClassicGame::AdvancedTeam, ClassicGame::CustomTeam];
+    pub fn class(self) -> &'static str {
+        crate::classicmp::GAME_CLASSES[self as usize]
+    }
+    /// menuchoice_gametype.gameNames.
+    pub fn name(self) -> &'static str {
+        ["Deathmatch", "Basic Team Deathmatch", "Advanced Team Deathmatch", "Custom Team Deathmatch"][self as usize]
+    }
+    pub fn team(self) -> bool {
+        self != ClassicGame::Deathmatch
+    }
+    /// bCustomizable: the host's settings count (else the game type's own numbers).
+    pub fn customizable(self) -> bool {
+        matches!(self, ClassicGame::Deathmatch | ClassicGame::CustomTeam)
+    }
+}
+
+/// DeusExMPGame.VictoryCondition.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
+pub enum Victory {
+    #[default]
+    Frags,
+    Time,
+}
+
+/// A Classic match's DeusExMPGame settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ClassicRules {
+    pub game: ClassicGame,
+    pub skills_avail: i32,
+    pub skills_per_kill: i32,
+    pub initial_augs: i32,
+    pub augs_per_kill: i32,
+    /// MPSkillStartLevel (1 Trained .. 3 Master).
+    pub skill_level: i32,
+    pub augs_allowed: bool,
+    pub victory: Victory,
+    /// ScoreToWin: kills, or minutes with a time limit.
+    pub score_to_win: u32,
+    /// fFriendlyFireMult (0..1).
+    pub friendly_fire: f32,
+}
+
+impl Default for ClassicRules {
+    fn default() -> Self {
+        ClassicRules::of(ClassicGame::Deathmatch)
+    }
+}
+
+impl ClassicRules {
+    /// A game type with its own numbers (the class's defaults, read from the game).
+    pub fn of(game: ClassicGame) -> Self {
+        let d = crate::classicmp::game_defaults(game.class());
+        ClassicRules {
+            game,
+            skills_avail: d.skills_avail,
+            skills_per_kill: d.skills_per_kill,
+            initial_augs: d.initial_augs,
+            augs_per_kill: d.augs_per_kill,
+            skill_level: d.skill_level.clamp(0, 3),
+            augs_allowed: d.augs_allowed,
+            victory: Victory::Frags,
+            score_to_win: d.score_to_win.max(1) as u32,
+            friendly_fire: d.friendly_fire,
+        }
+    }
+}
+
 /// The host room's match settings, as every player gets them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DmRules {
@@ -78,11 +170,50 @@ pub struct DmRules {
     pub auto_balance: bool,
     /// Team Deathmatch: teammates' shots hurt (x friendly_fire_mult).
     pub friendly_fire: bool,
+    /// Classic (the original patch) or Modern (ours).
+    pub family: Family,
+    /// Classic: the game type and its settings.
+    pub classic: ClassicRules,
 }
 
 impl Default for DmRules {
     fn default() -> Self {
-        DmRules { mode: Mode::Coop, frag_limit: 20, time_limit: 10, map: "DXMP_Cathedral".into(), after: After::NextMap, auto_balance: true, friendly_fire: false }
+        DmRules {
+            mode: Mode::Coop,
+            frag_limit: 20,
+            time_limit: 10,
+            map: "DXMP_Cathedral".into(),
+            after: After::NextMap,
+            auto_balance: true,
+            friendly_fire: false,
+            family: Family::Modern,
+            classic: ClassicRules { game: ClassicGame::Deathmatch, skills_avail: 2000, skills_per_kill: 2000, initial_augs: 2, augs_per_kill: 2, skill_level: 1, augs_allowed: true, victory: Victory::Frags, score_to_win: 20, friendly_fire: 0.5 },
+        }
+    }
+}
+
+impl DmRules {
+    pub fn classic(&self) -> bool {
+        self.family == Family::Classic
+    }
+    /// The key map data names this match by (MapEntry parts' `modes`).
+    pub fn mode_key(&self) -> &'static str {
+        match (self.family, self.classic.game, self.mode) {
+            (Family::Classic, ClassicGame::Deathmatch, _) => "cdm",
+            (Family::Classic, ClassicGame::BasicTeam, _) => "cbasic",
+            (Family::Classic, ClassicGame::AdvancedTeam, _) => "cadv",
+            (Family::Classic, ClassicGame::CustomTeam, _) => "ctdm",
+            (Family::Modern, _, Mode::Team) => "tdm",
+            _ => "dm",
+        }
+    }
+    /// The match's name ("Advanced Team Deathmatch").
+    pub fn title(&self) -> &'static str {
+        if self.classic() {
+            self.classic.game.name()
+        } else {
+            self.mode.name()
+        }
     }
 }
 
@@ -106,6 +237,62 @@ pub fn rules_from_settings(mode: Mode, friendly_fire: bool) -> DmRules {
         },
         auto_balance: crate::settings::get("DmAutoBalance") > 0.5,
         friendly_fire,
+        family: Family::Modern,
+        classic: ClassicRules::default(),
+    }
+}
+
+/// The host's Classic rules for a game type, from his Classic Match Settings (settings Cmp*; the game types that
+/// aren't customizable keep their own numbers, as ResetNonCustomizableOptions does).
+pub fn classic_rules_from_settings(game: ClassicGame) -> DmRules {
+    let mut c = ClassicRules::of(game);
+    let set = |k: &str| crate::settings::has(k).then(|| crate::settings::get(k));
+    // (Stored as the Match Settings choice's index: menus::classic_match_choices.)
+    if game.customizable() {
+        if let Some(v) = set("CmpSkillsAvail") {
+            c.skills_avail = (v.round() as i32).clamp(0, 20) * 500;
+        }
+        if let Some(v) = set("CmpSkillsPerKill") {
+            c.skills_per_kill = (v.round() as i32).clamp(0, 20) * 500;
+        }
+        if let Some(v) = set("CmpInitialAugs") {
+            c.initial_augs = (v.round() as i32).clamp(0, 9);
+        }
+        if let Some(v) = set("CmpAugsPerKill") {
+            c.augs_per_kill = (v.round() as i32).clamp(0, 9);
+        }
+        if let Some(v) = set("CmpSkillLevel") {
+            c.skill_level = (v.round() as i32 + 1).clamp(1, 3);
+        }
+        if game.team() {
+            if let Some(v) = set("CmpFriendly") {
+                c.friendly_fire = (v.round() / 10.0).clamp(0.0, 1.0);
+            }
+        }
+    }
+    if let Some(v) = set("CmpVictory") {
+        c.victory = if v > 0.5 { Victory::Time } else { Victory::Frags };
+    }
+    if let Some(v) = set("CmpScore") {
+        c.score_to_win = (v.round() as u32 + 1).clamp(1, 40);
+    }
+    let idx = |k: &str, n: usize| (crate::settings::get(k).max(0.0) as usize).min(n - 1);
+    let maps = &data().maps;
+    let (frag_limit, time_limit) = match c.victory {
+        Victory::Frags => (c.score_to_win, 0),
+        Victory::Time => (0, c.score_to_win),
+    };
+    DmRules {
+        mode: if game.team() { Mode::Team } else { Mode::Deathmatch },
+        frag_limit,
+        time_limit,
+        map: maps[idx("DmMap", maps.len())].file.clone(),
+        // DeusExMPGame.bChangeLevels: the next map of the list.
+        after: After::NextMap,
+        auto_balance: false,
+        friendly_fire: game.team() && c.friendly_fire > 0.0,
+        family: Family::Classic,
+        classic: c,
     }
 }
 
@@ -117,16 +304,27 @@ pub fn rules() -> Option<DmRules> {
     g.clone().or_else(env_rules)
 }
 
-/// DXVIEW_DM=dm|tdm[,map][,frags][,minutes]: deathmatch rules without the menus (test runs).
+/// DXVIEW_DM=dm|tdm|cdm|cbasic|cadv|ctdm[,map][,frags][,minutes]: deathmatch rules without the menus (test runs;
+/// the c* ones are Classic game types).
 fn env_rules() -> Option<DmRules> {
     let v = env_val!("DXVIEW_DM")?;
     let mut it = v.split(',');
-    let mode = match it.next()? {
-        "tdm" | "team" => Mode::Team,
-        "dm" => Mode::Deathmatch,
+    let classic = |g: ClassicGame| {
+        let mut r = DmRules { mode: if g.team() { Mode::Team } else { Mode::Deathmatch }, family: Family::Classic, classic: ClassicRules::of(g), ..DmRules::default() };
+        r.frag_limit = r.classic.score_to_win;
+        r.time_limit = 0;
+        r
+    };
+    let mut r = match it.next()? {
+        "tdm" | "team" => DmRules { mode: Mode::Team, ..DmRules::default() },
+        "dm" => DmRules { mode: Mode::Deathmatch, ..DmRules::default() },
+        "cdm" => classic(ClassicGame::Deathmatch),
+        "cbasic" => classic(ClassicGame::BasicTeam),
+        "cadv" => classic(ClassicGame::AdvancedTeam),
+        "ctdm" => classic(ClassicGame::CustomTeam),
         _ => return None,
     };
-    let mut r = DmRules { mode, ..DmRules::default() };
+    crate::classicmp::set_active(r.classic());
     if let Some(m) = it.next().filter(|m| !m.is_empty()) {
         r.map = m.trim_end_matches(".dx").to_string();
     }
@@ -142,7 +340,19 @@ fn env_rules() -> Option<DmRules> {
 /// The room's rules changed (the host's Host Room, or the host's Rules for a joiner). Co-op clears them.
 pub fn set_rules(r: Option<DmRules>) {
     let r = r.filter(|r| r.mode.versus());
+    // A Classic room plays with the original multiplayer values (classicmp.rs).
+    crate::classicmp::set_active(r.as_ref().is_some_and(|r| r.classic()));
     *RULES.lock().unwrap_or_else(|e| e.into_inner()) = r;
+}
+
+/// A Classic deathmatch room (the original patch's rules).
+pub fn classic() -> bool {
+    rules().is_some_and(|r| r.classic())
+}
+
+/// The player's body takes hits as the original's net game does (three regions): a Classic match being played.
+pub fn mp_body() -> bool {
+    playing() && classic()
 }
 
 pub fn mode() -> Mode {
@@ -181,11 +391,220 @@ pub struct Hit {
     pub legs: f32,
 }
 
+/// One multiplayer map's data (data/deathmatch.ron `maps`). Everything after `keep` is per mode: a part applies when
+/// its `modes` list is empty or holds the match's mode_key() ("dm", "tdm", "cdm", "cbasic", "cadv", "ctdm"; later
+/// modes add theirs) or its family ("classic" / "modern").
 #[derive(Deserialize, Clone, Debug)]
 pub struct MapEntry {
     pub file: String,
     pub title: String,
+    /// Modern deathmatch: the placed pickups kept, by actor name (Classic keeps every one).
     pub keep: Vec<String>,
+    /// Spawn sets that replace the map's PlayerStarts.
+    #[serde(default)]
+    pub spawns: Vec<SpawnSet>,
+    /// Play-area blockers: cylinders that stop players (cut a map down for a small mode).
+    #[serde(default)]
+    pub blockers: Vec<AreaBlock>,
+    /// Objective spots (flags, control points, uplinks, extraction zones, data drops).
+    #[serde(default)]
+    pub objectives: Vec<ObjectiveSpot>,
+    /// Loot tables: at each match, `picks` of the `spots` get an item drawn from `items` by weight.
+    #[serde(default)]
+    pub loot: Vec<LootTable>,
+    /// Codes made fresh each match for keypads / computers (written in datacubes and notes by the modes).
+    #[serde(default)]
+    pub codes: Vec<CodeSpot>,
+}
+
+/// A position in map units.
+pub type Pos = (f32, f32, f32);
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SpawnSet {
+    pub name: String,
+    #[serde(default)]
+    pub modes: Vec<String>,
+    pub points: Vec<SpawnSpot>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SpawnSpot {
+    pub at: Pos,
+    /// Unreal yaw (65536 a turn).
+    #[serde(default)]
+    pub yaw: i32,
+    /// Only this team spawns here (team games).
+    #[serde(default)]
+    pub team: Option<u8>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct AreaBlock {
+    pub name: String,
+    #[serde(default)]
+    pub modes: Vec<String>,
+    pub at: Pos,
+    pub radius: f32,
+    pub height: f32,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ObjectiveSpot {
+    pub name: String,
+    /// "flag", "point", "uplink", "extract", "data" (the modes that use them say).
+    pub kind: String,
+    #[serde(default)]
+    pub modes: Vec<String>,
+    pub at: Pos,
+    #[serde(default = "default_objective_radius")]
+    pub radius: f32,
+    #[serde(default)]
+    pub team: Option<u8>,
+}
+
+fn default_objective_radius() -> f32 {
+    160.0
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct LootTable {
+    pub name: String,
+    #[serde(default)]
+    pub modes: Vec<String>,
+    /// Where the items may go: placed actors by name (their location) or points.
+    #[serde(default)]
+    pub actors: Vec<String>,
+    #[serde(default)]
+    pub points: Vec<Pos>,
+    /// (class, weight).
+    pub items: Vec<(String, u32)>,
+    pub picks: u32,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct CodeSpot {
+    pub name: String,
+    #[serde(default)]
+    pub modes: Vec<String>,
+    /// Keypads / computers (actor names) that take the code.
+    pub devices: Vec<String>,
+    #[serde(default = "default_digits")]
+    pub digits: u8,
+}
+
+fn default_digits() -> u8 {
+    4
+}
+
+/// Every mode key a map part may name.
+pub const MODE_KEYS: [&str; 8] = ["dm", "tdm", "cdm", "cbasic", "cadv", "ctdm", "classic", "modern"];
+
+/// A part with this `modes` list is in this match.
+pub fn part_applies(modes: &[String], key: &str, family: Family) -> bool {
+    let fam = if family == Family::Classic { "classic" } else { "modern" };
+    modes.is_empty() || modes.iter().any(|m| m.eq_ignore_ascii_case(key) || m.eq_ignore_ascii_case(fam))
+}
+
+/// The map's data, by file (with or without ".dx").
+pub fn map_entry(file: &str) -> Option<&'static MapEntry> {
+    let stem = file.trim_end_matches(".dx");
+    data().maps.iter().find(|m| m.file.eq_ignore_ascii_case(stem))
+}
+
+/// The match's spawn set on this map, as starts (None: the map's own PlayerStarts).
+pub fn match_starts(file: &str) -> Option<Vec<Start>> {
+    let r = rules()?;
+    let key = r.mode_key();
+    let set = map_entry(file)?.spawns.iter().find(|s| part_applies(&s.modes, key, r.family))?;
+    Some(
+        set.points
+            .iter()
+            .map(|p| Start {
+                pos: DVec3::new(p.at.0 as f64, p.at.1 as f64, p.at.2 as f64),
+                yaw: p.yaw,
+                team_only: p.team.is_some(),
+                non_team_only: false,
+                team: p.team.unwrap_or(0),
+            })
+            .collect(),
+    )
+}
+
+/// The match's blockers, objectives and loot tables on this map.
+pub fn match_blockers(file: &str) -> Vec<&'static AreaBlock> {
+    let Some(r) = rules() else { return Vec::new() };
+    map_entry(file).map(|m| m.blockers.iter().filter(|b| part_applies(&b.modes, r.mode_key(), r.family)).collect()).unwrap_or_default()
+}
+
+pub fn match_objectives(file: &str) -> Vec<&'static ObjectiveSpot> {
+    let Some(r) = rules() else { return Vec::new() };
+    map_entry(file).map(|m| m.objectives.iter().filter(|b| part_applies(&b.modes, r.mode_key(), r.family)).collect()).unwrap_or_default()
+}
+
+pub fn match_loot(file: &str) -> Vec<&'static LootTable> {
+    let Some(r) = rules() else { return Vec::new() };
+    map_entry(file).map(|m| m.loot.iter().filter(|b| part_applies(&b.modes, r.mode_key(), r.family)).collect()).unwrap_or_default()
+}
+
+/// The match's codes on this map, made from `seed` (the host picks the seed and sends it): (code spot, digits).
+pub fn match_codes(file: &str, seed: u64) -> Vec<(String, String)> {
+    let Some(r) = rules() else { return Vec::new() };
+    let Some(m) = map_entry(file) else { return Vec::new() };
+    let mut x = seed ^ 0x9E37_79B9_7F4A_7C15;
+    m.codes
+        .iter()
+        .filter(|c| part_applies(&c.modes, r.mode_key(), r.family))
+        .map(|c| {
+            let code: String = (0..c.digits.clamp(1, 8))
+                .map(|_| {
+                    // splitmix64
+                    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                    let mut z = x;
+                    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                    char::from(b'0' + ((z ^ (z >> 31)) % 10) as u8)
+                })
+                .collect();
+            (c.name.clone(), code)
+        })
+        .collect()
+}
+
+/// The match's loot: (table, spot index into actors then points, class), drawn from `seed`.
+pub fn roll_loot(t: &LootTable, seed: u64) -> Vec<(usize, String)> {
+    let spots = t.actors.len() + t.points.len();
+    let total: u64 = t.items.iter().map(|i| i.1 as u64).sum();
+    if spots == 0 || total == 0 {
+        return Vec::new();
+    }
+    let mut x = seed | 1;
+    let mut next = || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut order: Vec<usize> = (0..spots).collect();
+    for i in (1..order.len()).rev() {
+        order.swap(i, (next() % (i as u64 + 1)) as usize);
+    }
+    order
+        .into_iter()
+        .take(t.picks as usize)
+        .map(|spot| {
+            let mut w = next() % total;
+            let class = t.items.iter().find(|i| {
+                if w < i.1 as u64 {
+                    true
+                } else {
+                    w -= i.1 as u64;
+                    false
+                }
+            });
+            (spot, class.map_or_else(String::new, |c| c.0.clone()))
+        })
+        .collect()
 }
 
 #[derive(Deserialize, Debug)]
@@ -204,6 +623,9 @@ pub struct Data {
     pub skin_unlocks: Vec<u32>,
     pub new_map_delay: f32,
     pub maps: Vec<MapEntry>,
+    /// Operative profile (dmchar.rs): credits and weapon mastery.
+    #[serde(default)]
+    pub profile: crate::dmchar::ProfileTuning,
 }
 
 pub fn data() -> &'static Data {
@@ -295,6 +717,13 @@ pub fn player_damage(weapon: &str, kind: &str, raw: f32, local: Option<DVec3>, h
 /// Team Deathmatch: the share of a teammate's hit that lands (0 without friendly fire).
 pub fn friendly_mult() -> f32 {
     match rules() {
+        Some(r) if r.classic() => {
+            if r.mode == Mode::Team {
+                r.classic.friendly_fire
+            } else {
+                1.0
+            }
+        }
         Some(r) if r.mode == Mode::Team && r.friendly_fire => data().friendly_fire_mult,
         Some(r) if r.mode == Mode::Team => 0.0,
         _ => 1.0,
@@ -343,7 +772,7 @@ fn frand() -> f64 {
 /// (position, team). (centre, yaw radians on the Unreal circle).
 pub fn spawn_point(lvl: &dx_level::Level, team: Option<u8>, others: &[(DVec3, Option<u8>)]) -> Option<(DVec3, f64)> {
     let team_game = team_mode();
-    let all = starts(lvl);
+    let all = match_starts(&lvl.name).filter(|v| !v.is_empty()).unwrap_or_else(|| starts(lvl));
     let usable: Vec<&Start> = all.iter().filter(|s| if team_game { !s.non_team_only } else { !s.team_only }).collect();
     let pool = if usable.is_empty() { all.iter().collect() } else { usable };
     let mut best: Option<(&Start, f64)> = None;
@@ -907,7 +1336,21 @@ pub fn host_tick(dt: f32) -> Vec<String> {
             h.dirty = true;
         }
         // One minute left (NotifyMinutes), when the limit is over two minutes.
-        if *t <= 60.0 && !h.notified_minute && r.time_limit >= 2 {
+        if r.classic() && *t <= 60.0 && !h.notified_minute && r.time_limit >= 2 {
+            // DeusExMPGame.NotifyGameStatus: "Less than a minute to go, and X leads the match!" / tied.
+            h.notified_minute = true;
+            let lead = if r.mode == Mode::Team {
+                let s = team_scores(&h.board.rows);
+                match s[0].cmp(&s[1]) {
+                    std::cmp::Ordering::Greater => team_name(TEAM_UNATCO).to_string(),
+                    std::cmp::Ordering::Less => team_name(TEAM_NSF).to_string(),
+                    _ => "Tied".into(),
+                }
+            } else {
+                winner(&h.board.rows).map_or_else(|| "Tied".to_string(), |w| w.name.clone())
+            };
+            out.push(crate::mphud::note_code("time", 1, &lead));
+        } else if *t <= 60.0 && !h.notified_minute && r.time_limit >= 2 {
             h.notified_minute = true;
             let lead = if r.mode == Mode::Team {
                 let s = team_scores(&h.board.rows);
@@ -930,11 +1373,26 @@ pub fn host_tick(dt: f32) -> Vec<String> {
             h.board.rows.iter().map(|x| x.score).max().unwrap_or(0)
         };
         let left = r.frag_limit as i32 - best;
-        let fifth = (r.frag_limit / 5) as i32;
+        let fifth = if crate::matchmode::current().fifth_notice(r.frag_limit) { (r.frag_limit / 5) as i32 } else { 0 };
         for mark in [fifth, 1] {
             if mark > 0 && left == mark && h.notified_frags != mark as u32 {
                 h.notified_frags = mark as u32;
-                out.push(format!("{mark} kill{} to win!", if mark == 1 { "" } else { "s" }));
+                if r.classic() {
+                    // MPMSG_CloseKills: "Only N more kills, and X will win the match!".
+                    let lead = if r.mode == Mode::Team {
+                        let s = team_scores(&h.board.rows);
+                        match s[0].cmp(&s[1]) {
+                            std::cmp::Ordering::Greater => team_name(TEAM_UNATCO).to_string(),
+                            std::cmp::Ordering::Less => team_name(TEAM_NSF).to_string(),
+                            _ => "Tied".into(),
+                        }
+                    } else {
+                        winner(&h.board.rows).map_or_else(|| "Tied".to_string(), |w| w.name.clone())
+                    };
+                    out.push(crate::mphud::note_code("close", mark as u32, &lead));
+                } else {
+                    out.push(format!("{mark} kill{} to win!", if mark == 1 { "" } else { "s" }));
+                }
             }
         }
     }
@@ -980,6 +1438,8 @@ pub fn match_over() -> bool {
 /// A placed pickup this map keeps.
 struct Spot {
     actor: usize,
+    /// A weapon that stays where it lies (Classic: bWeaponStay); everyone takes a copy.
+    stays: bool,
     respawn: f32,
     /// Seconds until it's back (0 = there).
     left: f32,
@@ -1023,6 +1483,21 @@ pub enum Frob {
     Take,
     /// A joiner: asked the host; it's hidden until he says.
     Asked,
+    /// A weapon that stays (Classic): take a copy, leave it there.
+    Stay,
+}
+
+/// The pickup's properties as this mode hands it out (Classic: mpPickupAmmoCount x 3 rounds with a weapon).
+pub fn pickup_props(class: &str, props: &[unreal_pkg::props::Property]) -> Vec<unreal_pkg::props::Property> {
+    use unreal_pkg::props::{Property, Value};
+    let mut v = props.to_vec();
+    if playing() {
+        if let Some(n) = crate::matchmode::current().pickup_ammo(class) {
+            v.retain(|p| !(p.name.eq_ignore_ascii_case("PickupAmmoCount") && p.index == 0));
+            v.push(Property { name: "PickupAmmoCount".into(), index: 0, value: Value::Int(n as i32) });
+        }
+    }
+    v
 }
 
 /// pickups::frob_item: a placed pickup is about to be taken.
@@ -1030,9 +1505,12 @@ pub fn frob_placed(actor: usize) -> Frob {
     if !playing() {
         return Frob::Normal;
     }
-    let tracked = with_pickups(|p| p.spots.iter().any(|s| s.actor == actor));
-    if !tracked {
+    let spot = with_pickups(|p| p.spots.iter().find(|s| s.actor == actor).map(|s| s.stays));
+    let Some(stays) = spot else {
         return Frob::Normal;
+    };
+    if stays {
+        return Frob::Stay;
     }
     if crate::netplay::is_client() {
         with_pickups(|p| {
@@ -1143,13 +1621,15 @@ pub fn pickups_system(
         if on {
             let stem = lvl.name.trim_end_matches(".dx").to_string();
             let entry = data().maps.iter().find(|m| m.file.eq_ignore_ascii_case(&stem));
+            let mode = crate::matchmode::current();
             for (e, it, _) in &items {
                 let Some(a) = it.actor else { continue };
                 let Some(info) = lvl.actors.get(a) else { continue };
-                let Some(secs) = respawn_secs(&info.class) else { continue };
-                let keep = entry.is_some_and(|m| m.keep.iter().any(|k| k.eq_ignore_ascii_case(&info.name)));
+                let Some(secs) = mode.respawn_secs(&info.class) else { continue };
+                // Classic: every pickup the map places (Inventory.RespawnTime); Modern: the map list's.
+                let keep = mode.keeps_all_pickups() || entry.is_some_and(|m| m.keep.iter().any(|k| k.eq_ignore_ascii_case(&info.name)));
                 if keep {
-                    spots.push(Spot { actor: a, respawn: secs, left: 0.0 });
+                    spots.push(Spot { actor: a, stays: mode.weapon_stays(&info.class), respawn: secs, left: 0.0 });
                 } else {
                     commands.entity(e).remove::<crate::pickups::PickupItem>().insert((DmRemoved, Visibility::Hidden));
                 }
@@ -1240,7 +1720,9 @@ pub fn respawn_here(
     player.body = imsim_core::movement::Character::new(at);
     player.body.physics = imsim_core::movement::Physics::Falling;
     player.noclip = false;
-    reset_player(inv, classes);
+    let mode = crate::matchmode::current();
+    mode.restart_player(inv, classes);
+    crate::mphud::start_shield(mode.spawn_shield());
     Some(cam_yaw(yaw))
 }
 
@@ -1288,12 +1770,16 @@ pub fn match_system(
                 c.yaw = yaw;
                 c.pitch = 0.0;
             }
-            crate::classic_hud::client_message("You're back in the fight.");
+            if !classic() {
+                crate::classic_hud::client_message("You're back in the fight.");
+            }
         }
     }
     if crate::netplay::is_host() || !crate::netplay::active() {
         for line in host_tick(time.delta_secs()) {
-            crate::classic_hud::client_message(&line);
+            if !crate::mphud::from_note(&line) {
+                crate::classic_hud::client_message(&line);
+            }
             NEWS.lock().unwrap_or_else(|e| e.into_inner()).push(line);
         }
         if let Some(map) = host_take_travel() {
@@ -1305,6 +1791,47 @@ pub fn match_system(
 
 static NEWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static RESPAWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The original multiplayer player classes (menuchoice_class), in Player Setup order.
+pub const CLASSIC_CLASSES: [(&str, &str); 4] = [("JCDentonMale", "JC Denton"), ("MPNSF", "NSF Terrorist"), ("MPUnatco", "UNATCO Trooper"), ("MPMJ12", "Majestic-12 Agent")];
+
+/// Classic: the class this player plays (team games: his team's - TeamDMGame's DefaultPlayerClass per team; else
+/// his Player Setup pick, setting MpClass). None: JC Denton.
+pub fn classic_class() -> Option<String> {
+    let r = rules().filter(|r| r.classic())?;
+    if r.mode == Mode::Team {
+        let t = team_of(my_id())?;
+        return Some(if t == TEAM_NSF { "MPNSF" } else { "MPUnatco" }.to_string());
+    }
+    let k = (setting!("MpClass") as usize).min(CLASSIC_CLASSES.len() - 1);
+    (k > 0).then(|| CLASSIC_CLASSES[k].0.to_string())
+}
+
+/// A class's look (Mesh, Texture, Skin, MultiSkins) from the player's own DeusEx.u; empty when its mesh package
+/// isn't there.
+pub fn class_dress(class: &str) -> Vec<unreal_pkg::props::Property> {
+    use unreal_pkg::props::{Property, Value};
+    let Some(Value::Path(mesh)) = crate::classicmp::class_value(class, "Mesh") else { return Vec::new() };
+    let pkg = mesh.split('.').next().unwrap_or_default();
+    let found = unreal_pkg::paths::root().is_some_and(|r| {
+        let dir = r.join("System");
+        std::fs::read_dir(&dir).map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(&format!("{pkg}.u")))).unwrap_or(false)
+    });
+    if !found {
+        return Vec::new();
+    }
+    let mut v = vec![Property { name: "Mesh".into(), index: 0, value: Value::Path(mesh) }];
+    for name in ["Texture", "Skin"] {
+        if let Some(x) = crate::classicmp::class_value(class, name) {
+            v.push(Property { name: name.into(), index: 0, value: x });
+        }
+    }
+    let d = crate::classicmp::class_props(class);
+    for p in d.into_iter().filter(|p| p.name.eq_ignore_ascii_case("MultiSkins")) {
+        v.push(p);
+    }
+    v
+}
 
 /// netplay: this dead player gets up again now (match_system puts him at a start with the kit).
 pub fn request_respawn() {
@@ -1328,12 +1855,19 @@ pub fn take_room_open() -> bool {
 }
 
 /// menus.rs: Match Settings was saved: when the room waits for it, the next match starts on its map.
+/// Match Settings were saved: the room's rules again from them (same family, game and mode).
+pub fn reapply_settings() {
+    let Some(r) = rules() else { return };
+    let nr = if r.classic() { classic_rules_from_settings(r.classic.game) } else { rules_from_settings(r.mode, r.friendly_fire) };
+    set_rules(Some(nr));
+}
+
 pub fn room_go() {
     if !AWAIT_ROOM.swap(false, std::sync::atomic::Ordering::Relaxed) {
         return;
     }
     let Some(old) = rules() else { return };
-    let r = rules_from_settings(old.mode, old.friendly_fire);
+    let r = if old.classic() { classic_rules_from_settings(old.classic.game) } else { rules_from_settings(old.mode, old.friendly_fire) };
     let map = r.map.clone();
     set_rules(Some(r));
     TRAVEL.lock().unwrap_or_else(|e| e.into_inner()).replace((map, After::NextMap));
@@ -1370,6 +1904,57 @@ pub fn reset_level() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The map data's per-mode parts: names unique, modes known, codes and loot sensible; with CON_GAME the
+    /// actors they name are in the map files.
+    #[test]
+    fn map_data_is_consistent() {
+        let d = data();
+        let game = std::env::var("CON_GAME").ok();
+        for m in &d.maps {
+            let mut names = std::collections::HashSet::new();
+            let modes = m.spawns.iter().map(|x| (&x.name, &x.modes))
+                .chain(m.blockers.iter().map(|x| (&x.name, &x.modes)))
+                .chain(m.objectives.iter().map(|x| (&x.name, &x.modes)))
+                .chain(m.loot.iter().map(|x| (&x.name, &x.modes)))
+                .chain(m.codes.iter().map(|x| (&x.name, &x.modes)));
+            for (name, list) in modes {
+                assert!(names.insert(name.clone()), "{}: {name} twice", m.file);
+                for k in list {
+                    assert!(MODE_KEYS.contains(&k.to_ascii_lowercase().as_str()), "{}: {name}: unknown mode {k}", m.file);
+                }
+            }
+            for c in &m.codes {
+                assert!((1..=8).contains(&c.digits), "{}: {} digits", m.file, c.name);
+                assert!(!c.devices.is_empty(), "{}: {} has no devices", m.file, c.name);
+            }
+            for t in &m.loot {
+                assert!(t.items.iter().all(|i| i.1 > 0), "{}: {} zero weight", m.file, t.name);
+                assert!(t.picks as usize <= t.actors.len() + t.points.len(), "{}: {} picks more than its spots", m.file, t.name);
+            }
+            for s in &m.spawns {
+                assert!(!s.points.is_empty(), "{}: {} has no points", m.file, s.name);
+            }
+            let Some(root) = game.as_deref() else { continue };
+            let Ok(pkg) = unreal_pkg::Package::open(std::path::Path::new(root).join("Maps").join(format!("{}.dx", m.file))) else { continue };
+            let have: std::collections::HashSet<String> = pkg.exports.iter().map(|e| e.name.to_ascii_lowercase()).collect();
+            let named = m.keep.iter().chain(m.loot.iter().flat_map(|t| t.actors.iter())).chain(m.codes.iter().flat_map(|c| c.devices.iter()));
+            for a in named {
+                assert!(have.contains(&a.to_ascii_lowercase()), "{}: no actor {a}", m.file);
+            }
+        }
+    }
+
+    #[test]
+    fn codes_and_loot_are_seeded() {
+        let t = LootTable { name: "t".into(), modes: Vec::new(), actors: Vec::new(), points: vec![(0.0, 0.0, 0.0); 6], items: vec![("MedKit".into(), 1), ("Lockpick".into(), 3)], picks: 4 };
+        let a = roll_loot(&t, 42);
+        assert_eq!(a, roll_loot(&t, 42));
+        assert_eq!(a.len(), 4);
+        let spots: std::collections::HashSet<usize> = a.iter().map(|x| x.0).collect();
+        assert_eq!(spots.len(), 4);
+        assert!(a.iter().all(|x| x.1 == "MedKit" || x.1 == "Lockpick"));
+    }
 
     #[test]
     fn data_parses() {

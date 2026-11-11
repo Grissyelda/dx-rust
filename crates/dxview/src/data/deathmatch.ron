@@ -64,6 +64,13 @@
     // DeusExMPGame.NewMapDelay: seconds the results show before the next map.
     new_map_delay: 16,
     // The DXMP maps: kept pickups by actor name (everything else of a class in `tiers` is taken out of the map).
+    // Per-mode parts (deathmatch.rs MapEntry; each optional, `modes` empty = every mode; keys dm tdm cdm cbasic
+    // cadv ctdm, or classic / modern):
+    //   spawns: [(name: "ctf_starts", modes: ["ctf"], points: [(at: (0, 0, 0), yaw: 16384, team: Some(0))])],
+    //   blockers: [(name: "north_wall", modes: ["uplink"], at: (0, 0, 0), radius: 200, height: 120)],
+    //   objectives: [(name: "unatco_flag", kind: "flag", at: (0, 0, 0), radius: 120, team: Some(0))],
+    //   loot: [(name: "crates", actors: ["CrateUnbreakableSmall3"], points: [(0, 0, 0)], items: [("MedKit", 2), ("BioelectricCell", 1)], picks: 2)],
+    //   codes: [(name: "vault", devices: ["Keypad0"], digits: 4)],
     maps: [
         // DXMP_Area51Bunker: 67 kept, starts 24, value near starts min 14 max 44 mean 32.3; quadrants [14, 39, 37, 38]
         // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 8, Lockpick 9, MedKit 6, Multitool 10, AssaultGun 2, AssaultShotgun 3, CombatKnife 2, EMPGrenade 2, Flamethrower 1, GEPGun 1, GasGrenade 2, LAM 2, LAW 1, MiniCrossbow 2, NanoSword 1, Pistol 3, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 2, StealthPistol 2

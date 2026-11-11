@@ -106,7 +106,7 @@ impl Projectile {
     /// rings): each ring at 0.75 and one more flat ring of half Damage over the whole radius, so the middle stays
     /// about the same and the edge takes much more.
     fn booms(&self, at: DVec3, r: f64) -> Vec<crate::explosion::Boom> {
-        let mut v = vec![crate::explosion::Boom {
+        let mut v = vec![crate::explosion::Boom { world: false,
             pos: at,
             damage: if self.blast_energy { self.damage * 0.75 } else { self.damage },
             radius: r,
@@ -117,7 +117,7 @@ impl Projectile {
             fx: 1,
         }];
         if self.blast_energy {
-            v.push(crate::explosion::Boom {
+            v.push(crate::explosion::Boom { world: false,
                 pos: at,
                 damage: self.damage * 0.5,
                 radius: r,
@@ -614,7 +614,7 @@ pub fn projectile_system(
                     }
                     c.touched.push(b);
                     if !ghost {
-                        pawn_hits.0.push(crate::damage::PawnHit {
+                        pawn_hits.0.push(crate::damage::PawnHit { world: false,
                             blocker: b,
                             damage,
                             damage_type,
@@ -644,7 +644,7 @@ pub fn projectile_system(
                     let a = &lvl.actors[cyl.actor];
                     if find(&a.props, "GroundSpeed").is_some() {
                         if !ghost {
-                            pawn_hits.0.push(crate::damage::PawnHit {
+                            pawn_hits.0.push(crate::damage::PawnHit { world: false,
                                 blocker: b,
                                 damage,
                                 damage_type,
@@ -802,7 +802,7 @@ pub fn projectile_system(
                 let a = &lvl.actors[blockers.list[b].actor];
                 if find(&a.props, "GroundSpeed").is_some() {
                     if !ghost {
-                        pawn_hits.0.push(crate::damage::PawnHit {
+                        pawn_hits.0.push(crate::damage::PawnHit { world: false,
                             blocker: b,
                             damage: p.damage,
                             damage_type: p.damage_type,

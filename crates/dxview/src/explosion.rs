@@ -30,6 +30,9 @@ pub struct Boom {
     /// Which DrawExplosionEffects: 0 plain, 1 projectile (fireball + three ShockRings), 2 thrown grenade (several
     /// fireballs across the blast), 3 EMP grenade (small fireball + SphereEffect).
     pub fx: u8,
+    /// Nobody set it off (an exploding barrel or door, a level's mine, a robot blowing up): in multiplayer no
+    /// player is credited with what it kills.
+    pub world: bool,
 }
 
 /// ShockRing / SphereEffect: a translucent mesh that grows to `size` (x3 for the sphere) and fades over LifeSpan.
@@ -607,6 +610,7 @@ pub fn explosion_system(
                     hit_loc,
                     attacker: b.from,
                     attacker_pos: b.pos,
+                    world: b.world,
                 });
             } else {
                 deco_hits.0.push(crate::destruct::DecoHit {
@@ -632,6 +636,10 @@ pub fn explosion_system(
             }
             let dir = (pc - b.pos) / d;
             let at = pc - dir * (0.5 * (player.params.height + player.params.radius));
+            // Multiplayer: a blast from another player's body here (his grenade or mine) is his kill.
+            if let Some(peer) = b.from.and_then(crate::netplay::peer_of_blocker) {
+                crate::netplay::note_hurt_by(peer);
+            }
             let f = cam.forward().as_vec3();
             let yaw = (f.z as f64).atan2(f.x as f64);
             ph.damage(dmg, b.damage_type, crate::ai::player_offset(pc, yaw, at));

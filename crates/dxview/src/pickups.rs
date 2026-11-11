@@ -719,8 +719,14 @@ fn frob_item(cx: &mut FrobCx, e: Entity, items: &FrobItems, net_items: &Query<&c
                 crate::deathmatch::hide(commands, e, it);
                 return;
             }
+            crate::deathmatch::Frob::Stay => {
+                // DeusExWeapon in a net game (bWeaponStay): a copy (or its rounds) for whoever touches it.
+                let props = crate::deathmatch::pickup_props(&it.class, &it.props);
+                take_pickup(&mut cx.inv, &mut cx.hud, &mut cx.assets, &mut cx.weapons.floor_use, &it.class, &props);
+                return;
+            }
             crate::deathmatch::Frob::Take => {
-                let (class, props) = (it.class.clone(), it.props.clone());
+                let (class, props) = (it.class.clone(), crate::deathmatch::pickup_props(&it.class, &it.props));
                 if take_pickup(&mut cx.inv, &mut cx.hud, &mut cx.assets, &mut cx.weapons.floor_use, &class, &props) {
                     crate::deathmatch::taken(a);
                     crate::deathmatch::hide(commands, e, it);
@@ -1031,6 +1037,7 @@ pub fn net_give_system(
     // Deathmatch: placed pickups the host gave us.
     for actor in crate::deathmatch::take_granted_placed() {
         if let Some((class, props)) = crate::deathmatch::placed_item(level, actor as usize) {
+            let props = crate::deathmatch::pickup_props(&class, &props);
             let _ = take_pickup(&mut inv, &mut hud, &mut assets, &mut weapons.floor_use, &class, &props);
         }
     }

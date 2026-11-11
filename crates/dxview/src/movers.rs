@@ -983,7 +983,7 @@ pub fn mover_damage_system(
             } else {
                 300.0
             };
-            booms.0.push(crate::explosion::Boom {
+            booms.0.push(crate::explosion::Boom { world: true,
                 pos: origin,
                 damage: 0.0,
                 radius: r,

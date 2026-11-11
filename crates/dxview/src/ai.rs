@@ -178,15 +178,25 @@ impl PlayerHealth {
             self.energy_drain_total += d;
             return;
         }
+        // A Classic deathmatch: DeusExPlayer.TakeDamage's net-game branch (three regions, MPDamageMult, tear gas
+        // poisons, CombatDifficulty at its default 1).
+        let mp = crate::deathmatch::mp_body();
         let mut d = dmg;
-        if matches!(damage_type, "Shot" | "AutoShot") {
+        if matches!(damage_type, "Shot" | "AutoShot") && !mp {
             d *= crate::travel::combat_difficulty();
             if d <= 1.0 && dmg > 0.0 {
                 d = 1.0;
             }
         }
-        if damage_type == "Poison" {
+        if damage_type == "Poison" || (mp && damage_type == "TearGas") {
+            if mp {
+                crate::mphud::notify(crate::mphud::Msg::FirstPoison);
+            }
             self.start_poison(dmg);
+        }
+        if mp && matches!(damage_type, "Burned" | "Flamed") {
+            // MPMSG_FirstBurn.
+            crate::mphud::notify(crate::mphud::Msg::FirstBurn);
         }
         if damage_type == "Flamed" && self.on_fire.is_none() {
             self.on_fire = Some(0.0);
@@ -232,7 +242,35 @@ impl PlayerHealth {
         let head_y = PLAYER_RADIUS * 0.35;
         let arm = PLAYER_RADIUS * 0.35;
         let p = &mut self.parts;
-        if offset.z > head_z {
+        if mp {
+            // GetMPHitLocation: the head (narrow; a hit beside it misses), the legs together, torso and arms as one.
+            if offset.z > head_z {
+                if offset.x.abs() < head_y || offset.y.abs() < head_y {
+                    p[P_HEAD] -= d * 2.0;
+                } else {
+                    return;
+                }
+            } else if offset.z < 0.0 {
+                p[P_LEG_R] -= d;
+                p[P_LEG_L] -= d;
+                // The legs are in step: only one leg's overflow goes up, into the arms and torso.
+                if p[P_LEG_L] < 0.0 {
+                    let over = p[P_LEG_L];
+                    p[P_ARM_R] += over;
+                    p[P_TORSO] += over;
+                    p[P_ARM_L] += over;
+                    p[P_LEG_L] = 0.0;
+                    p[P_LEG_R] = 0.0;
+                }
+                if p[P_LEG_L] <= 0.0 && p[P_LEG_R] <= 0.0 {
+                    crate::mphud::notify(crate::mphud::Msg::LostLegs);
+                }
+            } else {
+                p[P_ARM_L] -= d;
+                p[P_TORSO] -= d;
+                p[P_ARM_R] -= d;
+            }
+        } else if offset.z > head_z {
             // Only the narrow head region counts.
             if offset.x.abs() < head_y || offset.y.abs() < head_y {
                 p[P_HEAD] -= d * 2.0;
@@ -655,7 +693,7 @@ impl Afflictions {
             if self.poison_timer >= 2.0 {
                 self.poison_timer = 0.0;
                 self.poison_counter -= 1;
-                out.push(crate::damage::PawnHit {
+                out.push(crate::damage::PawnHit { world: false,
                     blocker,
                     damage: self.poison_damage,
                     damage_type: "PoisonEffect",
@@ -671,7 +709,7 @@ impl Afflictions {
                 self.bleed_timer = 0.0;
                 self.bleed_counter -= 1;
                 if self.bleed_damage > 0.0 {
-                    out.push(crate::damage::PawnHit {
+                    out.push(crate::damage::PawnHit { world: false,
                         blocker,
                         damage: self.bleed_damage,
                         damage_type: "BleedEffect",
@@ -768,6 +806,8 @@ pub struct Npc {
     /// A melee swing under way: seconds until its HandToHandAttack notify lands the blow.
     pub melee_wait: Option<f32>,
     pub keep_drawn: bool,
+    /// bUseFallbackWeapons: knives etc. compete with guns on equal terms (Howard Strong).
+    pub use_fallback: bool,
     /// The weapon is out (drawn) right now.
     pub weapon_drawn: bool,
     pub home: DVec3,
@@ -1191,6 +1231,7 @@ impl Npc {
             stand_height: fv(p, "CollisionHeight", 47.5) as f64,
             melee_wait: None,
             keep_drawn: matches!(find(p, "bKeepWeaponDrawn"), Some(Value::Bool(true))),
+            use_fallback: matches!(find(p, "bUseFallbackWeapons"), Some(Value::Bool(true))),
             weapon_drawn: false,
             home,
             home_yaw: yaw,
@@ -1593,12 +1634,14 @@ impl Npc {
     }
 
     /// ScriptedPawn.SwitchToBestWeapon: score every usable weapon by how far the enemy is from the middle of its
-    /// best range (lower is better), prefer non-fallback weapons (knives) while there's ammo, and stick with a new
-    /// choice for a while. `enemy` = (distance, radius, is_robot, is_player).
-    /// uc: ScriptedPawn.SwitchToBestWeapon, ScriptedPawn.GetWeaponBestRange
-    fn switch_to_best_weapon(&mut self, enemy: Option<(f64, f64, bool, bool)>) {
-        let (enemy_range, enemy_radius, robot, player) =
-            enemy.unwrap_or((400.0, 0.0, false, false));
+    /// best range (lower is better), adjusted by its damage type against this enemy; fallback weapons (knives,
+    /// crowbars) only win when nothing else has ammo (unless bUseFallbackWeapons), and a new choice is kept for a while.
+    /// uc: ScriptedPawn.SwitchToBestWeapon, ScriptedPawn.GetWeaponBestRange, ScriptedPawn.WeaponDamageType
+    fn switch_to_best_weapon(&mut self, enemy: Option<EnemyInfo>) {
+        let e = enemy.unwrap_or(EnemyInfo { range: 400.0, ..Default::default() });
+        let enemy_set = enemy.is_some();
+        let pawn = enemy_set && !e.player;
+        let (min_enemy, acc_enemy) = e.wrange.map(|(a, b)| (a as f64, b as f64)).unwrap_or((0.0, 0.0));
         let mut best: Option<(usize, f64, i32)> = None;
         for i in 0..self.arsenal.len() {
             let w = &self.arsenal[i];
@@ -1612,45 +1655,86 @@ impl Npc {
             if !valid {
                 continue;
             }
-            // GetWeaponBestRange (projectile weapons: no minimum for our purposes; AIMin/MaxRange if set).
-            let (wmin, wacc) = (0.0f64, w.accurate_range as f64);
-            let min_r = if w.ai_min_range > 0.0 && (w.ai_min_range as f64) <= wacc {
-                w.ai_min_range as f64
-            } else {
-                wmin
-            };
-            let acc_r = if w.ai_max_range > 0.0
-                && (w.ai_max_range as f64) >= min_r
-                && (w.ai_max_range as f64) <= wacc
-            {
-                w.ai_max_range as f64
-            } else {
-                wacc
-            };
-            let min_r = min_r.min(acc_r);
-            let cutoff = min_r + self.params.radius + enemy_radius;
+            // GetWeaponBestRange: GetWeaponRanges (thrown: no minimum), narrowed by AIMinRange / AIMaxRange.
+            let (wmin, wacc, _) = w.ranges();
+            let (wmin, wacc) = (wmin as f64, wacc as f64);
+            let (ai_min, ai_max) = (w.ai_min_range as f64, w.ai_max_range as f64);
+            let mut min_r = if ai_min > 0.0 && ai_min >= wmin && ai_min <= wacc { ai_min } else { wmin };
+            let acc_r = if ai_max > 0.0 && ai_max >= wmin && ai_max <= wacc { ai_max } else { wacc };
+            if min_r > acc_r {
+                min_r = acc_r;
+            }
+            let cutoff = min_r + self.params.radius + e.radius;
             let range = ((acc_r - min_r) * 0.5).max(50.0);
             let center = min_r + (acc_r - min_r) * 0.5;
-            let mut score = (enemy_range - center).abs() / range;
-            if cutoff >= enemy_range - self.params.radius && cutoff >= 256.0 {
+            let mut score = (e.range - center).abs() / range;
+            if min_r >= min_enemy && acc_r <= acc_enemy {
+                score += 0.5;
+            }
+            if cutoff >= e.range - self.params.radius && cutoff >= 256.0 {
                 score += 10000.0;
             }
             let mut level = 3;
-            if w.fallback {
+            if w.fallback && !self.use_fallback {
                 level = 2;
+            }
+            if !enemy_set && !w.use_as_drawn {
+                level = 1;
             }
             if w.ai_fire_delay > 0.0 && self.fire_timer > 0.0 {
                 level = 0;
             }
-            if w.stun && player {
-                score += 10.0;
-            }
-            if robot
-                && w.projectile
-                    .as_deref()
-                    .is_some_and(|p| p.contains("Poison"))
-            {
-                continue;
+            // Adjust by opponent and damage type.
+            let ammo = self.ammo_class_for(w);
+            match w.ai_damage_type(ammo) {
+                "Exploded" => score -= 0.2,
+                "Stunned" => {
+                    if pawn {
+                        score += if e.stunned { 1000.0 } else { -1.5 };
+                    }
+                    if e.player {
+                        score += 10.0;
+                    }
+                }
+                "TearGas" => {
+                    if (pawn && e.stunned) || e.robot {
+                        valid = false;
+                    } else if pawn {
+                        score -= 5.0;
+                    }
+                }
+                "HalonGas" => {
+                    if (pawn && (e.stunned || e.on_fire)) || e.robot {
+                        valid = false;
+                    } else if pawn {
+                        score -= 3.0;
+                    }
+                }
+                "PoisonGas" | "Poison" | "PoisonEffect" | "Radiation" => {
+                    if e.robot {
+                        valid = false;
+                    }
+                }
+                "Burned" | "Flamed" | "Shot" => {
+                    if e.robot {
+                        score += 0.5;
+                    }
+                }
+                "Sabot" => {
+                    if e.robot {
+                        score -= 0.5;
+                    }
+                }
+                "EMP" | "NanoVirus" => {
+                    if e.robot {
+                        score -= 5.0;
+                    } else if e.player {
+                        score += 5.0;
+                    } else {
+                        valid = false;
+                    }
+                }
+                _ => {}
             }
             let current = self.weapon.as_ref().is_some_and(|c| c.class == w.class);
             if current && self.weapon_timer < 10.0 {
@@ -1661,6 +1745,9 @@ impl Npc {
                 }
             } else {
                 score = (score + self.rand() as f64 * 0.1 - 0.05).max(0.0);
+            }
+            if !valid {
+                continue;
             }
             let win = match best {
                 None => true,
@@ -1977,7 +2064,7 @@ pub fn world_system(
                     println!("LEAVEWORLD {class} {tag}");
                 }
                 WorldReq::KnockOut(sel) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead => {
-                    hits.0.push(crate::damage::PawnHit {
+                    hits.0.push(crate::damage::PawnHit { world: false,
                         blocker: npc.blocker,
                         damage: 10000.0,
                         damage_type: "KnockedOut",
@@ -2014,7 +2101,7 @@ pub fn world_system(
                     npc.arsenal.clear();
                     npc.weapon = None;
                     npc.ammo_left.clear();
-                    hits.0.push(crate::damage::PawnHit {
+                    hits.0.push(crate::damage::PawnHit { world: false,
                         blocker: npc.blocker,
                         damage: 10000.0,
                         damage_type: "Shot",
@@ -2078,7 +2165,7 @@ pub fn world_system(
                 }
                 WorldReq::KillShot(sel) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead => {
                     npc.hp_body.invincible = false;
-                    hits.0.push(crate::damage::PawnHit {
+                    hits.0.push(crate::damage::PawnHit { world: false,
                         blocker: npc.blocker,
                         damage: 10000.0,
                         damage_type: "Shot",
@@ -3032,6 +3119,19 @@ fn sit_down(level: &dx_level::Level, npc: &mut Npc, deco: &mut Deco, p: &[Proper
 }
 
 /// One pawn as the others see it this frame (npc_system's snapshot for target selection and distress calls).
+/// SwitchToBestWeapon's view of the enemy: distance, collision radius, Robot / DeusExPlayer, bStunned, bOnFire and
+/// its weapon's (min, accurate) range.
+#[derive(Clone, Copy, Default)]
+struct EnemyInfo {
+    range: f64,
+    radius: f64,
+    robot: bool,
+    player: bool,
+    stunned: bool,
+    on_fire: bool,
+    wrange: Option<(f32, f32)>,
+}
+
 #[derive(Default)]
 struct Snap {
     blocker: usize,
@@ -3055,6 +3155,11 @@ struct Snap {
     /// Multiplayer: a player's body (that player's id).
     net_player: Option<u8>,
     yaw: f64,
+    /// bStunned (Stunned / RubbingEyes) and burning, and the held weapon's (min, accurate) range
+    /// (SwitchToBestWeapon reads them off the enemy).
+    stunned: bool,
+    on_fire: bool,
+    wrange: Option<(f32, f32)>,
 }
 
 /// npc_system's working buffers, kept between frames so a frame allocates nothing once they're warm.
@@ -3299,7 +3404,7 @@ fn alerting_state(npc: &mut Npc, an: &mut Animated, cx: &mut ActCx) -> (DVec3, b
                         });
                         alarms.trigger(i, npc.target, at);
                     } else if crate::perks::has("PerkSabotage") {
-                        new_hits.push(crate::damage::PawnHit {
+                        new_hits.push(crate::damage::PawnHit { world: false,
                             blocker: npc.blocker,
                             damage: 200.0,
                             damage_type: "Stunned",
@@ -3792,7 +3897,7 @@ fn puppet_dies(
                 let snd = if robot { "DeusExSounds.Generic.MediumExplosion1" } else { "DeusExSounds.Generic.LargeExplosion1" };
                 crate::sound::play(snd, at, 2.0, (boom * 4.0) as f32, 1.0);
                 // Effects only: the host's blast already hurt whoever it reached.
-                booms.0.push(crate::explosion::Boom { pos: at, damage: 0.0, radius: boom, damage_type: "Exploded", from: None, rings: false, fireball: true, fx: 0 });
+                booms.0.push(crate::explosion::Boom { world: true, pos: at, damage: 0.0, radius: boom, damage_type: "Exploded", from: None, rings: false, fireball: true, fx: 0 });
             }
         }
         Some(crate::netplay::PawnFx::Died { hit, from, damage, vel }) => {
@@ -3911,6 +4016,12 @@ fn fill_snaps<'a>(snaps: &mut Vec<Snap>, pawns: impl Iterator<Item = (&'a Npc, &
         s.disabled = n.hp_body.robot && n.emp_hp <= 0.0;
         s.net_player = n.net_player;
         s.yaw = n.yaw;
+        s.stunned = matches!(n.state, NpcState::Stunned(_) | NpcState::RubbingEyes(_));
+        s.on_fire = n.on_fire.is_some();
+        s.wrange = n.weapon.as_ref().map(|w| {
+            let (a, b, _) = w.ranges();
+            (a, b)
+        });
     }
     snaps.truncate(count);
 }
@@ -3990,7 +4101,7 @@ fn killswitch_step(
             None => {
                 npc.killswitch = None;
                 let c = blockers.list[npc.blocker].center;
-                new_hits.push(crate::damage::PawnHit {
+                new_hits.push(crate::damage::PawnHit { world: false,
                     blocker: npc.blocker,
                     damage: 10000.0,
                     damage_type: "Shot",
@@ -4612,7 +4723,7 @@ fn burn_tick(
             npc.hp_body.total();
             hp.0.insert(npc.blocker, npc.hp_body.health);
             if npc.hp_body.health <= 0.0 {
-                new_hits.push(crate::damage::PawnHit {
+                new_hits.push(crate::damage::PawnHit { world: false,
                     blocker: npc.blocker,
                     damage: 10.0,
                     damage_type: "Burned",
@@ -4900,9 +5011,10 @@ fn pawn_logs(
         if lvl.actors[npc.actor].name.eq_ignore_ascii_case(want) && (now * 2.0).floor() != ((now - dt) * 2.0).floor() {
             let c = blockers.list[npc.blocker].center;
             println!(
-                "PAWNLOG t={:.1} {} at ({:.0},{:.0},{:.0}) yaw={:.0} state={:?} phase={:?} anim={} wish={:.2?} route={} target={:?} fired={}",
+                "PAWNLOG t={:.1} {} at ({:.0},{:.0},{:.0}) yaw={:.0} state={:?} phase={:?} anim={} wish={:.2?} route={} target={:?} fired={} weapon={} loaded={} ammo={:?}",
                 now, lvl.actors[npc.actor].name, c.x, c.y, c.z, npc.yaw.to_degrees(), npc.state, npc.atk_phase, npc.anim, wish.truncate(),
-                npc.route.is_some(), npc.target, npc.just_fired
+                npc.route.is_some(), npc.target, npc.just_fired,
+                npc.weapon.as_ref().map(|w| w.class.as_str()).unwrap_or("-"), npc.loaded, npc.weapon_ammo()
             );
         }
     }
@@ -5966,15 +6078,25 @@ fn pick_weapon_for_range(npc: &mut Npc, cx: &ActCx, dist: f64) {
     if npc.switch_check <= 0.0 && npc.reload_timer <= 0.0 {
         npc.switch_check = 0.5;
         let enemy = match npc.target {
-            Some(Target::Player) => Some((dist, player.params.radius, false, true)),
+            Some(Target::Player) => Some(EnemyInfo {
+                range: dist,
+                radius: player.params.radius,
+                player: true,
+                wrange: crate::weapons::player_ranges(),
+                ..Default::default()
+            }),
             Some(Target::Pawn(b)) => {
                 let c = blockers.list[b];
-                Some((
-                    dist,
-                    c.radius,
-                    find(&lvl.actors[c.actor].props, "EMPHitPoints").is_some(),
-                    false,
-                ))
+                let snap = cx.senses.snap_of(b);
+                Some(EnemyInfo {
+                    range: dist,
+                    radius: c.radius,
+                    robot: find(&lvl.actors[c.actor].props, "EMPHitPoints").is_some(),
+                    stunned: snap.is_some_and(|s| s.stunned),
+                    on_fire: snap.is_some_and(|s| s.on_fire),
+                    wrange: snap.and_then(|s| s.wrange),
+                    ..Default::default()
+                })
             }
             None => None,
         };
@@ -7364,7 +7486,7 @@ fn ai_can_shoot(npc: &Npc, cx: &ActCx, lead: bool, discount_min: bool) -> Option
     let safe = if w.instant {
         ai_safe_to_shoot(npc, cx, start, end, DVec3::ZERO, true)
     } else {
-        let p = w.proj.unwrap_or(crate::weapons::ProjInfo { blast_radius: 0.0, accurate: 0.0, max: 0.0, radius: 0.0, height: 0.0, thrown });
+        let p = w.proj.unwrap_or(crate::weapons::ProjInfo { blast_radius: 0.0, accurate: 0.0, max: 0.0, radius: 0.0, height: 0.0, thrown, damage_type: "None" });
         let ext = DVec3::new(p.radius as f64, p.radius as f64, p.height as f64) * 3.0;
         ai_safe_to_shoot(npc, cx, start, end, ext, false)
     };
@@ -7453,7 +7575,7 @@ fn trace_shot(npc: &Npc, w: &crate::weapons::WeaponStats, cx: &mut ActCx, dir: D
     if w.penetrating && !robot {
         cx.blood.0.push((at - dir, dir));
     }
-    cx.new_hits.push(crate::damage::PawnHit {
+    cx.new_hits.push(crate::damage::PawnHit { world: false,
         blocker: b,
         damage: w.hit_damage,
         damage_type: dtype,
@@ -7797,7 +7919,7 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
     let self_destruct = crate::pawnclass::explodes_on_death(cls) && !(knocked_out || stunned);
     if self_destruct {
         crate::sound::play("DeusExSounds.Generic.LargeExplosion1", center, 1.0, 256.0 * 16.0, 1.0);
-        booms.0.push(crate::explosion::Boom {
+        booms.0.push(crate::explosion::Boom { world: true,
             pos: center,
             damage: 100.0,
             radius: 256.0,
@@ -7832,7 +7954,7 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
                 rr,
                 1.0,
             );
-            booms.0.push(crate::explosion::Boom {
+            booms.0.push(crate::explosion::Boom { world: true,
                 pos: center,
                 damage: (0.5 * r) as f32,
                 radius: 8.0 * r,
@@ -8283,7 +8405,9 @@ pub fn player_health_ui(
         hud.text.clear();
         hud.time_left = 0.0;
     }
-    if ph.dead {
+    // (A deathmatch has its own death screen and respawns: mphud / netplay.)
+    let versus = crate::deathmatch::playing();
+    if ph.dead && !versus {
         // Ours: Enter (pad: the Jump button) loads the most recent save; worded for the device in use. Whether there
         // is one is asked again only after a save is written or deleted, or for another character: save::latest
         // lists the save folder and looks at each file, every frame the death screen was up.
@@ -8331,7 +8455,7 @@ pub fn player_health_ui(
         );
     }
     let pad_confirm = crate::gamepad::frame().pad_last && keys.just_pressed(KeyCode::Space);
-    if ph.dead && !crate::menus::open() && (keys.just_pressed(KeyCode::Enter) || pad_confirm) {
+    if ph.dead && !versus && !crate::menus::open() && (keys.just_pressed(KeyCode::Enter) || pad_confirm) {
         // The most recent save (manual, quick or auto) is loaded; with none, the map is rebuilt from scratch in
         // place (loader.rs) with the same character: every pawn, door, item and flag back to how the map starts.
         if let Some(last) = crate::save::latest() {
@@ -8782,12 +8906,25 @@ mod weapon_choice_tests {
         n.ammo = Some("Ammo10mm".into());
         n.ammo_left = vec![("Ammo10mm".into(), 2)];
         // Even point blank, the gun beats the fallback knife while it has ammo.
-        n.switch_to_best_weapon(Some((40.0, 16.0, false, true)));
+        n.switch_to_best_weapon(Some(EnemyInfo { range: 40.0, radius: 16.0, player: true, ..Default::default() }));
         assert_eq!(n.weapon.as_ref().unwrap().class, "WeaponPistol");
         n.use_ammo();
         n.use_ammo();
         assert_eq!(n.weapon_ammo(), Some(0));
-        n.switch_to_best_weapon(Some((40.0, 16.0, false, true)));
+        n.switch_to_best_weapon(Some(EnemyInfo { range: 40.0, radius: 16.0, player: true, ..Default::default() }));
+        assert_eq!(n.weapon.as_ref().unwrap().class, "WeaponCombatKnife");
+    }
+
+    #[test]
+    fn use_fallback_weapons_prefers_the_knife_up_close() {
+        let mut n = Npc::new(0, 0, &[], 0, DVec3::ZERO);
+        n.use_fallback = true;
+        n.arsenal = vec![
+            stats("WeaponPistol", 6, 2400.0, false, Some("Ammo10mm")),
+            stats("WeaponCombatKnife", 0, 80.0, true, None),
+        ];
+        n.ammo_left = vec![("Ammo10mm".into(), 20)];
+        n.switch_to_best_weapon(Some(EnemyInfo { range: 40.0, radius: 16.0, player: true, ..Default::default() }));
         assert_eq!(n.weapon.as_ref().unwrap().class, "WeaponCombatKnife");
     }
 
@@ -8802,7 +8939,7 @@ mod weapon_choice_tests {
         n.arsenal = vec![bite.into(), bump.into()];
         n.weapon_timer = 100.0;
         n.fire_timer = 8.0;
-        n.switch_to_best_weapon(Some((60.0, 16.0, false, true)));
+        n.switch_to_best_weapon(Some(EnemyInfo { range: 60.0, radius: 16.0, player: true, ..Default::default() }));
         assert_eq!(n.weapon.as_ref().unwrap().class, "WeaponKarkianBite");
     }
 

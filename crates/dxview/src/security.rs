@@ -326,6 +326,9 @@ struct Cam {
     msg_off: String,
     /// The lens shown (netplay::LENS_*), for the joiners.
     net_lens: u8,
+    /// Classic multiplayer (SecurityCamera.safeTarget / team, MakeCameraAlly): who switched it on - it never
+    /// watches him or his team.
+    mp_safe: Option<u8>,
 }
 
 struct Turret {
@@ -370,6 +373,17 @@ struct Turret {
     /// The lens shown (netplay::LENS_*) and shots fired (wrapping), for the joiners.
     net_lens: u8,
     shots: u8,
+    /// Classic multiplayer (AutoTurret.safeTarget / team): the player who set it from a security computer (it
+    /// never shoots him or, in a team game, his team), and SetSafeTarget's 2.5 s switch-over.
+    mp_safe: Option<u8>,
+    mp_team: Option<u8>,
+    switch_t: f32,
+    beep_t: f32,
+}
+
+/// A Classic multiplayer match is on (AutoTurret's NetMode != NM_Standalone branches).
+fn mp() -> bool {
+    crate::deathmatch::mp_body()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -668,10 +682,14 @@ pub fn security_system(
         BLASTS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     // Multiplayer (host): the joiners' blasts, security computer settings and shots at turret guns.
     blasts.extend(crate::netplay::take_sec_blasts());
-    for (kind, tag, a, b) in crate::netplay::take_sec_controls() {
+    for (kind, tag, a, b, peer) in crate::netplay::take_sec_controls() {
         match kind {
             0 => {
+                let mp = mp();
                 for c in st.cams.iter_mut().filter(|c| !c.gone && c.tag.eq_ignore_ascii_case(&tag)) {
+                    if mp {
+                        c.mp_safe = (a > 0.5).then_some(peer);
+                    }
                     if a > 0.5 {
                         cam_trigger(c, false);
                     } else {
@@ -680,7 +698,7 @@ pub fn security_system(
                 }
             }
             1 => control::set_camera_desired(st, &tag, (a as f64, b as f64)),
-            _ => control::set_turret(st, &tag, a as u8),
+            _ => control::set_turret_by(st, &tag, a as u8, peer),
         }
     }
     for (base, damage, kind) in crate::netplay::take_turret_hits() {
@@ -980,8 +998,12 @@ fn apply_hacks(st: &mut Security, hacked: Vec<usize>, lvl: &dx_level::Level) {
             }
         }
         if let Some(t) = st.turrets.iter_mut().find(|t| t.gun_blocker == b && !t.gone) {
-            // AutoTurretGun.HackAction: disable, or bring back.
-            if !t.disabled {
+            // AutoTurretGun.HackAction: disable, or bring back (in a net game: disabled, whoever owned it).
+            if mp() {
+                turret_untrigger(t);
+                t.disabled = true;
+                t.mp_safe = None;
+            } else if !t.disabled {
                 turret_untrigger(t);
                 t.disabled = true;
             } else {
@@ -1184,7 +1206,7 @@ fn sees_player(world: &World, f: &Frame, from: DVec3) -> bool {
 }
 
 /// Pawns a turret can target: (blocker, centre, hostile to the player).
-fn turret_pawns(npcs: &Query<&Npc>, lvl: &dx_level::Level, blockers: &Blockers) -> Vec<(usize, DVec3, bool)> {
+fn turret_pawns(npcs: &Query<&Npc>, lvl: &dx_level::Level, blockers: &Blockers) -> Vec<(usize, DVec3, bool, Option<u8>)> {
     npcs.iter()
         .filter(|n| {
             n.state != NpcState::Dead
@@ -1196,7 +1218,7 @@ fn turret_pawns(npcs: &Query<&Npc>, lvl: &dx_level::Level, blockers: &Blockers) 
                 && !(setting!("FixTurretAnimals") > 0.5
                     && crate::classtree::is_a(&lvl.actors[n.actor].class, "Animal"))
         })
-        .map(|n| (n.blocker, n.body.as_ref().map_or(blockers.list[n.blocker].center, |b| b.location), n.hates("Player")))
+        .map(|n| (n.blocker, n.body.as_ref().map_or(blockers.list[n.blocker].center, |b| b.location), n.hates("Player"), n.net_player))
         .collect()
 }
 
@@ -1312,7 +1334,10 @@ fn camera_watch(c: &mut Cam, cx: &mut DevCx) -> (&'static str, Option<u8>, Optio
             c.check_t = 0.0;
             // CheckPlayerVisibility (multiplayer: every player's body on the host counts too).
             let range = crate::smartai::camera_range(c.range);
-            let host_seen = cx.f.detectable && !cx.f.radar_trans && me.distance(c.pos) <= range && sees_player(&cx.world, &cx.f, c.pos);
+            // (Classic multiplayer: AcquireMultiplayerTarget skips its owner and his team.)
+            let me_id = crate::deathmatch::my_id();
+            let friend = mp() && c.mp_safe.is_some_and(|s| s == me_id || (crate::deathmatch::team_mode() && crate::deathmatch::allied(s, me_id)));
+            let host_seen = !friend && cx.f.detectable && !cx.f.radar_trans && me.distance(c.pos) <= range && sees_player(&cx.world, &cx.f, c.pos);
             let seen_at = if host_seen {
                 Some(me)
             } else if crate::netplay::is_host() {
@@ -1396,7 +1421,7 @@ fn camera_watch(c: &mut Cam, cx: &mut DevCx) -> (&'static str, Option<u8>, Optio
 fn turret_tick(
     t: &mut Turret,
     cx: &mut DevCx,
-    pawns: &[(usize, DVec3, bool)],
+    pawns: &[(usize, DVec3, bool, Option<u8>)],
     decos: &mut Query<(&mut Deco, &mut Transform), Without<LaserFx>>,
     children: &Query<&Children>,
     part_mats: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
@@ -1444,6 +1469,27 @@ fn turret_tick(
             t.confusion_dur = 10.0;
         }
     }
+    if mp() {
+        // AutoTurret.Tick in a net game: nobody's (or its owner gone / on another team now) = disabled; the
+        // switch-over beeps (UpdateSwitch).
+        if !t.disabled {
+            let me_id = crate::deathmatch::my_id();
+            let present = |id: u8| id == me_id || crate::netplay::has_player(id);
+            let valid = t.mp_safe.is_some_and(|s| present(s) && (t.mp_team.is_none() || crate::deathmatch::team_of(s) == t.mp_team));
+            if !valid {
+                t.disabled = true;
+                t.mp_safe = None;
+            }
+        }
+        if t.switch_t > 0.0 {
+            t.switch_t -= dt;
+            t.beep_t -= dt;
+            if t.beep_t <= 0.0 && t.switch_t > 0.0 {
+                crate::sound::play("DeusExSounds.Generic.TurretSwitch", t.gun_pos, 1.0, t.max_range as f32, 1.0);
+                t.beep_t = 0.75;
+            }
+        }
+    }
     let on = t.active && !t.disabled;
     if env_on!("DXVIEW_TURRETLOG") && t.gun_pos.distance(me) < 2000.0 {
         let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(cx.movers) };
@@ -1462,11 +1508,52 @@ fn turret_tick(
 /// AutoTurret target selection (bTrackPlayersOnly / bTrackPawnsOnly) and the DesiredRotation toward it. Returns
 /// where the gun would point at the target (unclamped), for the fire check.
 /// uc: AutoTurret.Tick
-fn turret_target(t: &mut Turret, cx: &mut DevCx, pawns: &[(usize, DVec3, bool)], on: bool) -> (f64, f64) {
+fn turret_target(t: &mut Turret, cx: &mut DevCx, pawns: &[(usize, DVec3, bool, Option<u8>)], on: bool) -> (f64, f64) {
     let (lvl, blockers, movers, me) = (cx.lvl, cx.blockers, cx.movers, cx.f.me);
     let (detectable, radar_trans) = (cx.f.detectable, cx.f.radar_trans);
     let mut dest = t.want;
-    if on {
+    if on && mp() {
+        // AcquireMultiplayerTarget: players only - not its owner, not his teammates, not with Radar Transparency
+        // on, in range and in sight; none while switching owners.
+        let had = t.target;
+        t.target = None;
+        if !t.confused && t.switch_t <= 0.0 {
+            let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(movers) };
+            let clear = |to: DVec3| w.trace(t.gun_pos, to, DVec3::ZERO).fraction >= 0.999;
+            let ok = |id: u8| t.mp_safe != Some(id) && !t.mp_safe.is_some_and(|s| crate::deathmatch::team_mode() && crate::deathmatch::allied(s, id));
+            let me_id = crate::deathmatch::my_id();
+            let mut best: Option<(f64, TurretTarget)> = None;
+            if ok(me_id) && detectable && !radar_trans && !crate::computers::player_ignored() {
+                let d = me.distance(t.gun_pos);
+                if d < t.max_range && clear(me) {
+                    best = Some((d, TurretTarget::Player));
+                }
+            }
+            for p in pawns.iter().filter(|p| p.3.is_some_and(|id| ok(id) && !crate::netplay::remote_aug(id, "AugRadarTrans"))) {
+                let d = p.1.distance(t.gun_pos);
+                if d < t.max_range && best.is_none_or(|b| d < b.0) && clear(p.1) {
+                    best = Some((d, TurretTarget::Pawn(p.0)));
+                }
+            }
+            t.target = best.map(|b| b.1);
+            if t.target.is_some() && t.target != had {
+                crate::sound::play("DeusExSounds.Generic.TurretLocked", t.gun_pos, 1.0, t.max_range as f32, 1.0);
+            }
+        }
+        match t.target {
+            Some(tt) => {
+                let at = match tt {
+                    TurretTarget::Player => me,
+                    TurretTarget::Pawn(b) | TurretTarget::Deco(b) => blockers.list[b].center,
+                };
+                let (p, y) = rotator(at - t.gun_pos);
+                dest = (p, y);
+                let near = t.pitch_limit / 2.0;
+                t.want = (p.clamp(t.orig.0 - near, t.orig.0 + near), y);
+            }
+            None => t.want = t.orig,
+        }
+    } else if on {
         t.target = None;
         if !t.confused {
             cx.world.ignore = Some(t.gun_blocker);
@@ -2082,6 +2169,10 @@ fn fire(
     }
     let dir = (end - start).normalize_or_zero();
     if player_hit {
+        // In a net game the turret's owner gets the kill (AutoTurret.Fire: attacker = safetarget).
+        if let Some(owner) = t.mp_safe.filter(|_| mp()) {
+            crate::netplay::note_hurt_by(owner);
+        }
         ph.damage(t.damage, "AutoShot", crate::ai::player_offset(player_cyl.center, player_yaw, at));
         // A spark where it hits and the player bleeds (SpawnBlood: pawns that aren't robots).
         crate::impacts::spark(at, -dir);
@@ -2118,13 +2209,23 @@ fn fire(
         Some(b) => {
             let a = &lvl.actors[blockers.list[b].actor];
             if find(&a.props, "GroundSpeed").is_some() {
-                // The pawn it meant to shoot blames the player (attacker = GetPlayerPawn()).
-                pawn_hits.0.push(crate::damage::PawnHit {
+                // The pawn it meant to shoot blames the player (attacker = GetPlayerPawn()); in a net game its
+                // owner (safetarget), nobody's = the world's.
+                let (attacker, world) = match t.mp_safe.filter(|_| mp()) {
+                    Some(o) if o == crate::deathmatch::my_id() => (None, false),
+                    Some(o) => match crate::netplay::body_blocker(o) {
+                        Some(bb) => (Some(bb), false),
+                        None => (None, true),
+                    },
+                    None if mp() => (None, true),
+                    None => (None, false),
+                };
+                pawn_hits.0.push(crate::damage::PawnHit { world,
                     blocker: b,
                     damage: t.damage,
                     damage_type: "AutoShot",
                     hit_loc: at,
-                    attacker: None,
+                    attacker,
                     attacker_pos: start,
                 });
             } else {
@@ -2217,7 +2318,10 @@ fn init(
         let Some(gun) = spawn_gun(i, gun_class, &p, commands, lvl, blockers, assets, images, meshes, materials) else {
             continue;
         };
-        let turret = new_turret(i, &p, gun, &by_actor, blockers);
+        let mut turret = new_turret(i, &p, gun, &by_actor, blockers);
+        if crate::deathmatch::classic() && crate::deathmatch::versus() && crate::deathmatch::is_dm_map(&lvl.name) {
+            mp_turret_setup(&mut turret, &lvl.actors[i].class);
+        }
         st.turrets.push(turret);
     }
     println!(
@@ -2329,6 +2433,7 @@ fn new_camera(
         msg_on: { let m = sv(&d, "msgActivated"); if m.is_empty() { "Camera activated".into() } else { m } },
         msg_off: { let m = sv(&d, "msgDeactivated"); if m.is_empty() { "Camera deactivated".into() } else { m } },
         net_lens: 0,
+        mp_safe: None,
     }
 }
 
@@ -2538,7 +2643,24 @@ fn new_turret(i: usize, p: &[Property], gun: GunSpawn, by_actor: &HashMap<usize,
         seed,
         net_lens: 0,
         shots: 0,
+        mp_safe: None,
+        mp_team: None,
+        switch_t: 0.0,
+        beep_t: 0.0,
     }
+}
+
+/// AutoTurret.PreBeginPlay in a net game: the multiplayer range and damage, invincible, and disabled unless it
+/// starts active (bDisabled = !bActive). For a Classic match's map.
+fn mp_turret_setup(t: &mut Turret, class: &str) {
+    use unreal_pkg::props::Value;
+    if let Some(Value::Int(r)) = crate::classicmp::class_value(class, "mpTurretRange") {
+        t.max_range = r as f64;
+    }
+    if let Some(Value::Int(d)) = crate::classicmp::class_value(class, "mpTurretDamage") {
+        t.damage = d as f32;
+    }
+    t.disabled = !t.active;
 }
 
 /// What a security computer shows and controls (ComputerSecurityCameraWindow / ComputerScreenSecurity).
@@ -2557,7 +2679,16 @@ pub mod control {
         if crate::netplay::is_client() {
             crate::netplay::sec_control_out(0, tag, if on { 1.0 } else { 0.0 }, 0.0);
         }
+        set_camera_by(st, tag, on, crate::deathmatch::my_id());
+    }
+
+    /// The same by player `owner` (DeusExPlayer.ToggleCameraState: switching it on makes it his, MakeCameraAlly).
+    pub fn set_camera_by(st: &mut Security, tag: &str, on: bool, owner: u8) {
+        let mp = mp();
         for c in st.cams.iter_mut().filter(|c| !c.gone && c.tag.eq_ignore_ascii_case(tag)) {
+            if mp {
+                c.mp_safe = on.then_some(owner);
+            }
             if on {
                 cam_trigger(c, true);
             } else {
@@ -2601,12 +2732,29 @@ pub mod control {
         })
     }
 
-    /// ComputerScreenSecurity.SetTurretState / SetTurretTrackMode.
+    /// ComputerScreenSecurity.SetTurretState / SetTurretTrackMode, by this player.
     pub fn set_turret(st: &mut Security, tag: &str, mode: u8) {
         if crate::netplay::is_client() {
             crate::netplay::sec_control_out(2, tag, mode as f32, 0.0);
         }
+        set_turret_by(st, tag, mode, crate::deathmatch::my_id());
+    }
+
+    /// The same by player `owner` (the host, for a joiner's computer). In a Classic match the turret becomes
+    /// his (DeusExPlayer.SetTurretTrackMode: SetSafeTarget + team).
+    pub fn set_turret_by(st: &mut Security, tag: &str, mode: u8, owner: u8) {
+        let mp = mp();
         for t in st.turrets.iter_mut().filter(|t| !t.gone && t.tag.eq_ignore_ascii_case(tag)) {
+            if mp {
+                if mode == 0 {
+                    t.mp_safe = None;
+                } else {
+                    t.mp_safe = Some(owner);
+                    t.mp_team = crate::deathmatch::team_of(owner);
+                    t.switch_t = 2.5;
+                    t.beep_t = 0.0;
+                }
+            }
             match mode {
                 0 => {
                     // SetTurretState(False, True): off and disabled.

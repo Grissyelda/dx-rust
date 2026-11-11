@@ -31,6 +31,103 @@ pub struct DmChar {
     pub wins: u32,
     pub created: u64,
     pub saved: u64,
+    // ---- Operative profile v1 (Modern multiplayer, MULTIPLAYER roadmap Phase 0): what carries between matches.
+    /// Credits to spend, and all ever earned.
+    pub credits: u32,
+    pub credits_total: u32,
+    /// Teammates healed.
+    pub heals: u32,
+    /// Bought unlocks by id ("perk.sprinter", "mod.pistol.scope" ...; the store comes with Phase 2).
+    pub unlocks: Vec<String>,
+    /// Loadouts, and the one in use.
+    pub loadouts: Vec<Loadout>,
+    pub loadout: usize,
+}
+
+/// A loadout: the weapons and items a Modern match starts with.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Loadout {
+    pub name: String,
+    pub primary: String,
+    pub secondary: String,
+    pub items: Vec<String>,
+}
+
+/// What earns credits (data/deathmatch.ron `profile`).
+#[derive(Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct ProfileTuning {
+    pub per_kill: u32,
+    pub per_heal: u32,
+    pub per_match: u32,
+    pub per_win: u32,
+    /// Kills with a weapon for each mastery level.
+    pub mastery: Vec<u32>,
+    pub max_loadouts: usize,
+}
+
+impl Default for ProfileTuning {
+    fn default() -> Self {
+        ProfileTuning { per_kill: 10, per_heal: 5, per_match: 25, per_win: 75, mastery: vec![10, 25, 50, 100, 200, 350, 500], max_loadouts: 5 }
+    }
+}
+
+fn tuning() -> &'static ProfileTuning {
+    &crate::deathmatch::data().profile
+}
+
+/// Weapon mastery: (level, kills for the next level or None at the top) from the kills with it.
+pub fn mastery(c: &DmChar, weapon: &str) -> (usize, Option<u32>) {
+    let kills = c.kills.iter().find(|k| k.0 == weapon).map_or(0, |k| k.1);
+    let steps = &tuning().mastery;
+    let level = steps.iter().filter(|&&n| kills >= n).count();
+    (level, steps.get(level).copied())
+}
+
+/// Credits earned now (a Modern match only: Classic is the original's, nothing carries).
+fn earn(c: &mut DmChar, n: u32) {
+    c.credits = c.credits.saturating_add(n);
+    c.credits_total = c.credits_total.saturating_add(n);
+}
+
+/// Spend credits on an unlock; Err when it's already had or too dear.
+pub fn buy(c: &mut DmChar, id: &str, cost: u32) -> Result<(), &'static str> {
+    if c.unlocks.iter().any(|u| u == id) {
+        return Err("Already unlocked.");
+    }
+    if c.credits < cost {
+        return Err("Not enough credits.");
+    }
+    c.credits -= cost;
+    c.unlocks.push(id.to_string());
+    Ok(())
+}
+
+/// Add or replace a loadout (by name), up to the tuning's limit.
+pub fn set_loadout(c: &mut DmChar, l: Loadout) -> Result<usize, &'static str> {
+    if let Some(i) = c.loadouts.iter().position(|x| x.name == l.name) {
+        c.loadouts[i] = l;
+        return Ok(i);
+    }
+    if c.loadouts.len() >= tuning().max_loadouts {
+        return Err("No room for another loadout.");
+    }
+    c.loadouts.push(l);
+    Ok(c.loadouts.len() - 1)
+}
+
+/// A teammate healed (Modern co-op of the match): counted, credits.
+pub fn note_heal() {
+    if crate::deathmatch::classic() {
+        return;
+    }
+    let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = g.as_mut() {
+        c.heals += 1;
+        earn(c, tuning().per_heal);
+        save(c);
+    }
 }
 
 fn now() -> u64 {
@@ -221,9 +318,13 @@ pub fn new_game(c: &DmChar) -> crate::travel::NewGame {
 
 /// A kill in deathmatch with `weapon`: counted, and a skin it earns is announced. Returns the notice.
 pub fn credit_kill(weapon: &str) -> Option<String> {
+    if crate::deathmatch::classic() {
+        return None;
+    }
     let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     let c = g.as_mut()?;
     c.total_kills += 1;
+    earn(c, tuning().per_kill);
     if weapon.is_empty() {
         save(c);
         return None;
@@ -246,6 +347,9 @@ pub fn credit_kill(weapon: &str) -> Option<String> {
 
 /// The match is over: a death, a match, a win counted.
 pub fn note_death() {
+    if crate::deathmatch::classic() {
+        return;
+    }
     let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(c) = g.as_mut() {
         c.deaths += 1;
@@ -254,11 +358,16 @@ pub fn note_death() {
 }
 
 pub fn note_match(won: bool) {
+    if crate::deathmatch::classic() {
+        return;
+    }
     let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(c) = g.as_mut() {
         c.matches += 1;
+        earn(c, tuning().per_match);
         if won {
             c.wins += 1;
+            earn(c, tuning().per_win);
         }
         save(c);
     }
@@ -287,6 +396,23 @@ pub fn weapon_name(class: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn profile_mastery_and_store() {
+        let mut c = super::fresh();
+        c.kills.push(("WeaponPistol".into(), 26));
+        assert_eq!(super::mastery(&c, "WeaponPistol"), (2, Some(50)));
+        assert_eq!(super::mastery(&c, "WeaponRifle"), (0, Some(10)));
+        super::earn(&mut c, 30);
+        assert_eq!(super::buy(&mut c, "perk.sprinter", 50), Err("Not enough credits."));
+        assert_eq!(super::buy(&mut c, "perk.sprinter", 20), Ok(()));
+        assert_eq!(c.credits, 10);
+        assert_eq!(c.credits_total, 30);
+        assert!(super::buy(&mut c, "perk.sprinter", 0).is_err());
+        let l = super::Loadout { name: "Stealth".into(), primary: "WeaponMiniCrossbow".into(), ..Default::default() };
+        assert_eq!(super::set_loadout(&mut c, l.clone()), Ok(0));
+        assert_eq!(super::set_loadout(&mut c, l), Ok(0));
+    }
+
     use super::*;
 
     #[test]

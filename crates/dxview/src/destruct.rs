@@ -414,6 +414,8 @@ pub fn deco_damage_system(
         if find(p, "GroundSpeed").is_some()
             || flag(p, "bStatic")
             || flag(p, "bInvincible")
+            // AutoTurret / AutoTurretGun in a net game: bInvincible (PreBeginPlay).
+            || (crate::deathmatch::mp_body() && (a.class.starts_with("AutoTurret") || a.class == "SecurityCamera"))
             || find(p, "HitPoints").is_none()
         {
             continue;
@@ -573,7 +575,7 @@ pub fn deco_damage_system(
                 "DeusExSounds.Generic.LargeExplosion1"
             };
             crate::sound::play(snd, center, 1.0, (radius * 16.0) as f32, 1.0);
-            booms.0.push(crate::explosion::Boom {
+            booms.0.push(crate::explosion::Boom { world: true,
                 pos: center,
                 // The host's break: the blast's look only (the host's blast hurts).
                 damage: if net_break { 0.0 } else { damage },

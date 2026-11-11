@@ -951,7 +951,7 @@ impl Enhance {
     /// The on / off enhancements: gameplay, interface, AI, visuals, fixes, quality of life, sound.
     fn toggle_items(items: &mut Vec<Choice>) {
         for (key, group, lbl, help) in [
-            ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo and switch weapons (or to melee) when they run dry, as the original scripts say. They reload every clip either way."),
+            ("NPCFiniteAmmo", "Gameplay", "NPC Ammo Runs Out", "Enemies use up their ammo and switch weapons (or to melee) when they run dry, as in the original. Off: endless ammo. They reload every clip either way."),
             ("FloorConsumables", "Gameplay", "Use Consumables From The Floor", "With no room in your inventory, a medkit, bioelectric cell, food or drink you pick up is used on the spot."),
             ("LadderGrab", "Gameplay", "Grab Ladders", "Use takes hold of a ladder and Jump lets go; on it, forward and back climb up and down."),
             ("NotesAutofill", "Gameplay", "Codes From Notes", "Keypad codes and computer logins you've noted are offered: Tab (pad: Y) types a keypad code or fills in a login."),
@@ -1713,7 +1713,34 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             f = frame(assets, "MenuScreenDisplay");
             f.class = class.to_string();
             f.title = "Match Settings".into();
-            let choices = match_choices();
+            let choices = match crate::deathmatch::rules().filter(|r| r.classic()) {
+                Some(r) => classic_match_choices(r.classic.game),
+                None => match_choices(),
+            };
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, choices.len(), slots);
+            Body::Choices { choices }
+        }
+        "MenuScreenPlayerSetup" => {
+            // MenuScreenPlayerSetup's class choice (menuchoice_class) for Classic deathmatch; team games dress
+            // each player in his team's class.
+            f = frame(assets, "MenuScreenDisplay");
+            f.class = class.to_string();
+            f.title = "Player Setup".into();
+            let v = crate::settings::get("MpClass").clamp(0.0, 3.0);
+            let choices = vec![Choice {
+                key: "MpClass".into(),
+                label: "|&Class".into(),
+                help: "Who you play in a Classic deathmatch (team games: UNATCO troopers against NSF terrorists).".into(),
+                kind: ChoiceKind::Enum(crate::deathmatch::CLASSIC_CLASSES.iter().map(|c| c.1.to_string()).collect()),
+                value: v,
+                saved: v,
+                info_w: 140,
+                info_x: 270,
+                control_x: 270,
+                voff: 0,
+                dropdown: false,
+            }];
             let slots = art_rows(&f);
             cut_empty_rows(&mut f, choices.len(), slots);
             Body::Choices { choices }
@@ -1995,6 +2022,47 @@ fn match_choices() -> Vec<Choice> {
         e("DmAfter", "After the |&Match", "When a match ends and its results have shown: the next of the five maps, the same map again, or back to the room.", ["Next Map", "Same Map", "Back to Room"].iter().map(|s| s.to_string()).collect()),
         e("DmAutoBalance", "Team |&Auto-Balance", "Team Deathmatch: when one team is two players bigger, its next player to die joins the other.", ["Off", "On"].iter().map(|s| s.to_string()).collect()),
     ]
+}
+
+/// Classic Match Settings = MenuScreenHostGame's choices (map, victory type and value, friendly fire; and for the
+/// customizable game types the starting skill points / level / augmentations and what a kill brings). Values are
+/// stored as the choice's index (deathmatch::classic_rules_from_settings turns them into numbers).
+fn classic_match_choices(game: crate::deathmatch::ClassicGame) -> Vec<Choice> {
+    let d = crate::deathmatch::ClassicRules::of(game);
+    let e = |key: &str, label: &str, help: &str, values: Vec<String>, dflt: f32| {
+        let v = if crate::settings::has(key) { crate::settings::get(key) } else { dflt };
+        let v = v.clamp(0.0, values.len().saturating_sub(1) as f32);
+        Choice {
+            key: key.into(),
+            label: label.into(),
+            help: help.into(),
+            kind: ChoiceKind::Enum(values),
+            value: v,
+            saved: v,
+            info_w: 140,
+            info_x: 270,
+            control_x: 270,
+            voff: 0,
+            dropdown: false,
+        }
+    };
+    let nums = |n: std::ops::RangeInclusive<i32>, step: i32| n.map(|x| (x * step).to_string()).collect::<Vec<_>>();
+    let mut v = vec![
+        e("DmMap", "|&Map", "The multiplayer map to play (Server Map).", crate::deathmatch::maps().into_iter().map(|m| m.1).collect(), 0.0),
+        e("CmpVictory", "|&Victory Type", "Kill Limit: the first to the kills wins. Time Limit: the most kills when the clock runs out.", vec!["Kill Limit".into(), "Time Limit".into()], 0.0),
+        e("CmpScore", "Victory |&Value", "Kills to win, or minutes to play.", nums(1..=40, 1), (d.score_to_win.clamp(1, 40) - 1) as f32),
+    ];
+    if game.team() && game.customizable() {
+        v.push(e("CmpFriendly", "|&Friendly Fire", "How much of a hit on a teammate counts.", (0..=10).map(|x| format!("{}%", x * 10)).collect(), (d.friendly_fire * 10.0).round()));
+    }
+    if game.customizable() {
+        v.push(e("CmpSkillLevel", "Starting Skill |&Level", "Every skill starts at this level.", vec!["Trained".into(), "Advanced".into(), "Master".into()], (d.skill_level - 1).clamp(0, 2) as f32));
+        v.push(e("CmpSkillsAvail", "Starting |&Skill Points", "Skill points to spend (Skill menu key) at the start.", nums(0..=20, 500), (d.skills_avail / 500).clamp(0, 20) as f32));
+        v.push(e("CmpSkillsPerKill", "Skill Points per |&Kill", "Skill points a kill brings.", nums(0..=20, 500), (d.skills_per_kill / 500).clamp(0, 20) as f32));
+        v.push(e("CmpInitialAugs", "Starting |&Augmentations", "Augmentations installed at the start, in the preferred order.", nums(0..=9, 1), d.initial_augs.clamp(0, 9) as f32));
+        v.push(e("CmpAugsPerKill", "Augmentation |&Bonus", "Augmentations a kill brings.", nums(0..=9, 1), d.augs_per_kill.clamp(0, 9) as f32));
+    }
+    v
 }
 
 fn dualsense_choices() -> Vec<Choice> {
@@ -3466,7 +3534,7 @@ fn open_from_game(
     // Dead (DeusExPlayer state Dying): Escape or Fire brings up the menu to load a game.
     DEAD.store(ph.dead, Ordering::Relaxed);
     st.dead_t = if ph.dead { st.dead_t + dt } else { 0.0 };
-    let dead_click = ph.dead && st.dead_t > 2.0 && binds.buttons.just_pressed(MouseButton::Left);
+    let dead_click = ph.dead && st.dead_t > 2.0 && binds.buttons.just_pressed(MouseButton::Left) && !crate::mphud::death_screen();
     if st.stack.is_empty() && st.intro.is_none() && !others && (binds.keys.just_pressed(KeyCode::Escape) || dead_click) {
         let w = open_window(hud, assets, "MenuMain");
         st.push(w);
@@ -4801,6 +4869,7 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                 1 | 4 => {
                     save_choices(win);
                     if win.f.class == "MenuScreenMatchSettings" {
+                        crate::deathmatch::reapply_settings();
                         crate::deathmatch::room_go();
                     }
                     crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
@@ -5165,8 +5234,12 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
             // Wells 13..121 for the buttons, 157 for the connection line, 193 for the server's address, 229 for
             // the deathmatch character.
             const CUT: (i32, i32) = (224, 0);
-            let mut dm = b("Deathmatch Character", 229, 1, "MenuScreenDmCharacter");
-            dm.enabled = crate::dmchar::blocked().is_none();
+            // Without Augmentique (Modern deathmatch's characters) the well opens Classic's Player Setup instead.
+            let dm = if crate::dmchar::blocked().is_none() {
+                b("Deathmatch Character", 229, 1, "MenuScreenDmCharacter")
+            } else {
+                b("Player Setup", 229, 1, "MenuScreenPlayerSetup")
+            };
             let buttons = vec![
                 b("Host Room", 13, 1, "MenuScreenHostRoom"),
                 b("Join Room", 49, 1, "MenuScreenJoinRoom"),
@@ -5317,14 +5390,12 @@ fn mp_host_choices() -> Vec<Choice> {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
     let modern = crate::remaster::is_modern();
     vec![
-        mp_choice(
-            "MpMode",
-            "|&Game Mode",
-            "Co-op: play the story together. Deathmatch: everyone for themselves on the multiplayer maps. Team Deathmatch: UNATCO against the NSF, up to 8 a side. Match Settings sets the map and limits.",
-            // (Android hosts co-op only: deathmatch needs Modern and Augmentique.)
-            if crate::platform::android() { s(&["Co-op"]) } else { s(&["Co-op", "Deathmatch", "Team Deathmatch"]) },
-            0,
-        ),
+        if crate::platform::android() {
+            mp_choice("MpLook", "|&Look", "Android plays Classic: the original game for everyone in the room.", s(&["Classic"]), 0)
+        } else {
+            mp_choice("MpLook", "|&Look", &mp_look_help(!modern), s(&["Classic", "Modern"]), if modern { 1 } else { 0 })
+        },
+        mp_choice("MpMode", "|&Game Mode", &mp_mode_help(!modern), mp_mode_values(!modern), 0),
         mp_choice(
             "MpRoom",
             "|&Room",
@@ -5339,41 +5410,81 @@ fn mp_host_choices() -> Vec<Choice> {
             (2..=imsim_net::MAX_PLAYERS).map(|n| n.to_string()).collect(),
             (d.max_players.clamp(2, imsim_net::MAX_PLAYERS) - 2) as usize,
         ),
-        if crate::platform::android() {
-            mp_choice("MpLook", "|&Look", "Android plays Classic: the original game for everyone in the room.", s(&["Classic"]), 0)
-        } else {
-            mp_choice("MpLook", "|&Look", &mp_look_help(!modern), s(&["Classic", "Modern"]), if modern { 1 } else { 0 })
-        },
         mp_choice("MpTough", "|&Tougher Enemies", "Co-op: enemies get tougher with more players.", s(&["Off", "On"]), if d.tough { 1 } else { 0 }),
         mp_choice("MpFriendly", "|&Friendly Fire", "Players' shots and blasts hurt each other.", s(&["Off", "On"]), 0),
     ]
 }
 
+/// Game Mode's values for the look: Classic offers the original's four game types (menuchoice_gametype), Modern
+/// ours. Android hosts co-op only.
+fn mp_mode_values(classic: bool) -> Vec<String> {
+    let v: &[&str] = if crate::platform::android() {
+        &["Co-op"]
+    } else if classic {
+        &["Co-op", "Deathmatch", "Basic Team DM", "Advanced Team DM", "Custom Team DM"]
+    } else {
+        &["Co-op", "Deathmatch", "Team Deathmatch"]
+    };
+    v.iter().map(|x| x.to_string()).collect()
+}
+
+fn mp_mode_help(classic: bool) -> String {
+    if classic {
+        "Co-op: play the story together. The rest are the original multiplayer game: Deathmatch, everyone for themselves; Basic Team DM, UNATCO against the NSF with every augmentation and Advanced skills; Advanced Team DM, skill points and augmentations earned by kills; Custom Team DM, your own Match Settings. No mods.".into()
+    } else {
+        "Co-op: play the story together. Deathmatch: everyone for themselves on the multiplayer maps. Team Deathmatch: UNATCO against the NSF, up to 8 a side. Match Settings sets the map and limits.".into()
+    }
+}
+
+/// The original game type a Classic room's Game Mode index plays (None: co-op).
+fn classic_game_of(i: u8) -> Option<crate::deathmatch::ClassicGame> {
+    use crate::deathmatch::ClassicGame as G;
+    match i {
+        1 => Some(G::Deathmatch),
+        2 => Some(G::BasicTeam),
+        3 => Some(G::AdvancedTeam),
+        4 => Some(G::CustomTeam),
+        _ => None,
+    }
+}
+
+/// A Classic match's session: the player's name, the original JC (no mods, no Lay D).
+fn classic_new_game(name: &str) -> crate::travel::NewGame {
+    crate::travel::NewGame { name: name.to_string(), skin: 0, female: false, difficulty: 1.0, char_id: String::new(), ..Default::default() }
+}
+
 /// The room as the host's choices set it.
 fn mp_host_settings(h: &MpHost) -> RoomSettings {
     let v = |k: &str| h.choices.iter().find(|c| c.key == k).map_or(0, |c| c.value.max(0.0) as u8);
+    let classic = v("MpLook") == 0;
     RoomSettings {
-        mode: match v("MpMode") {
-            1 => Mode::Deathmatch,
-            2 => Mode::TeamDeathmatch,
-            _ => Mode::Coop,
+        mode: match (classic, v("MpMode")) {
+            (_, 0) => Mode::Coop,
+            (_, 1) => Mode::Deathmatch,
+            _ => Mode::TeamDeathmatch,
         },
         public: v("MpRoom") == 0,
         max_players: (2 + v("MpPlayers")).min(imsim_net::MAX_PLAYERS),
         look: if v("MpLook") == 0 { Look::Classic } else { Look::Modern },
         tough: v("MpTough") == 1,
         name: h.name.clone(),
-        detail: mp_dm_detail(v("MpMode")),
+        detail: mp_dm_detail(v("MpMode"), classic),
     }
 }
 
 /// A deathmatch room's map and limits for the browser ("Cathedral/20_kills/10_min").
-fn mp_dm_detail(mode: u8) -> String {
+fn mp_dm_detail(mode: u8, classic: bool) -> String {
     if mode == 0 {
         return String::new();
     }
-    let r = crate::deathmatch::rules_from_settings(crate::deathmatch::Mode::Deathmatch, false);
+    let r = match classic_game_of(mode).filter(|_| classic) {
+        Some(g) => crate::deathmatch::classic_rules_from_settings(g),
+        None => crate::deathmatch::rules_from_settings(crate::deathmatch::Mode::Deathmatch, false),
+    };
     let mut d = crate::deathmatch::map_title(&r.map).replace(' ', "_").replace('\'', "");
+    if classic {
+        d = format!("{}/{d}", r.classic.game.name().replace(' ', "_"));
+    }
     if r.frag_limit > 0 {
         d.push_str(&format!("/{}_kills", r.frag_limit));
     }
@@ -5396,33 +5507,43 @@ fn mp_look_help(classic: bool) -> String {
 /// Classic with mods installed is fine: the host's mods are switched off while the room lasts (netplay::force_look,
 /// said in the Look choice's help). Returns a message for a box (none now).
 fn mp_host_cycle(h: &mut MpHost, i: u8, dir: i32) -> Option<String> {
+    let classic_room = h.choices.iter().find(|c| c.key == "MpLook").is_some_and(|c| c.value < 0.5);
     let c = h.choices.get_mut(i as usize)?;
     let before = c.value;
     c.cycle(dir);
-    // Deathmatch needs Augmentique (outfits, weapon skins) and is played in Modern.
-    if c.key == "MpMode" && c.value > 0.5 {
+    // Modern deathmatch needs Augmentique (outfits, weapon skins); Classic deathmatch is the original's, no mods.
+    if c.key == "MpMode" && c.value > 0.5 && !classic_room {
         if let Some(why) = crate::dmchar::blocked() {
             c.value = 0.0;
             return Some(why.to_string());
         }
     }
-    if c.key == "MpLook" && c.value < 0.5 && mp_host_versus(h) {
-        let c = h.choices.get_mut(i as usize)?;
-        c.value = 1.0;
-        return Some("Deathmatch is played in the Modern look.".into());
-    }
-    let c = h.choices.get_mut(i as usize)?;
-    if c.key == "MpMode" {
-        let versus = c.value > 0.5;
-        let changed = (before > 0.5) != versus || (before - c.value).abs() > 0.5;
-        if let Some(l) = h.choices.iter_mut().find(|c| c.key == "MpLook") {
-            if versus {
-                l.value = 1.0;
+    if c.key == "MpLook" {
+        // The look decides the modes on offer (the family first): Co-op and Deathmatch stay, team modes map across.
+        let classic = c.value < 0.5;
+        if let Some(m) = h.choices.iter_mut().find(|c| c.key == "MpMode") {
+            let old = m.value.max(0.0) as u8;
+            let new = match (classic, old) {
+                (_, 0) => 0,
+                (_, 1) => 1,
+                (true, _) => 3,
+                (false, _) => 2,
+            };
+            m.kind = ChoiceKind::Enum(mp_mode_values(classic));
+            m.help = mp_mode_help(classic);
+            m.value = new as f32;
+            m.saved = m.value;
+            if !classic && new > 0 {
+                if let Some(why) = crate::dmchar::blocked() {
+                    m.value = 0.0;
+                    m.saved = 0.0;
+                    crate::online::update(mp_host_settings(h));
+                    mp_apply_dm(h);
+                    return Some(why.to_string());
+                }
             }
         }
-        if changed {
-            mp_apply_dm(h);
-        }
+        let _ = before;
     }
     let Some(c) = h.choices.get_mut(i as usize) else { return None };
     if c.key == "MpLook" {
@@ -5445,6 +5566,11 @@ fn mp_host_versus(h: &MpHost) -> bool {
 /// The host's deathmatch rules for his room (deathmatch.rs) from the mode, Friendly Fire and Match Settings.
 fn mp_apply_dm(h: &MpHost) {
     let v = |k: &str| h.choices.iter().find(|c| c.key == k).map_or(0.0, |c| c.value);
+    if v("MpLook") < 0.5 {
+        // Classic: the original's game type with its numbers (customizable ones from Match Settings).
+        crate::deathmatch::set_rules(classic_game_of(v("MpMode") as u8).map(crate::deathmatch::classic_rules_from_settings));
+        return;
+    }
     let mode = match v("MpMode") as u8 {
         1 => crate::deathmatch::Mode::Deathmatch,
         2 => crate::deathmatch::Mode::Team,
@@ -5731,6 +5857,23 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
             // the logo map: the host's story first (a save, or New Game on the same screen).
             // The host picks his game every time: a save (any character's), a new character (New Game: the
             // character creator), or, with a game up, carrying on with it.
+            if crate::deathmatch::versus() && crate::deathmatch::rules().is_some_and(|r| r.classic()) {
+                // A Classic match: the chosen map for everyone, each player under his name as the original's
+                // multiplayer JC (or the class Player Setup picked).
+                mp_apply_dm(h);
+                let map = crate::deathmatch::rules().map(|r| r.map).unwrap_or_else(|| "DXMP_Cathedral".into());
+                let was_on = crate::netplay::started();
+                let name = crate::travel::with_session(|s| s.name.clone()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| h.name.clone());
+                let ng = classic_new_game(&name);
+                crate::travel::set_session(ng.clone());
+                crate::netplay::start_game();
+                if was_on && !intro_map() {
+                    crate::netplay::host_travel(&map);
+                }
+                crate::loader::request(&format!("{map}.dx"), crate::loader::Goal::NewGame(ng));
+                acts.push(Act::PopAll);
+                return false;
+            }
             if crate::deathmatch::versus() {
                 // A deathmatch room: the host's story isn't used - the chosen map loads for everyone, each
                 // player as his deathmatch character.
@@ -5764,6 +5907,7 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
         (ACT_MP_NEWGAME, _) => acts.push(Act::Push("MenuSelectDifficulty".into())),
         (ACT_MP_PLAYON, _) => acts.push(Act::PopAll),
         (ACT_MATCH, _) => acts.push(Act::Push("MenuScreenMatchSettings".into())),
+        (ACT_DMCHAR, _) if crate::deathmatch::rules().is_some_and(|r| r.classic()) => acts.push(Act::Push("MenuScreenPlayerSetup".into())),
         (ACT_DMCHAR, _) => match crate::dmchar::blocked() {
             Some(why) => acts.push(Act::Msg("Deathmatch Character".into(), why.into(), false, MsgPurpose::Info)),
             None => acts.push(Act::Push("MenuScreenDmCharacter".into())),
@@ -6099,7 +6243,15 @@ fn mp_join_answer(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAsse
                 if j.tough { ", tougher enemies" } else { "" },
             );
             let versus = j.mode != Mode::Coop;
+            let classic_room = j.look == Look::Classic;
             st.mp.joined = Some(j);
+            if versus && classic_room {
+                // A Classic deathmatch room (the original multiplayer): in under the session's name, no mods.
+                let name = crate::travel::with_session(|s| s.name.clone()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Player".into());
+                crate::netplay::choose_character(classic_new_game(&name), None);
+                mp_join_room(st, hud, assets);
+                return;
+            }
             if versus {
                 // A deathmatch room: in as the deathmatch character (story characters stay out of it).
                 mp_dm_join(st, hud, assets);
@@ -6337,7 +6489,7 @@ impl DmEdit {
             vec!["Body".into(), if c.female { "Female (Lay D Denton)".into() } else { "Male".into() }],
             vec!["Face".into(), format!("{} of 5", c.skin.min(4) + 1)],
             vec!["Augmentique Outfit".into(), crate::dmchar::outfit_name(c)],
-            vec!["Record".into(), format!("{} kills, {} deaths, {} wins", c.total_kills, c.deaths, c.wins)],
+            vec!["Record".into(), format!("{} kills, {} deaths, {} wins, {} credits", c.total_kills, c.deaths, c.wins, c.credits)],
         ];
         for w in &self.weapons {
             let skins = crate::dmchar::skins_for(c, w);

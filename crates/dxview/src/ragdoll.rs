@@ -1016,7 +1016,7 @@ fn grab_test_system(
             let Some((e, _, n, _)) = st.2.and_then(|e| skels.get(e).ok()) else { return };
             let c = blockers.list[n.blocker].center;
             let _ = e;
-            hits.0.push(crate::damage::PawnHit { blocker: n.blocker, damage: 1000.0, damage_type: "Shot", hit_loc: c, attacker: None, attacker_pos: player.body.location });
+            hits.0.push(crate::damage::PawnHit { world: false, blocker: n.blocker, damage: 1000.0, damage_type: "Shot", hit_loc: c, attacker: None, attacker_pos: player.body.location });
             println!("GRABTEST killed blocker {} at {:?}", n.blocker, c);
             *st = (1, now, Some(e), 0.0);
         }

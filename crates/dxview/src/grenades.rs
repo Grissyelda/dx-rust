@@ -630,7 +630,7 @@ pub fn grenade_system(
             if let Some(s) = &g.impact_snd {
                 crate::sound::play(s, g.pos, 2.0, (g.blast * 16.0) as f32, 1.0);
             }
-            booms.0.push(Boom {
+            booms.0.push(Boom { world: g.placed && g.from.is_none(),
                 pos: g.pos,
                 damage: g.damage,
                 radius: g.blast,
@@ -643,7 +643,7 @@ pub fn grenade_system(
             // GMDX Knockout Gas: the player's gas grenade also knocks out what's in the blast (Damage 260,
             // 'KnockedOut'; the tear gas clouds still come).
             if g.damage_type == "TearGas" && g.from.is_none() && !g.placed && crate::perks::has("PerkKnockoutGas") {
-                booms.0.push(Boom {
+                booms.0.push(Boom { world: false,
                     pos: g.pos,
                     damage: 260.0,
                     radius: g.blast,
@@ -755,7 +755,7 @@ fn net_apply(
                 if let Some(s) = &g.impact_snd {
                     crate::sound::play(s, g.pos, 2.0, (g.blast * 16.0) as f32, 1.0);
                 }
-                booms.0.push(Boom {
+                booms.0.push(Boom { world: true,
                     pos: g.pos,
                     damage: 0.0,
                     radius: g.blast,

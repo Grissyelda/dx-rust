@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Classic multiplayer: the original deathmatch (November 11)
+- Host Room now asks for the look first. Classic offers the original game types: Deathmatch, Basic Team DM (every
+  augmentation, Advanced skills), Advanced Team DM (skill points and augmentations earned by kills) and Custom Team
+  DM; Modern keeps our Deathmatch and Team Deathmatch. Classic matches need no mods (the room turns them off).
+- Classic plays by the original multiplayer patch's rules, read from your own install: every weapon, skill and
+  augmentation takes its multiplayer numbers; damage lands in three regions (head x2, legs, body) with no difficulty
+  scaling; the sniper rifle hits hard only through the scope; you start with a medkit, lockpick and multitool and
+  six seconds of protection; kills bring skill points and augmentations; weapons stay where they lie for everyone and
+  other pickups come back after their respawn time.
+- The original's screens: buy skills with the number keys (Skill menu key, B), "Skills available!", the death screen
+  with "Press <Fire> to restart" and the killer's details (L), the centred notices ("You hit your teammate!", "Only 4
+  more kills, and X will win the match!"), the original scoreboard and win screen.
+- Team games dress everyone as UNATCO troopers or NSF terrorists; in Deathmatch pick JC, an NSF terrorist, a UNATCO
+  trooper or an MJ12 agent in Player Setup (Multiplayer menu, or Character in the Host Room).
+- Turrets and cameras work as in the original's multiplayer: off until someone switches them on at a security
+  computer, then they're his - they never shoot him or his team - and they can't be destroyed.
+- Grenade, mine and turret kills now go to whoever threw, planted or owns them.
+
+### Multiplayer groundwork (November 11)
+- Map data can now hold per-mode spawn sets, play-area blockers, objective spots, loot tables and codes made fresh
+  each match (for the modes to come).
+- Deathmatch characters keep an operative profile: credits earned by kills, heals and matches, weapon mastery,
+  unlocks and loadouts (the store comes with the new modes). The Record row shows your credits.
+- Network budget: `DXVIEW_NETBUDGET=1` prints the bytes sent per message kind every 5 s; big decoration updates go
+  in smaller pieces.
+
+### Enemies run out of ammo (November 10)
+- "NPC Finite Ammo" is now on by default, in Classic too, as in the original: guards use up the ammo they carry,
+  switch weapons when a gun runs dry and draw their knife, baton or crowbar when nothing is left. Existing players
+  get it switched on once; turn it off in Settings > Enhancements for the old endless ammo.
+- Weapon choice follows the original SwitchToBestWeapon fully: a weapon's damage type against the enemy (EMP and
+  scramble grenades only at robots, no gas at robots or at someone already gassed or stunned, explosives preferred),
+  the enemy's own weapon range, projectile weapons' real ranges, and bUseFallbackWeapons (Howard Strong fights with
+  his knife even with a gun). As in the original, a guard with a loaded gun keeps it at close range: melee comes when
+  the guns are empty.
+
 ### Display settings in the Display menu (November 10)
 - Settings > Display now has Frame Rate Cap, Field of View and Upscaling beside Vertical Sync, and an Advanced...
   button for Anti-Aliasing, HDR Rendering, Real-Time Shadows, Lean Rendering, Lean Updates, CPU Worker Threads and

@@ -100,7 +100,7 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     // Enhancement: Joe Wintergreen-style lip sync (smoother mouth tweens, visible blinks). On by default.
     ("SmoothLipSync", 1.0),
     // Small v2 enhancements (all off unless noted).
-    ("NPCFiniteAmmo", 0.0),
+    ("NPCFiniteAmmo", 1.0),
     ("FloorConsumables", 0.0),
     ("LadderGrab", 0.0),
     ("NotesAutofill", 0.0),

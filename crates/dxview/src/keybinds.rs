@@ -79,6 +79,9 @@ pub const ACTIONS: &[(&str, Input)] = &[
     // scoreboard (scoreboard.rs).
     ("Classic / Modern (scores in multiplayer)", K(KeyCode::Tab)),
     ("Chat (multiplayer)", K(KeyCode::KeyY)),
+    // DeusExPlayer.BuySkills / KillerProfile (Classic matches).
+    ("Skill menu (multiplayer)", K(KeyCode::KeyB)),
+    ("Kill details (multiplayer)", K(KeyCode::KeyL)),
     ("Player list (multiplayer)", K(KeyCode::KeyP)),
 ];
 

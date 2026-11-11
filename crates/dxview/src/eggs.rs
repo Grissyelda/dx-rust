@@ -216,7 +216,7 @@ pub fn warren_system(
                     continue;
                 }
                 let nano = n.hates("Player") && crate::sound::frand() < 0.5;
-                hits.0.push(crate::damage::PawnHit {
+                hits.0.push(crate::damage::PawnHit { world: false,
                     blocker: n.blocker,
                     damage: if nano { 100.0 } else { n.emp_hp * 2.0 },
                     damage_type: if nano { "NanoVirus" } else { "EMP" },

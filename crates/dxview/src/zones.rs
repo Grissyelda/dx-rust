@@ -165,7 +165,7 @@ pub fn npc_pain_system(
             let depth = 0.3 * feet.is_some() as u8 as f32 + 0.3 * body.is_some() as u8 as f32 + 0.4 * head.is_some() as u8 as f32;
             let dmg = (r.dps * depth).floor();
             if dmg > 0.0 {
-                pawn_hits.0.push(crate::damage::PawnHit {
+                pawn_hits.0.push(crate::damage::PawnHit { world: false,
                     blocker: n.blocker,
                     damage: dmg,
                     damage_type: crate::util::intern(&r.damage_type),

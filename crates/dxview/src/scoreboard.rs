@@ -95,6 +95,18 @@ pub fn scoreboard_system(
     let mode = deathmatch::mode();
     let extra = pings.iter().map(|p| (p.1 / 20.0) as u64).sum::<u64>() ^ (s as u64) << 32 ^ (win.width() as u64) << 40 ^ mode as u64;
     let h = hash(&board, extra);
+    if deathmatch::classic() {
+        // The original's own layout: full screen, no panel (DeusExMPGame.ShowDMScoreboard / the win screens).
+        if h == *key && !node.is_empty() {
+            return;
+        }
+        *key = h;
+        let (s, k, sw, sh) = crate::mphud::screen_units(win);
+        if let Some(c) = crate::mphud::draw_board(&mut hud, &mut assets, &board, sw, sh, s) {
+            crate::prompts::present::<ScoreNode, _>(&mut commands, &mut images, &mut layers, &mut node, img, Some(&c), (sw, sh), s, Vec2::ZERO, k);
+        }
+        return;
+    }
     // Layout in UI units: a fixed-width panel, centred.
     let team = mode == deathmatch::Mode::Team;
     let w = if team { 600 } else { 420 };

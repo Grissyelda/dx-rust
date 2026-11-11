@@ -497,7 +497,7 @@ pub fn projgen_system(
             }
             if let Some(nc) = blockers.list.get(n.blocker).filter(|nc| nc.radius > 0.0) {
                 if nc.center.distance(me) <= 128.0 && lvl.collision.trace(me, nc.center, DVec3::ZERO).fraction >= 1.0 {
-                    pawn_hits.0.push(crate::damage::PawnHit { blocker: n.blocker, damage: 5.0, damage_type: "Radiation", hit_loc: nc.center, attacker: Some(b), attacker_pos: me });
+                    pawn_hits.0.push(crate::damage::PawnHit { world: false, blocker: n.blocker, damage: 5.0, damage_type: "Radiation", hit_loc: nc.center, attacker: Some(b), attacker_pos: me });
                 }
             }
         }

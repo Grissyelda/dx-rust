@@ -349,7 +349,7 @@ static OVERRIDES: std::sync::RwLock<Vec<(String, Vec<(String, String, u32, Value
 /// Layers apply in a fixed order, later ones winning: the player's skins (travel), Visible Attachments, HDTP,
 /// Augmentique outfits; unknown names last.
 fn layer_rank(layer: &str) -> usize {
-    ["travel", "visibleattachments", "hdtp", "augmentique"].iter().position(|l| *l == layer).unwrap_or(99)
+    ["travel", "visibleattachments", "hdtp", "augmentique", "classicmp"].iter().position(|l| *l == layer).unwrap_or(99)
 }
 
 static OVERRIDE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -359,9 +359,10 @@ pub(crate) fn bump_override_generation() {
     OVERRIDE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// While mods are suspended only our own layer (the player's skins, "travel") applies.
+/// While mods are suspended only our own layers apply: the player's skins ("travel") and the original
+/// multiplayer values a Classic deathmatch plays with ("classicmp").
 fn layer_live(layer: &str) -> bool {
-    layer == "travel" || !crate::mods::suspended()
+    layer == "travel" || layer == "classicmp" || !crate::mods::suspended()
 }
 
 pub fn override_generation() -> u64 {

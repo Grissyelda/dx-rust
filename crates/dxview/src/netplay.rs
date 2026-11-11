@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The game messages' version (Hello / Welcome).
-pub const PROTO: u32 = 3;
+pub const PROTO: u32 = 4;
 /// Seconds before a dead player gets up again near the host (Easy / Medium).
 pub const RESPAWN_SECS: f32 = 4.0;
 /// Hard and Realistic co-op: the wait is longer, and if every player is down at once the level restarts for all.
@@ -86,6 +86,9 @@ pub struct Look {
     pub outfit: Option<(String, String, [String; 8])>,
     /// His weapon skins (class, Augmentique skin id): his body's weapon wears them.
     pub skins: Vec<(String, String)>,
+    /// Classic: the multiplayer class he plays (MPNSF / MPUnatco / MPMJ12; None = JC Denton).
+    #[serde(default)]
+    pub mp_class: Option<String>,
 }
 
 /// One player's body, 30 times a second.
@@ -118,6 +121,8 @@ pub struct PState {
     pub camo: bool,
     /// The loader generation of his map: a new value is a new arrival (a reload of the same map counts).
     pub gen: u32,
+    /// Looking through a scope (Classic: the sniper rifle hits hard only zoomed).
+    pub scoped: bool,
 }
 
 /// The augmentations whose glow shows on a body.
@@ -202,7 +207,7 @@ enum Msg {
     Hit { on: HitOn, damage: f32, kind: String, at: [f32; 3], from: [f32; 3] },
     /// `by`: the player who did it (friendly fire / deathmatch), None = a pawn.
     /// `at`: where it hit, from the body's centre (None: unknown); `weapon`: the attacker's weapon class.
-    Damage { damage: f32, kind: String, from: [f32; 3], by: Option<u8>, at: Option<[f32; 3]>, weapon: String },
+    Damage { damage: f32, kind: String, from: [f32; 3], by: Option<u8>, at: Option<[f32; 3]>, weapon: String, scoped: bool },
     /// A player went down (`by`: the player who did it).
     Died { by: Option<u8>, kind: String },
     Travel(String),
@@ -483,7 +488,7 @@ struct Net {
     locks: Vec<(u16, bool)>,
     events_in: Vec<(String, bool)>,
     hits_in: Vec<(u8, HitOn, f32, String, [f32; 3], [f32; 3])>,
-    damage_in: Vec<(f32, String, [f32; 3], Option<u8>, Option<[f32; 3]>, String)>,
+    damage_in: Vec<(f32, String, [f32; 3], Option<u8>, Option<[f32; 3]>, String, bool)>,
     /// Medkits other players used on us: (points, who).
     heals_in: Vec<(f32, String)>,
     /// The player who last hurt us (deathmatch credit).
@@ -557,6 +562,11 @@ pub fn last_end() -> String {
 }
 
 /// (id, name, ping ms) of every other player.
+/// Another player with this id is in the session.
+pub fn has_player(id: u8) -> bool {
+    with(|n| n.remotes.iter().any(|r| r.id == id)).unwrap_or(false)
+}
+
 pub fn players() -> Vec<(u8, String, f32)> {
     with(|n| n.remotes.iter().map(|r| (r.id, r.look.name.clone(), r.ping)).collect()).unwrap_or_default()
 }
@@ -582,8 +592,9 @@ fn my_look() -> Look {
         name: s.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "JC Denton".into()),
         female: s.as_ref().is_some_and(|s| s.female),
         skin: s.as_ref().map_or(0, |s| s.skin.min(4)),
-        outfit: if dm { crate::augmentique::worn_look() } else { None },
-        skins: if dm { crate::dmchar::current().map(|c| c.weapon_skins).unwrap_or_default() } else { Vec::new() },
+        outfit: if dm && !crate::deathmatch::classic() { crate::augmentique::worn_look() } else { None },
+        skins: if dm && !crate::deathmatch::classic() { crate::dmchar::current().map(|c| c.weapon_skins).unwrap_or_default() } else { Vec::new() },
+        mp_class: crate::deathmatch::classic_class(),
     }
 }
 
@@ -593,7 +604,8 @@ fn rules_now(n: &Net) -> Rules {
     r.dm = crate::deathmatch::rules();
     if r.dm.is_some() {
         r.coop = false;
-        r.classic = false;
+        // A Classic match plays the Classic look with no mods (as the original multiplayer patch).
+        r.classic = r.dm.as_ref().is_some_and(|d| d.classic());
         r.friendly_fire = r.dm.as_ref().is_some_and(|d| d.friendly_fire);
     }
     r
@@ -603,7 +615,7 @@ fn rules_now(n: &Net) -> Rules {
 fn joiner_rules(n: &mut Net, r: &Rules) {
     let was = crate::deathmatch::versus();
     crate::deathmatch::set_rules(r.dm.clone());
-    if r.dm.is_some() && !was {
+    if r.dm.as_ref().is_some_and(|d| !d.classic()) && !was {
         let c = crate::dmchar::last().unwrap_or_else(|| {
             let mut c = crate::dmchar::fresh();
             c.name = n.look.name.clone();
@@ -723,11 +735,70 @@ fn net_thread(mut ep: Endpoint, rx: Receiver<Out>, inbox: Arc<Mutex<Inbox>>) {
 }
 
 fn send_to(n: &Net, peer: u8, m: &Msg, reliable: bool) {
-    let _ = n.tx.send(Out::To(peer, encode(m), reliable));
+    let b = encode(m);
+    budget_note(m, &b, 1);
+    let _ = n.tx.send(Out::To(peer, b, reliable));
 }
 
 fn send_all(n: &Net, m: &Msg, reliable: bool, except: Option<u8>) {
-    let _ = n.tx.send(Out::All(encode(m), reliable, except));
+    let b = encode(m);
+    budget_note(m, &b, n.remotes.iter().filter(|r| Some(r.id) != except).count());
+    let _ = n.tx.send(Out::All(b, reliable, except));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Network budget (DXVIEW_NETLOG / DXVIEW_NETBUDGET / DXVIEW_PROF): bytes sent per message kind, printed every 5 s,
+// and a warning for any one message over SOFT_CAP (they go in reliable pieces of 1000 bytes; a big one holds up
+// everything behind it).
+
+/// Moved decorations a Decos message carries at most.
+const DECO_CHUNK: usize = 32;
+
+/// One message's size that is worth a warning.
+const SOFT_CAP: usize = 48 * 1024;
+
+#[derive(Default)]
+struct Budget {
+    since: Option<std::time::Instant>,
+    /// Variant index (bincode's leading varint) -> (name, messages, bytes on the wire incl. copies).
+    kinds: std::collections::HashMap<u32, (String, u32, u64)>,
+}
+
+static BUDGET: Mutex<Option<Budget>> = Mutex::new(None);
+
+fn budget_on() -> bool {
+    env_on!("DXVIEW_NETLOG") || env_on!("DXVIEW_NETBUDGET") || env_on!("DXVIEW_PROF")
+}
+
+fn budget_note(m: &Msg, b: &[u8], copies: usize) {
+    if copies == 0 || !budget_on() {
+        return;
+    }
+    // (bincode's varint: one byte below 251.)
+    let idx = b.first().copied().unwrap_or(0) as u32;
+    let mut g = BUDGET.lock().unwrap_or_else(|e| e.into_inner());
+    let bg = g.get_or_insert_with(Budget::default);
+    let now = std::time::Instant::now();
+    let since = *bg.since.get_or_insert(now);
+    let e = bg.kinds.entry(idx).or_insert_with(|| {
+        let d = format!("{m:?}");
+        let name: String = d.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        (name, 0, 0)
+    });
+    e.1 += copies as u32;
+    e.2 += (b.len() * copies) as u64;
+    if b.len() > SOFT_CAP {
+        println!("NETBUDGET big {} message: {} bytes", e.0, b.len());
+    }
+    let secs = now.duration_since(since).as_secs_f64();
+    if secs >= 5.0 {
+        let mut v: Vec<&(String, u32, u64)> = bg.kinds.values().collect();
+        v.sort_by(|a, b| b.2.cmp(&a.2));
+        let total: u64 = v.iter().map(|k| k.2).sum();
+        let list: Vec<String> = v.iter().take(10).map(|k| format!("{} {}x {:.1} KB/s", k.0, k.1, k.2 as f64 / 1024.0 / secs)).collect();
+        println!("NETBUDGET {:.1} KB/s out: {}", total as f64 / 1024.0 / secs, list.join(", "));
+        *bg = Budget { since: Some(now), ..Default::default() };
+    }
 }
 
 /// Joiner: to the host.
@@ -990,6 +1061,13 @@ pub fn shot() {
 /// Hits on a puppet (a pawn the host runs, seen by a joiner, or a player's body): sent where they count.
 /// `peer`: the body's player, if it is one.
 pub fn puppet_hits(actor: usize, peer: Option<u8>, hits: &[crate::damage::PawnHit]) {
+    // MPMSG_TeamHit goes to the one who fired (DeusExPlayer.TakeDamage tells the instigator).
+    if let Some(p) = peer {
+        let me = crate::deathmatch::my_id();
+        if p != me && crate::deathmatch::allied(me, p) && hits.iter().any(|h| h.attacker.is_none() && !h.world) {
+            crate::mphud::hit_teammate();
+        }
+    }
     with(|n| {
         for h in hits {
             let at = [h.hit_loc.x as f32, h.hit_loc.y as f32, h.hit_loc.z as f32];
@@ -1001,11 +1079,22 @@ pub fn puppet_hits(actor: usize, peer: Option<u8>, hits: &[crate::damage::PawnHi
                     // Turrets and blasts hurt everyone; the host's own shots only with friendly fire.
                     let world_hit = matches!(h.damage_type, "AutoShot" | "Exploded" | "Burned" | "Flamed" | "Shocked" | "Radiation" | "PoisonGas" | "TearGas" | "HalonGas");
                     if h.attacker.is_some() || world_hit || players_hurt {
-                        let by = if h.attacker.is_none() { Some(0) } else { None };
+                        // Who gets the kill: the host's own (attacker None, not the world's), a player whose body
+                        // dealt it (a joiner's grenade or mine: the host throws it from his body), else nobody.
+                        let peer_body = h.attacker.and_then(|b| n.remotes.iter().find(|r| r.blocker == Some(b)).map(|r| r.id));
+                        let by = match (h.attacker, peer_body) {
+                            (None, _) if h.world => None,
+                            (None, _) => Some(0),
+                            (Some(_), pb) => pb,
+                        };
                         // Where on him (from his body's centre) and with what (the host's own weapon for his shots).
                         let local = n.remotes.iter().find(|r| r.id == p).map(|r| [at[0] - r.st.pos[0], at[1] - r.st.pos[1], at[2] - r.st.pos[2]]);
-                        let weapon = if h.attacker.is_none() { MY_WEAPON.lock().map(|w| w.clone()).unwrap_or_default() } else { String::new() };
-                        send_to(n, p, &Msg::Damage { damage: h.damage, kind: h.damage_type.to_string(), from, by, at: local, weapon }, true);
+                        let (weapon, scoped) = match by {
+                            Some(0) => (MY_WEAPON.lock().map(|w| w.clone()).unwrap_or_default(), crate::weapons::ZOOMED.load(std::sync::atomic::Ordering::Relaxed)),
+                            Some(k) => n.remotes.iter().find(|r| r.id == k).map(|r| (r.st.weapon.clone(), r.st.scoped)).unwrap_or_default(),
+                            None => (String::new(), false),
+                        };
+                        send_to(n, p, &Msg::Damage { damage: h.damage, kind: h.damage_type.to_string(), from, by, at: local, weapon, scoped }, true);
                     }
                 }
                 (Role::Client, Some(p)) => {
@@ -1356,7 +1445,7 @@ pub fn net_in_system(
             match on {
                 HitOn::Pawn(a) => {
                     let Some(b) = npcs.iter().find(|(_, n, ..)| n.actor == a as usize && n.net.is_none()).map(|(_, n, ..)| n.blocker) else { continue };
-                    hits.0.push(crate::damage::PawnHit {
+                    hits.0.push(crate::damage::PawnHit { world: false,
                         blocker: b,
                         damage: dmg,
                         damage_type: crate::util::intern(&kind),
@@ -1371,16 +1460,16 @@ pub fn net_in_system(
                         continue;
                     }
                     // The shooter's weapon, and where it hit (from the victim's centre).
-                    let weapon = with(|n| n.remotes.iter().find(|r| r.id == from_peer).map(|r| r.st.weapon.clone())).flatten().unwrap_or_default();
+                    let (weapon, scoped) = with(|n| n.remotes.iter().find(|r| r.id == from_peer).map(|r| (r.st.weapon.clone(), r.st.scoped))).flatten().unwrap_or_default();
                     if p == 0 {
                         with(|n| n.last_by = Some(from_peer));
                         let c = player.body.location;
                         let local = [at[0] - c.x as f32, at[1] - c.y as f32, at[2] - c.z as f32];
-                        take_hit(&mut ph, &player, dmg, &kind, from, Some(from_peer), Some(local), &weapon);
+                        take_hit(&mut ph, &player, dmg, &kind, from, Some(from_peer), Some(local), &weapon, scoped);
                     } else {
                         with(|n| {
                             let local = n.remotes.iter().find(|r| r.id == p).map(|r| [at[0] - r.st.pos[0], at[1] - r.st.pos[1], at[2] - r.st.pos[2]]);
-                            send_to(n, p, &Msg::Damage { damage: dmg, kind, from, by: Some(from_peer), at: local, weapon }, true)
+                            send_to(n, p, &Msg::Damage { damage: dmg, kind, from, by: Some(from_peer), at: local, weapon, scoped }, true)
                         });
                     }
                 }
@@ -1389,9 +1478,9 @@ pub fn net_in_system(
     }
     // Damage the host sent us (pawns' shots at our body there).
     let dmg = with(|n| std::mem::take(&mut n.damage_in)).unwrap_or_default();
-    for (d, kind, from, by, at, weapon) in dmg {
+    for (d, kind, from, by, at, weapon, scoped) in dmg {
         with(|n| n.last_by = by);
-        take_hit(&mut ph, &player, d, &kind, from, by, at, &weapon);
+        take_hit(&mut ph, &player, d, &kind, from, by, at, &weapon, scoped);
     }
     // Medkits other players used on us.
     let heals = with(|n| std::mem::take(&mut n.heals_in)).unwrap_or_default();
@@ -1459,6 +1548,13 @@ pub fn net_in_system(
             if look != n.look {
                 n.look = look;
                 send_roster(n);
+            }
+        } else if n.role == Role::Client && crate::deathmatch::classic() {
+            // Classic: his class follows his team (and his Player Setup pick).
+            let look = my_look();
+            if look != n.look {
+                n.look = look.clone();
+                send_host(n, &Msg::LookIs(look), true);
             }
         }
         reqs
@@ -1677,13 +1773,29 @@ pub fn net_in_system(
 /// The weapon in this player's hands (deathmatch damage on the others' side).
 static MY_WEAPON: Mutex<String> = Mutex::new(String::new());
 
-/// A hit on this player from another machine: in a deathmatch through deathmatch.rs's table (by body region and
-/// the attacker's weapon; teammates' share in Team Deathmatch), else as the game worked it out.
+/// A player's body's blocker here (None: no body).
+pub fn body_blocker(peer: u8) -> Option<usize> {
+    with(|n| n.remotes.iter().find(|r| r.id == peer).and_then(|r| r.blocker)).flatten()
+}
+
+/// Another player has this augmentation running (his state's list).
+pub fn remote_aug(peer: u8, aug: &str) -> bool {
+    with(|n| n.remotes.iter().find(|r| r.id == peer).is_some_and(|r| r.st.augs.iter().any(|a| a.eq_ignore_ascii_case(aug)))).unwrap_or(false)
+}
+
+/// The weapon class in this player's hands (as the others are told).
+pub fn my_weapon() -> String {
+    MY_WEAPON.lock().map(|w| w.clone()).unwrap_or_default()
+}
+
+/// A hit on this player from another machine: in a deathmatch through the match mode (matchmode.rs: Modern's
+/// table by body region and the attacker's weapon; Classic's multiplayer body and the sniper rifle's scope rule;
+/// teammates' share in a team game), else as the game worked it out.
 #[allow(clippy::too_many_arguments)]
-fn take_hit(ph: &mut PlayerHealth, player: &crate::Player, d: f32, kind: &str, from: [f32; 3], by: Option<u8>, at: Option<[f32; 3]>, weapon: &str) {
+fn take_hit(ph: &mut PlayerHealth, player: &crate::Player, d: f32, kind: &str, from: [f32; 3], by: Option<u8>, at: Option<[f32; 3]>, weapon: &str, scoped: bool) {
     let from = DVec3::new(from[0] as f64, from[1] as f64, from[2] as f64);
     if crate::deathmatch::playing() {
-        if crate::deathmatch::match_over() {
+        if crate::deathmatch::match_over() || crate::mphud::shielded() {
             return;
         }
         let me = crate::deathmatch::my_id();
@@ -1697,12 +1809,28 @@ fn take_hit(ph: &mut PlayerHealth, player: &crate::Player, d: f32, kind: &str, f
             return;
         }
         let local = at.map(|a| DVec3::new(a[0] as f64, a[1] as f64, a[2] as f64));
-        let (dd, off) = crate::deathmatch::player_damage(weapon, kind, d, local, player.params.height, player.params.radius);
+        let yaw = f32::from_bits(MY_YAW.load(std::sync::atomic::Ordering::Relaxed)) as f64;
+        let (dd, off) = crate::matchmode::current().player_damage(weapon, kind, d, local, player.params.height, player.params.radius, scoped, yaw);
+        crate::mphud::note_hit_taken(by, weapon, kind, dd * mult, off);
         ph.damage(dd * mult, kind, off);
         return;
     }
     let off = from - player.body.location;
     ph.damage(d, kind, off.normalize_or_zero() * player.params.radius);
+}
+
+/// This player's view yaw (Unreal axes, radians, as f32 bits): hits from other machines land in his own frame.
+static MY_YAW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A player's id from the blocker of his body here (None: not a player's body).
+pub fn peer_of_blocker(b: usize) -> Option<u8> {
+    with(|n| n.remotes.iter().find(|r| r.blocker == Some(b)).map(|r| r.id)).flatten()
+}
+
+/// Who hurt this player last (the kill credit): a blast or a burn dealt by another player's body here (the host
+/// sets it for his own player from explosion.rs).
+pub fn note_hurt_by(peer: u8) {
+    with(|n| n.last_by = Some(peer));
 }
 
 enum Up {
@@ -1721,6 +1849,9 @@ fn respawn_tick(
     dt: f32,
     my_map: u32,
 ) {
+    // A Classic death screen: (killer's name, weapon, streak, health, augs), a suicide, the method.
+    type Killer = (String, String, u32, u8, Vec<String>);
+    let mut down: Option<(Option<Killer>, bool, String)> = None;
     let up = with(|n| {
         let hard = n.rules.coop && n.rules.difficulty >= 2.0;
         // Hard / Realistic: everyone down at once (each stays down RESPAWN_HARD_SECS, so the windows overlap) - the
@@ -1758,11 +1889,25 @@ fn respawn_tick(
             if crate::deathmatch::playing() {
                 crate::dmchar::note_death();
             }
+            if crate::deathmatch::classic() {
+                let me = crate::deathmatch::my_id();
+                let killer = by.filter(|k| *k != me).and_then(|k| n.remotes.iter().find(|r| r.id == k)).map(|r| {
+                    let streak = crate::deathmatch::board().and_then(|b| b.rows.iter().find(|x| x.id == r.id).map(|x| x.streak)).unwrap_or(0);
+                    (r.look.name.clone(), r.st.weapon.clone(), streak, r.st.health, r.st.augs.clone())
+                });
+                let weapon = killer.as_ref().map(|k| k.1.clone()).unwrap_or_default();
+                down = Some((killer, by == Some(me), crate::deathmatch::method(&weapon, &kind)));
+            }
             match n.role {
                 Role::Host => died(n, 0, by, &kind),
                 Role::Client => send_host(n, &Msg::Died { by, kind }, true),
                 Role::Off => {}
             }
+        }
+        if crate::deathmatch::playing() && crate::matchmode::current().respawn_delay().is_none() {
+            // Classic: up again when Fire is pressed on the death screen (mphud).
+            n.respawn = Some(f32::MAX);
+            return None;
         }
         let t = n.respawn.get_or_insert(if hard { RESPAWN_HARD_SECS } else { RESPAWN_SECS });
         *t -= dt;
@@ -1786,6 +1931,9 @@ fn respawn_tick(
         Some(Up::Respawn(if n.rules.coop { near } else { dm_spot(lvl, &others) }, hard))
     })
     .flatten();
+    if let Some((killer, self_kill, method)) = down {
+        crate::mphud::died(killer, self_kill, &method);
+    }
     let (near, hard) = match up {
         None => return,
         Some(Up::Reset) => {
@@ -1856,14 +2004,18 @@ fn died(n: &mut Net, who: u8, by: Option<u8>, kind: &str) {
         if let Some((k, w)) = news.credit {
             if k == 0 {
                 crate::dmchar::credit_kill(&w);
-                crate::deathmatch::reward_kill();
+                crate::matchmode::current().reward_kill();
             } else {
                 send_to(n, k, &Msg::Frag(w), true);
             }
         }
         if let (Some(m), Some(k)) = (news.to_killer, by) {
             if k == 0 {
-                crate::classic_hud::client_message(&m);
+                if crate::deathmatch::classic() {
+                    crate::mphud::notify(crate::mphud::Msg::KilledTeammate);
+                } else {
+                    crate::classic_hud::client_message(&m);
+                }
             } else {
                 send_to(n, k, &Msg::Note(m), true);
             }
@@ -1979,6 +2131,14 @@ fn spawn_body(id: u8, look: &Look, st: &PState) {
         props.push(Property { name: "Skin".into(), index: 0, value: Value::Path("None".into()) });
         for (i, s) in skins.iter().enumerate() {
             props.push(Property { name: "MultiSkins".into(), index: i as u32, value: Value::Path(s.clone()) });
+        }
+    }
+    // Classic: the original's multiplayer classes (Human subclasses on MPCharacters.mp_jumpsuit).
+    if let Some(class) = look.mp_class.as_deref() {
+        let dress = crate::deathmatch::class_dress(class);
+        if !dress.is_empty() {
+            props.retain(|p| !matches!(p.name.as_str(), "Mesh" | "MultiSkins" | "Texture" | "Skin"));
+            props.extend(dress);
         }
     }
     crate::deathmatch::set_remote_skins(id, look.skins.clone());
@@ -2219,7 +2379,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             s.sec_blasts.push((d3(at), radius as f64, damage, kind.clone()));
             s.remote_blasts.push((d3(at), radius as f64, kind));
         }),
-        (Role::Host, Msg::SecControl { kind, tag, a, b }) => sync(|s| s.sec_controls.push((kind, tag, a, b))),
+        (Role::Host, Msg::SecControl { kind, tag, a, b }) => sync(|s| s.sec_controls.push((kind, tag, a, b, peer))),
         (Role::Host, Msg::TurretHit { base, damage, kind }) => sync(|s| s.turret_hits.push((base, damage, kind))),
         (Role::Host, Msg::HackSet(a, v)) => sync(|s| s.hacks_in.push((a, v))),
         (Role::Host, Msg::HackAct(a, k)) => sync(|s| s.hack_acts_in.push((a, k))),
@@ -2293,7 +2453,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Client, Msg::Movers(list)) => n.movers_in.extend(list),
         (Role::Client, Msg::Flags(f)) => n.flags_in = Some(f),
         (Role::Client, Msg::Event(name, on)) => n.events_in.push((name, on)),
-        (Role::Client, Msg::Damage { damage, kind, from, by, at, weapon }) => n.damage_in.push((damage, kind, from, by, at, weapon)),
+        (Role::Client, Msg::Damage { damage, kind, from, by, at, weapon, scoped }) => n.damage_in.push((damage, kind, from, by, at, weapon, scoped)),
         (Role::Client, Msg::Heal { amount, by, .. }) => n.heals_in.push((amount, by)),
         (Role::Client, Msg::Travel(map)) => {
             n.host_map = Some(map.clone());
@@ -2309,7 +2469,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Client, Msg::Board(b)) => crate::deathmatch::set_board(b),
         (Role::Client, Msg::Frag(weapon)) => {
             crate::dmchar::credit_kill(&weapon);
-            crate::deathmatch::reward_kill();
+            crate::matchmode::current().reward_kill();
         }
         (Role::Client, Msg::PickupGrant(a)) => crate::deathmatch::grant_placed(a),
         (Role::Client, Msg::Pickups(map, there)) => {
@@ -2317,7 +2477,11 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
                 crate::deathmatch::set_pickup_state(there);
             }
         }
-        (Role::Client, Msg::Note(line)) => feed(&line, NEWS),
+        (Role::Client, Msg::Note(line)) => {
+            if !crate::mphud::from_note(&line) {
+                feed(&line, NEWS)
+            }
+        }
         (Role::Client, Msg::Decos { map, moved, gone }) => sync(|s| {
             if map == s.map {
                 s.deco_moves.extend(moved);
@@ -2443,7 +2607,9 @@ pub fn net_out_system(
             light: plight.brightness,
             camo: ph.camo,
             gen: crate::loader::generation() as u32,
+            scoped: crate::weapons::ZOOMED.load(std::sync::atomic::Ordering::Relaxed),
         };
+        MY_YAW.store(yaw.to_bits(), std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut w) = MY_WEAPON.lock() {
             w.clone_from(&st.weapon);
         }
@@ -2975,6 +3141,9 @@ pub fn mate_label(id: u8, medkits: u32) -> String {
 
 /// Send `amount` health points to player `to` (one of our medkits, used up by the caller).
 pub fn heal_player(to: u8, amount: f32) {
+    if crate::deathmatch::versus() {
+        crate::dmchar::note_heal();
+    }
     with(|n| {
         let m = Msg::Heal { to, amount, by: n.look.name.clone() };
         if n.role == Role::Host {
@@ -3298,7 +3467,7 @@ struct Sync {
     // Security. Host in: joiners' blasts, computer settings, turret hits. Joiner in: the host's state. Host: last
     // state built / sent reliably, clocks.
     sec_blasts: Vec<(DVec3, f64, f32, String)>,
-    sec_controls: Vec<(u8, String, f32, f32)>,
+    sec_controls: Vec<(u8, String, f32, f32, u8)>,
     turret_hits: Vec<(u32, f32, String)>,
     sec_in: Option<SecNet>,
     sec_last: Option<SecNet>,
@@ -3879,7 +4048,7 @@ pub fn sec_control_out(kind: u8, tag: &str, a: f32, b: f32) {
 }
 
 /// Host: joiners' security computer settings (kind, tag, a, b).
-pub fn take_sec_controls() -> Vec<(u8, String, f32, f32)> {
+pub fn take_sec_controls() -> Vec<(u8, String, f32, f32, u8)> {
     sync(|s| std::mem::take(&mut s.sec_controls))
 }
 
@@ -4229,7 +4398,18 @@ pub fn world_sync_system(
                 if env_on!("DXVIEW_NETLOG") {
                     println!("NET decos out {:?} gone {gone:?}", moved.iter().map(|m| lvl.actors[m.actor as usize].name.as_str()).collect::<Vec<_>>());
                 }
-                with(|n| send_all(n, &Msg::Decos { map: my_map, moved, gone }, true, None));
+                // (At most DECO_CHUNK a message: a big shove of crates mustn't hold everything else up.)
+                with(|n| {
+                    let mut first = true;
+                    for chunk in moved.chunks(DECO_CHUNK) {
+                        let g = if first { gone.clone() } else { Vec::new() };
+                        first = false;
+                        send_all(n, &Msg::Decos { map: my_map, moved: chunk.to_vec(), gone: g }, true, None);
+                    }
+                    if moved.is_empty() {
+                        send_all(n, &Msg::Decos { map: my_map, moved: Vec::new(), gone: gone.clone() }, true, None);
+                    }
+                });
             }
             // A joiner who has just arrived on this map gets the whole picture: moved and broken decorations, the
             // items lying about, the laser beams.
@@ -4248,7 +4428,10 @@ pub fn world_sync_system(
                 });
                 if let Some((broken, items, lasers)) = fresh {
                     with(|n| {
-                        send_to(n, id, &Msg::Decos { map: my_map, moved: all_moved.clone(), gone: broken }, true);
+                        send_to(n, id, &Msg::Decos { map: my_map, moved: Vec::new(), gone: broken }, true);
+                        for chunk in all_moved.chunks(DECO_CHUNK) {
+                            send_to(n, id, &Msg::Decos { map: my_map, moved: chunk.to_vec(), gone: Vec::new() }, true);
+                        }
                         for (k, it) in items {
                             send_to(n, id, &Msg::ItemSpawn(k, it), true);
                         }

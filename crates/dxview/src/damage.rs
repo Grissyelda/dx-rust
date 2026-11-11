@@ -17,6 +17,8 @@ pub struct PawnHit {
     /// Who did it: None = the player, Some(blocker) = another pawn.
     pub attacker: Option<usize>,
     pub attacker_pos: DVec3,
+    /// Nobody's doing (a barrel, a level's mine, a falling crate): no player gets the kill in multiplayer.
+    pub world: bool,
 }
 
 #[derive(Resource, Default)]
@@ -367,7 +369,7 @@ mod tests {
         Body::new(&p)
     }
     fn hit(damage: f32, ty: &'static str, at: DVec3, from: DVec3) -> PawnHit {
-        PawnHit {
+        PawnHit { world: false,
             blocker: 0,
             damage,
             damage_type: ty,
