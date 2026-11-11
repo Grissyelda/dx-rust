@@ -26,7 +26,8 @@ underneath.
   scripts. Every modern change is an optional switch in *Settings > Enhancements* (one searchable list).
 - **Multiplayer**:
   - **co-op** for up to 16 players through the story, in one shared world;
-  - **Deathmatch and Team Deathmatch** on the original's five multiplayer maps;
+  - **Classic deathmatch**: the original multiplayer patch rebuilt (its four game types, rules and screens);
+  - **Modern Deathmatch and Team Deathmatch** with characters and unlockable weapon skins;
   - room codes, a public lobby browser, and direct codes that work without any server.
 - **Classic / Modern in one key.** Press **Tab** and the screen wipes between the game as it shipped and a modern
   look with every enhancement on (your own mix is remembered).
@@ -86,8 +87,9 @@ co-op. Saves are in `Android/data/com.dxrust.game/files`.
 
 ### Multiplayer
 Choose **Multiplayer** on the main menu.
-- **Host Room**: Co-op, Deathmatch or Team Deathmatch; Classic or Modern; public or private. You get a short code
-  (`DX12`) and a long code (`ABCDE-FGHIJ-KLMNO`); everyone marks *Ready*, then the host presses *Start Game*.
+- **Host Room**: Classic or Modern first, then the game mode (co-op or one of that family's deathmatches); public
+  or private. You get a short code (`DX12`) and a long code (`ABCDE-FGHIJ-KLMNO`); everyone marks *Ready*, then the
+  host presses *Start Game*.
 - **Join Room**: type either code and pick or make a multiplayer character. **Lobby Browser** lists public rooms.
 
 **Co-op**: the host plays the story (conversations, scripts and travel follow the host); enemies, doors, computers
@@ -95,8 +97,15 @@ and kills are shared; each player keeps their own inventory, skills and augmenta
 the host (on Hard and Realistic, without their inventory). Use a medkit on another player to heal them. **Y** chats,
 hold **Tab** for the scores. Classic rooms switch your mods off; Modern rooms need the host's mods.
 
-**Deathmatch / Team Deathmatch** (up to 8 v 8) play in Modern with Augmentique. Make a *Deathmatch Character* (body,
-face, outfit); kills unlock weapon skins. The host sets the map and the frag and time limits.
+**Classic deathmatch** is the original multiplayer patch: Deathmatch, Basic, Advanced and Custom Team Deathmatch
+with the original's numbers, skill buying (**B**), augmentations per kill and death screen, and no mods. Pick your
+class in *Player Setup*.
+
+**Modern Deathmatch / Team Deathmatch** (up to 8 v 8) need Augmentique. Make a *Deathmatch Character* (body, face,
+outfit); kills unlock weapon skins. The host sets the map and the frag and time limits.
+
+What's planned for multiplayer, including the new Modern modes, is in
+[MULTIPLAYER_ROADMAP.md](MULTIPLAYER_ROADMAP.md).
 
 **No server needed:** the long code holds the host's address. If the room screen says the router didn't open the
 port itself, forward **UDP 27972** to the host (or turn on UPnP). Players on the same network find the host on their
@@ -181,7 +190,8 @@ The extracted source and the reports stay on your machine (they are the game's o
 ## Status
 The whole game is implemented. Before 1.0: a full playthrough with fixes, tuning by eye, more render-thread
 performance work (Modern with every mod runs about 70 fps on a Ryzen 5 3600 and RTX 3050), Steam Deck tuning, and
-save round-trip tests on every map. The full list is in [ROADMAP.md](ROADMAP.md).
+save round-trip tests on every map. The full list is in [ROADMAP.md](ROADMAP.md); multiplayer has its own,
+[MULTIPLAYER_ROADMAP.md](MULTIPLAYER_ROADMAP.md).
 
 If your frame rate sits at exactly 30, turn off *Vertical Sync* (Settings > Display). On a CPU with many cores, also
 try *Settings > Enhancements > Display: CPU Worker Threads*. Bug reports are very welcome: say which map you were on
