@@ -2,7 +2,7 @@
 
 DX RUST rebuilds the original Deus Ex (2000) in Rust on the Bevy engine, running on the game's own data files.
 
-- **v1.0**: the original game, every mission, played 1:1, on Windows, Linux / Steam Deck and macOS.
+- **v1.0**: the original game, every mission, played 1:1, on Windows, Linux / Steam Deck, macOS and Android.
 - **v2.0**: optional modern improvements on top, each a switch in Settings > Enhancements (Tab in play flips
   between Classic and Modern).
 
@@ -11,12 +11,8 @@ The whole game is implemented: every mission script, map, set piece and ending, 
 stealth, skills, augmentations, inventory, conversations, computers, saves, menus, HUD), checked against the
 original scripts. Most of v2.0 is in as well, and co-op multiplayer is playable.
 
-## v1.0: what's left
-1. **A full playthrough**, M00 to the endings, fixing what comes up. Watch conversation events after mission 1,
-   flags carried between maps, followers crossing maps, bosses and killswitch deaths, vehicles and elevators.
-2. **Tuning by eye**: water, the intro's logo electricity and mirror floor, letterbox height on wide screens.
-3. **Performance**: the render thread (Bevy's per-view command recording) is the limit with Modern and every mod.
-4. **Release polish**: Steam Deck at 800p / 60 fps, save round-trip tests on every map.
+## Classic Mode: what's left
+1. **Release polish**: Steam Deck at 800p / 60 fps, save round-trip tests on every map.
 
 ## v2.0: done
 - **Controls**: full controller support, Xbox / PlayStation glyphs, aug wheel, DualSense light bar, triggers,
@@ -48,12 +44,8 @@ original scripts. Most of v2.0 is in as well, and co-op multiplayer is playable.
 1. **Multiplayer**: internet playtests; Classic deathmatch played side by side with the original; the Modern
    multiplayer game (a living level, progression between matches, new modes). Its own plan is
    [MULTIPLAYER_ROADMAP.md](MULTIPLAYER_ROADMAP.md).
-2. **Weapon mods shown on the weapon**: scope, laser sight and silencer on the view model and in third person.
-3. **Materials for weapons and items**: highlights from the material table (they're lit per vertex today).
-4. **Leftovers**: AI sees JC at his body while he peeks from cover; GMDX's commando melee and minimum ranges;
+2. **Leftovers**: AI sees JC at his body while he peeks from cover; GMDX's commando melee and minimum ranges;
    blinking lights don't light their surroundings; tune glow strength by eye.
-
-Cut: more NPCs and livelier locations, no loading screens, PBR materials, time of day.
 
 ## Engine principles
 - **Original gameplay:** keep its quirks, but not its engine flaws.
