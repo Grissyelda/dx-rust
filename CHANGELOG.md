@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## v0.13.0
+
+The highlights since v0.12.0 (the detailed notes for each day follow):
+- **Classic multiplayer**: the original multiplayer patch rebuilt, with no mods. Deathmatch, Basic, Advanced and
+  Custom Team Deathmatch play by the original's rules and numbers (read from your own install): three-region
+  damage, skill points and augmentations earned by kills, the original skill-buying screen, death screen, notices,
+  scoreboard and win screen, team outfits, Player Setup, and turrets and cameras that belong to whoever switches
+  them on. The Host Room now asks for Classic or Modern first. The plan for what's next is in
+  [MULTIPLAYER_ROADMAP.md](MULTIPLAYER_ROADMAP.md).
+- **Smarter enemies, faithful to the original**: guards run out of ammo by default, pick their weapon as the
+  original does, reposition after every shot, reload, check their line of fire and lead moving targets. Every
+  ported piece of the AI is now marked with the original function it follows, and a tool compares the two.
+- **Display settings in the Display menu**: Frame Rate Cap, Field of View and Upscaling, plus an Advanced screen.
+- **Fixes** from GitHub issues #39-#62: hazards that never hurt (77 damage triggers), guards who saw too far,
+  gunfights where guards stood still, overheard conversations, mirrors, Linux windows, Android start-up, the
+  headless lobby server, and more.
+- **Performance and memory**: less video memory and render-thread work (wgpu's indirect-draw check off on
+  Vulkan / Metal), a lower memory peak while loading, half-size sound memory.
+
 
 ### Classic multiplayer: the original deathmatch (November 11)
 - Host Room now asks for the look first. Classic offers the original game types: Deathmatch, Basic Team DM (every

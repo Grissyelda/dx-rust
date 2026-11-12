@@ -3,7 +3,7 @@ name = "dxandroid"
 license = "GPL-3.0-or-later"
 edition = "2021"
 # The APK's versionName, and its versionCode (cargo-apk makes it from major.minor.patch: newer installs over older).
-version = "0.12.0"
+version = "0.13.0"
 description = "DX RUST for Android (Classic): the game as a NativeActivity library, packaged into an APK by cargo-apk."
 
 [lib]

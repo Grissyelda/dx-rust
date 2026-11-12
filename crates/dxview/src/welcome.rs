@@ -2,7 +2,7 @@
 //! look out for, and the state of Modern's performance. Shown at start until "Don't Show Again" (setting
 //! WelcomeSeen = VERSION; raise VERSION when the text gains something worth showing again).
 
-pub const VERSION: f32 = 1.2;
+pub const VERSION: f32 = 1.3;
 
 pub fn due() -> bool {
     setting!("WelcomeSeen") < VERSION
@@ -37,13 +37,18 @@ cover.
 - Mods: Lay D Denton, HDTP, New Vision, Helios, GMDX's perks and fixes, Augmentique outfits and Visible \
 Attachments, all from the launcher's Mods page.
 
-MULTIPLAYER (NEW)
+MULTIPLAYER
 Multiplayer on this menu: host a room and share its code, or join one. In co-op the host plays the story and \
 everyone shares the fight; each player keeps their own character, inventory and augmentations. Everyone marks \
 Ready before the host starts. Press Y to chat. Classic rooms are played without mods, Modern rooms with the \
-host's. The long room code works even when the online services are down (see the README). Deathmatch and Team \
-Deathmatch run on the original's five multiplayer maps (Modern with Augmentique): make a Deathmatch Character on the \
-Multiplayer screen; kills unlock weapon skins. Hold Tab for the scoreboard.
+host's. The long room code works even when the online services are down (see the README). Hold Tab for the \
+scoreboard.
+
+CLASSIC DEATHMATCH (NEW)
+Pick Classic in the Host Room and play the original multiplayer game: Deathmatch, Basic, Advanced or Custom Team \
+Deathmatch on the five original maps, with its own rules and screens and no mods needed. Press B to buy skills \
+with the number keys, and L on the death screen for your killer's details. Choose who you play in Player Setup. \
+Modern Deathmatch (with Augmentique) has Deathmatch Characters whose kills unlock weapon skins.
 
 THINGS TO KNOW
 - Each new character keeps its own saves, autosaves and achievements; the Load screen groups them by character.
