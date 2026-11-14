@@ -6,6 +6,11 @@
 //! texture. Up to SLOTS planes reflect at once (the nearest ones within 40 m, each with its own camera pair and
 //! image); farther mirror faces show just their texture. Each reflection has the sky too: a second camera renders
 //! the sky room with the reflected view's rotation into the same image first.
+//!
+//! With Lean Rendering only a plane the camera can see reflects: not one seen from behind, nor one with no line of
+//! sight to any of its faces (`seen_now`), and where nothing is re-filed (the CPU-culling path) a reflection goes half
+//! a second after it stops being wanted, not six. In UNATCO HQ on a Switch, facing a bare wall, two polished floors past
+//! it were reflecting: three views of the scene a frame, 1,077 draw calls and 19 ms of the render thread's encoding.
 
 use bevy::camera::RenderTarget;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -136,6 +141,8 @@ pub struct Mirrors {
     /// comes back on has the level's GPU-culled surfaces re-filed - gpudrive::refile_system - a hitch; panning past
     /// mirrors and water switched them on and off and the cut scenes juddered).
     pub wanted_at: std::collections::HashMap<usize, f32>,
+    /// Lean Rendering: per plane, when its line of sight is traced next and whether there was one (`seen_now`).
+    pub sight: Vec<(f32, bool)>,
 }
 
 /// A reflection camera (world, or the sky room with `sky`) of slot `0`.
@@ -363,6 +370,9 @@ pub fn spawn_camera(commands: &mut Commands, mirrors: &Mirrors) {
 /// materials which plane shows which image.
 /// How long a reflection keeps its camera after it stops being wanted (seconds).
 const HOLD: f32 = 6.0;
+/// The same with Lean Rendering where nothing is re-filed (the CPU-culling path, the Switch's): just enough that a
+/// glance across a mirror's edge doesn't switch its reflection off and on.
+const SHORT_HOLD: f32 = 0.5;
 
 #[allow(clippy::type_complexity)]
 pub fn mirror_system(
@@ -376,6 +386,7 @@ pub fn mirror_system(
     mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
     water_sheets: Query<&ViewVisibility, (With<MeshMaterial3d<crate::water::WaterMaterial>>, Without<crate::water::WaterGrid>, Without<crate::water::OceanRing>, Without<crate::water::WaterBacking>)>,
     time: Res<Time<Real>>,
+    level: Option<Res<crate::LevelRes>>,
 ) {
     if mirrors.planes.is_empty() {
         return;
@@ -385,8 +396,16 @@ pub fn mirror_system(
         mirrors.water_seen = now;
     }
     // In a cut scene or conversation nothing is let go: every camera coming back on re-files the level's surfaces
-    // (gpudrive::refile_system), a hitch that showed as jitter in the camera moves.
-    let hold = if crate::cinematic::active() || crate::consys::third_person() { f32::MAX } else { HOLD };
+    // (gpudrive::refile_system), a hitch that showed as jitter in the camera moves. Where nothing is re-filed (the
+    // CPU-culling path), Lean Rendering lets a reflection go a moment after it stops being wanted.
+    let lean = crate::perf::lean_rendering();
+    let hold = if lean && !crate::gpudrive::enabled() {
+        SHORT_HOLD
+    } else if crate::cinematic::active() || crate::consys::third_person() {
+        f32::MAX
+    } else {
+        HOLD
+    };
     let water_wanted = mirrors.water_seen > 0.0 && now - mirrors.water_seen < hold;
     if crate::credits::open() {
         for (_, mut cam, ..) in &mut cams {
@@ -451,6 +470,21 @@ pub fn mirror_system(
         .map(|(i, p)| (i, eye.clamp(p.min, p.max).distance(eye)))
         .filter(|(_, d)| *d <= 40.0)
         .collect();
+    // Lean Rendering: no reflection for a plane the camera can't see, from behind (Unreal draws mirrored faces from
+    // the front only) or with no line of sight to any of its faces. Facing a bare wall in UNATCO HQ, the polished
+    // floors of the rooms past it were reflecting: the scene drawn three times a frame for nothing on screen.
+    let mut unseen: Vec<usize> = Vec::new();
+    if let (true, Some(level)) = (lean, level.as_deref()) {
+        let Mirrors { planes, sight, .. } = &mut *mirrors;
+        sight.resize(planes.len(), (f32::MIN, false));
+        near.retain(|&(i, _)| {
+            let seen = seen_now(&planes[i], &mut sight[i], i, eye, fwd, now, &level.0);
+            if !seen {
+                unseen.push(i);
+            }
+            seen
+        });
+    }
     near.sort_by(|a, b| a.1.total_cmp(&b.1));
     // One water plane reflects at a time (the nearest): each slot is two more renders of the scene.
     let mut seen_water = false;
@@ -469,13 +503,20 @@ pub fn mirror_system(
     for p in &want {
         mirrors.wanted_at.insert(*p, now);
     }
-    // Planes wanted a moment ago stay in their slots while there's room (no off-and-on).
-    for s in mirrors.slots.iter() {
-        if let Some(p) = s.plane {
-            if !want.contains(&p) && want.len() < max && mirrors.wanted_at.get(&p).is_some_and(|t| now - t < hold) {
-                want.push(p);
+    // Planes wanted a moment ago stay in their slots while there's room (no off-and-on); with Lean Rendering, only
+    // while they can still be seen.
+    let held: Vec<usize> = mirrors.slots.iter().filter_map(|s| s.plane).collect();
+    for p in held {
+        if want.contains(&p) || want.len() >= max || !mirrors.wanted_at.get(&p).is_some_and(|t| now - t < hold) {
+            continue;
+        }
+        if let (true, Some(level)) = (lean, level.as_deref()) {
+            let Mirrors { planes, sight, .. } = &mut *mirrors;
+            if !seen_now(&planes[p], &mut sight[p], p, eye, fwd, now, &level.0) {
+                continue;
             }
         }
+        want.push(p);
     }
     // DXVIEW_PROF: a line when the reflected planes change, for the pop-in check. A plane gets a reflection only within 40 m
     // and in view; until then its face shows its texture, or the 16x16 placeholder.
@@ -486,10 +527,11 @@ pub fn mirror_system(
             if *last != want {
                 let nearest = mirrors.planes.iter().map(|p| eye.clamp(p.min, p.max).distance(eye)).fold(f32::MAX, f32::min);
                 eprintln!(
-                    "[MIRROR] {:.1} s: reflecting {:?} (was {:?}); nearest plane {:.1} m; eye {:?}",
+                    "[MIRROR] {:.1} s: reflecting {:?} (was {:?}); unseen {:?}; nearest plane {:.1} m; eye {:?}",
                     START.elapsed().as_secs_f32(),
                     want,
                     *last,
+                    unseen,
                     nearest,
                     eye
                 );
@@ -635,6 +677,52 @@ pub fn mirror_system(
             ..main_proj.clone()
         });
     }
+}
+
+/// Lean Rendering: can plane `i` be seen from `eye`? Not from behind; else its line of sight (`in_sight`), traced at
+/// 10 Hz per plane and staggered as coronas trace theirs, remembered in `sight`. Water always counts as seen.
+#[allow(clippy::too_many_arguments)]
+fn seen_now(p: &Plane, sight: &mut (f32, bool), i: usize, eye: Vec3, fwd: Vec3, now: f32, level: &dx_level::Level) -> bool {
+    if p.water {
+        return true;
+    }
+    if p.n.dot(eye) - p.d < 0.01 {
+        return false;
+    }
+    if now >= sight.0 {
+        sight.0 = now + 0.1 + (i % 6) as f32 * 0.016;
+        sight.1 = in_sight(p, eye, fwd, level);
+    }
+    sight.1
+}
+
+/// A line of sight from `eye` to one of the plane's faces: BSP traces to points 5 cm in front of it - where the view
+/// ray meets it, its nearest point, then the centres and corners of faces spread over it - until one is clear. Movers
+/// aren't in the BSP, so a closed door leaves a mirror behind it reflecting (as before); a solid see-through brush
+/// hides one.
+fn in_sight(p: &Plane, eye: Vec3, fwd: Vec3, level: &dx_level::Level) -> bool {
+    let ue = |v: Vec3| {
+        let u = dx_level::bevy_to_ue(v.into());
+        bevy::math::DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64)
+    };
+    let from = ue(eye);
+    let clear = |q: Vec3| level.collision.trace(from, ue(q + p.n * 0.05), bevy::math::DVec3::ZERO).fraction >= 0.999;
+    let along = p.n.dot(fwd);
+    if along.abs() > 1e-4 {
+        let t = (p.d - p.n.dot(eye)) / along;
+        let hit = eye + fwd * t;
+        if t > 0.0 && hit.cmpge(p.min - Vec3::splat(0.01)).all() && hit.cmple(p.max + Vec3::splat(0.01)).all() && clear(hit) {
+            return true;
+        }
+    }
+    if clear(eye.clamp(p.min, p.max)) {
+        return true;
+    }
+    let step = (p.tris.len() / 8).max(1);
+    p.tris.iter().step_by(step).take(8).any(|t| {
+        let c = (t[0] + t[1] + t[2]) / 3.0;
+        clear(c) || t.iter().any(|v| clear(v.lerp(c, 0.1)))
+    })
 }
 
 /// JC as the mirrors show him: GM_Trench with his skins (JCDentonMale), standing where the player is, facing the
