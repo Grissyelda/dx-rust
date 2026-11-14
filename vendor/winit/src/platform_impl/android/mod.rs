@@ -209,6 +209,29 @@ impl<T: 'static> EventLoop<T> {
 
         if let Some(event) = main_event {
             trace!("Handling main event {:?}", event);
+            // DX RUST patch: the game's start-up log hears every lifecycle event.
+            if let Some(f) = crate::platform::android::lifecycle::hook() {
+                let name = match &event {
+                    MainEvent::InitWindow { .. } => "InitWindow",
+                    MainEvent::TerminateWindow { .. } => "TerminateWindow",
+                    MainEvent::WindowResized { .. } => "WindowResized",
+                    MainEvent::RedrawNeeded { .. } => "RedrawNeeded",
+                    MainEvent::ContentRectChanged { .. } => "ContentRectChanged",
+                    MainEvent::GainedFocus => "GainedFocus",
+                    MainEvent::LostFocus => "LostFocus",
+                    MainEvent::ConfigChanged { .. } => "ConfigChanged",
+                    MainEvent::LowMemory => "LowMemory",
+                    MainEvent::Start => "Start",
+                    MainEvent::Resume { .. } => "Resume",
+                    MainEvent::SaveState { .. } => "SaveState",
+                    MainEvent::Pause => "Pause",
+                    MainEvent::Stop => "Stop",
+                    MainEvent::Destroy => "Destroy",
+                    MainEvent::InsetsChanged { .. } => "InsetsChanged",
+                    _ => "Other",
+                };
+                f(name);
+            }
 
             match event {
                 MainEvent::InitWindow { .. } => {

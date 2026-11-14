@@ -227,3 +227,20 @@ pub mod gamepad {
         HOOK.get().copied()
     }
 }
+
+/// DX RUST patch: every activity lifecycle event the event loop receives (Start, Resume, InitWindow, Pause, Stop,
+/// Destroy...), by name, for the game's own start-up log. Upstream logs most of them only at debug level.
+pub mod lifecycle {
+    use std::sync::OnceLock;
+
+    static HOOK: OnceLock<fn(&str)> = OnceLock::new();
+
+    /// Send lifecycle event names to `f` from now on (only the first call counts).
+    pub fn set_hook(f: fn(&str)) {
+        let _ = HOOK.set(f);
+    }
+
+    pub(crate) fn hook() -> Option<fn(&str)> {
+        HOOK.get().copied()
+    }
+}

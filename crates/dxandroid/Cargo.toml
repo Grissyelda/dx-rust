@@ -3,7 +3,7 @@ name = "dxandroid"
 license = "GPL-3.0-or-later"
 edition = "2021"
 # The APK's versionName, and its versionCode (cargo-apk makes it from major.minor.patch: newer installs over older).
-version = "0.13.0"
+version = "0.13.1"
 description = "DX RUST for Android (Classic): the game as a NativeActivity library, packaged into an APK by cargo-apk."
 
 [lib]
@@ -36,9 +36,15 @@ extract_native_libs = true
 
 [package.metadata.android.application.activity]
 orientation = "sensorLandscape"
-config_changes = "orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density"
+# Every configuration change is handled in place: the activity is never torn down and rebuilt (a rebuilt
+# NativeActivity can't take over the game that's already running). smallestScreenSize, touchscreen, fontScale,
+# layoutDirection, colorMode, locale, mcc and mnc are new in v0.13.1 (GitHub issue #62 guesses: game controllers,
+# display and refresh changes on handhelds and Snapdragon phones).
+config_changes = "orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|touchscreen|uiMode|density|fontScale|layoutDirection|colorMode|locale|mcc|mnc"
 launch_mode = "singleTask"
 exported = true
+# Full screen only: never split-screen, a freeform window or a second display's resized copy.
+resizeable_activity = false
 
 # Finding the game folder anywhere on the phone or an SD card (Android 11+: "All files access").
 [[package.metadata.android.uses_permission]]

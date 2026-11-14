@@ -826,6 +826,13 @@ pub fn run() {
     add_world_systems(&mut app);
     add_menu_systems(&mut app);
     app.run();
+    // Android: the loop ended (the activity is going away). End the process too, so the next start is a fresh one
+    // instead of a new activity beside a game still running without a window (its music still playing).
+    if platform::android() {
+        platform::note("game loop ended: exiting");
+        settings::save();
+        std::process::exit(0);
+    }
 }
 
 /// Bevy's plugins (the window from the settings), engine settings, our schedule / profiling plugins, and the
@@ -861,6 +868,10 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
                 present_mode: menus::present_mode(setting!("VSync")),
                 ..default()
             }),
+            // Android: the system ends the app, never a closed window (GitHub issue #62 guess: an exit there left
+            // the game running without its activity).
+            exit_condition: if platform::android() { bevy::window::ExitCondition::DontExit } else { bevy::window::ExitCondition::OnAllClosed },
+            close_when_requested: !platform::android(),
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.05, 0.07, 0.12)))

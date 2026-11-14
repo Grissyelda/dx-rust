@@ -35,7 +35,14 @@ static BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 
 /// The app is in the background (Android: switched away from, the screen off): sound is muted, the game paused.
 pub fn backgrounded() -> bool {
-    BACKGROUND.load(std::sync::atomic::Ordering::Relaxed)
+    BACKGROUND.load(std::sync::atomic::Ordering::Relaxed) || STOPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Android: the activity is stopped (not on screen), whether or not its window went away.
+static STOPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_stopped(on: bool) {
+    STOPPED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Bevy's lifecycle messages: suspended -> background (and the game paused behind the menu); resumed -> back.
@@ -63,11 +70,22 @@ pub fn note(msg: &str) {
 
 /// Android: the window's focus / visibility / size changes into startup.log.
 pub fn window_log_system(
+    mut exits: bevy::prelude::MessageReader<bevy::app::AppExit>,
+    windows: bevy::prelude::Query<(), bevy::prelude::With<bevy::window::Window>>,
+    mut had_window: bevy::prelude::Local<bool>,
     mut focus: bevy::prelude::MessageReader<bevy::window::WindowFocused>,
     mut occl: bevy::prelude::MessageReader<bevy::window::WindowOccluded>,
     mut size: bevy::prelude::MessageReader<bevy::window::WindowResized>,
     mut frames: bevy::prelude::Local<u32>,
 ) {
+    for e in exits.read() {
+        note(&format!("app exit requested: {e:?}"));
+    }
+    let has = !windows.is_empty();
+    if has != *had_window {
+        note(if has { "window entity present" } else { "window entity GONE" });
+        *had_window = has;
+    }
     for e in focus.read() {
         note(&format!("window focused {}", e.focused));
     }

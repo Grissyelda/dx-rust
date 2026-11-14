@@ -51,8 +51,11 @@ pub fn startup() -> String {
         if let Some(dir) = a.external_data_path().or_else(|| a.internal_data_path()) {
             unreal_pkg::paths::set_data_dir(dir);
         }
+        // Keep the screen on. (The theme is already full screen: the old FULLSCREEN window flag on top of it is
+        // gone - one of the guesses for GitHub issue #62, the game dropping to the background at start on some
+        // Snapdragon phones and handhelds.)
         use bevy::android::android_activity::WindowManagerFlags as F;
-        a.set_window_flags(F::KEEP_SCREEN_ON | F::FULLSCREEN, F::empty());
+        a.set_window_flags(F::KEEP_SCREEN_ON, F::empty());
     }
     crate::platform::note(&format!("DX RUST {} starting (Android SDK {})", env!("CARGO_PKG_VERSION"), sdk()));
     // A crash from here on leaves crash.log in the app's folder (the release build aborts on a panic, so the hook
@@ -63,6 +66,7 @@ pub fn startup() -> String {
         let _ = std::fs::write(unreal_pkg::paths::data_dir().join("crash.log"), &msg);
     }));
     winit::platform::android::gamepad::set_hook(pad_event);
+    winit::platform::android::lifecycle::set_hook(activity_event);
     if let Some(p) = saved_game_path().filter(|p| can_read(p)) {
         crate::platform::note(&format!("game folder {}", p.display()));
         return p.display().to_string();
@@ -77,6 +81,24 @@ pub fn startup() -> String {
     run_setup_app();
     // The setup screen restarts the app; if that ever fails, quit rather than load nothing.
     std::process::exit(0);
+}
+
+/// Every activity lifecycle event (from our winit patch), into startup.log - the log GitHub issue #62 needs. Stop /
+/// Start also mute and unmute the game (an activity sent to the background without the window going away first
+/// kept playing its music), and Destroy ends the process: the activity is finishing, and a fresh start from the
+/// launcher or Recents is better than a new activity on a game that's still running without a window.
+fn activity_event(name: &str) {
+    crate::platform::note(&format!("activity {name}"));
+    match name {
+        "Stop" => crate::platform::set_stopped(true),
+        "Start" | "Resume" => crate::platform::set_stopped(false),
+        "Destroy" => {
+            crate::settings::save();
+            crate::platform::note("activity destroyed: exiting");
+            std::process::exit(0);
+        }
+        _ => {}
+    }
 }
 
 fn launcher_txt() -> PathBuf {

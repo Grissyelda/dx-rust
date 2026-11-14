@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.13.1
+
+Android hotfix.
+
+### Android: the game no longer drops to the background at start (#62)
+On some phones and handhelds (so far Snapdragon ones) the game went to the background as it started, with its
+music still playing and nothing on screen. Fixed:
+- The activity is never torn down and rebuilt for a configuration change (controllers, display, refresh rate,
+  fonts, locale...), never split-screen or freeform, and the old full-screen window flag on top of the full-screen
+  theme is gone.
+- Bindless materials are off on every Android GPU, so every phone takes the same drawing path.
+- The game no longer quits because its window went away; if Android does end the activity, the whole app ends
+  with it (no music left playing with nothing on screen), and the music stops whenever the game isn't on screen.
+- `Android/data/com.dxrust.game/files/startup.log` now lists every activity event (start, pause, stop, window
+  created / lost...) and any request to quit, for future reports.
+
 ## v0.13.0
 
 The highlights since v0.12.0 (the detailed notes for each day follow):

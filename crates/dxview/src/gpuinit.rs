@@ -21,11 +21,6 @@ const BINDLESS_FEATURES: bevy::render::settings::WgpuFeatures = bevy::render::se
     .union(bevy::render::settings::WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)
     .union(bevy::render::settings::WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY);
 
-/// Texture array elements a bindless StandardMaterial asks for per shader stage. Bevy only checks the sampler
-/// count before going bindless, so a driver with the features but a smaller texture-array limit fails every
-/// material's bind group layout (nothing of the level drawn).
-#[cfg(target_os = "android")]
-const BINDLESS_TEXTURES: u32 = 4096;
 
 pub fn wgpu_settings() -> WgpuSettings {
     let mut s = WgpuSettings::default();
@@ -51,7 +46,7 @@ pub fn wgpu_settings() -> WgpuSettings {
     s
 }
 
-/// Android: does the GPU's texture-array limit fit Bevy's bindless materials? Also prints what the device offers
+/// Android: may Bevy's bindless materials be used? (Not at present: see below.) Also prints what the device offers
 /// (for bug reports). Elsewhere assumed (desktop drivers allow far more).
 #[cfg(target_os = "android")]
 fn bindless_fits() -> bool {
@@ -65,7 +60,10 @@ fn bindless_fits() -> bool {
     };
     let (info, l, f) = (a.get_info(), a.limits(), a.features());
     let has = f.contains(BINDLESS_FEATURES);
-    let fits = !has || l.max_binding_array_elements_per_shader_stage >= BINDLESS_TEXTURES;
+    // Bindless materials stay off on Android for now: the phones that run the game (Mali, no binding arrays) take
+    // the plain path, and the ones that drop to the background at start (GitHub issue #62: Snapdragon / Adreno,
+    // which offer binding arrays) are the ones that would take the bindless one - so all take the plain path.
+    let fits = !has;
     let line = format!(
         "gpu: {} ({}) binding arrays {} / {} elements, storage textures {}, storage buffers {}, compute x {}, 2D {}",
         info.name, info.driver_info, has, l.max_binding_array_elements_per_shader_stage,
