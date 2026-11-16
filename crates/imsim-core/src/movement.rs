@@ -463,7 +463,9 @@ impl Character {
                     }
                 }
                 // A wall: try it a step higher; if that lifts us out of the water, climb out onto the edge.
+                let before_step = self.location;
                 self.try_move(w, p, step_up);
+                let stepped = self.location - before_step;
                 if w.water_at(self.location).is_none() {
                     // Climbed out onto the edge: keep the swimming velocity (bJustTeleported) - the step itself
                     // isn't speed, or the 25-unit hop would launch us at thousands of units a second.
@@ -472,7 +474,9 @@ impl Character {
                     self.velocity = DVec3::new(vel.x, vel.y, vel.z.max(0.0));
                     return;
                 }
-                self.try_move(w, p, -step_up);
+                // Back down only as far as the step went up (under a dock or a ceiling it went nowhere, and a full
+                // step down every bump sank the swimmer 20 units a frame).
+                self.try_move(w, p, -stepped);
                 let slide = delta - hit.normal * delta.dot(hit.normal);
                 if delta.dot(slide) >= 0.0 {
                     let h2 = self.try_move(w, p, slide);

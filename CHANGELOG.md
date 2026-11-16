@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Swimming: breath at the surface
+Swimming against a wall, a dock edge or a ceiling no longer pulls you under: each bump stepped the swimmer down a full
+step height instead of only the height it had stepped up, so near structures JC sank in short jerks while the view
+stayed above the water, and the breath bar kept running down. The "head under water" test now also uses the same
+eye height the camera sits on.
+
 ### Multiplayer: leaving a deathmatch goes back to the title
 Leaving a deathmatch or team deathmatch room (Leave Multiplayer) now ends the match for you and returns to the main
 menu on the title screen, for the host too. Before, the host stayed on the arena map, playing it alone as a single

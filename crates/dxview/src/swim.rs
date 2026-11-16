@@ -88,7 +88,11 @@ pub fn swim_system(
     let active = !player.noclip && !ph.dead;
     let loc = player.body.location;
     let h = player.params.height;
-    let head = active && water_at(lvl, loc + DVec3::Z * player.eye_height).is_some();
+    // Unreal's HeadRegion is the zone at Location + EyeHeight, the smoothed eye (PlayerPawn.UpdateEyeHeight) the
+    // camera sits on - not the BaseEyeHeight it eases toward. Bobbing at the surface the two differ by a few units,
+    // and with the target height the head stayed "under" (breath running out) while the view was above the water.
+    let eye = player.view.eye_height;
+    let head = active && water_at(lvl, loc + DVec3::Z * eye).is_some();
     let foot = active && water_at(lvl, loc - DVec3::Z * (h - 1.0)).is_some();
     ph.in_water = active && water_at(lvl, loc).is_some();
     if !sw.started {
@@ -195,6 +199,12 @@ pub fn swim_system(
         );
     }
 
+    if env_on!("DXVIEW_SWIMLOG") && (now * 2.0).floor() != ((now - dt) * 2.0).floor() {
+        println!(
+            "SWIM z {:.1} eye {:.1} (base {:.1}) head {} swimming {} timer {:.1}/{:.1}",
+            loc.z, loc.z + eye, loc.z + player.eye_height, head, player.swimming, sw.timer, sw.duration
+        );
+    }
     // Head going under / coming up (Pawn + DeusExPlayer.HeadZoneChange).
     if head != sw.head_in {
         if head {
@@ -343,7 +353,7 @@ pub fn swim_system(
             if pain_of(loc).is_some() {
                 depth += 0.4;
             }
-            if pain_of(loc + DVec3::Z * player.eye_height).is_some() {
+            if pain_of(loc + DVec3::Z * eye).is_some() {
                 depth += 0.2;
             }
             if *dps > 0.0 {
