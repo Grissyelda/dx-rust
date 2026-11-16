@@ -1459,8 +1459,12 @@ pub fn save_last_system(world: &mut World) {
         let msg = match write(&path, &s) {
             Ok(()) => {
                 println!("save: wrote {} ({})", path.display(), desc);
-                // The snapshot for the load screen (160 x 120, raw RGB beside the save).
+                // The snapshot for the load screen (160 x 120, raw RGB beside the save). Not on the simple GPU
+                // path (gpuinit::safe_gpu): no screen read-back there.
                 let shot = snapshot_path(&path);
+                if crate::gpuinit::safe_gpu() {
+                    crate::platform::note(&format!("saved {} (no thumbnail)", path.display()));
+                } else {
                 world
                     .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
                     .observe(move |c: On<bevy::render::view::screenshot::ScreenshotCaptured>| {
@@ -1496,6 +1500,7 @@ pub fn save_last_system(world: &mut World) {
                             let _ = std::fs::write(&shot, out);
                         }
                     });
+                }
                 format!("Game saved: {desc}")
             }
             Err(e) => {

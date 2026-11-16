@@ -24,7 +24,7 @@ fn enabled() -> bool {
     // Only where Bevy really culls on the GPU: without GPU preprocessing (old Mali / Adreno drivers on Android,
     // GL) a NoCpuCulling mesh is never drawn - the level vanished there - and with preprocessing but no culling
     // every surface would be drawn in every view.
-    *ON.get_or_init(|| !env_on!("DXVIEW_CPU_CULL"))
+    *ON.get_or_init(|| !env_on!("DXVIEW_CPU_CULL") && !crate::gpuinit::safe_gpu())
         && (GPU_MODE.load(std::sync::atomic::Ordering::Relaxed) == 3 || env_on!("DXVIEW_FORCE_GPU_CULL"))
 }
 

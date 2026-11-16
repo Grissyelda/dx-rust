@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Multiplayer: leaving a deathmatch goes back to the title
+Leaving a deathmatch or team deathmatch room (Leave Multiplayer) now ends the match for you and returns to the main
+menu on the title screen, for the host too. Before, the host stayed on the arena map, playing it alone as a single
+player game. Leaving a co-op room is unchanged: the host keeps playing his own campaign, joiners go back to the title.
+
+### Android: a simpler drawing path on Mali phones
+A Mali phone closed when Training or a new game loaded its first map. On Mali GPUs the game now draws without
+GPU-driven indirect draws or GPU culling, poses characters on the CPU instead of in a vertex shader, and saves without
+the load screen's thumbnail picture (no read-back of the screen). Other phones are unchanged.
+
+### Android: more detail in startup.log
+Loading a map now writes each step (requested, read, built, first frame, settled) with the app's memory use and the
+phone's free memory to `Android/data/com.dxrust.game/files/startup.log`, to track down a crash on some Mali phones
+when starting Training or a new game.
+
 ## v0.13.1
 
 Android hotfix.

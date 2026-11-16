@@ -898,6 +898,13 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
             achievements::set_map(&level.name);
             LevelRes(level)
         });
+    // The simple GPU path (gpuinit::safe_gpu, Mali phones): every camera draws without GPU-driven indirect draws,
+    // added the moment the camera is (Bevy wants it there from the start).
+    if gpuinit::safe_gpu() {
+        app.add_observer(|add: On<Add, Camera>, mut commands: Commands| {
+            commands.entity(add.entity).insert(bevy::render::view::NoIndirectDrawing);
+        });
+    }
 }
 
 /// Test configurations, level setup, the loader, the cursor watchdog and the loading screen.

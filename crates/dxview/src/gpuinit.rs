@@ -22,6 +22,26 @@ const BINDLESS_FEATURES: bevy::render::settings::WgpuFeatures = bevy::render::se
     .union(bevy::render::settings::WgpuFeatures::PARTIALLY_BOUND_BINDING_ARRAY);
 
 
+/// The GPU's name as the probe saw it (Android only; empty elsewhere).
+static GPU_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// A phone GPU that takes the simplest drawing path we have (Arm Mali, or `DXVIEW_SAFE_GPU=1` to try it on a desktop):
+/// no GPU-driven indirect draws (Bevy's NoIndirectDrawing on every camera) or GPU culling,
+/// characters posed on the CPU instead of by the vertex-animation shader, and no save thumbnails (no screen read-back).
+/// A Mali phone closed when Training or a new game loaded its first map, while the title screen (no characters, no
+/// save) ran; these are the paths that start there.
+pub fn safe_gpu() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = env_on!("DXVIEW_SAFE_GPU") || GPU_NAME.get().is_some_and(|n| crate::util::contains_ci(n, "mali"));
+        if on {
+            println!("gpu: simple drawing path (no indirect draws or GPU culling, CPU character animation, no save thumbnails)");
+            crate::platform::note("simple GPU path on: no indirect draws or GPU culling, CPU character animation, no save thumbnails");
+        }
+        on
+    })
+}
+
 pub fn wgpu_settings() -> WgpuSettings {
     let mut s = WgpuSettings::default();
     // Test aid: no binding arrays, so every material takes its non-bindless path (what phones without them get).
@@ -59,6 +79,7 @@ fn bindless_fits() -> bool {
         return true;
     };
     let (info, l, f) = (a.get_info(), a.limits(), a.features());
+    let _ = GPU_NAME.set(info.name.clone());
     let has = f.contains(BINDLESS_FEATURES);
     // Bindless materials stay off on Android for now: the phones that run the game (Mali, no binding arrays) take
     // the plain path, and the ones that drop to the background at start (GitHub issue #62: Snapdragon / Adreno,

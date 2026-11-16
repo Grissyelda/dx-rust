@@ -68,6 +68,22 @@ pub fn note(msg: &str) {
     }
 }
 
+/// `note` plus the process's memory and what the phone has left (Linux /proc), so a report shows whether a step
+/// ran the phone out of memory (Android kills the app without a word then).
+pub fn note_mem(msg: &str) {
+    if !android() {
+        return;
+    }
+    let field = |file: &str, key: &str| -> Option<u64> {
+        let s = std::fs::read_to_string(file).ok()?;
+        let l = s.lines().find(|l| l.starts_with(key))?;
+        l[key.len()..].split_whitespace().next()?.parse::<u64>().ok()
+    };
+    let rss = field("/proc/self/status", "VmRSS:").unwrap_or(0) / 1024;
+    let avail = field("/proc/meminfo", "MemAvailable:").unwrap_or(0) / 1024;
+    note(&format!("{msg} (app {rss} MB, phone free {avail} MB)"));
+}
+
 /// Android: the window's focus / visibility / size changes into startup.log.
 pub fn window_log_system(
     mut exits: bevy::prelude::MessageReader<bevy::app::AppExit>,

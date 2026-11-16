@@ -906,13 +906,22 @@ pub fn join(j: &imsim_net::client::Joined, look: Look) -> Result<(), String> {
 pub fn leave(why: &str) {
     let mut g = NET.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(n) = g.take() {
+        // A deathmatch (or team deathmatch) room ends at the title for everyone, the host too: its map is only a
+        // match arena, nothing to go on playing alone. A co-op host keeps his own campaign.
+        let versus = crate::deathmatch::versus() || crate::deathmatch::playing();
         // Out of the room: no match, no board.
         crate::deathmatch::host_end();
         crate::deathmatch::set_rules(None);
         crate::deathmatch::set_my_id(0);
         // The player's mods come back (the title map, or the next map, is built with them).
         let resume = unreal_pkg::mods::set_suspended(false);
-        if resume && !(n.role == Role::Client && n.welcomed) {
+        // A joiner's world was the host's: without him it's back to the title (his character is saved). A versus
+        // room's arena ends there too, unless no map of the room was ever up (leaving from the Host Room screen).
+        let leave_map = match n.role {
+            Role::Client => n.welcomed,
+            _ => versus && (n.started || !crate::menus::intro_map()),
+        };
+        if resume && !leave_map {
             crate::remaster::request_reload();
         }
         if n.role == Role::Host {
@@ -924,8 +933,7 @@ pub fn leave(why: &str) {
         let _ = n.tx.send(Out::Stop);
         // Long enough for the link thread to say goodbye (the game may be quitting).
         std::thread::sleep(Duration::from_millis(30));
-        // A joiner's world was the host's: without him it's back to the title (his character is saved).
-        if n.role == Role::Client && n.welcomed {
+        if leave_map {
             drop(g);
             crate::loader::request("DX.dx", crate::loader::Goal::Title);
             if !why.is_empty() {
@@ -2820,6 +2828,17 @@ pub fn dev_system(mut stage: Local<u8>, mut wait: Local<f32>, time: Res<Time>) {
             }
         }
     }
+    // DXVIEW_MP_LEAVE_AT=<secs>: leave the session that long after it opened (as the main menu's Leave Multiplayer).
+    if *stage == 9 || *stage == 20 {
+        if let Some(at) = env_val!("DXVIEW_MP_LEAVE_AT").and_then(|v| v.parse::<f32>().ok()) {
+            if *wait >= at && active() {
+                println!("NET dev leaving");
+                leave("");
+                *stage = 30;
+                return;
+            }
+        }
+    }
     match *stage {
         0 => {
             // Without online services (DXVIEW_MP_OFFLINE=1 for the host; a direct code in the joiner's file).
@@ -2828,6 +2847,10 @@ pub fn dev_system(mut stage: Local<u8>, mut wait: Local<f32>, time: Res<Time>) {
                 match open_host(rules) {
                     Ok((port, ..)) => println!("NET dev offline host on port {port}"),
                     Err(e) => println!("NET dev offline host failed: {e}"),
+                }
+                // DXVIEW_MP_DM=1: the room is a deathmatch (leave-to-title tests).
+                if env_on!("DXVIEW_MP_DM") {
+                    crate::deathmatch::set_rules(Some(crate::deathmatch::DmRules { mode: crate::deathmatch::Mode::Deathmatch, ..Default::default() }));
                 }
                 *stage = 9;
                 return;

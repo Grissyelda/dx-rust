@@ -245,7 +245,7 @@ pub fn gpuanim_setup(
     if new.is_empty() {
         return;
     }
-    let cpu_only = env_on!("DXVIEW_CPU_ANIM");
+    let cpu_only = env_on!("DXVIEW_CPU_ANIM") || crate::gpuinit::safe_gpu();
     let mut todo = Vec::new();
     for (e, a, children) in &new {
         let ma = &level.0.mesh_actors[a.mesh_actor];

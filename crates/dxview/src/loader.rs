@@ -195,6 +195,7 @@ fn prefetch_tick(world: &mut World) {
 
 /// Go to `map` (file name; ".dx" added if missing).
 pub fn request(map: &str, goal: Goal) {
+    crate::platform::note_mem(&format!("map requested: {map}"));
     // Multiplayer: a joiner goes where the host goes, and only then; the host takes everyone along.
     if matches!(goal, Goal::Travel(_)) && !crate::netplay::may_travel() {
         return;
@@ -339,7 +340,9 @@ pub fn loader_system(world: &mut World) {
         let m = map.clone();
         let _ = std::thread::Builder::new().name("level-load".into()).spawn(move || {
             let t0 = std::time::Instant::now();
+            crate::platform::note_mem(&format!("reading {m}"));
             let r = dx_level::load_level(&root, &m).map(|l| (l, crate::player_params(&root)));
+            crate::platform::note_mem(&format!("read {m} in {:.1} s{}", t0.elapsed().as_secs_f32(), if r.is_err() { " (failed)" } else { "" }));
             crate::prof::hitch_note(&format!("level load {m}"), t0.elapsed().as_secs_f64() * 1000.0);
             // Developer aid: DXVIEW_LOAD_DELAY=<secs> holds the loading screen up longer (to look at it).
             if let Some(d) = env_val!("DXVIEW_LOAD_DELAY").map(str::to_owned).and_then(|v| v.parse::<f32>().ok()) {
@@ -396,7 +399,7 @@ fn protected(world: &World, e: Entity) -> bool {
 }
 
 fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, params: (imsim_core::movement::MoveParams, f64, f64)) {
-    crate::platform::note(&format!("map {map}"));
+    crate::platform::note_mem(&format!("building {map}"));
     // What travels with the player, from the map being left.
     if matches!(goal, Goal::Travel(_)) {
         // MissionScript.PreTravel of the map being left.
@@ -480,10 +483,12 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
     world.insert_resource(crate::LevelRes(level));
     crate::sound::relevel(world);
     GEN.fetch_add(1, Ordering::Relaxed);
+    crate::platform::note("setting the map up");
     world.run_schedule(LevelSetup);
     crate::save::begin_level(arrive);
     world.resource_mut::<Time<Virtual>>().unpause();
     println!("loader: {map} built");
+    crate::platform::note_mem(&format!("{map} built"));
 }
 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
@@ -625,6 +630,7 @@ pub fn settling() -> bool {
 pub fn settle_system(mut seen: Local<u64>, mut paused_by_us: Local<bool>, mut time: ResMut<Time<Virtual>>) {
     if generation() != *seen {
         *seen = generation();
+        crate::platform::note("first frame on the new map");
         let settle = !env_on!("DXVIEW_NO_SETTLE");
         if let Ok(mut a) = SETTLED_AT.lock() {
             *a = (!settle).then(std::time::Instant::now);
@@ -649,6 +655,7 @@ pub fn settle_system(mut seen: Local<u64>, mut paused_by_us: Local<bool>, mut ti
                 *a = Some(std::time::Instant::now());
             }
             crate::prof::mem_mark("map settled");
+            crate::platform::note_mem(&format!("map settled after {age:.1} s"));
         }
     }
     let on = g.is_some();
