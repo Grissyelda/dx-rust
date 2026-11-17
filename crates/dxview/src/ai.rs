@@ -1988,6 +1988,8 @@ pub enum WorldReq {
     Face(Sel, DVec3),
     /// Mission06 TeleportPawn: SetLocation + SetRotation + SetOrders(orders).
     TeleportOrders(Sel, DVec3, i32, String),
+    /// ScriptedPawn.CatchFire (The Nameless Mod's scripts).
+    Ignite(Sel),
 }
 
 static WORLD: std::sync::Mutex<Vec<WorldReq>> = std::sync::Mutex::new(Vec::new());
@@ -2109,6 +2111,17 @@ pub fn world_system(
                         damage_type: "Shot",
                         hit_loc: deco.body.location,
                         attacker: Some(npc.blocker),
+                        attacker_pos: deco.body.location,
+                    });
+                }
+                WorldReq::Ignite(sel) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead && out.is_none() => {
+                    // Set alight the way fire damage does it.
+                    hits.0.push(crate::damage::PawnHit { world: false,
+                        blocker: npc.blocker,
+                        damage: 1.0,
+                        damage_type: "Flamed",
+                        hit_loc: deco.body.location,
+                        attacker: None,
                         attacker_pos: deco.body.location,
                     });
                 }

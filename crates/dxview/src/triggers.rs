@@ -22,6 +22,8 @@ use unreal_pkg::props::{find, Property, Value};
 #[derive(Debug, Clone)]
 enum Kind {
     Plain,
+    /// The Nameless Mod's MSCallbackTrigger: touched or triggered, it asks the mission script to run ScriptFunction.
+    Callback(String),
     /// UnTrigger: touching it (relevant) or triggering it untriggers its Event (no once-only, delay or message).
     Un,
     /// LogicTrigger: inGroup1 / inGroup2, Op (AND, OR, XOR), Not, OneShot, in1, in2, outhit.
@@ -214,6 +216,15 @@ pub fn set_collision(tag: &str, on: bool) {
     }
 }
 
+static ACTIVE: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+
+/// A mission script turns triggers with this Tag on or off (bInitiallyActive / Destroy).
+pub fn set_active(tag: &str, on: bool) {
+    if let Ok(mut q) = ACTIVE.lock() {
+        q.push((tag.to_string(), on));
+    }
+}
+
 pub fn push_order(o: PawnOrder) {
     if let Ok(mut q) = ORDERS.lock() {
         q.push(o);
@@ -263,8 +274,9 @@ fn i(p: &[Property], n: &str, d: i32) -> i32 {
     }
 }
 
-const CLASSES: [&str; 13] = [
+const CLASSES: [&str; 14] = [
     "Trigger",
+    "MSCallbackTrigger",
     "UnTrigger",
     "DirectionalTrigger",
     "DataLinkTrigger",
@@ -340,6 +352,10 @@ fn build(level: &dx_level::Level) -> Vec<Trig> {
                 in2: false,
                 hit: false,
             },
+            "MSCallbackTrigger" => Kind::Callback(match find(p, "ScriptFunction") {
+                Some(Value::Name(n)) => n.clone(),
+                _ => String::new(),
+            }),
             "ShakeTrigger" => Kind::Shake(
                 f(p, "shakeTime", 0.0) as f32,
                 f(p, "shakeRollMagnitude", 0.0) as f32,
@@ -629,6 +645,12 @@ fn touch(
                 out.emit(&t.event, &t.group, false);
             }
         }
+        Kind::Callback(f) => {
+            if relevant(t, by_player) {
+                base_touch(t, now, out);
+                crate::missions::game_event(&f);
+            }
+        }
         Kind::Shake(time, roll, vert) => {
             if relevant(t, by_player) {
                 if by_player {
@@ -682,7 +704,7 @@ fn untouch(t: &mut Trig, by_player: bool, flags: &mut imsim_core::flags::FlagBas
                 }
             }
         }
-        Kind::Plain | Kind::Logic { .. } | Kind::Shake(..) | Kind::Fade { .. }
+        Kind::Plain | Kind::Logic { .. } | Kind::Shake(..) | Kind::Fade { .. } | Kind::Callback(_)
             if relevant(t, by_player) => {
                 base_untouch(t, out);
             }
@@ -866,6 +888,11 @@ fn triggered(
             crate::shake::shake_view(time, roll, vert);
             trigger_state(t);
         }
+        Kind::Callback(f) => {
+            if on {
+                crate::missions::game_event(&f);
+            }
+        }
         Kind::Fade { .. } => {
             trigger_state(t);
             start_fade(t);
@@ -955,6 +982,11 @@ pub fn trigger_system(
     for (tag, on) in COLLIDE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         for t in tr.list.iter_mut().filter(|t| t.tag.eq_ignore_ascii_case(&tag)) {
             t.collide = on;
+        }
+    }
+    for (tag, on) in ACTIVE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        for t in tr.list.iter_mut().filter(|t| t.tag.eq_ignore_ascii_case(&tag)) {
+            t.active = on;
         }
     }
     let dt = time.delta_secs();

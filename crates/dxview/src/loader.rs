@@ -88,6 +88,7 @@ fn start_prefetch(root: std::path::PathBuf, map: &str) {
         mm.push_str(".dx");
     }
     let _ = std::thread::Builder::new().name("level-prefetch".into()).spawn(move || {
+        crate::tnmmode::before_load();
         let r = dx_level::load_level(&root, &mm).map(|l| (l, crate::player_params(&root)));
         let _ = tx.send(r);
     });
@@ -341,6 +342,7 @@ pub fn loader_system(world: &mut World) {
         let _ = std::thread::Builder::new().name("level-load".into()).spawn(move || {
             let t0 = std::time::Instant::now();
             crate::platform::note_mem(&format!("reading {m}"));
+            crate::tnmmode::before_load();
             let r = dx_level::load_level(&root, &m).map(|l| (l, crate::player_params(&root)));
             crate::platform::note_mem(&format!("read {m} in {:.1} s{}", t0.elapsed().as_secs_f32(), if r.is_err() { " (failed)" } else { "" }));
             crate::prof::hitch_note(&format!("level load {m}"), t0.elapsed().as_secs_f64() * 1000.0);
@@ -405,7 +407,8 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
         // MissionScript.PreTravel of the map being left.
         world.resource_scope(|world, mut flags: Mut<crate::ai::GameFlags>| {
             let lvl = &world.resource::<crate::LevelRes>().0;
-            crate::missions::pre_travel_current(&mut flags.0, lvl);
+            let movers = world.resource::<crate::movers::Movers>();
+            crate::missions::pre_travel_current(&mut flags.0, lvl, movers);
         });
     }
     let carry = matches!(goal, Goal::Travel(_)).then(|| crate::save::capture_travel(world));
@@ -494,6 +497,8 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::frobui::reset_level();
+    crate::destruct::reset_vulnerable();
     crate::netplay::reset_level();
     crate::deathmatch::reset_level();
     crate::living::reset_level();
@@ -856,6 +861,18 @@ fn dev_goto(world: &mut World) {
             if v.len() == 3 {
                 world.resource_mut::<crate::Player>().body.location = glam::DVec3::new(v[0], v[1], v[2]);
                 println!("GOTO teleported to {v:?}");
+            }
+            return;
+        }
+        // "secs;<ActorName>;near": the player is moved beside that actor (conversation tests).
+        Some("near") => {
+            let lvl = &world.resource::<crate::LevelRes>().0;
+            let at = lvl.actors.iter().position(|a| a.name.eq_ignore_ascii_case(map)).and_then(|i| {
+                world.resource::<crate::actors::Blockers>().list.iter().find(|c| c.actor == i).map(|c| c.center)
+            });
+            if let Some(at) = at {
+                world.resource_mut::<crate::Player>().body.location = at + glam::DVec3::new(70.0, 0.0, 0.0);
+                println!("GOTO near {map} at {at:?}");
             }
             return;
         }

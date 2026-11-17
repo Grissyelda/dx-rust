@@ -47,6 +47,15 @@ pub fn give(id: &str, desc: &str) -> String {
     format!("{desc} added to Nano Key Ring")
 }
 
+/// A mission script gives a pawn (by Tag or BindName) a nanokey to hand over or be searched for.
+pub fn give_pawn_key(pawn: &str, id: &str, desc: &str) {
+    if let Ok(mut c) = CARRIED.lock() {
+        if !c.iter().any(|(t, k, _)| t.eq_ignore_ascii_case(pawn) && k.eq_ignore_ascii_case(id)) {
+            c.push((pawn.to_string(), id.to_string(), desc.to_string()));
+        }
+    }
+}
+
 /// PickupDistributor: what the level's pawns carry.
 pub fn set_carried(list: &[(String, String, String)]) {
     if let Ok(mut c) = CARRIED.lock() {

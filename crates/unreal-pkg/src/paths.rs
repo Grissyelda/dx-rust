@@ -19,9 +19,12 @@ fn in_app_bundle(exe_dir: &Path) -> bool {
         && exe_dir.parent().and_then(Path::parent).and_then(Path::extension).is_some_and(|e| e == "app")
 }
 
-/// The folder for what the game writes (settings, saves, key bindings, logs): beside the executable, so a release
-/// stays one portable folder. A macOS app bundle is signed and can be read-only, so there it's the player's
-/// Application Support folder.
+/// The folder for what the game writes (settings, saves, key bindings, logs, installed mods):
+/// - `portable.txt` beside the executable (or beside the macOS app): that folder, always;
+/// - else the executable's own folder when it can be written to, so an unzipped release stays one folder (and
+///   older releases' saves stay where they are); a macOS app bundle is signed and isn't used;
+/// - else the player's own folder: `%LOCALAPPDATA%\DX RUST` on Windows, `~/Library/Application Support/DX RUST`
+///   on macOS, `$XDG_DATA_HOME/dx-rust` (`~/.local/share/dx-rust`) on Linux and the Steam Deck.
 pub fn data_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -30,19 +33,48 @@ pub fn data_dir() -> PathBuf {
             let _ = std::fs::create_dir_all(d);
             return d.clone();
         }
-        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
-        let support = exe_dir
-            .as_deref()
-            .filter(|d| cfg!(target_os = "macos") && in_app_bundle(d))
-            .and(std::env::var_os("HOME"))
-            .map(|home| PathBuf::from(home).join("Library/Application Support/DX RUST"));
-        if let Some(dir) = support {
-            let _ = std::fs::create_dir_all(&dir);
-            return dir;
+        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_else(|| ".".into());
+        let bundle = in_app_bundle(&exe_dir);
+        // The folder a player sees: beside the .app for a macOS bundle.
+        let shown = if bundle { exe_dir.ancestors().nth(3).map(Path::to_path_buf).unwrap_or_else(|| exe_dir.clone()) } else { exe_dir.clone() };
+        if shown.join("portable.txt").is_file() {
+            return shown;
         }
-        exe_dir.unwrap_or_else(|| ".".into())
+        if !bundle && writable(&exe_dir) {
+            return exe_dir;
+        }
+        let dir = user_dir().unwrap_or(exe_dir);
+        let _ = std::fs::create_dir_all(&dir);
+        dir
     })
     .clone()
+}
+
+/// Whether a file can be made in `dir` (made and removed again).
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".dxrust-write-test-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The player's own data folder for DX RUST on this platform.
+pub fn user_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")).map(|d| PathBuf::from(d).join("DX RUST"))
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/DX RUST"))
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+            .map(|d| d.join("dx-rust"))
+    }
 }
 
 static DATA_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();

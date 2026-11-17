@@ -96,6 +96,15 @@ The *Smooth Lip Sync* enhancement uses the timings from Joe Wintergreen's lipsyn
 
 It was rewritten in Rust; none of the mod's files are included. Credit to Joe Wintergreen (@joewintergreen).
 
+## SDL3
+Simple DirectMedia Layer 3 (libsdl.org), zlib license, Copyright (C) 1997-2025 Sam Lantinga. Not compiled in: the
+Windows release ships the official `SDL3.dll` beside `dxview.exe` with its `LICENSE-SDL3.txt`, and on other systems
+the system's copy is used if there is one. DX RUST loads it at run time for controller input only.
+
+## Recomp Achievements
+`tools/recomp-achievements/dx-rust.json` and `crates/dxview/src/rlach.rs` follow the Recomp Achievements channel
+specification (RecompLauncher). No code of theirs is included.
+
 ## winit (modified copy in `vendor/winit`)
 winit 0.30.13, Apache-2.0 or MIT (its `LICENSE` file is kept in `vendor/winit`). This is an altered copy: on
 Android it hands controller events to a hook and accepts cursor grab / position requests as no-ops (see

@@ -73,9 +73,31 @@ fn f_prop(p: &[Property], n: &str, d: f64) -> f64 {
         _ => d,
     }
 }
-/// bHighlight defaults to true on decorations and pawns.
+/// bHighlight defaults to true on decorations and pawns; a mission script can turn it on for a Tag.
 fn highlighted(p: &[Property]) -> bool {
-    !matches!(find(p, "bHighlight"), Some(Value::Bool(false)))
+    if !matches!(find(p, "bHighlight"), Some(Value::Bool(false))) {
+        return true;
+    }
+    let tag = match find(p, "Tag") {
+        Some(Value::Name(t)) => t.as_str(),
+        _ => return false,
+    };
+    FORCED.lock().is_ok_and(|f| f.iter().any(|t| t.eq_ignore_ascii_case(tag)))
+}
+
+/// Tags a mission script made highlightable (bHighlight = True), for the map being played.
+static FORCED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn force_highlight(tag: &str) {
+    if let Ok(mut f) = FORCED.lock() {
+        f.push(tag.to_string());
+    }
+}
+
+pub fn reset_level() {
+    if let Ok(mut f) = FORCED.lock() {
+        f.clear();
+    }
 }
 
 /// DeusExPlayer.GetDisplayName (nobody has been spoken to yet, so the unfamiliar name).

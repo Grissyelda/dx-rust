@@ -14,6 +14,15 @@ use unreal_pkg::props::{find, Property, Value};
 #[derive(Resource, Default)]
 pub struct GameEvents(pub Vec<(String, bool)>);
 
+static STRENGTH_SETS: std::sync::Mutex<Vec<(String, f64)>> = std::sync::Mutex::new(Vec::new());
+
+/// A mission script sets the hack strength left on the devices (keypads, boxes) with this Tag (0 = bypassed).
+pub fn set_strength(tag: &str, strength: f64) {
+    if let Ok(mut q) = STRENGTH_SETS.lock() {
+        q.push((tag.to_string(), strength));
+    }
+}
+
 /// SkillTech value (0.1 untrained .. 0.75 master).
 pub fn tech_skill() -> f64 {
     crate::abilities::skill("SkillTech") as f64
@@ -210,6 +219,14 @@ pub fn device_system(
     let hacking = &mut *hacking;
     let lvl = &level.0;
     let props = |b: usize| &lvl.actors[blockers.list[b].actor].props;
+    // Mission scripts: hackStrength set on the devices with a tag.
+    for (tag, s) in STRENGTH_SETS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        for (b, c) in blockers.list.iter().enumerate() {
+            if name_prop(&lvl.actors[c.actor].props, "Tag").eq_ignore_ascii_case(&tag) {
+                hacking.strength.insert(b, s);
+            }
+        }
+    }
     // Multitool bypass in progress.
     if let Some(job) = hacking.job.as_mut() {
         job.ticks += time.delta_secs_f64() * 10.0;

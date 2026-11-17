@@ -6,8 +6,9 @@
 //! TNMDefault.ini's search order), loads its code packages so its classes have their defaults and ancestry (its
 //! characters, decorations and items act as the Deus Ex classes they extend), plays Trestkon from its start map,
 //! reads its two halves of conversations and their speech, and plays its Ogg music (TNMOggMusicManager's tracks:
-//! ambient, combat, conversation, death). Its own UnrealScript gameplay (TNM.u: the player class, mission scripts,
-//! menus) isn't ported, so what goes beyond the Deus Ex classes it builds on doesn't happen yet.
+//! ambient, combat, conversation, death). Its gameplay is rewritten in Rust piece by piece: the difficulty filter
+//! (`before_load`), out-of-world bodies and datacubes (scriptworld.rs), MSCallbackTrigger (triggers.rs) and the mission
+//! scripts (missions/tnm.rs). What isn't rewritten yet plays with the Deus Ex classes it builds on.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -47,6 +48,17 @@ pub fn setup(root: &Path, tnm: &Path) {
 
 pub fn active() -> bool {
     unreal_pkg::tnm::active().is_some()
+}
+
+/// Before a map is built: The Nameless Mod's enemy / item appearance level for this playthrough, from the
+/// difficulty picked (its Easy / Medium / Hard set both to 0 / 1 / 2; Realistic counts as Hard). Off outside TNM.
+pub fn before_load() {
+    let f = active().then(|| {
+        let d = crate::travel::combat_difficulty();
+        let n = if d <= 1.0 { 0 } else if d <= 1.5 { 1 } else { 2 };
+        (n, n)
+    });
+    dx_level::actors::set_difficulty_filter(f);
 }
 
 /// The player's class: Trestkon, or JC.

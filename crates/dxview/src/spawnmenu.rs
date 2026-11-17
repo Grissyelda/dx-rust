@@ -374,6 +374,7 @@ pub fn spawn_menu_system(
                 let at = from + (want - from) * (h.fraction - 0.05).max(0.0);
                 if b.0 == "GOD" {
                     let on = !crate::ai::GOD_MODE.load(std::sync::atomic::Ordering::Relaxed);
+                    crate::rlach::casual("god_mode");
                     crate::ai::GOD_MODE.store(on, std::sync::atomic::Ordering::Relaxed);
                     hud.text = format!("God mode {}", if on { "ON" } else { "OFF" });
                     hud.time_left = 2.0;
@@ -390,11 +391,13 @@ pub fn spawn_menu_system(
                         _ => "AllSkills",
                     };
                     crate::missions::player_req(crate::missions::PlayerReq::Cheat(c));
+                    crate::rlach::casual("cheats");
                     hud.text = c.to_string();
                     hud.time_left = 2.0;
                     continue;
                 }
                 if b.0 == "ALLAUGS" {
+                    crate::rlach::casual("cheats");
                     for aug in AUGS {
                         let _ = crate::abilities::give_aug(&mut assets.classes, aug, true);
                     }

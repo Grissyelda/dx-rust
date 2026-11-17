@@ -1146,10 +1146,12 @@ fn apply_hacks(st: &mut Security, hacked: Vec<usize>, lvl: &dx_level::Level, me:
     }
 }
 
-/// Trigger / UnTrigger by event tag for cameras, turrets and lasers ("*" = every camera and turret).
+/// Trigger / UnTrigger by event tag for cameras, turrets and lasers ("*" = every camera and turret, "*cameras" =
+/// every camera).
 fn apply_events(st: &mut Security, events: &[(String, bool)]) {
     for (tag, on) in events {
-        for c in st.cams.iter_mut().filter(|c| !c.gone && (tag == "*" || c.tag.eq_ignore_ascii_case(tag))) {
+        // "*cameras" = every camera only (The Nameless Mod's "cameras offline" scripts).
+        for c in st.cams.iter_mut().filter(|c| !c.gone && (tag == "*" || tag == "*cameras" || c.tag.eq_ignore_ascii_case(tag))) {
             if *on {
                 cam_trigger(c, false);
             } else {

@@ -133,6 +133,20 @@ pub fn scriptworld_system(
             let ai = lvl.mesh_actors[mi].actor;
             reqs.insert(0, ActorReq::Vehicle(ActorSel { class: Some(lvl.actors[ai].class.clone()), tag: Some(format!("#actor{ai}")) }, false));
         }
+        // The Nameless Mod: its bodies, datacubes and decorations placed with bInWorld=False wait out of the world
+        // until a mission script's EnterWorld (pawns are ai.rs's).
+        if crate::tnmmode::active() {
+            for (_, mr, _, _) in &q {
+                let ai = lvl.mesh_actors[mr.0].actor;
+                let a = &lvl.actors[ai];
+                if dx_level::actors::out_of_world(&a.props)
+                    && !crate::classtree::is_a(&a.class, "ScriptedPawn")
+                    && !crate::classtree::is_a(&a.class, "Vehicles")
+                {
+                    reqs.insert(0, ActorReq::Hide(ActorSel { class: None, tag: Some(format!("#actor{ai}")) }, true));
+                }
+            }
+        }
     }
     for r in reqs {
         if let ActorReq::Restore(list) = &r {

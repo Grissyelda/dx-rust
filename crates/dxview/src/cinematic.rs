@@ -805,6 +805,16 @@ pub fn cinematic_system(
     cams.p1().rotation = rotq;
 }
 
+/// A mission script turns a Teleporter off (bEnabled = False): it no longer takes the player anywhere.
+pub fn set_teleporter_enabled(tag: &str, on: bool) {
+    if on {
+        return;
+    }
+    if let Ok(mut e) = EXITS.lock() {
+        e.retain(|x| !(x.teleporter && x.tag.eq_ignore_ascii_case(tag)));
+    }
+}
+
 fn load_exits(level: &dx_level::Level) -> Vec<Exit> {
     let s = |p: &[unreal_pkg::props::Property], n: &str| match find(p, n) {
         Some(Value::Str(v)) | Some(Value::Name(v)) => v.clone(),

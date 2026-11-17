@@ -298,6 +298,10 @@ fn fast_env(c: &mut std::process::Command, fast: bool) {
     }
 }
 
+/// The SDL3 release shipped beside dxview.exe (sdl3pad.rs loads it at run time).
+const SDL3_URL: &str = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18-win32-x64.zip";
+const SDL3_SHA256: &str = "75C2C0FC74E7D1206AAEDC22893A35887332F4F85F5C8B74FDDC10D177985F2C";
+
 /// BUILD_RELEASE.bat: the game and the launcher with the C runtime linked in, in their own build folders, then
 /// dist\dxrust-windows-x64.zip with the notices.
 fn build_windows(job: &Shared, ctl: &Ctl, ctx: &egui::Context, cfg: &Cfg) -> Result<(), String> {
@@ -320,9 +324,28 @@ fn build_windows(job: &Shared, ctl: &Ctl, ctx: &egui::Context, cfg: &Cfg) -> Res
         .env("CARGO_TARGET_DIR", root.join("target").join("dist-launcher"));
     fast_env(&mut c, cfg.fast);
     run::run(job, ctl, ctx, c)?;
+    // SDL3 (controllers, zlib licence): the official Windows build, fetched once, checked against its known hash.
+    let sdl_dir = root.join("target").join("sdl3");
+    if !sdl_dir.join("SDL3.dll").is_file() {
+        lock(job).set(Status::Running("fetching SDL3".into()));
+        std::fs::create_dir_all(&sdl_dir).map_err(|e| e.to_string())?;
+        let zip = sdl_dir.join("sdl3.zip");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; Invoke-WebRequest -UseBasicParsing -Uri '{SDL3_URL}' -OutFile '{z}'; \
+             if ((Get-FileHash -Algorithm SHA256 '{z}').Hash -ne '{SDL3_SHA256}') {{ throw 'SDL3 download hash mismatch' }}; \
+             Expand-Archive -Force -LiteralPath '{z}' -DestinationPath '{d}'",
+            z = zip.display(),
+            d = sdl_dir.display()
+        );
+        let mut c = cmd("powershell.exe");
+        c.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        run::run(job, ctl, ctx, c)?;
+    }
     lock(job).set(Status::Running("packing the zip".into()));
     std::fs::create_dir_all(&dist).map_err(|e| e.to_string())?;
     let copies = [
+        (sdl_dir.join("SDL3.dll"), "SDL3.dll"),
+        (sdl_dir.join("LICENSE.txt"), "LICENSE-SDL3.txt"),
         (root.join("target/dist-build/release/dxview.exe"), "dxview.exe"),
         (root.join("target/dist-launcher/release/dxlauncher.exe"), "dxlauncher.exe"),
         (root.join("LICENSE"), "LICENSE.txt"),

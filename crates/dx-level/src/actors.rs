@@ -273,6 +273,29 @@ pub struct PatrolInfo {
 }
 static LEVEL_EXTRAS: std::sync::RwLock<Option<LevelExtras>> = std::sync::RwLock::new(None);
 
+/// The Nameless Mod's difficulty filter (Trestkon.FilterPawns / FilterItems): (pawn level, item level), 0..3.
+static DIFFICULTY: std::sync::RwLock<Option<(u8, u8)>> = std::sync::RwLock::new(None);
+
+/// Turn the per-difficulty filter on (The Nameless Mod) or off (None).
+pub fn set_difficulty_filter(f: Option<(u8, u8)>) {
+    if let Ok(mut d) = DIFFICULTY.write() {
+        *d = f;
+    }
+}
+
+/// A placed actor the filter takes out: a ScriptedPawn whose bDifficulty<pawn level> is False, or an Inventory /
+/// Containers whose bDifficulty<item level> is False (Actor's bDifficulty0..3 default True; maps store False).
+fn difficulty_removes(classes: &mut ClassDb, class: &str, props: &[Property]) -> bool {
+    let Some((pawn, item)) = DIFFICULTY.read().ok().and_then(|d| *d) else { return false };
+    let off = |n: u8| matches!(find(props, &format!("bDifficulty{n}")), Some(Value::Bool(false)));
+    if !(off(pawn) || off(item)) {
+        return false;
+    }
+    let anc = classes.ancestry(class);
+    let is = |c: &str| anc.iter().any(|a| a.eq_ignore_ascii_case(c));
+    (is("ScriptedPawn") && off(pawn)) || ((is("Inventory") || is("Containers")) && off(item))
+}
+
 pub fn set_level_extras(f: Option<LevelExtras>) {
     if let Ok(mut h) = LEVEL_EXTRAS.write() {
         *h = f;
@@ -307,6 +330,12 @@ pub fn build(
             }
         }
         if find(&props, "Location").is_none() {
+            continue;
+        }
+        if difficulty_removes(classes, &class, &props) {
+            if std::env::var_os("DXL_DIFFLOG").is_some() {
+                println!("DIFFICULTY left out {} ({class})", e.name);
+            }
             continue;
         }
         class_begin_play(classes, &class, &mut props);

@@ -627,6 +627,25 @@ pub struct ImageNote {
 }
 
 impl ConState {
+    /// DeusExPlayer.AddGoal (from a mission script): a new goal goes on top with the "Goal Received" message; an
+    /// existing one keeps its place. The text is set either way (DeusExGoal.SetText).
+    pub fn add_goal(&mut self, name: &str, text: &str, primary: bool) {
+        if let Some(g) = self.goals.iter_mut().find(|g| g.name.eq_ignore_ascii_case(name)) {
+            g.text = text.to_string();
+            return;
+        }
+        self.goals.insert(0, Goal { name: name.to_string(), text: text.to_string(), primary, completed: false });
+        if let Some(m) = self.strings.get("GoalAdded").cloned() {
+            self.messages.push(m);
+        }
+        crate::sound::play_player("DeusExSounds.UserInterface.LogGoalAdded", 1.0, 0.0);
+    }
+
+    /// Player.ClientMessage from a mission script.
+    pub fn message(&mut self, text: &str) {
+        self.messages.push(text.to_string());
+    }
+
     /// DeusExPlayer.GoalCompleted: an existing goal not yet done is marked done (log sound + message).
     pub fn goal_completed(&mut self, name: &str) {
         if let Some(g) = self.goals.iter_mut().find(|g| g.name.eq_ignore_ascii_case(name)) {
@@ -982,6 +1001,11 @@ pub fn has_vault_note(text: &str) -> bool {
     lock().as_ref().is_some_and(|st| st.notes.iter().any(|n| n.trim() == text))
 }
 
+/// The player has this DataVaultImage (class, or a subclass named so).
+pub fn has_image(class: &str) -> bool {
+    lock().as_ref().is_some_and(|st| st.images.iter().any(|c| c.eq_ignore_ascii_case(class)))
+}
+
 /// DeusExPlayer.AddImage: a DataVaultImage class for the Images screen; false when the player already has it.
 pub fn add_image(class: &str) -> bool {
     let mut g = lock();
@@ -1333,6 +1357,9 @@ impl ConState {
             }
         }
         let me = self.actors.get(&Who::Player)?;
+        if how == Invoke::Frob && env_on!("DXVIEW_CONLOG") {
+            println!("CONLOG frob {} owns {:?}", a.bind, self.owners.get(&fold(&a.bind)).map(|l| l.iter().map(|&i| self.db.cons[i].name.clone()).collect::<Vec<_>>()));
+        }
         for &ci in self.owners.get(&fold(&a.bind))? {
             let c = &self.db.cons[ci];
             if is_bark(c) || c.datalink {
@@ -1368,12 +1395,21 @@ impl ConState {
             // CheckConversationHeightDifference(20), else CanActorSeePlayer.
             let dz = (me.pos.z - a.pos.z).abs();
             if dz > (me.height - a.height).abs() + 20.0 && !self.can_see(who) {
+                if env_on!("DXVIEW_CONLOG") {
+                    println!("CONLOG {} height dz {dz:.1} me.h {} a.h {}", c.name, me.height, a.height);
+                }
                 continue;
+            }
+            if how == Invoke::Frob && env_on!("DXVIEW_CONLOG") {
+                println!("CONLOG {} candidate once {} played {}", c.name, c.display_once, Self::played(flags, &c.name));
             }
             if c.display_once && Self::played(flags, &c.name) {
                 continue;
             }
             if !Self::check_flags(flags, &c.flags) {
+                if how == Invoke::Frob && env_on!("DXVIEW_CONLOG") {
+                    println!("CONLOG {} flags {:?}", c.name, c.flags);
+                }
                 continue;
             }
             return Some(ci);
@@ -1395,35 +1431,35 @@ impl ConState {
         con: Option<usize>,
     ) -> bool {
         let Some(a) = self.actors.get(&who).cloned() else {
-            return false;
+            { conlog(&who, 1); return false; }
         };
         let forced = how == Invoke::Forced;
         if !forced && !self.can_start() {
-            return false;
+            { conlog(&who, 2); return false; }
         }
         if !forced && a.pawn && (a.busy || !a.alive) {
-            return false;
+            { conlog(&who, 3); return false; }
         }
         let Some(ci) = con.or_else(|| self.active_conversation(flags, who, how)) else {
-            return false;
+            { conlog(&who, 4); return false; }
         };
         let c = self.db.cons[ci].clone();
         if self.play.as_ref().is_some_and(|p| p.con == ci) {
-            return false;
+            { conlog(&who, 5); return false; }
         }
         if !forced && !c.first_person && a.pawn && a.hostile {
-            return false;
+            { conlog(&who, 6); return false; }
         }
         if let Some(p) = &self.play {
             if self.db.cons[p.con].first_person && how == Invoke::Radius {
-                return false;
+                { conlog(&who, 7); return false; }
             }
         }
         if self.link.is_some()
             && !matches!(self.link.as_ref().map(|l| l.phase), Some(LinkPhase::Held))
         {
             if c.first_person {
-                return false;
+                { conlog(&who, 8); return false; }
             }
             self.abort_link_saving_history(flags);
         }
@@ -1448,14 +1484,14 @@ impl ConState {
                     continue;
                 }
                 if !c.datalink && (s.is_none() || t.is_none()) {
-                    return false;
+                    { conlog(&who, 9); return false; }
                 }
                 if let (Some(s), Some(t)) = (s, t) {
                     if s != Who::Player
                         && t != Who::Player
                         && self.pos(s).distance(self.pos(t)) > 300.0
                     {
-                        return false;
+                        { conlog(&who, 10); return false; }
                     }
                 }
             }
@@ -3764,5 +3800,12 @@ pub fn reset_level() {
     CURSOR_FREED.store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut v) = MOUSE_ACC.lock() {
         *v = Default::default();
+    }
+}
+
+/// DXVIEW_CONLOG: why a conversation didn't start (the numbered check in start_conversation).
+fn conlog(who: &Who, step: u32) {
+    if env_on!("DXVIEW_CONLOG") {
+        println!("CONLOG {who:?} not started at check {step}");
     }
 }

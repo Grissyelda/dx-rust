@@ -2919,6 +2919,8 @@ dependencies = [
  "imsim-net",
  "imsim-plants",
  "jni 0.21.1",
+ "libc",
+ "libloading",
  "libmimalloc-sys",
  "mimalloc",
  "modkit",

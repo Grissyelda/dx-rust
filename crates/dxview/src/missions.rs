@@ -15,6 +15,9 @@ use bevy::prelude::*;
 use std::sync::Mutex;
 use unreal_pkg::props::{find, Property, Value};
 
+mod tnm;
+pub use tnm::load_text as tnm_load_text;
+
 /// A pawn that exists (alive, maybe out of the world).
 #[derive(Debug, Clone)]
 pub struct PawnInfo {
@@ -66,6 +69,21 @@ pub struct Ctx<'a> {
     pub now: f64,
     pub vars: &'a mut Vars,
     pub seed: &'a mut u64,
+    /// The player's credits (The Nameless Mod's scripts check them).
+    pub credits: i64,
+    /// The player carries a multitool.
+    pub has_multitool: bool,
+}
+
+/// Mission-script functions asked for by the map (The Nameless Mod's MSCallbackTrigger), run on the next tick.
+static GAME_EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn game_event(f: &str) {
+    if !f.is_empty() {
+        if let Ok(mut q) = GAME_EVENTS.lock() {
+            q.push(f.to_string());
+        }
+    }
 }
 
 /// Things scripts do to the player and the screen.
@@ -154,6 +172,12 @@ pub fn reset_level() {
         q.clear();
     }
     if let Ok(mut q) = SPAWNS.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = tnm::ITEMS.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = GAME_EVENTS.lock() {
         q.clear();
     }
 }
@@ -376,6 +400,10 @@ impl Ctx<'_> {
 
 pub fn first_frame(c: &mut Ctx) {
     let map = c.map.clone();
+    if crate::tnmmode::active() {
+        tnm::first_frame(c);
+        return;
+    }
     match c.mission {
         2 => m02_first(c, &map),
         3 => m03_first(c, &map),
@@ -395,6 +423,13 @@ pub fn first_frame(c: &mut Ctx) {
 
 pub fn timer(c: &mut Ctx) {
     let map = c.map.clone();
+    if crate::tnmmode::active() {
+        for f in take(&GAME_EVENTS) {
+            tnm::game_event(c, &f);
+        }
+        tnm::timer(c);
+        return;
+    }
     match c.mission {
         2 => m02_timer(c, &map),
         3 => m03_timer(c, &map),
@@ -422,8 +457,12 @@ pub fn set_current(mission: i32, map: &str) {
     }
 }
 
-pub fn pre_travel_current(fl: &mut FlagBase, lvl: &dx_level::Level) {
+pub fn pre_travel_current(fl: &mut FlagBase, lvl: &dx_level::Level, movers: &crate::movers::Movers) {
     let (m, map) = CURRENT.lock().map(|c| c.clone()).unwrap_or_default();
+    if crate::tnmmode::active() {
+        tnm::pre_travel(fl, m, &map, movers, lvl);
+        return;
+    }
     pre_travel(fl, m, &map);
     if m == 8 && map == "08_NYC_STREET" {
         // Mission08.PreTravel: make sure that damn helicopter is gone (kept gone if the player comes back).
@@ -2112,6 +2151,11 @@ pub fn mission_fx_system(
                 crate::explosion::spawn_mesh_fx(&mut commands, &mut assets, &mut images, &mut meshes, &mut materials, "SphereEffect", at, [0, 0, 0], 4.0);
             }
         }
+    }
+    // Items a script puts down (The Nameless Mod's SpawnItemAt, its keys).
+    for (class, pos, props) in take(&tnm::ITEMS) {
+        println!("MISSION item {class} at {pos:?}");
+        throws.0.push((class, pos, DVec3::ZERO, None, props));
     }
     for (class, tag, pos, yaw, order) in take(&SPAWNS) {
         // Spawn + InitializePawn, SetOrders('Patrolling', orderTag), ChangeAlly('Player', -1, True),

@@ -13,14 +13,41 @@ you pick. RAR archives and Inno Setup / NSIS / MSI installers are recognised and
 ### The Nameless Mod mode
 The launcher's new **Game** row plays The Nameless Mod (Off Topic Productions) from your own copy of it: its maps,
 characters, decorations and items, both halves of its conversations with their speech, and its Ogg soundtrack
-(ambient, combat, conversation and death tracks). Trestkon starts in his apartment; saves are kept apart. Its own
-scripted gameplay isn't rewritten yet, so the levels play with the Deus Ex rules they build on.
+(ambient, combat, conversation and death tracks). Trestkon starts in his apartment; saves are kept apart.
+*Settings > Mods* switches between Deus Ex and The Nameless Mod in game (*Play It* / *Play Deus Ex*, then a restart),
+and installing it there offers to start it straight away.
+
+Its gameplay is being rewritten piece by piece. Done so far: enemies and items appear or not by the difficulty you
+picked, as in the mod; characters, bodies and datacubes it keeps out of the world wait until the story brings them in;
+its map triggers that call the mission script work; and most of Mission 20's script, the opening act in Forum City
+(Phasmatis's apartment, downtown, the slums, the corporate district, PDX and the Wild Cards' towers, the cults, the
+server complexes) - who is where after each choice, doors sealed or opened, private messages from your contacts, goals
+closed when the person behind a job is taken out, rewards and skill awards, the count of the living that closes Sol's
+bar and the Party Zone after trouble. Not yet: Mission 20's set pieces (the Quad launcher, the sewer flush, the PDX
+"mark" sequence), the later missions' scripts (21 to 25 and the bonus maps), The Nameless Mod's own player abilities,
+menus, achievements and its intro.
+
+### Run logs, portable mode and data folders
+Every run writes a log to a `logs` folder (the newest ten are kept), and a crash leaves its own `crash-<time>.log`
+beside them - attach them to a bug report. Where your settings, saves and logs live: beside the game when that folder
+can be written to, otherwise in `%LOCALAPPDATA%\DX RUST` (Windows), `~/Library/Application Support/DX RUST` (macOS)
+or `~/.local/share/dx-rust` (Linux). An empty `portable.txt` beside the game (beside `DX RUST.app` on a Mac) keeps
+everything next to it.
+
+### Controllers through SDL3
+Controllers are read through SDL3 when it's there (the Windows release ships `SDL3.dll`; Linux and the Steam Deck
+use the system's), which knows far more pads by name; without it the old controller code reads them. A DualSense
+stays with DX RUST's own code for its adaptive triggers, speaker and haptics. The setting *PadBackend* = 1 goes back to
+the old code.
 
 ### RecompLauncher support
 DX RUST can be added to RecompLauncher: `recomplauncher.json` describes the game folder, how to start it
 (`--game <folder>`), its settings file and a page of display settings, and ships in every release package. The game
 answers RecompLauncher's Big Picture and controller hints, and exits with a clear message (code 2) when the folder it's
-given isn't Deus Ex. Release files are now named `dxrust-windows-x64.zip`, `dxrust-linux-x64.tar.gz`,
+given isn't Deus Ex. Unlocks are reported to RecompLauncher's achievements (Recomp Achievements: all 50, with
+points; loading a save or using the debug menu's cheats is reported too, as its rules ask), it shows where you are,
+and its setup can check your Deus Ex files first (`--prepare`: every package opened, a damaged or missing one named).
+Release files are now named `dxrust-windows-x64.zip`, `dxrust-linux-x64.tar.gz`,
 `dxrust-macos-arm64.zip` and `dxrust-android-arm64.apk`.
 
 ### Multiplayer: downed, revive and interrogation (Modern deathmatch)

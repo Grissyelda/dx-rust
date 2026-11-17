@@ -166,6 +166,8 @@ pub fn glyph_kind() -> PadKind {
 pub struct GilrsRes(pub gilrs::Gilrs);
 
 pub fn setup(world: &mut World) {
+    // SDL3 first (sdl3pad.rs); gilrs stays as the fallback and for pads SDL3 isn't reading.
+    crate::sdl3pad::init();
     match gilrs::Gilrs::new() {
         Ok(g) => {
             for (_, p) in g.gamepads() {
@@ -314,6 +316,31 @@ fn read_pad(mut g: NonSendMut<GilrsRes>, f: &mut PadFrame, any_event: &mut bool)
             f.held.push(PadBtn::Touch);
         }
         *ACTIVE.lock().unwrap() = None;
+        return;
+    }
+    // SDL3 (sdl3pad.rs) when it's there: it knows the most controllers by name.
+    if crate::sdl3pad::active() {
+        *ACTIVE.lock().unwrap() = None;
+        if let Some(r) = crate::sdl3pad::read() {
+            f.connected = true;
+            f.name = r.name;
+            f.kind = r.kind;
+            let dz = [0.06, 0.1, 0.15, 0.22, 0.3][(setting!("PadDeadzone") as usize).min(4)];
+            f.ls = dead(Vec2::new(r.ls.0, r.ls.1), dz);
+            f.rs = dead(Vec2::new(r.rs.0, r.rs.1), dz);
+            f.lt = r.lt;
+            f.rt = r.rt;
+            f.held = r.held;
+            if f.lt > 0.33 {
+                f.held.push(PadBtn::LT);
+            }
+            if f.rt > 0.33 {
+                f.held.push(PadBtn::RT);
+            }
+            if crate::dualsense::touch_click() {
+                f.held.push(PadBtn::Touch);
+            }
+        }
         return;
     }
     // The active pad: the first connected one.
@@ -912,6 +939,10 @@ pub fn rumble_system(
     }
     // Paused on the menus: no rumble.
     let (lo, hi) = if crate::menus::open() { (0.0, 0.0) } else { rumble_now() };
+    if crate::sdl3pad::active() {
+        crate::sdl3pad::rumble(lo, hi);
+        return;
+    }
     let Some(mut g) = gilrs else { return };
     let Some(id) = *ACTIVE.lock().unwrap() else {
         *effect = None;

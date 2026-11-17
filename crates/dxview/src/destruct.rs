@@ -413,7 +413,7 @@ pub fn deco_damage_system(
         let p = &a.props;
         if find(p, "GroundSpeed").is_some()
             || flag(p, "bStatic")
-            || flag(p, "bInvincible")
+            || (flag(p, "bInvincible") && !made_vulnerable(p))
             // AutoTurret / AutoTurretGun in a net game: bInvincible (PreBeginPlay).
             || (crate::deathmatch::mp_body() && (a.class.starts_with("AutoTurret") || a.class == "SecurityCamera"))
             || find(p, "HitPoints").is_none()
@@ -966,6 +966,27 @@ pub fn shell_system(
 }
 
 /// Items the player drops from the inventory screen: (class, where, velocity, PickupAmmoCount override).
+/// Tags of decorations a mission script made breakable (bInvincible = False), for the map being played.
+static VULNERABLE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn make_vulnerable(tag: &str) {
+    if let Ok(mut v) = VULNERABLE.lock() {
+        v.push(tag.to_string());
+    }
+}
+
+fn made_vulnerable(p: &[Property]) -> bool {
+    let Some(Value::Name(tag)) = find(p, "Tag") else { return false };
+    VULNERABLE.lock().is_ok_and(|v| v.iter().any(|t| t.eq_ignore_ascii_case(tag)))
+}
+
+/// A new map: nothing made breakable yet.
+pub fn reset_vulnerable() {
+    if let Ok(mut v) = VULNERABLE.lock() {
+        v.clear();
+    }
+}
+
 #[derive(Resource, Default)]
 /// Items the player dropped: (class, where, velocity, PickupAmmoCount for weapons, property overrides such as a
 /// canister's AddAugs).

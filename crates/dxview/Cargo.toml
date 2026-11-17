@@ -25,6 +25,8 @@ ron = "0.12"
 half = "2.7"
 # Gamepads (XInput / Windows.Gaming.Input / evdev) for controller support.
 gilrs = "0.11"
+# SDL3 is loaded at run time (sdl3pad.rs): no build-time SDL needed.
+libloading = "0.8"
 # Ragdolls (skeletal.rs ragdoll): rigid bodies and joints.
 avian3d = { version = "0.7", default-features = false, features = ["3d", "f32", "parry-f32", "parallel", "xpbd_joints"] }
 
@@ -55,6 +57,9 @@ ndk = { version = "0.9", default-features = false }
 ndk-sys = "0.6"
 winit = { version = "0.30.13", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Console", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 raw-window-handle = "0.6"

@@ -19,6 +19,9 @@ use bevy::{
 #[macro_use]
 mod env;
 mod modscreen;
+mod runlog;
+mod rlach;
+mod sdl3pad;
 mod tnmmode;
 mod nullmask;
 mod online;
@@ -561,6 +564,7 @@ fn install_crash_log() {
         let msg = format!("dxview crashed: {info}\n{}\n", std::backtrace::Backtrace::force_capture());
         eprintln!("{msg}");
         let _ = std::fs::write(unreal_pkg::paths::data_dir().join("crash.log"), &msg);
+        runlog::crash(&msg);
         prev(info);
     }));
 }
@@ -758,6 +762,7 @@ fn startup_map(args: &[String]) -> String {
 fn load_first_level(root: &String, map: &String) -> Level {
     println!("dxview: loading {map} from {root} ...");
     let t0 = std::time::Instant::now();
+    crate::tnmmode::before_load();
     let level = match dx_level::load_level(&PathBuf::from(root), map) {
         Ok(l) => l,
         Err(e) => {
@@ -790,6 +795,17 @@ pub fn run() {
     // screen until it is).
     #[cfg(target_os = "android")]
     let android_root = android::startup();
+    // RecompLauncher's setup step: `--prepare --game <folder>` checks the copy and exits, no window.
+    #[cfg(not(target_os = "android"))]
+    if std::env::args().any(|a| a == "--prepare") {
+        let (_, game) = recomp::take_game_arg(std::env::args().collect());
+        let game = game.unwrap_or_else(|| game_root(&std::env::args().filter(|a| a != "--prepare").collect::<Vec<_>>()));
+        std::process::exit(recomp::prepare(&game));
+    }
+    // This run's log file (logs/ in the data folder): everything printed from here on goes there too.
+    runlog::start();
+    // RecompLauncher's achievement channel (only when it started us).
+    rlach::init();
     prof::init();
     // DXT1 textures go to the GPU compressed (desktop GPUs and the Steam Deck take BC formats; checked again once
     // the render device exists). DXVIEW_NO_BC1 decodes them as before.

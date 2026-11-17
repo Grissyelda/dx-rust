@@ -54,7 +54,15 @@ Download your platform's file from [Releases](../../releases).
 ### RecompLauncher
 [RecompLauncher](https://recomplauncher.com/game/dx-rust) installs DX RUST, keeps it up to date and starts it:
 pick your Deus Ex folder on its setup screen, set the display options on the game's page, press Play. Command line
-and shortcuts: `dxview --game "path to Deus Ex"`.
+and shortcuts: `dxview --game "path to Deus Ex"`. Achievements unlock in RecompLauncher too, and
+`dxview --prepare --game "path"` checks a Deus Ex folder (exit code 0 = fine, 2 = not Deus Ex, 3 = damaged files).
+
+### Where your files go
+Settings (`settings.txt`, `launcher.txt`), saves and the `logs` folder sit beside the game when that folder can be
+written to. Otherwise they go to `%LOCALAPPDATA%\DX RUST` on Windows, `~/Library/Application Support/DX RUST` on
+macOS (an app bundle always uses this one) and `$XDG_DATA_HOME/dx-rust` (normally `~/.local/share/dx-rust`) on
+Linux and the Steam Deck. Put an empty file named `portable.txt` beside the game (on a Mac, beside `DX RUST.app`) to
+keep everything next to it, for a USB stick or a second copy. Android uses the app's own storage folder.
 
 ### Windows
 1. Unzip `dxrust-windows-x64.zip` anywhere and run **dxlauncher.exe**.
@@ -153,8 +161,10 @@ authors' page. GMDX's perks are rewritten in Rust and read their data from your 
 Ex. Download it from its page and install it with the mod manager (its installer `.exe` unpacks directly), or point
 the launcher at a folder you installed it to (right-click the **Game** row). Then set the launcher's **Game** row to
 *Nameless Mod* and press Play. DX RUST reads its maps, characters, conversations and Ogg music from your copy; saves
-go to their own `TNMSave` folder. Work in progress: The Nameless Mod's own scripted gameplay (its player class, mission
-scripts and menus) isn't rewritten yet, so its levels play with the Deus Ex rules they build on.
+go to their own `TNMSave` folder. In game, *Settings > Mods* switches between Deus Ex and The Nameless Mod (the game
+restarts). Work in progress: its difficulty rules, its script triggers and most of Mission 20's script (the opening act
+in Forum City) are rewritten; the later missions' scripts, Trestkon's own abilities, its menus and achievements aren't
+yet, so those parts play with the Deus Ex rules they build on.
 
 ## Building from source
 You need Rust (stable, 1.95 or later) and a C compiler: the Visual Studio C++ build tools on Windows, the Xcode

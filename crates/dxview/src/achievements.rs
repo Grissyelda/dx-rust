@@ -117,7 +117,10 @@ impl Store {
     fn check_majestic(&mut self) {
         if !self.unlocked.contains_key("majestic") && LIST.iter().filter(|a| a.0 != "majestic").all(|a| self.has(a.0)) {
             self.unlocked.insert("majestic".into(), now_secs());
-            self.popups.push("majestic".into());
+            crate::rlach::event("majestic");
+            if !crate::rlach::quiet() {
+                self.popups.push("majestic".into());
+            }
         }
     }
 }
@@ -284,9 +287,11 @@ pub fn unlock(id: &str) {
     let t = now_secs();
     // A GLOBAL one another character already has still goes in this character's file (the menu's list of who
     // unlocked it) but isn't announced again.
-    if !s.global.contains_key(id) {
+    // (RecompLauncher's achievements show their own toast: ours stays hidden then.)
+    if !s.global.contains_key(id) && !crate::rlach::quiet() {
         s.popups.push(id.to_string());
     }
+    crate::rlach::event(id);
     s.unlocked.insert(id.to_string(), t);
     if is_global(id) && !s.global.contains_key(id) {
         let who = crate::travel::with_session(|g| g.name.clone()).unwrap_or_default();
@@ -539,6 +544,7 @@ pub fn achievements_system(
     ),
     mut nodes: Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<crate::classic_hud::HudLayer>)>,
 ) {
+    crate::rlach::frame();
     let _prof = crate::prof::scope("achievements::achievements_system");
     let lvl = &level.0;
     let dt = time.delta_secs().min(0.1);

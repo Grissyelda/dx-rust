@@ -59,6 +59,7 @@ impl ModsView {
             .map(|(e, s)| {
                 let status = match (&job, s) {
                     (Some((n, f, true)), _) if n == e.id => format!("Installing... {:.0}%", f * 100.0),
+                    (_, State::On(_)) if e.id == "tnm" && crate::tnmmode::active() => "Playing now".to_string(),
                     (_, State::On(_)) if e.id == "tnm" => "Installed".to_string(),
                     (_, State::On(_)) => "Installed, on".to_string(),
                     (_, State::Off(_)) => "Installed, off".to_string(),
@@ -138,7 +139,8 @@ impl ModsView {
         match (self.entry(), self.sel.and_then(|i| self.states.get(i))) {
             (Some(e), Some(State::On(_))) if e.id != "tnm" => "Turn Off",
             (Some(e), Some(State::Off(_))) if e.id != "tnm" => "Turn On",
-            (Some(e), Some(State::On(_))) if e.id == "tnm" => "Reinstall",
+            (Some(e), Some(State::On(_))) if e.id == "tnm" && crate::tnmmode::active() => "Play Deus Ex",
+            (Some(e), Some(State::On(_))) if e.id == "tnm" => "Play It",
             _ => "Install",
         }
     }
@@ -147,6 +149,14 @@ impl ModsView {
     pub fn main_action(&mut self) -> Option<(String, bool)> {
         match self.main_label() {
             "Turn Off" | "Turn On" => self.toggle(),
+            "Play It" => {
+                set_pending_game(Some("tnm"));
+                Some(("Restart into The Nameless Mod now? A game in progress isn't saved.".into(), true))
+            }
+            "Play Deus Ex" => {
+                set_pending_game(Some("dx"));
+                Some(("Restart into Deus Ex now? A game in progress isn't saved.".into(), true))
+            }
             _ => self.install().map(|t| (t, false)),
         }
     }
@@ -162,7 +172,8 @@ impl ModsView {
                 self.changed = true;
                 let mods: Vec<&str> = r.mods.iter().map(|(id, _)| *id).collect();
                 if mods.contains(&"tnm") {
-                    (format!("{title} is installed ({} files). Play it from the launcher's Game row.", r.files), false)
+                    set_pending_game(Some("tnm"));
+                    (format!("{title} is installed ({} files). Restart into it now? (Later: Play It on this screen, or the launcher's Game row.)", r.files), true)
                 } else {
                     (format!("{title} is installed and on ({} files). Restart the game now to use it?", r.files), true)
                 }
@@ -176,7 +187,7 @@ impl ModsView {
         let i = self.sel?;
         let on = match &self.states[i] {
             State::NotInstalled => return Some((format!("{} isn't installed.", e.name), false)),
-            _ if e.id == "tnm" => return Some(("The Nameless Mod is its own game: choose it in the launcher's Game row.".into(), false)),
+            _ if e.id == "tnm" => return None,
             State::On(_) => false,
             State::Off(_) => true,
         };
@@ -219,12 +230,34 @@ fn size(b: u64) -> String {
     }
 }
 
-/// Start the game again (the mods are chosen at start-up).
+/// The game to start on the next restart (launcher.txt Game=), set when the player asks to switch.
+static PENDING_GAME: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+fn set_pending_game(g: Option<&'static str>) {
+    if let Ok(mut p) = PENDING_GAME.lock() {
+        *p = g;
+    }
+}
+
+/// Start the game again (the mods are chosen at start-up), switching between Deus Ex and The Nameless Mod
+/// when the player asked for that.
 pub fn restart() {
     crate::settings::save();
+    if let Some(g) = PENDING_GAME.lock().ok().and_then(|mut p| p.take()) {
+        let _ = install::set_launcher_lines(&[("Game".into(), g.into())], &[]);
+    }
     if let Ok(exe) = std::env::current_exe() {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        if std::process::Command::new(exe).args(args).spawn().is_ok() {
+        // `--tnm <folder>` and DXVIEW_TNM would override the Game line: left out of the new start.
+        let mut args: Vec<String> = Vec::new();
+        let mut it = std::env::args().skip(1);
+        while let Some(a) = it.next() {
+            if a == "--tnm" {
+                it.next();
+                continue;
+            }
+            args.push(a);
+        }
+        if std::process::Command::new(exe).args(args).env_remove("DXVIEW_TNM").spawn().is_ok() {
             std::process::exit(0);
         }
     }

@@ -114,6 +114,12 @@ pub fn mission_system(
             fl.set("PlayerTraveling", FlagValue::Bool(true), 0);
         }
         crate::missions::set_current(st.mission, &st.map);
+        // The Nameless Mod: its mission script's strings and numbers (goal texts, awards) from the player's files.
+        if crate::tnmmode::active() {
+            if let Some(Value::Path(p) | Value::Str(p) | Value::Name(p)) = info.and_then(|a| find(&a.props, "Script")) {
+                crate::missions::tnm_load_text(&mut assets.classes, p);
+            }
+        }
         // Discord Rich Presence: where we are.
         {
             let loc = info
@@ -124,6 +130,7 @@ pub fn mission_system(
                 .unwrap_or_else(|| st.map.clone());
             if crate::menus::intro_map() || st.mission < 0 {
                 crate::discord::set("In the main menu", "");
+                crate::rlach::presence("In the main menu");
             } else {
                 let diff = match crate::travel::combat_difficulty() {
                     d if d <= 1.0 => "Easy",
@@ -133,6 +140,7 @@ pub fn mission_system(
                 };
                 let m = if st.mission == 0 { "Training".to_string() } else { format!("Mission {}", st.mission) };
                 crate::discord::set(&loc, &format!("{m} - {diff}"));
+                crate::rlach::presence(&loc);
             }
         }
         // LDDP (JCDentonMale.TravelPostAccept): its flags on every arrival, never expiring.
@@ -185,6 +193,10 @@ pub fn mission_system(
                     continue;
                 }
                 if let Some(Value::Str(b)) = find(&a.props, "BindName") {
+                    // The Nameless Mod keeps Kylie's body (killed skin) for her mission 24 scene.
+                    if crate::tnmmode::active() && mission == 24 && b == "Kylie" {
+                        continue;
+                    }
                     if !b.is_empty() && fl.get_bool(&format!("{b}_Dead")) {
                         crate::ai::world_req(crate::ai::WorldReq::Destroy(crate::ai::Sel::Bind(b.clone())));
                     }
@@ -228,6 +240,8 @@ pub fn mission_system(
                 let map = st.map.clone();
                 let st = &mut *st;
                 let mut c = ctx(lvl, fl, &map, mission, &npcs, &decos, &mut movers, &mut assets, &player, &ph, &mut st.vars, &mut st.seed, time.elapsed_secs_f64());
+                c.credits = inv.0.credits as i64;
+                c.has_multitool = inv.0.items.iter().any(|i| i.def.class == "Multitool");
                 crate::missions::first_frame(&mut c);
             }
         }
@@ -236,6 +250,8 @@ pub fn mission_system(
         let map = st.map.clone();
         let st = &mut *st;
         let mut c = ctx(lvl, fl, &map, mission, &npcs, &decos, &mut movers, &mut assets, &player, &ph, &mut st.vars, &mut st.seed, time.elapsed_secs_f64());
+        c.credits = inv.0.credits as i64;
+        c.has_multitool = inv.0.items.iter().any(|i| i.def.class == "Multitool");
         crate::missions::timer(&mut c);
         return;
     }
@@ -561,5 +577,7 @@ fn ctx<'a>(
         now,
         vars,
         seed,
+        credits: 0,
+        has_multitool: false,
     }
 }
