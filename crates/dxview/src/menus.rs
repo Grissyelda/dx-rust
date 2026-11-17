@@ -4553,17 +4553,19 @@ fn apply_acts(
                     Some(Value::Str(s)) if !s.is_empty() => format!("{s}.dx"),
                     _ => "01_NYC_UNATCOIsland.dx".into(),
                 };
-                // MenuScreenNewGame: ShowIntro(True) - the intro cut scene, then the new game on strStartMap. (The
-                // Nameless Mod's own intro is a scripted scene of its own: straight to its start map.)
-                if !crate::tnmmode::active() && root.0.join("Maps").join("00_Intro.dx").exists() {
-                    crate::loader::request("00_Intro.dx", crate::loader::Goal::Intro(Some((ng, map))));
+                // MenuScreenNewGame: ShowIntro(True) - the intro cut scene, then the new game on strStartMap. The
+                // Nameless Mod's intro is its TNMIntro map (its script's EndIntro starts the new game, Trestkon
+                // bStartNewGameAfterIntro / PostIntro).
+                let intro = crate::tnmmode::intro_map();
+                if root.0.join("Maps").join(intro).exists() || unreal_pkg::paths::exists(&root.0.join("Maps").join(intro)) {
+                    crate::loader::request(intro, crate::loader::Goal::Intro(Some((ng, map))));
                 } else {
                     crate::loader::request(&map, crate::loader::Goal::NewGame(ng));
                 }
                 st.stack.clear();
             }
             Act::Intro => {
-                crate::loader::request("00_Intro.dx", crate::loader::Goal::Intro(None));
+                crate::loader::request(crate::tnmmode::intro_map(), crate::loader::Goal::Intro(None));
                 st.stack.clear();
             }
             Act::Training => {

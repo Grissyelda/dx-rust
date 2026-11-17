@@ -237,8 +237,8 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
             patrol(c, "KashueLeaving", "KKWaypoint");
         }
         "TrestkonAppear" => spawn_trestkon(c, "TrestkonSpawn", "Trestkon", "", ("Patrolling", "TrestkonWaypoint")),
-        // The intro is over: the game proper starts at the first mission's map.
-        "EndIntro" => c.send_player("20_PhasApartment"),
+        // The intro is over: the new game it was started for, else back to the title (Trestkon.PostIntro).
+        "EndIntro" => crate::cinematic::post_intro(),
         "PrintEndgameQuoteABI" | "PrintEndgameQuoteWC1" | "PrintEndgameQuoteWC2" | "PrintEndgameQuotePDX" | "PrintEndgameQuoteNARC" => {}
         "RollCredits" => c.send_player("TNMMenu"),
         "PlayPDXEndgame01" => {

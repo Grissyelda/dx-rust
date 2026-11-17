@@ -49,6 +49,12 @@ pub struct Swim {
     tread: f64,
     /// Extra WaterRings due: (time, place).
     rings: Vec<(f64, DVec3)>,
+    /// The Nameless Mod's airless zones (Trestkon bNoOxygen): the head is in one, its breath timer and duration,
+    /// and its PainTime.
+    airless: bool,
+    air_timer: f64,
+    air_duration: f64,
+    air_pain: f64,
 }
 
 #[derive(Component)]
@@ -369,6 +375,47 @@ pub fn swim_system(
         }
     } else {
         sw.zone_pain_time = -1.0;
+    }
+
+    // The Nameless Mod's airless zones (the space station): the breath timer runs as under water (UnderWaterTime x
+    // swimming skill) unless a hazmat suit is on, the breath bar shows, and when it's out, 5 'Drowned' every 2 s.
+    // Leaving for air after real drowning makes him gasp (Trestkon HeadZoneChange / GotOxygen / PainTimer).
+    crate::zones::apply_oxygen_asks(lvl);
+    let airless = active && !head && crate::zones::no_oxygen(lvl, loc + DVec3::Z * eye);
+    if airless && !sw.airless && !ph.hazmat {
+        sw.airless = true;
+        sw.air_duration = under_water_time() * swim_skill();
+        sw.air_timer = sw.air_duration;
+        sw.air_pain = sw.air_duration;
+    } else if !airless && sw.airless {
+        sw.airless = false;
+        if sw.air_pain > 0.0 && sw.air_pain < 8.0 {
+            crate::sound::play_owned(
+                crate::sound::PLAYER,
+                crate::sound::slot::PAIN,
+                &crate::travel::voice("DeusExSounds.Player.MaleGasp"),
+                None,
+                1.0,
+                0.0,
+                crate::sound::random_pitch(),
+            );
+        }
+        if !player.swimming {
+            ph.breath = None;
+        }
+    }
+    if sw.airless {
+        sw.air_timer = (sw.air_timer - dt).max(0.0);
+        if sw.air_timer > 0.0 {
+            sw.air_pain = sw.air_timer;
+        } else {
+            sw.air_pain -= dt;
+            if sw.air_pain <= 0.0 {
+                ph.damage(5.0, "Drowned", DVec3::ZERO);
+                sw.air_pain = if ph.dead { 0.0 } else { 2.0 };
+            }
+        }
+        ph.breath = Some((sw.air_timer / sw.air_duration.max(1e-3)) as f32);
     }
 
     // Pawn.PainTimer: out of breath under water, 5 points every 2 s.

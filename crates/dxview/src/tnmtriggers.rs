@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use unreal_pkg::props::{find, Property, Value};
 
 /// The trigger classes this module answers for (only while The Nameless Mod is played).
-pub const CLASSES: [&str; 23] = [
+pub const CLASSES: [&str; 24] = [
     "CESequenceTrigger",
     "TNMBindNameTrigger",
     "GoalAddTrigger",
@@ -42,6 +42,7 @@ pub const CLASSES: [&str; 23] = [
     "TakeDamageTrigger",
     "insanedeathtrigger",
     "SetGoalTrigger",
+    "oxygenzonetrigger",
 ];
 
 pub fn is_class(class: &str) -> bool {
@@ -74,6 +75,8 @@ pub enum TnmKind {
     ConForce { con: String, bind: String, check: String, check_false: bool, parts: Vec<String>, used: i32, limit: i32 },
     BlowUp { used: i32, limit: i32 },
     Achievement,
+    /// OxygenZoneTrigger: the zones tagged Event lose or get air when triggered (touching does nothing).
+    Oxygen { toggle: bool, value: bool },
     /// The Event's decorations solid again (Trigger) or not (UnTrigger): bodies of collision only; kept as a
     /// plain trigger.
     Inert,
@@ -143,6 +146,7 @@ pub fn kind_for(class: &str, p: &[Property]) -> TnmKind {
         },
         "insanetrigger" => TnmKind::Insane { start: b(p, "bStartInsane", false) },
         "lightswitchflipper" => TnmKind::LightFlip(b(p, "SetOff", false)),
+        "oxygenzonetrigger" => TnmKind::Oxygen { toggle: b(p, "bToggle", false), value: b(p, "value", false) },
         "tnmconversationtrigger" => TnmKind::Con {
             con: s(p, "conversationTag"),
             bind: s(p, "BindName"),
@@ -449,6 +453,8 @@ pub fn on_touch(k: &mut TnmKind, event: &str, once: bool, by_player: bool, relev
                 act.destroy = once;
             }
         }
+        // OxygenZoneTrigger's Touch does nothing.
+        TnmKind::Oxygen { .. } => {}
         TnmKind::BindName { .. } | TnmKind::Limited(_) | TnmKind::Autosave => act.base = relevant,
     }
     act
@@ -549,6 +555,7 @@ pub fn on_trigger(k: &mut TnmKind, event: &str, once: bool, on: bool, flags: &mu
             work(if *off { Work::LightOff } else { Work::LightOn }, event);
             act.base = true;
         }
+        TnmKind::Oxygen { toggle, value } => crate::zones::ask_oxygen(event, *toggle, *value),
         TnmKind::Con { con, bind, check, check_false, timer, breathe } => {
             if tnm_con(flags, con, bind, check, *check_false, *timer, *breathe) {
                 act.base = true;

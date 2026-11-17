@@ -144,7 +144,8 @@ fn make(
         skill_time: 0.0,
         prox_radius: f("proxRadius", 128.0) as f64,
         prox_check: 0.0,
-        damage: f("Damage", 100.0),
+        // The Nameless Mod's Quad Damage powerup: the player's own thrown grenades too.
+        damage: f("Damage", 100.0) * if from.is_none() && !placed { crate::tnmpower::damage_mult() } else { 1.0 },
         blast: f("blastRadius", 256.0) as f64,
         damage_type: match find(d, "DamageType") {
             Some(Value::Name(n)) => damage_type_of(n),

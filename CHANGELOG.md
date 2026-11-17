@@ -28,8 +28,11 @@ lava), Mission 21 (DXI), Mission 23 (the ABI complex: the archive's code, the re
 ruins, the mirror-Trestkon fight), Mission 24 (the space station: holograms, Kylie and Deus Diablo, the respawning
 GameSpy firewalls and their switched loyalties, the airlocks, the station shaking apart) and Mission 25 (the training
 course, the endings and the epilogue with their forced conversations). Guards noticing you clear the mod's "not
-seen" flags. Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, oxygen zones, the mod's ending
-quotes and credits, slow motion, The Nameless Mod's own player abilities, menus and achievements, and its bonus maps.
+seen" flags. A new game opens with the mod's own intro and its scripted camera sequences, the Forum City sewers flush
+what's lying in them, airless zones (the space station's decompressed hallway, until the air pumps come on) leave
+you holding your breath, and the arena's Quad Damage (x4 damage) and Ring of Shadows (unseen) powerups last 30
+seconds. Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the mod's ending quotes and credits,
+slow motion, The Nameless Mod's own player abilities, menus and achievements, and its bonus maps.
 
 ### Run logs, portable mode and data folders
 Every run writes a log to a `logs` folder (the newest ten are kept), and a crash leaves its own `crash-<time>.log`

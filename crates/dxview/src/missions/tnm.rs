@@ -408,6 +408,7 @@ pub fn timer(c: &mut Ctx) {
     let _ = c.living(&map);
     if c.mission == 20 || c.mission == 22 {
         m20and22_timer(c, &map);
+        flushed(c);
     }
     if c.mission == 20 {
         for (s, l) in M20_TIMERS {
@@ -1391,6 +1392,82 @@ pub fn game_event(c: &mut Ctx, f: &str) {
             c.enter(Sel::isa_bind("ScriptedPawn", "Hawk"));
         }
         "WrenchAward" => c.award(25, "strWrenchAward"),
+        // Silver Dragon runs for the nearest of his escape points.
+        "SDFindPatrol" => {
+            if let Some(sd) = c.pawns.iter().find(|p| crate::classtree::is_a(&p.class, "SD")).cloned() {
+                let best = (0..=5)
+                    .map(|i| format!("SDRunPoint{i}"))
+                    .filter_map(|t| c.point("PatrolPoint", &t).map(|(p, _)| ((p - sd.pos).length(), t)))
+                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((_, tag)) = best {
+                    c.orders(Sel::isa("SD"), "RunningTo", &tag);
+                }
+            }
+        }
+        // Zero's sniper marks on PDX's guards: a guard standing at his mark is shot through the window.
+        "PDXMark1" | "PDXMark2" | "PDXMark3" | "PDXMark4" => {
+            if !c.down("Zero") && !c.b("QC_MAIN_GetNewsscript") {
+                pdx_mark(c, f.as_bytes()[7] - b'0');
+            }
+        }
+        // The IRC channel isn't simulated.
+        "IRCKick" | "PlayOutroTrack" | "OSC02Fan" => {}
+        "BackOutTunnel" => {
+            if !c.b("Shawn_PissedOffGuards") {
+                c.ally(Sel::tag("PhasecGuards"), 0.0, true);
+                c.ally(Sel::tag("Cop1"), 0.0, true);
+            }
+        }
+        "BullseyeCheck" => {
+            let p = c.player_pos;
+            if p.x > 5880.0 && p.x < 6855.0 && p.y > 11192.0 && p.y < 11911.0 {
+                c.trigger("BullseyeAward");
+            }
+        }
+        // Phasmatis has everything the player carries laid out at the item dump (keys stay).
+        "PhasTakeInventory" => {
+            if let Some((at, _)) = c.point("Actor", "itemdump").or_else(|| c.lvl.actors.iter().find(|a| tag_of(&a.props).eq_ignore_ascii_case("itemdump")).map(|a| {
+                let l = a.location();
+                (DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64), 0)
+            })) {
+                let spots: Vec<DVec3> = (0..80)
+                    .map(|_| {
+                        let v = c.vrand();
+                        at + DVec3::new(v.x, v.y, 0.0) * 64.0
+                    })
+                    .collect();
+                player_req(PlayerReq::DropInventory(spots));
+            }
+        }
+        "PlayNVSMessage" => {
+            crate::consys::start_forced_con(c.fl, "LaptopBriefing");
+        }
+        "LlamaGuardInvul" => {
+            if crate::carry::carried_bind().eq_ignore_ascii_case("LlamaHostage") {
+                crate::carry::drop_body();
+            }
+        }
+        "KaleDropBody" => {
+            if crate::carry::carried_bind().eq_ignore_ascii_case("Master_Kale") {
+                crate::carry::drop_body();
+            }
+        }
+        // The sewer flush: the current runs while the water is let out; what lay in the sewer's pipe or its
+        // deposit basin ends up in the treatment plant's lost property (counted by class).
+        "FlushStart" => {
+            crate::zones::set_velocity("SuccZone", Some(DVec3::new(0.0, -1000.0, 1.0)));
+            crate::sound::play_player("DeusExSounds.Weapons.WPApproach", 1.0, 0.0);
+        }
+        "FlushStop" => {
+            crate::zones::set_velocity("SuccZone", None);
+            crate::pickups::flush_zones(&["SuccZone", "DepositZone"]);
+            c.set("MS_FlushPending", true, 23);
+        }
+        "DDHologramAppear" => c.enter_tag("DDHologram"),
+        "DDHologramDisappear" => c.leave_tag("DDHologram"),
+        // Narcissus warns about the weapon cases while their keypads still stand.
+        "VoodooCalloutBlowpipe" | "VoodooCalloutKatana" => c.pm("PM_Narc_Yardbomb"),
+        "KillTrestkon" => kill_trestkon(c),
         "TurnMelkValve1" | "TurnMelkValve2" => crate::destruct::make_vulnerable(&f["Turn".len()..]),
         "DestroyedValve" => {
             let n = c.int("MS_ValvesDestroyed");
@@ -1407,6 +1484,99 @@ pub fn game_event(c: &mut Ctx, f: &str) {
         }
         _ => println!("MISSION game event {f}: not handled yet"),
     }
+}
+
+/// PDXMark: the guard at his mark is shot through his window; two marks (3 and 4) go together.
+fn pdx_mark(c: &mut Ctx, n: u8) {
+    let at_mark = |c: &Ctx, guard: &str, nav: &str| -> Option<bool> {
+        let g = c.pawns.iter().find(|p| p.tag.eq_ignore_ascii_case(guard))?;
+        let mark = c.lvl.actors.iter().find(|a| tag_of(&a.props).eq_ignore_ascii_case(nav))?;
+        let l = mark.location();
+        let d = DVec3::new(g.pos.x - l[0] as f64, g.pos.y - l[1] as f64, 0.0);
+        Some(d.length() < 128.0)
+    };
+    let shoot = |c: &mut Ctx, i: u8| {
+        crate::ai::world_req(WorldReq::KillShot(Sel::tag(&format!("DXAGuard_Mark{i}"))));
+        c.blow_up(&format!("PDXWindow_Mark{i}"));
+    };
+    match n {
+        1 | 2 => match at_mark(c, &format!("DXAGuard_Mark{n}"), &format!("GP_Mark{n}")) {
+            Some(true) => {
+                shoot(c, n);
+                c.pm(&format!("PM_Zero_PDXMark{n}"));
+            }
+            Some(false) => c.pm(&format!("PM_Zero_PDXMark{n}_Failed")),
+            None => c.pm(&format!("PM_Zero_PDXMark{n}_Dead")),
+        },
+        3 => match (at_mark(c, "DXAGuard_Mark3", "GP_Mark3"), at_mark(c, "DXAGuard_Mark4", "GP_Mark4")) {
+            (Some(true), Some(true)) => {
+                shoot(c, 3);
+                c.trigger("MSMark4Delay");
+            }
+            (Some(_), Some(_)) => c.pm("PM_Zero_PDXMark3and4_Failed"),
+            _ => c.pm("PM_Zero_PDXMark3and4_Dead"),
+        },
+        _ => {
+            if c.pawns.iter().any(|p| p.tag.eq_ignore_ascii_case("DXAGuard_Mark4")) {
+                shoot(c, 4);
+                c.pm("PM_Zero_PDXMark3and4");
+            }
+        }
+    }
+}
+
+/// The Narcissus loop's end: Trestkon dies one of several ways (the arena's spawn points add the strange ones).
+fn kill_trestkon(c: &mut Ctx) {
+    let points = c.points("SpawnPoint", "NarcSpawnPoints");
+    let n = if points.is_empty() { 3 } else { 8 };
+    let pick = (c.rand() * n as f64) as usize % n;
+    let hunters = ["TNMGreasel", "MelkyGreasel", "RedGreasel", "Abomnation", "Ghand"];
+    match pick {
+        0 => player_req(PlayerReq::Kill("Shot")),
+        1 => player_req(PlayerReq::Kill("Flamed")),
+        2 => player_req(PlayerReq::Kill("Exploded")),
+        _ => {
+            // Something deathless comes out of every spawn point for him.
+            let class = hunters[(pick - 3) % hunters.len()];
+            for p in points {
+                let d = c.player_pos - p;
+                let yaw = (d.y.atan2(d.x) * 32768.0 / std::f64::consts::PI) as i32;
+                let props = vec![
+                    prop("bInvincible", Value::Bool(true)),
+                    prop("Alliance", Value::Name("Narcissus".into())),
+                    prop("Orders", Value::Name("Attacking".into())),
+                    Property { name: "InitialAlliances".into(), index: 6, value: Value::Alliance("Player".into(), -1.0, true) },
+                ];
+                if let Ok(mut q) = PAWNS.lock() {
+                    q.push((class.to_string(), p, yaw, props));
+                }
+                c.fx(Fx::SpawnFlash(p));
+            }
+        }
+    }
+}
+
+/// What the sewer flush took: counted per class into SewerFlush_<Class> flags for the lost-property clerk.
+fn flushed(c: &mut Ctx) {
+    if !c.b("MS_FlushPending") {
+        return;
+    }
+    let Some(items) = crate::pickups::take_flushed() else { return };
+    c.fl.delete("MS_FlushPending");
+    if items.is_empty() {
+        return;
+    }
+    for (class, n) in &items {
+        let key = format!("SewerFlush_{class}");
+        let v = c.int(&key);
+        c.set_int(&key, v + n, 23);
+    }
+    c.pm("PM_Hoover_FlushedItems");
+    if !c.b("MS_FlushedItem") {
+        c.add_goal("SewerFlushRetrieval", "strGoalSewerRetrieval", false, false);
+    }
+    c.set("FlushedItem", true, 23);
+    c.set("MS_FlushedItem", true, 23);
 }
 
 // =================================================================================================== Mission 21

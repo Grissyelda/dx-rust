@@ -74,6 +74,16 @@ pub fn take_discard_body() -> bool {
     DISCARD_BODY.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
+static DROP_BODY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The body in our hands is dropped, as if thrown (a script's Trestkon.DropItem).
+pub fn drop_body() {
+    DROP_BODY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn take_drop_body() -> bool {
+    DROP_BODY.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn carried_bind() -> String {
     CARRIED_BIND.lock().map(|b| b.clone()).unwrap_or_default()
 }

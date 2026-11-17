@@ -46,6 +46,15 @@ fn with<R>(lvl: &dx_level::Level, f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 pub fn reset_level() {
+    if let Ok(mut q) = VEL_SET.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = OXY_SET.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = OXY_ASK.lock() {
+        q.clear();
+    }
     if let Ok(mut g) = STATE.lock() {
         let pending = g.as_mut().and_then(|s| s.pending.take());
         *g = Some(State { pending, ..Default::default() });
@@ -70,7 +79,91 @@ pub fn pain(lvl: &dx_level::Level, p: DVec3) -> Option<(f32, String)> {
 /// ZoneVelocity at `p`.
 pub fn velocity(lvl: &dx_level::Level, p: DVec3) -> DVec3 {
     let z = lvl.collision.zone_at(p).max(0) as usize;
-    lvl.zone_rules.get(z).map(|r| DVec3::new(r.velocity[0] as f64, r.velocity[1] as f64, r.velocity[2] as f64)).unwrap_or(DVec3::ZERO)
+    let Some(r) = lvl.zone_rules.get(z) else { return DVec3::ZERO };
+    if let Ok(v) = VEL_SET.lock() {
+        if let Some((_, v)) = v.iter().find(|(t, _)| !r.tag.is_empty() && t.eq_ignore_ascii_case(&r.tag)) {
+            return *v;
+        }
+    }
+    DVec3::new(r.velocity[0] as f64, r.velocity[1] as f64, r.velocity[2] as f64)
+}
+
+/// Zones whose ZoneVelocity a script changed, by Tag (None = back to the map's value).
+static VEL_SET: std::sync::Mutex<Vec<(String, DVec3)>> = std::sync::Mutex::new(Vec::new());
+
+/// ZoneVelocity of the zones tagged `tag` (a script's sewer flush); None puts the map's value back.
+pub fn set_velocity(tag: &str, v: Option<DVec3>) {
+    if let Ok(mut q) = VEL_SET.lock() {
+        q.retain(|(t, _)| !t.eq_ignore_ascii_case(tag));
+        if let Some(v) = v {
+            q.push((tag.to_string(), v));
+        }
+    }
+}
+
+/// Zones whose air a script changed: (zone index, no oxygen). An OxygenZoneTrigger toggles or sets the zones
+/// tagged with its Event; the air pumps give every zone air.
+static OXY_SET: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
+
+fn airless_zone(lvl: &dx_level::Level, z: usize) -> bool {
+    let base = lvl.zone_rules.get(z).is_some_and(|r| r.no_oxygen);
+    OXY_SET.lock().ok().and_then(|q| q.iter().rev().find(|(i, _)| *i == z).map(|(_, v)| *v)).unwrap_or(base)
+}
+
+/// No air to breathe at this point (The Nameless Mod's tnmzoneinfo bNoOxygen).
+pub fn no_oxygen(lvl: &dx_level::Level, p: DVec3) -> bool {
+    let z = lvl.collision.zone_at(p).max(0) as usize;
+    airless_zone(lvl, z)
+}
+
+/// OxygenZoneTrigger.Trigger: the zones tagged `tag` lose or get air (toggled, or set to `value`).
+pub fn set_oxygen(lvl: &dx_level::Level, tag: &str, toggle: bool, value: bool) {
+    for (z, r) in lvl.zone_rules.iter().enumerate() {
+        if !tag.is_empty() && r.tag.eq_ignore_ascii_case(tag) {
+            let now = airless_zone(lvl, z);
+            let v = if toggle { !now } else { value };
+            if let Ok(mut q) = OXY_SET.lock() {
+                q.retain(|(i, _)| *i != z);
+                q.push((z, v));
+            }
+        }
+    }
+}
+
+/// Some zone tagged `tag` has no air.
+pub fn tag_airless(lvl: &dx_level::Level, tag: &str) -> bool {
+    lvl.zone_rules.iter().enumerate().any(|(z, r)| r.tag.eq_ignore_ascii_case(tag) && airless_zone(lvl, z))
+}
+
+/// Air everywhere (The Nameless Mod's EnableAirPumps).
+pub fn air_everywhere(lvl: &dx_level::Level) {
+    if let Ok(mut q) = OXY_SET.lock() {
+        q.clear();
+        q.extend((0..lvl.zone_rules.len()).map(|z| (z, false)));
+    }
+}
+
+/// Oxygen toggles requested by triggers (they don't hold the level): (tag, toggle, value).
+static OXY_ASK: std::sync::Mutex<Vec<(String, bool, bool)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn ask_oxygen(tag: &str, toggle: bool, value: bool) {
+    if let Ok(mut q) = OXY_ASK.lock() {
+        q.push((tag.to_string(), toggle, value));
+    }
+}
+
+/// Applies queued oxygen toggles (called from the swim system, which holds the level).
+pub fn apply_oxygen_asks(lvl: &dx_level::Level) {
+    let asks: Vec<(String, bool, bool)> = OXY_ASK.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for (t, toggle, value) in asks {
+        set_oxygen(lvl, &t, toggle, value);
+    }
+}
+
+/// The Tag of the zone a point is in.
+pub fn zone_tag(lvl: &dx_level::Level, p: DVec3) -> String {
+    let z = lvl.collision.zone_at(p).max(0) as usize;
+    lvl.zone_rules.get(z).map(|r| r.tag.clone()).unwrap_or_default()
 }
 
 /// ZoneInfo.Trigger: zones tagged `name` with DamagePerSec toggle bPainZone.

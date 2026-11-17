@@ -7,7 +7,7 @@
 //! station shaking itself apart once the turbines stop, quest awards, the airlocks, schematics, the robots that die
 //! together, the "not seen" flags.
 //!
-//! Left out: oxygen zones (no air to run out of), the Narcissus window and New Game Plus, the station TV's live
+//! Left out: the Narcissus window and New Game Plus, the station TV's live
 //! census text, the turning solar panels and sky box, Trestkon catching fire on cue.
 
 use super::*;
@@ -24,6 +24,9 @@ const NARC: [&str; 9] =
     ["NARC_Source", "NARC_Tresk", "NARC_Kashue", "NARC_Phas", "NARC_IRC", "NARC_Testers", "NARC_NoCult", "NARC_Sewers", "NARC_Despots"];
 
 pub(super) fn first(c: &mut Ctx, map: &str) {
+    if c.b("MS_SSAirPumpsEnabled") {
+        crate::zones::air_everywhere(c.lvl);
+    }
     if map != "24_SPACESTATION02" && c.b("MS_DDSafe") {
         c.set("MS_DDSafe", false, 0);
         c.pm("PM_Kashue_DDSafe");
@@ -157,6 +160,15 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
     }
     match map {
         "24_SPACESTATION01" => {
+            // Once a door of the decompression hallway is broken: while the hallway is still airless its oxygen
+            // trigger runs (every check, as the mod does); with air in it, the hallway's own trigger is spent.
+            if c.mover_ids("DecompressionHallwayDoor").len() == 2 && c.movers_left("DecompressionHallwayDoor") != 2 {
+                if crate::zones::tag_airless(c.lvl, "DecompressionHallwayZone") {
+                    c.trigger("DecompressionHallwayOxygenTrigger");
+                } else {
+                    crate::triggers::set_active("DecompressionHallwayTrigger", false);
+                }
+            }
             let lead_done = (c.b("ALLIED_PDX") && c.b("QC_MAIN_DisableAILocks")) || (c.b("ALLIED_WC") && c.b("QC_MAIN_NarcissusLoop"));
             if !c.b("MS_SpawnedKKHologram") && lead_done {
                 c.hide(ActorSel::tag("GSLogo2"), true);
@@ -321,7 +333,10 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
             c.setd("QC_MAIN_DownloadSchematics", true);
             c.pm(if c.b("ALLIED_WC") { "PM_Scara_GotSchematics" } else { "PM_Kashue_GotSchematics" });
         }
-        "EnableAirPumps" => c.set("MS_SSAirPumpsEnabled", true, 25),
+        "EnableAirPumps" => {
+            crate::zones::air_everywhere(c.lvl);
+            c.set("MS_SSAirPumpsEnabled", true, 25);
+        }
         "LEETRobotsDie" => crate::ai::world_req(WorldReq::Disable(Sel::tag("LEETRobot"))),
         "AnnieSpiderbotsDie" => crate::ai::world_req(WorldReq::Disable(Sel::tag("AnnieFarmSpiderBots"))),
         "APGSecBotDie" => crate::ai::world_req(WorldReq::Disable(Sel::tag("APGSecBot"))),

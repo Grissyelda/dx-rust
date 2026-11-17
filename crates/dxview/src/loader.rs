@@ -461,6 +461,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
     let arrive = match goal {
         Goal::NewGame(ng) => {
             crate::stamina::refill();
+            crate::tnmpower::clear();
             crate::save::new_game();
             crate::travel::set_session(ng);
             crate::achievements::character_changed();
@@ -471,6 +472,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
             }
         }
         Goal::Load(s) => {
+            crate::tnmpower::clear();
             crate::save::prepare_load(&s);
             crate::save::Arrive::Load(s)
         }

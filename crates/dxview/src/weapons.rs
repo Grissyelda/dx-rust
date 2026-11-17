@@ -238,7 +238,8 @@ impl WeaponStats {
         } else {
             1.0
         };
-        combat - 2.0 * self.skill
+        // The Nameless Mod's Quad Damage powerup: x4 while it runs.
+        (combat - 2.0 * self.skill) * crate::tnmpower::damage_mult()
     }
 
     /// GetShotTime for the player: Combat Strength makes melee swings faster.
@@ -3376,7 +3377,8 @@ fn throw_corpse(
         && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right))
         // A right click on a door or device frobs it instead (pickups::frob_system, ParseRightClick).
         && !(mouse.just_pressed(MouseButton::Right) && crate::frobui::body_frob());
-    if !clicked {
+    // A script can make the player drop it too (The Nameless Mod's hostages and Kale).
+    if !clicked && !crate::carry::take_drop_body() {
         return false;
     }
     let conv = |v: Vec3| DVec3::new(v.x as f64, v.z as f64, v.y as f64).normalize();

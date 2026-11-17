@@ -24,6 +24,7 @@ mod rlach;
 mod sdl3pad;
 mod tnmmode;
 mod tnmtriggers;
+mod tnmpower;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1036,6 +1037,7 @@ fn add_combat_systems(app: &mut App) {
                     netplay::item_sync_system.after(destruct::weapon_drop_system),
                     netplay::device_sync_system.after(devices::device_system),
                     pickups::net_give_system.after(pickups::frob_system),
+                    pickups::flush_system.after(pickups::frob_system),
                     deathmatch::pickups_system.after(pickups::frob_system),
                     deathmatch::match_system.after(netplay::net_in_system).before(ai::npc_system),
                     nettags::nametag_system,
@@ -1172,6 +1174,7 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, logic::logic_system.after(devices::device_system))
         .init_resource::<tnmtriggers::TnmMovers>()
         .add_systems(Update, tnmtriggers::tnm_system.after(devices::device_system))
+        .add_systems(Update, tnmpower::powerup_system.after(actors::deco_physics).after(interp::rotating_system))
         .add_systems(Update, scriptworld::scriptworld_system.after(mission::mission_system))
         .add_systems(Update, missions::mission_fx_system.after(mission::mission_system))
         .add_systems(Update, credits::credits_system)

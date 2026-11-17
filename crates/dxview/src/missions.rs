@@ -134,6 +134,8 @@ pub enum PlayerReq {
     Wounds([f32; 6], [f32; 6]),
     /// Back from the dead (The Nameless Mod's capture: the player wakes in a cell).
     Revive,
+    /// The player dies of this damage type (The Nameless Mod's KillTrestkon).
+    Kill(&'static str),
     /// Player.SetLocation.
     Teleport(DVec3),
     /// MissionEndgame: the quote, shown centred for `secs`.
@@ -2055,6 +2057,11 @@ pub fn mission_fx_system(
                     *p = (*p * scale[i]).max(floor[i]);
                 }
                 ph.recompute();
+            }
+            PlayerReq::Kill(kind) => {
+                if !ph.dead {
+                    ph.damage(100_000.0, kind, DVec3::ZERO);
+                }
             }
             PlayerReq::Revive => {
                 ph.dead = false;

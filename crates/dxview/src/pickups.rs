@@ -35,6 +35,49 @@ pub struct PickupItem {
     pub props: std::sync::Arc<Vec<Property>>,
 }
 
+/// Loose items to take out of the zones with these Tags (a script's sewer flush), and what was taken:
+/// (class, amount - credits, ammo rounds, copies, or a weapon's loaded rounds).
+static FLUSH_ASK: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static FLUSHED: std::sync::Mutex<Option<Vec<(String, i32)>>> = std::sync::Mutex::new(None);
+
+pub fn flush_zones(tags: &[&str]) {
+    if let Ok(mut q) = FLUSH_ASK.lock() {
+        q.extend(tags.iter().map(|t| t.to_string()));
+    }
+}
+
+/// The result of the last flush (once).
+pub fn take_flushed() -> Option<Vec<(String, i32)>> {
+    FLUSHED.lock().ok().and_then(|mut f| f.take())
+}
+
+pub fn flush_system(
+    mut commands: Commands,
+    level: Res<crate::LevelRes>,
+    items: Query<(Entity, &PickupItem, &GlobalTransform)>,
+) {
+    let ask: Vec<String> = FLUSH_ASK.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    if ask.is_empty() {
+        return;
+    }
+    let lvl = &level.0;
+    let mut got = Vec::new();
+    for (e, it, gt) in &items {
+        let u = dx_level::bevy_to_ue(gt.translation().to_array());
+        let tag = crate::zones::zone_tag(lvl, DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64));
+        if !ask.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+            continue;
+        }
+        let p = &it.props;
+        let n = i(p, "numCredits").or_else(|| i(p, "AmmoAmount")).or_else(|| i(p, "NumCopies")).or_else(|| i(p, "PickupAmmoCount")).unwrap_or(1).max(1);
+        got.push((it.class.clone(), n));
+        commands.entity(e).despawn();
+    }
+    if let Ok(mut f) = FLUSHED.lock() {
+        *f = Some(got);
+    }
+}
+
 fn s(p: &[Property], n: &str) -> String {
     match find(p, n) {
         Some(Value::Str(v)) => v.clone(),
@@ -1165,6 +1208,11 @@ fn frob_device(
         .as_deref()
         .filter(|t| cx.only_tool && (*t == "Multitool" || *t == "Lockpick"));
     println!("FROB device {} ({})", a.name, a.class);
+    // The Nameless Mod's powerups (QuadDamage / RingofShadows.Frob).
+    if crate::tnmpower::is_powerup(&a.class) {
+        crate::tnmpower::take(cx.level, blockers.list[b].actor);
+        return;
+    }
     // Augmentique's outfit boxes (OutfitSpawner.Frob -> SpawnerPickup, then the box goes).
     if crate::augmentique::is_spawner(&a.class) {
         if let Some(msg) = crate::augmentique::spawner_pickup(&a.props) {
@@ -1460,6 +1508,7 @@ pub fn device_like(a: &dx_level::actors::ActorInfo) -> bool {
         && (crate::devices::is_hackable(p)
             || crate::fixtures::is_fixture(&a.class)
             || crate::augmentique::is_spawner(&a.class)
+            || crate::tnmpower::is_powerup(&a.class)
             || a.class.eq_ignore_ascii_case("ammocrate")
             || crate::computers::is_terminal(&a.class)
             || !crate::devices::name_prop(p, "Event").is_empty()

@@ -128,6 +128,9 @@ pub fn reset_level() {
             q.clear();
         }
     }
+    if let Ok(mut t) = TNM_SEQS.lock() {
+        t.clear();
+    }
     if let Ok(mut t) = TRANSIT.lock() {
         *t = None;
     }
@@ -155,6 +158,12 @@ enum Cmd {
     Roll,
     Wait,
     Trigger,
+    /// The Nameless Mod's tnmCameraPoint: CAMCMD_END (back to the player), MOVETOPLAYER (to his eyes), FACEPLAYER
+    /// (in front of his face, looking at it), and the commands kept as plain stops (fades, interpolation paths).
+    End,
+    ToPlayer,
+    FacePlayer,
+    Still,
 }
 
 #[derive(Clone, Debug)]
@@ -206,6 +215,59 @@ struct Cine {
     intro_started: bool,
     intro: bool,
     timer: f32,
+    /// A Nameless Mod cut scene (started by its Tag, ended by CAMCMD_END or running out): the player's place,
+    /// eye height and view before it, put back after.
+    tnm: Option<(DVec3, f64, [f64; 3])>,
+    ended: bool,
+}
+
+/// The Nameless Mod's camera sequences on this map: (Tag, points in sequence order).
+static TNM_SEQS: Mutex<Vec<(String, Vec<Point>)>> = Mutex::new(Vec::new());
+
+/// tnmCameraPoint's commands (its own enum: no WAIT, Trigger is 6, then its additions).
+fn tnm_cmd(b: u8) -> Cmd {
+    match b {
+        1 => Cmd::Push,
+        2 => Cmd::Fov,
+        3 => Cmd::Tilt,
+        4 => Cmd::Pan,
+        5 => Cmd::Roll,
+        6 => Cmd::Trigger,
+        7 => Cmd::End,
+        8 => Cmd::ToPlayer,
+        9 | 10 | 11 => Cmd::Still,
+        12 => Cmd::FacePlayer,
+        _ => Cmd::Move,
+    }
+}
+
+/// The map's tnmCameraPoints grouped by Tag (InitAllPoints links the points that share it by sequence number).
+fn load_tnm_seqs(level: &dx_level::Level) -> Vec<(String, Vec<Point>)> {
+    let mut groups: Vec<(String, Vec<Point>)> = Vec::new();
+    for (a, mut pt) in level.actors.iter().filter(|a| a.class.eq_ignore_ascii_case("tnmCameraPoint")).filter_map(|a| point_of(a).map(|p| (a, p))) {
+        let cmd = match find(&a.props, "cmd").or_else(|| find(&a.props, "Cmd")) {
+            Some(Value::Byte(b)) => *b,
+            _ => 0,
+        };
+        pt.cmd = tnm_cmd(cmd);
+        let tag = match find(&a.props, "Tag") {
+            Some(Value::Name(t)) => t.clone(),
+            _ => a.class.clone(),
+        };
+        match groups.iter_mut().find(|(t, _)| t.eq_ignore_ascii_case(&tag)) {
+            Some(g) => g.1.push(pt),
+            None => groups.push((tag, vec![pt])),
+        }
+    }
+    for g in groups.iter_mut() {
+        g.1.sort_by_key(|p| p.seq);
+    }
+    groups
+}
+
+/// A Nameless Mod camera sequence is on screen.
+pub fn tnm_scene() -> bool {
+    letterbox() && STATE.lock().ok().is_some_and(|s| s.as_ref().is_some_and(|c| c.tnm.is_some()))
 }
 
 fn f(p: &[unreal_pkg::props::Property], n: &str) -> f64 {
@@ -217,11 +279,15 @@ fn f(p: &[unreal_pkg::props::Property], n: &str) -> f64 {
 }
 
 fn load_points(level: &dx_level::Level) -> Vec<Point> {
-    let mut v: Vec<Point> = level
-        .actors
-        .iter()
-        .filter(|a| a.class == "CameraPoint")
-        .map(|a| {
+    let mut v: Vec<Point> = level.actors.iter().filter(|a| a.class == "CameraPoint").filter_map(point_of).collect();
+    // InitAllPoints links each point to the next higher sequence number.
+    v.sort_by_key(|p| p.seq);
+    v
+}
+
+fn point_of(a: &dx_level::actors::ActorInfo) -> Option<Point> {
+    Some({
+        {
             let p = &a.props;
             let cmd = match find(p, "Cmd").or_else(|| find(p, "cmd")) {
                 Some(Value::Byte(b)) => *b,
@@ -269,11 +335,8 @@ fn load_points(level: &dx_level::Level) -> Vec<Point> {
                 loc: DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64),
                 rot,
             }
-        })
-        .collect();
-    // InitAllPoints links each point to the next higher sequence number.
-    v.sort_by_key(|p| p.seq);
-    v
+        }
+    })
 }
 
 /// Shortest way round for a rotator component difference (CameraPoint.Running.Tick).
@@ -327,6 +390,23 @@ impl Cine {
                     ev.push((pt.event.clone(), true));
                 }
             }
+            Cmd::End => self.ended = true,
+            Cmd::ToPlayer => {
+                if let Some((loc, eye, rot)) = self.tnm {
+                    end.0 = loc + DVec3::Z * eye;
+                    end.1 = rot;
+                }
+            }
+            Cmd::FacePlayer => {
+                if let Some((loc, eye, rot)) = self.tnm {
+                    let eye_at = loc + DVec3::Z * eye;
+                    let facing = DVec3::new((rot[1] * UU).cos(), (rot[1] * UU).sin(), 0.0);
+                    end.0 = eye_at + facing * 20.0;
+                    let back = (eye_at - end.0).normalize_or_zero();
+                    end.1 = [back.z.asin() / UU, back.y.atan2(back.x) / UU, 0.0];
+                }
+            }
+            Cmd::Still => {}
         }
         // Running in parallel with the previous point: its change is added to ours.
         if let Some(pi) = prev.as_ref() {
@@ -499,7 +579,7 @@ fn continue_prompt(pad: bool) -> String {
 }
 
 /// MissionIntro.PostIntro: the new game the intro was started for, or back to the title.
-fn post_intro() {
+pub(crate) fn post_intro() {
     match crate::loader::take_after_intro() {
         Some((ng, map)) => crate::loader::request(&map, crate::loader::Goal::NewGame(ng)),
         None => crate::loader::request("DX.dx", crate::loader::Goal::Title),
@@ -554,7 +634,15 @@ pub fn cinematic_system(
             intro_started: false,
             intro: mission == 98,
             timer: 0.0,
+            tnm: None,
+            ended: false,
         };
+        if let Ok(mut t) = TNM_SEQS.lock() {
+            *t = if crate::tnmmode::active() { load_tnm_seqs(&level.0) } else { Vec::new() };
+            if !t.is_empty() {
+                println!("cinematic: {} camera sequences", t.len());
+            }
+        }
         let mut c = c;
         let mut ev = Vec::new();
         if has_start {
@@ -769,6 +857,34 @@ pub fn cinematic_system(
             post_intro();
             return;
         }
+    // The Nameless Mod: a camera sequence starts when its first point is triggered (tnmCameraPoint Idle.Trigger ->
+    // StartCinematic): the player is held where he is, the camera runs the points, CAMCMD_END hands the view back.
+    // A sequence started from inside another (its CAMCMD_TRIGGER) takes over the camera; the player stays put.
+    if !letterbox() || c.tnm.is_some() {
+        let start = {
+            let seqs = TNM_SEQS.lock().unwrap_or_else(|e| e.into_inner());
+            evs.iter().chain(events.0.iter().filter(|(_, on)| *on).map(|(n, _)| n)).find_map(|n| seqs.iter().find(|(t, p)| t.eq_ignore_ascii_case(n) && p.first().is_some_and(|p| p.seq == 0)).cloned())
+        };
+        if let Some((tag, points)) = start {
+            println!("cinematic: sequence {tag} ({} points)", points.len());
+            if c.tnm.is_none() {
+                let f = cams.p0().0.forward();
+                let rot = [(f.y as f64).asin() / UU, (f.z as f64).atan2(f.x as f64) / UU, 0.0];
+                let eye = player.eye_height;
+                c.loc = player.body.location + DVec3::Z * eye;
+                c.rot = rot;
+                c.fov = crate::weapons::base_fov() as f64;
+                c.tnm = Some((player.body.location, eye, rot));
+            }
+            c.points = points;
+            c.running.clear();
+            c.ended = false;
+            ACTIVE.store(true, Ordering::Relaxed);
+            let mut ev = Vec::new();
+            c.wake(0, None, &mut ev);
+            events.0.extend(ev);
+        }
+    }
     if !letterbox() {
         return;
     }
@@ -782,6 +898,21 @@ pub fn cinematic_system(
     let mut ev = Vec::new();
     c.tick(if crate::loader::settling() { 0.0 } else { time.delta_secs_f64().min(0.1) }, &mut ev);
     events.0.extend(ev);
+    // The Nameless Mod's sequence is over (CAMCMD_END, or no point left running): the player is back.
+    if let Some((loc, eye, _)) = c.tnm {
+        if c.ended || c.running.is_empty() {
+            c.tnm = None;
+            c.ended = false;
+            c.running.clear();
+            player.body.location = loc;
+            player.body.velocity = DVec3::ZERO;
+            player.eye_height = eye;
+            ACTIVE.store(false, Ordering::Relaxed);
+            vm.set_if_neq(Visibility::Inherited);
+            println!("cinematic: sequence over");
+            return;
+        }
+    }
     if env_on!("DXVIEW_CINELOG") {
         println!("CINE t {:.3} dt {:.4} loc {:.2?} rot {:.1?} fov {:.2}", time.elapsed_secs(), time.delta_secs(), c.loc.to_array(), c.rot, c.fov);
     }

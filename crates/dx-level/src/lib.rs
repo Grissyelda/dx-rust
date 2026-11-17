@@ -203,6 +203,8 @@ pub struct ZoneRule {
     pub velocity: [f32; 3],
     pub player_event: String,
     pub no_inventory: bool,
+    /// The Nameless Mod's tnmzoneinfo bNoOxygen: no air to breathe here (the space station).
+    pub no_oxygen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1099,6 +1101,7 @@ pub fn build_level(
                 velocity: vel,
                 player_event: name("ZonePlayerEvent"),
                 no_inventory: b("bNoInventory"),
+                no_oxygen: b("bNoOxygen"),
             }
         })
         .collect();

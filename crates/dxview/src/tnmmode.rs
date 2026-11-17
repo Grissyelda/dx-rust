@@ -62,6 +62,15 @@ pub fn before_load() {
 }
 
 /// The player's class: Trestkon, or JC.
+/// The intro cut scene's map: Deus Ex's 00_Intro, or The Nameless Mod's TNMIntro.
+pub fn intro_map() -> &'static str {
+    if active() {
+        "TNMIntro.dx"
+    } else {
+        "00_Intro.dx"
+    }
+}
+
 pub fn player_class() -> &'static str {
     if active() {
         "Trestkon"
