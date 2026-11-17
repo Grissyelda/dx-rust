@@ -1,0 +1,389 @@
+{
+  "format": 1,
+  "game": "dx-rust",
+  "source": "events",
+  "versions": ">=0.1.0",
+  "achievements": [
+    {
+      "id": 1,
+      "title": "Majestic Revelations",
+      "description": "Unlock every other achievement.",
+      "event": "majestic",
+      "points": 50
+    },
+    {
+      "id": 2,
+      "title": "Rescue the Lady",
+      "description": "Stop the NSF terrorists on Liberty Island.",
+      "event": "lady",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 3,
+      "title": "On the Town",
+      "description": "Free the hostages, discover the NSF generator, and take down the NSF's EMP field.",
+      "event": "town",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 4,
+      "title": "The Lebedev Sanction",
+      "description": "Locate the airfield where the NSF moved the Ambrosia, and hear some shocking details from Paul.",
+      "event": "lebedev",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 5,
+      "title": "Inevitable Choices",
+      "description": "Question your alliances.",
+      "event": "choices",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 6,
+      "title": "Breakout",
+      "description": "Escape the Majestic 12 facility.",
+      "event": "breakout",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 7,
+      "title": "Hong Kong",
+      "description": "Find Tracer Tong, obtain the ROM encoding for the Dragon's Tooth, and ally the Triads.",
+      "event": "hongkong",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 8,
+      "title": "The Supertanker Part 1",
+      "description": "Meet Stanton Dowd and discuss the supertanker.",
+      "event": "tanker1",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 9,
+      "title": "The Supertanker Part 2",
+      "description": "Scuttle the supertanker and disable the EM disruption field before escaping the shipyard.",
+      "event": "tanker2",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 10,
+      "title": "Grey Paree",
+      "description": "Meet with Nicolette DuClare and make contact with the Illuminati.",
+      "event": "paree",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 11,
+      "title": "Treasures of the Templars",
+      "description": "Access the computer so that Morgan Everett can complete his work on the Gray Death cure.",
+      "event": "templars",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 12,
+      "title": "Vandenberg AFB",
+      "description": "Uplink Daedalus and gain Morgan Everett access to the Universal Constructor.",
+      "event": "vandenberg",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 13,
+      "title": "By the Sea",
+      "description": "Steal a submarine and retrieve the schematic for the Universal Constructor.",
+      "event": "sea",
+      "type": "progression",
+      "points": 10
+    },
+    {
+      "id": 14,
+      "title": "Area 51",
+      "description": "Decide the fate of mankind.",
+      "event": "area51",
+      "type": "progression",
+      "points": 25
+    },
+    {
+      "id": 15,
+      "title": "Second Coming",
+      "description": "Complete the game by merging with Helios.",
+      "event": "helios",
+      "type": "win",
+      "points": 50
+    },
+    {
+      "id": 16,
+      "title": "Cut the Cord",
+      "description": "Complete the game by enacting a new Dark Age.",
+      "event": "darkage",
+      "type": "win",
+      "points": 50
+    },
+    {
+      "id": 17,
+      "title": "Shaking the Invisible Hand",
+      "description": "Complete the game by joining the Illuminati.",
+      "event": "illuminati",
+      "type": "win",
+      "points": 50
+    },
+    {
+      "id": 18,
+      "title": "Biomachina",
+      "description": "Install at least one augmentation into each body part.",
+      "event": "biomachina",
+      "points": 25
+    },
+    {
+      "id": 19,
+      "title": "Slugger",
+      "description": "Take down 3 enemies with a melee attack while the Combat Strength augmentation is active.",
+      "event": "slugger",
+      "points": 25
+    },
+    {
+      "id": 20,
+      "title": "Solid Sneak",
+      "description": "Sneak past 3 enemies with the Run Silent augmentation active.",
+      "event": "sneak",
+      "points": 25
+    },
+    {
+      "id": 21,
+      "title": "Section 9 Methods",
+      "description": "Travel through a humanoid enemy's line of sight while the Cloak augmentation is active.",
+      "event": "section9",
+      "points": 10
+    },
+    {
+      "id": 22,
+      "title": "Automotonophobia",
+      "description": "Travel through the line of sight of a machine with the Radar Transparency augmentation active.",
+      "event": "automoto",
+      "points": 10
+    },
+    {
+      "id": 23,
+      "title": "Wardenclyffe Man",
+      "description": "Activate 3 other augmentations while the Power Recirculator augmentation is active.",
+      "event": "wardenclyffe",
+      "points": 25
+    },
+    {
+      "id": 24,
+      "title": "Atom Heart Son",
+      "description": "Increase the level of 3 other augmentations by using the Synthetic Heart augmentation.",
+      "event": "atomheart",
+      "points": 25
+    },
+    {
+      "id": 25,
+      "title": "The Best Offense Is...",
+      "description": "Kill an enemy with their own projectile via the Aggressive Defense System.",
+      "event": "bestoffense",
+      "points": 25
+    },
+    {
+      "id": 26,
+      "title": "Special Eyes",
+      "description": "Alert an enemy seen through a surface with the Vision Enhancement augmentation active.",
+      "event": "specialeyes",
+      "points": 10
+    },
+    {
+      "id": 27,
+      "title": "Public Servant",
+      "description": "Grant the sick bum's request in Battery Park.",
+      "event": "servant",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 28,
+      "title": "JC Dunkin'",
+      "description": "Score a basket in Hell's Kitchen.",
+      "event": "dunkin",
+      "points": 10
+    },
+    {
+      "id": 29,
+      "title": "El Escapa",
+      "description": "Successfully break Miguel out of the MJ12 detention facility.",
+      "event": "escapa",
+      "points": 25,
+      "type": "missable"
+    },
+    {
+      "id": 30,
+      "title": "You Saw Nothing",
+      "description": "Listen to Walton Simons' interrogation of the NSF soldiers.",
+      "event": "sawnothing",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 31,
+      "title": "I'm In",
+      "description": "Enter the secret compartment in Alex Jacobson's office.",
+      "event": "imin",
+      "points": 10
+    },
+    {
+      "id": 32,
+      "title": "Pinball Wizard",
+      "description": "Reveal the secret room in the NSF Helibase.",
+      "event": "pinball",
+      "points": 10
+    },
+    {
+      "id": 33,
+      "title": "Don't Feed the Wildlife",
+      "description": "Feed a body to a Karkian or Greasel.",
+      "event": "wildlife",
+      "points": 25
+    },
+    {
+      "id": 34,
+      "title": "Dibbuk Defusal",
+      "description": "Something's odd about that odd mechanic. Maybe Everett would know about him.",
+      "event": "dibbuk",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 35,
+      "title": "Sure",
+      "description": "Pay Mercedes and Tessa's entry fee.",
+      "event": "sure",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 36,
+      "title": "Renton, Far From Home",
+      "description": "Save Sandra from JoJo, mourn Mr. Renton's untimely death, and meet Sandra in California.",
+      "event": "renton",
+      "points": 25,
+      "type": "missable"
+    },
+    {
+      "id": 37,
+      "title": "American Hero",
+      "description": "Despite everything, keep your allies and friends alive.",
+      "event": "hero",
+      "points": 25
+    },
+    {
+      "id": 38,
+      "title": "Lose the Tail",
+      "description": "If you mention Stanton Dowd to Joe Greene... watch your back.",
+      "event": "tail",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 39,
+      "title": "No Thanks, Mean Joe",
+      "description": "Ah, yes. A journalist. You can trust him...",
+      "event": "meanjoe",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 40,
+      "title": "Based",
+      "description": "Talk with Leo Gold further after detaining him.",
+      "event": "based",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 41,
+      "title": "Nice Gun, Mind If I Have It?",
+      "description": "Obtain an assault rifle on your first mission on Liberty Island.",
+      "event": "nicegun",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 42,
+      "title": "Nerves of Steel",
+      "description": "Stop Anna Navarre from killing Lebedev.",
+      "event": "nerves",
+      "points": 25,
+      "type": "missable"
+    },
+    {
+      "id": 43,
+      "title": "Thanks a 'Ton, JC",
+      "description": "Don't be afraid, I'm with you, Paul.",
+      "event": "tonjc",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 44,
+      "title": "How Did You...",
+      "description": "Two passwords for your life.",
+      "event": "howdid",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 45,
+      "title": "I Am Not a Machi...",
+      "description": "Having a man on the inside at UNATCO pays off.",
+      "event": "notmachine",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 46,
+      "title": "What a Shame",
+      "description": "Comment on Mr. Renton's untimely passing.",
+      "event": "shame",
+      "points": 10,
+      "type": "missable"
+    },
+    {
+      "id": 47,
+      "title": "Pool Shark",
+      "description": "Use the cue ball to sink all other balls on the Underworld's pool table.",
+      "event": "pool",
+      "points": 25
+    },
+    {
+      "id": 48,
+      "title": "Veteran Agent",
+      "description": "Have two Master level skills at the same time.",
+      "event": "veteran",
+      "points": 25
+    },
+    {
+      "id": 49,
+      "title": "Lock and Load",
+      "description": "Install one of each compatible upgrade type onto a single weapon.",
+      "event": "lockload",
+      "points": 25
+    },
+    {
+      "id": 50,
+      "title": "Upgrades, people. Upgrades",
+      "description": "Fully upgrade an augmentation.",
+      "event": "upgrades",
+      "points": 10
+    }
+  ]
+}
