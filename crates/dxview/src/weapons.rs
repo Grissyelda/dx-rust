@@ -601,7 +601,8 @@ const SMOOTH_VIEW_TWEEN: f32 = 0.18;
 /// can knock a guard out (the body's own multipliers apply: head, from behind). No weapon skill, the Combat
 /// Strength aug counts as for melee weapons.
 pub fn bash_on() -> bool {
-    setting!("MeleeBash") > 0.5
+    // (Modern deathmatch: the Enforcer's signature perk.)
+    setting!("MeleeBash") > 0.5 || crate::dmchar::class_perk() == "enforcer"
 }
 /// The whole swing (seconds) and where in it the blow lands (fraction).
 const BASH_TIME: f32 = 0.5;

@@ -63,6 +63,120 @@
     skin_unlocks: [10, 25, 50, 100, 200, 350, 500],
     // DeusExMPGame.NewMapDelay: seconds the results show before the next map.
     new_map_delay: 16,
+    // Modern: the living level (living.rs). Heat per player: unsilenced shots staff hear, a camera seeing a drawn
+    // weapon (per second), staff seeing a restricted area entered or a lockpick / multitool at work (per second);
+    // hurting staff is wanted at once. Wanted at 100, calm again below 40, drains after 12 s out of sight.
+    // A hacked security computer / camera / turret is the hacker's for hacked_secs. Guards walk the map's own
+    // patrol routes (people first, then bots, up to max_guards; a map's `staff` can change that).
+    living: (
+        heat: (suspicious: 30, wanted: 100, calm_below: 40, max: 160, hold_secs: 12, decay: 9, shot_heard: 34,
+               weapon_seen_rate: 15, restricted_rate: 70, tampering_rate: 60),
+        hacked_secs: 120,
+        ping_secs: 8,
+        owned_ping_every: 2,
+        guard: "MJ12Troop",
+        bot: "SecurityBot3",
+        max_guards: 6,
+        dark_reach: 320,
+        dark: 0.06,
+    ),
+    // Modern: the operative profile (dmchar.rs). Credits per thing done in a match (shown after it), kills with a
+    // weapon for each mastery level, loadouts kept.
+    profile: (
+        per_kill: 10, per_takedown: 15, per_assist: 5, per_hack: 8, per_heal: 5, per_objective: 20,
+        per_match: 25, per_win: 75,
+        mastery: [10, 25, 50, 100, 200, 350, 500],
+        max_loadouts: 5,
+    ),
+    // Modern: loadouts on a points budget (imsim_core::loadout). Every player has the same `budget` unless the host
+    // picks Full (no cap). Skills start Trained; levels above it cost skill_steps in turn (Advanced 8, Master +10).
+    // `unlock`: credits to unlock an entry (anything not listed is open); `mod_mastery`: the weapon mastery level a
+    // mod needs on that weapon (dmchar mastery: kills with it). `ammo`: rounds given with a weapon.
+    loadouts: (
+        prices: (
+            budget: 100,
+            max_weapons: 3,
+            max_augs: 3,
+            max_mods_per_weapon: 3,
+            skill_steps: [8, 10],
+            weapons: {
+                "WeaponPistol": 0, "WeaponStealthPistol": 6, "WeaponCombatKnife": 2, "WeaponCrowbar": 2,
+                "WeaponBaton": 2, "WeaponSword": 6, "WeaponProd": 8, "WeaponPepperGun": 4, "WeaponShuriken": 6,
+                "WeaponMiniCrossbow": 8, "WeaponSawedOffShotgun": 12, "WeaponAssaultShotgun": 16,
+                "WeaponAssaultGun": 16, "WeaponRifle": 22, "WeaponNanoSword": 24, "WeaponFlamethrower": 26,
+                "WeaponLAW": 26, "WeaponPlasmaRifle": 30, "WeaponGEPGun": 34,
+            },
+            items: {
+                "MedKit": 4, "BioelectricCell": 5, "Lockpick": 2, "Multitool": 3, "WeaponLAM": 8,
+                "WeaponEMPGrenade": 6, "WeaponGasGrenade": 6, "WeaponNanoVirusGrenade": 6, "BallisticArmor": 10,
+                "HazMatSuit": 6, "AdaptiveArmor": 14, "TechGoggles": 6,
+            },
+            item_max: {
+                "MedKit": 3, "BioelectricCell": 2, "Lockpick": 2, "Multitool": 2, "WeaponLAM": 2, "WeaponEMPGrenade": 2,
+                "WeaponGasGrenade": 2, "WeaponNanoVirusGrenade": 2, "BallisticArmor": 1, "HazMatSuit": 1,
+                "AdaptiveArmor": 1, "TechGoggles": 1,
+            },
+            augs: {
+                "AugCloak": 22, "AugRadarTrans": 16, "AugVision": 12, "AugSpeed": 14, "AugStealth": 10,
+                "AugBallistic": 16, "AugShield": 12, "AugEMP": 8, "AugHealing": 16, "AugDefense": 14,
+                "AugCombat": 10, "AugMuscle": 8, "AugTarget": 12, "AugAqualung": 2, "AugPower": 10,
+                "AugEnviro": 8, "AugDrone": 18, "AugHeartLung": 12,
+            },
+            mods: {
+                "WeaponModAccuracy": 4, "WeaponModClip": 4, "WeaponModRange": 3, "WeaponModRecoil": 3,
+                "WeaponModReload": 3, "WeaponModScope": 5, "WeaponModSilencer": 6, "WeaponModLaser": 3,
+            },
+        ),
+        unlock: {
+            "WeaponGEPGun": 300, "WeaponPlasmaRifle": 250, "WeaponFlamethrower": 200, "WeaponLAW": 200,
+            "WeaponNanoSword": 250, "WeaponRifle": 100, "AdaptiveArmor": 150,
+            "AugCloak": 200, "AugDrone": 250, "AugRadarTrans": 150, "AugDefense": 150, "AugHeartLung": 100,
+        },
+        mod_mastery: {
+            "WeaponModAccuracy": 1, "WeaponModClip": 1, "WeaponModRange": 2, "WeaponModRecoil": 2,
+            "WeaponModReload": 2, "WeaponModLaser": 3, "WeaponModScope": 3, "WeaponModSilencer": 4,
+        },
+        ammo: {
+            "WeaponPistol": 60, "WeaponStealthPistol": 60, "WeaponMiniCrossbow": 12, "WeaponSawedOffShotgun": 24,
+            "WeaponAssaultShotgun": 36, "WeaponAssaultGun": 120, "WeaponRifle": 24, "WeaponFlamethrower": 100,
+            "WeaponLAW": 1, "WeaponPlasmaRifle": 48, "WeaponGEPGun": 4, "WeaponPepperGun": 100, "WeaponProd": 24,
+            "WeaponShuriken": 10,
+        },
+        // Six class templates to start from (each within the budget). The signature perk comes with the class
+        // whatever the loadout holds.
+        classes: [
+            (id: "infiltrator", name: "Infiltrator", perk: "Quiet Feet",
+             text: "Cloak-and-dagger: silenced pistol, lockpicks, sound-masking augmentations. Signature: footsteps make half the noise.",
+             build: (class: "infiltrator", weapons: ["WeaponStealthPistol", "WeaponCombatKnife"],
+                     items: [("Lockpick", 2), ("MedKit", 1)], skills: [("SkillWeaponPistol", 1), ("SkillLockpicking", 1)],
+                     augs: ["AugStealth", "AugVision"], mods: [("WeaponStealthPistol", "WeaponModAccuracy")])),
+            (id: "netrunner", name: "Netrunner", perk: "Wireless Hacking",
+             text: "Hacker: multitools, the Computer skill, EMP. Signature: hack cameras, turrets and terminals from 12 metres away with a multitool.",
+             build: (class: "netrunner", weapons: ["WeaponPistol", "WeaponProd"],
+                     items: [("Multitool", 2), ("WeaponEMPGrenade", 2), ("MedKit", 1)], skills: [("SkillComputer", 2), ("SkillTech", 1)],
+                     augs: ["AugEMP", "AugRadarTrans"], mods: [])),
+            (id: "enforcer", name: "Enforcer", perk: "Melee Bash",
+             text: "Heavy: assault gun and shotgun, ballistic protection. Signature: bash with any firearm (F).",
+             build: (class: "enforcer", weapons: ["WeaponAssaultGun", "WeaponSawedOffShotgun"],
+                     items: [("MedKit", 1)], skills: [("SkillWeaponRifle", 1)],
+                     augs: ["AugBallistic", "AugMuscle"], mods: [("WeaponAssaultGun", "WeaponModClip")])),
+            (id: "medic", name: "Medic", perk: "Field Surgeon",
+             text: "Support: medkits and healing. Signature: two extra medkits, and a medkit on a teammate heals twice as much.",
+             build: (class: "medic", weapons: ["WeaponPistol", "WeaponMiniCrossbow"],
+                     items: [("MedKit", 3), ("BioelectricCell", 1)], skills: [("SkillMedicine", 2), ("SkillWeaponPistol", 1)],
+                     augs: ["AugHealing", "AugShield"], mods: [])),
+            (id: "saboteur", name: "Saboteur", perk: "Demolitions",
+             text: "Traps and explosives: LAMs, gas and EMP grenades. Signature: one more LAM than the loadout holds.",
+             build: (class: "saboteur", weapons: ["WeaponPistol", "WeaponSawedOffShotgun"],
+                     items: [("WeaponLAM", 2), ("WeaponGasGrenade", 2), ("MedKit", 1)], skills: [("SkillDemolition", 2)],
+                     augs: ["AugEMP", "AugSpeed"], mods: [])),
+            (id: "marksman", name: "Marksman", perk: "Spotter",
+             text: "Long range: the rifle line, steady aim. Signature: a rival held in your scope for a second is marked for your team.",
+             build: (class: "marksman", weapons: ["WeaponMiniCrossbow", "WeaponPistol"],
+                     items: [("MedKit", 1)], skills: [("SkillWeaponRifle", 2), ("SkillWeaponPistol", 1)],
+                     augs: ["AugTarget", "AugVision"], mods: [("WeaponMiniCrossbow", "WeaponModScope")])),
+        ],
+    ),
     // The DXMP maps: kept pickups by actor name (everything else of a class in `tiers` is taken out of the map).
     // Per-mode parts (deathmatch.rs MapEntry; each optional, `modes` empty = every mode; keys dm tdm cdm cbasic
     // cadv ctdm, or classic / modern):

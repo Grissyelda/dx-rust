@@ -268,6 +268,7 @@ pub fn crosshair_system(
     let mut color = Color::WHITE;
     let mut target_dist = None;
     ON_ENEMY.store(false, std::sync::atomic::Ordering::Relaxed);
+    AIMED.store(0, std::sync::atomic::Ordering::Relaxed);
     // TraceLOS also takes breakable DeusExMovers (the training range's glass targets): the nearest such mover
     // in front of whatever else the line hits.
     let mover_target = crate::movers::mover_on_line(&level.0, &mv.rt, eye, eye + dir * 8000.0).filter(|&(i, f)| {
@@ -299,6 +300,7 @@ pub fn crosshair_system(
                 .map(|n| n.hates("Player"))
                 .unwrap_or(false);
             ON_ENEMY.store(hostile, std::sync::atomic::Ordering::Relaxed);
+            AIMED.store(b + 1, std::sync::atomic::Ordering::Relaxed);
             color = if hostile {
                 Color::srgb(1.0, 0.0, 0.0)
             } else {
@@ -555,6 +557,13 @@ pub fn scope_overlay_system(
 
 /// The crosshair is on a hostile pawn (the red accuracy brackets): gamepad aim slowdown reads it.
 static ON_ENEMY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The pawn under the crosshair (its blocker + 1; 0 = none).
+static AIMED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The pawn (blocker) under the crosshair, if any.
+pub fn aimed_pawn() -> Option<usize> {
+    AIMED.load(std::sync::atomic::Ordering::Relaxed).checked_sub(1)
+}
 
 pub fn on_enemy() -> bool {
     ON_ENEMY.load(std::sync::atomic::Ordering::Relaxed)

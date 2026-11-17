@@ -200,6 +200,8 @@ pub fn footstep_system(
     if b.physics == imsim_core::movement::Physics::Climbing {
         return;
     }
+    // Modern deathmatch: the Infiltrator's Quiet Feet halve the noise of his steps.
+    let mult = if crate::dmchar::class_perk() == "infiltrator" { mult * 0.5 } else { mult };
     noises.0.push(Noise {
         pos: b.location,
         volume: volume * mult,

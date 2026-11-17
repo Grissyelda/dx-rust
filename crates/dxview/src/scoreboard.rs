@@ -94,6 +94,13 @@ pub fn scoreboard_system(
     let k = s as f32 / win.scale_factor();
     let mode = deathmatch::mode();
     let extra = pings.iter().map(|p| (p.1 / 20.0) as u64).sum::<u64>() ^ (s as u64) << 32 ^ (win.width() as u64) << 40 ^ mode as u64;
+    // Modern: this match's credits, under the results.
+    let ledger: Vec<(&'static str, u32, u32)> = if board.ended.is_some() && mode != deathmatch::Mode::Coop && !deathmatch::classic() {
+        crate::dmchar::ledger()
+    } else {
+        Vec::new()
+    };
+    let extra = extra ^ ledger.iter().map(|l| l.2 as u64 * 31 + l.1 as u64).sum::<u64>() << 8;
     let h = hash(&board, extra);
     if deathmatch::classic() {
         // The original's own layout: full screen, no panel (DeusExMPGame.ShowDMScoreboard / the win screens).
@@ -118,7 +125,8 @@ pub fn scoreboard_system(
     };
     let ended = board.ended.clone();
     let head_h = if ended.is_some() { 78 } else { 40 };
-    let hgt = head_h + 30 + rows_n.max(1) as i32 * 14 + if team { 22 } else { 6 } + if ended.is_some() { 20 } else { 0 };
+    let ledger_h = if ledger.is_empty() { 0 } else { 30 };
+    let hgt = head_h + 30 + rows_n.max(1) as i32 * 14 + if team { 22 } else { 6 } + if ended.is_some() { 20 } else { 0 } + ledger_h;
     let pos = Vec2::new((win.width() - w as f32 * k) / 2.0, (win.height() * 0.18).max(8.0));
     if h == *key && !node.is_empty() {
         return;
@@ -208,6 +216,17 @@ pub fn scoreboard_system(
             _ => deathmatch::map_title(&e.next_map),
         };
         c.text(&small, 0, y + 4, w, small.height, HAlign::Center, VAlign::Top, header, &format!("{} seconds to {after}.", board.next_in.max(0.0).ceil() as i32));
+        if !ledger.is_empty() {
+            // The credits this match earned, by what earned them.
+            let total: u32 = ledger.iter().map(|l| l.2).sum();
+            let parts: Vec<String> = ledger.iter().map(|(what, n, cr)| format!("{what} {n} (+{cr})")).collect();
+            let yy = y + 4 + small.height + 4;
+            c.fill(8, yy - 2, w - 16, 1, Style::Normal, border);
+            c.text(&small, 4, yy, w - 8, small.height, HAlign::Center, VAlign::Top, GOLD, &format!("Credits earned: {total}"));
+            c.set_clip(Some((4, yy + small.height, w - 8, small.height + 2)));
+            c.text(&small, 4, yy + small.height, w - 8, small.height, HAlign::Center, VAlign::Top, text, &parts.join("   "));
+            c.set_clip(None);
+        }
     }
     let _ = y;
     crate::prompts::present::<ScoreNode, _>(&mut commands, &mut images, &mut layers, &mut node, img, Some(&c), (w, hgt), s, pos, k);

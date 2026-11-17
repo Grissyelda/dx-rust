@@ -496,6 +496,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 fn reset_modules() {
     crate::netplay::reset_level();
     crate::deathmatch::reset_level();
+    crate::living::reset_level();
     crate::mphud::reset_level();
     crate::info::reset_level();
     crate::zones::reset_level();

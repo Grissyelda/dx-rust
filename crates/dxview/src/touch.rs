@@ -169,9 +169,6 @@ static AUG_ICONS: Mutex<Vec<(Rect, KeyCode)>> = Mutex::new(Vec::new());
 
 /// classic_hud: a window placed this frame (name as in classic_hud's Win, logical rect, logical px per unit).
 pub fn note_hud(name: &'static str, rect: Option<Rect>, unit: f32) {
-    if !enabled() {
-        return;
-    }
     if let Ok(mut h) = HUD.lock() {
         h.retain(|w| w.0 != name);
         if let Some(r) = rect {
@@ -191,6 +188,11 @@ pub fn note_aug_icons(icons: Vec<(Rect, KeyCode)>) {
 
 fn hud_rect(name: &str) -> Option<(Rect, f32)> {
     HUD.lock().ok()?.iter().find(|w| w.0 == name).map(|w| (w.1, w.2))
+}
+
+/// Where a HUD window was last placed (logical rect, logical px per HUD unit), for things drawn beside it.
+pub fn hud_window(name: &str) -> Option<(Rect, f32)> {
+    hud_rect(name)
 }
 
 /// gamepad::move_axes: the stick's push (x right, y forward), 0..1.

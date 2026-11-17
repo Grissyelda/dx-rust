@@ -257,6 +257,28 @@ pub fn set_extra_actors(f: Option<ExtraActors>) {
     }
 }
 
+/// Actors the game itself adds to a map as it is read (ours: a living level's guards in a Modern multiplayer
+/// match): (map name, the map's placed actors) -> [(class, name, own properties incl. Location)]. Merged with the
+/// class's defaults like placed actors; unlike a mod's extras they don't depend on mods being on. They come after
+/// every placed actor, in the order given, so every machine that reads the map with the same rules numbers them
+/// alike.
+pub type LevelExtras = Box<dyn Fn(&str, &[ActorInfo], &[PatrolInfo]) -> Vec<(String, String, Vec<Property>)> + Send + Sync>;
+
+/// A PatrolPoint of the map (navigation points aren't in the actor list): its Tag, place and yaw.
+#[derive(Clone, Debug)]
+pub struct PatrolInfo {
+    pub tag: String,
+    pub location: [f32; 3],
+    pub yaw: i32,
+}
+static LEVEL_EXTRAS: std::sync::RwLock<Option<LevelExtras>> = std::sync::RwLock::new(None);
+
+pub fn set_level_extras(f: Option<LevelExtras>) {
+    if let Ok(mut h) = LEVEL_EXTRAS.write() {
+        *h = f;
+    }
+}
+
 pub fn build(
     pkg: &Package,
     classes: &mut ClassDb,
@@ -294,6 +316,29 @@ pub fn build(
     if let (false, Ok(h)) = (unreal_pkg::mods::suspended(), EXTRA_ACTORS.read()) {
         if let Some(f) = h.as_ref() {
             for (class, name, props) in f(pkg.self_name.as_deref().unwrap_or("")) {
+                actors.push(ActorInfo { name, class, export: -1, props });
+            }
+        }
+    }
+    if let Ok(h) = LEVEL_EXTRAS.read() {
+        if let Some(f) = h.as_ref() {
+            let mut patrols = Vec::new();
+            for e in pkg.exports.iter().filter(|e| e.size > 0 && pkg.class_name(e.class_index) == "PatrolPoint") {
+                let Some(p) = classes.actor_properties(pkg, e) else { continue };
+                let Some(Value::Vector(l)) = find(&p, "Location") else { continue };
+                let tag = match find(&p, "Tag") {
+                    Some(Value::Name(s)) if s != "None" => s.clone(),
+                    _ => continue,
+                };
+                let yaw = match find(&p, "Rotation") {
+                    Some(Value::Rotator(r)) => r[1],
+                    _ => 0,
+                };
+                patrols.push(PatrolInfo { tag, location: *l, yaw });
+            }
+            for (class, name, own) in f(pkg.self_name.as_deref().unwrap_or(""), &actors, &patrols) {
+                let mut props = classes.added_actor(&class, own);
+                class_begin_play(classes, &class, &mut props);
                 actors.push(ActorInfo { name, class, export: -1, props });
             }
         }

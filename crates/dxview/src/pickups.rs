@@ -243,7 +243,9 @@ fn frob_mate(cx: &mut FrobCx, id: u8) {
     } else if !has {
         format!("You need a medkit to heal {name}.")
     } else {
-        let n = (30.0 * crate::abilities::skill("SkillMedicine")).floor();
+        // Modern deathmatch: the Medic's Field Surgeon heals twice as much.
+        let surgeon = if crate::dmchar::class_perk() == "medic" { 2.0 } else { 1.0 };
+        let n = (30.0 * crate::abilities::skill("SkillMedicine") * surgeon).floor();
         cx.inv.0.use_one("MedKit");
         crate::netplay::heal_player(id, n);
         crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);

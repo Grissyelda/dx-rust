@@ -44,7 +44,9 @@ pub fn wireless_target(
     eye: glam::DVec3,
     dir: glam::DVec3,
 ) -> Option<(usize, f64)> {
-    let range = crate::perks::value_if("PerkWirelessStrength")? as f64;
+    // (Modern deathmatch: the Netrunner's Wireless Hacking reaches 12 metres.)
+    let range = crate::perks::value_if("PerkWirelessStrength")
+        .or_else(|| (crate::dmchar::class_perk() == "netrunner").then_some(630.0))? as f64;
     if !crate::perks::holding("Multitool") {
         return None;
     }

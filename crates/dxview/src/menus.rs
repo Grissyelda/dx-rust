@@ -837,6 +837,8 @@ enum Body {
     Wait(MpWait),
     /// Ours: the deathmatch character creator (dmchar.rs).
     DmChar(DmEdit),
+    /// Ours: Modern deathmatch loadouts (dmchar.rs, MULTIPLAYER Phase 2).
+    Loadout(LoadEdit),
 }
 
 struct AchieveView {
@@ -1619,7 +1621,7 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             Body::Menu { buttons, x, w, notes: Vec::new() }
         }
         "MenuScreenMultiplayer" | "MenuScreenHostRoom" | "MenuScreenJoinRoom" | "MenuScreenLobbyBrowser" | "MenuScreenChooseCharacter"
-        | "MenuScreenOnlineServices" | "MenuScreenWaitingRoom" | "MenuScreenDmCharacter" => {
+        | "MenuScreenOnlineServices" | "MenuScreenWaitingRoom" | "MenuScreenDmCharacter" | "MenuScreenLoadout" => {
             let (mf, body) = mp_window(assets, class);
             f = mf;
             body
@@ -2021,6 +2023,26 @@ fn match_choices() -> Vec<Choice> {
         e("DmTimeLimit", "|&Time Limit", "Minutes until the match ends: the most kills wins.", n(&crate::deathmatch::TIME_LIMITS, " minutes")),
         e("DmAfter", "After the |&Match", "When a match ends and its results have shown: the next of the five maps, the same map again, or back to the room.", ["Next Map", "Same Map", "Back to Room"].iter().map(|s| s.to_string()).collect()),
         e("DmAutoBalance", "Team |&Auto-Balance", "Team Deathmatch: when one team is two players bigger, its next player to die joins the other.", ["Off", "On"].iter().map(|s| s.to_string()).collect()),
+        {
+            // The living level (living.rs): Full unless the host picked otherwise.
+            let mut c = e(
+                "DmLevel",
+                "|&Level Activity",
+                "The level's own security. Off: nothing. Light: cameras watch, and alarms show on everyone's screen who was seen armed in sight of them, in a security room or shooting near them. Full: also turrets and patrolling guards, who hunt whoever the alarm is about. Hack a security computer, camera or turret to make it yours for a while.",
+                [crate::deathmatch::Activity::Off, crate::deathmatch::Activity::Light, crate::deathmatch::Activity::Full].iter().map(|a| a.name().to_string()).collect(),
+            );
+            if !crate::settings::has("DmLevel") {
+                c.value = 2.0;
+                c.saved = 2.0;
+            }
+            c
+        },
+        e(
+            "DmLoadouts",
+            "|&Loadouts",
+            "Equal: every player's loadout is paid for out of the same points budget; unlocks only add choices. Full: no budget, for private rooms - whatever your character has unlocked.",
+            ["Equal", "Full"].iter().map(|s| s.to_string()).collect(),
+        ),
     ]
 }
 
@@ -2323,6 +2345,12 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             hash_debug(h, &d.c);
             (d.sel, d.scroll, d.others.len(), &d.weapons).hash(h);
         }
+        Body::Loadout(l) => {
+            edit_key(&l.name, h);
+            hash_debug(h, &l.c);
+            hash_debug(h, &l.b);
+            (l.sel, l.scroll, l.idx).hash(h);
+        }
         Body::Join(MpJoin { code }) => code.hash(h),
         Body::Addr(MpAddr { edit }) => edit_key(edit, h),
         Body::Chars(MpChars { list, rows, room, sel, scroll }) => (list, rows, room, sel, scroll).hash(h),
@@ -2553,6 +2581,7 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
         Body::Addr(a) => draw_mp_addr(u, a, cx, cy),
         Body::Wait(w) => draw_mp_wait(u, w, cx, cy),
         Body::DmChar(d) => draw_dm_char(u, d, cx, cy),
+        Body::Loadout(l) => draw_loadout(u, l, cx, cy),
         Body::Choices { choices } => draw_choices(u, choices, &win.f, &mut win.drop, cx, cy),
         Body::NewGame(ng) => draw_new_game(u, ng, focus, fonts, cx, cy),
         Body::Keys(k) if k.pad => draw_pad_keys(u, k, cx, cy, waiting_keys),
@@ -3901,6 +3930,14 @@ fn left_press(cx: &mut InCx) -> Option<&'static str> {
                             }
                             d.sel = Some(r);
                         }
+                        Body::Loadout(lo) if l == 0 => {
+                            if lo.sel == Some(r) {
+                                if let Some(m) = lo.step(1) {
+                                    acts.push(Act::Msg("Loadout".into(), m, false, MsgPurpose::Info));
+                                }
+                            }
+                            lo.sel = Some(r);
+                        }
                         Body::Chars(c) if l == 0 => {
                             c.sel = Some(r);
                             if double {
@@ -4076,6 +4113,30 @@ fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
         if !matches!(k, KeyCode::Escape | KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter) || en.sel.is_some() && matches!(k, KeyCode::Enter | KeyCode::NumpadEnter) {
             return true;
         }
+    }
+    // The loadout screen: the same, typing the loadout's name.
+    if let Body::Loadout(d) = &mut win.body {
+        let msg = match k {
+            KeyCode::ArrowUp => {
+                d.move_sel(-1);
+                None
+            }
+            KeyCode::ArrowDown => {
+                d.move_sel(1);
+                None
+            }
+            KeyCode::ArrowLeft => d.step(-1),
+            KeyCode::ArrowRight | KeyCode::Enter | KeyCode::NumpadEnter => d.step(1),
+            KeyCode::Escape | KeyCode::Tab => return false,
+            _ => {
+                d.name.key(*k, text.as_deref(), shift, ctrl);
+                None
+            }
+        };
+        if let Some(m) = msg {
+            acts.push(Act::Msg("Loadout".into(), m, false, MsgPurpose::Info));
+        }
+        return true;
     }
     // The deathmatch character creator: arrows work the list, everything else types the name.
     if let Body::DmChar(d) = &mut win.body {
@@ -4490,6 +4551,7 @@ fn help_text(top_w: &Win, assets: &mut RuntimeAssets) -> String {
         },
         (Body::Host(h), focus) => mp_host_help(h, focus, &top_w.f),
         (Body::DmChar(d), _) => d.help(),
+        (Body::Loadout(l), _) => l.help(),
         (Body::Addr(_), _) => "The online services' host name or IP address, with :port when it isn't 27962 (ask whoever runs \
              the server). Empty: this PC. Save & Connect or [Enter].".into(),
         (Body::Join(_), _) => "Type the host's room code: four characters from online services, or the long direct code (Ctrl+V pastes it). Then Join Room or [Enter].".into(),
@@ -5104,7 +5166,11 @@ const ACT_MATCH: u8 = 51;
 const ACT_DMCHAR_SAVE: u8 = 52;
 const ACT_DMCHAR_DEL: u8 = 53;
 const ACT_DMCHAR: u8 = 54;
-const ACT_LAST: u8 = ACT_DMCHAR;
+/// The character screen: Loadout...; the loadout screen: Save Loadout, Unlock.
+const ACT_LOADOUT: u8 = 55;
+const ACT_LOADOUT_SAVE: u8 = 56;
+const ACT_LOADOUT_UNLOCK: u8 = 57;
+const ACT_LAST: u8 = ACT_LOADOUT_UNLOCK;
 /// Host Room widgets: Copy Code, and a Kick per player row (40 + row).
 const HDR_COPY: u8 = 29;
 const HDR_KICK: u8 = 40;
@@ -5318,6 +5384,7 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
                 (2, 2, "Cancel".into(), String::new()),
                 (2, ACT_DMCHAR_SAVE, "Save Character".into(), String::new()),
                 (0, ACT_DMCHAR_DEL, "Delete".into(), String::new()),
+                (0, ACT_LOADOUT, "Loadouts...".into(), String::new()),
             ];
             let c = crate::dmchar::last().unwrap_or_else(|| {
                 let mut c = crate::dmchar::fresh();
@@ -5327,6 +5394,18 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
                 c
             });
             (f, Body::DmChar(DmEdit::new(c)))
+        }
+        "MenuScreenLoadout" => {
+            let mut f = frame(assets, "MenuScreenCustomizeKeys");
+            f.class = class.to_string();
+            f.title = "Modern Loadouts".into();
+            f.actions = vec![
+                (2, 2, "Cancel".into(), String::new()),
+                (2, ACT_LOADOUT_SAVE, "Save & Use".into(), String::new()),
+                (0, ACT_LOADOUT_UNLOCK, "Unlock".into(), String::new()),
+            ];
+            let c = crate::dmchar::last().unwrap_or_else(crate::dmchar::fresh);
+            (f, Body::Loadout(LoadEdit::new(c)))
         }
         "MenuScreenChooseCharacter" => {
             let mut f = frame(assets, "MenuScreenLoadGame");
@@ -5919,6 +5998,28 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
             }
             Err(m) => acts.push(Act::Msg("Deathmatch Character".into(), m, false, MsgPurpose::Info)),
         },
+        (ACT_LOADOUT, Body::DmChar(d)) => {
+            // The loadouts belong to the character: keep what's been edited first.
+            if d.c.id.is_empty() {
+                acts.push(Act::Msg("Loadouts".into(), "Save your character first: loadouts belong to it.".into(), false, MsgPurpose::Info));
+            } else {
+                let _ = dm_char_save(d);
+                acts.push(Act::Push("MenuScreenLoadout".into()));
+            }
+        }
+        (ACT_LOADOUT_SAVE, Body::Loadout(l)) => match l.save() {
+            Ok(m) => {
+                crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
+                if let Some(m) = m {
+                    acts.push(Act::Msg("Loadout".into(), m, false, MsgPurpose::Info));
+                }
+            }
+            Err(m) => acts.push(Act::Msg("Loadout".into(), m, false, MsgPurpose::Info)),
+        },
+        (ACT_LOADOUT_UNLOCK, Body::Loadout(l)) => {
+            let m = l.unlock();
+            acts.push(Act::Msg("Unlock".into(), m, false, MsgPurpose::Info));
+        }
         (ACT_DMCHAR_DEL, Body::DmChar(d)) => {
             if !d.c.id.is_empty() {
                 crate::dmchar::delete(&d.c.id);
@@ -6569,6 +6670,372 @@ impl DmEdit {
     }
 }
 
+/// The Modern loadout editor: one of the character's loadouts on the points budget (imsim_core::loadout).
+struct LoadEdit {
+    c: crate::dmchar::DmChar,
+    /// Which saved loadout (== c.loadouts.len(): a new one).
+    idx: usize,
+    b: imsim_core::loadout::Build,
+    name: Edit,
+    sel: Option<usize>,
+    scroll: i32,
+}
+
+/// What a loadout row is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LRow {
+    Which,
+    Class,
+    Points,
+    Credits,
+    Weapon(usize),
+    Item(usize),
+    Skill(usize),
+    Aug(usize),
+    Mod(usize, usize),
+}
+
+const LO_SKILLS: [&str; 11] = [
+    "SkillWeaponPistol", "SkillWeaponRifle", "SkillWeaponHeavy", "SkillWeaponLowTech", "SkillDemolition", "SkillComputer",
+    "SkillTech", "SkillLockpicking", "SkillMedicine", "SkillEnviro", "SkillSwimming",
+];
+const LO_MODS: [&str; 8] = [
+    "WeaponModAccuracy", "WeaponModClip", "WeaponModRange", "WeaponModRecoil", "WeaponModReload", "WeaponModScope",
+    "WeaponModSilencer", "WeaponModLaser",
+];
+
+fn lo_prices() -> &'static imsim_core::loadout::Prices {
+    &crate::deathmatch::data().loadouts.prices
+}
+
+/// A price table's keys, cheapest first.
+fn lo_sorted(m: &std::collections::HashMap<String, u32>) -> Vec<String> {
+    let mut v: Vec<(&String, &u32)> = m.iter().collect();
+    v.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(b.0)));
+    v.into_iter().map(|x| x.0.clone()).collect()
+}
+
+impl LoadEdit {
+    fn new(c: crate::dmchar::DmChar) -> LoadEdit {
+        let idx = c.loadout.min(c.loadouts.len());
+        let (b, name) = match c.loadouts.get(idx) {
+            Some(l) => (l.build.clone(), l.name.clone()),
+            None => {
+                let t = &crate::deathmatch::data().loadouts.classes;
+                (t.first().map(|t| t.build.clone()).unwrap_or_default(), t.first().map_or_else(|| "Loadout".to_string(), |t| t.name.clone()))
+            }
+        };
+        let mut e = Edit::new(20);
+        e.text = name.chars().collect();
+        e.cur = e.text.len();
+        e.anchor = 0;
+        LoadEdit { c, idx, b, name: e, sel: Some(1), scroll: 0 }
+    }
+    fn layout(&self) -> Vec<LRow> {
+        let p = lo_prices();
+        let mut v = vec![LRow::Which, LRow::Class, LRow::Points, LRow::Credits];
+        v.extend((0..p.max_weapons).map(LRow::Weapon));
+        v.extend((0..lo_sorted(&p.items).len()).map(LRow::Item));
+        v.extend((0..LO_SKILLS.len()).map(LRow::Skill));
+        v.extend((0..p.max_augs).map(LRow::Aug));
+        for w in 0..self.b.weapons.len() {
+            v.extend((0..p.max_mods_per_weapon).map(|k| LRow::Mod(w, k)));
+        }
+        v
+    }
+    fn lock_note(&self, id: &str) -> String {
+        if crate::dmchar::unlocked(&self.c, &self.b.class, id) {
+            String::new()
+        } else {
+            format!(" (locked: {} credits)", crate::dmchar::unlock_cost(id).unwrap_or(0))
+        }
+    }
+    fn mods_of(&self, w: usize) -> Vec<String> {
+        let Some(wc) = self.b.weapons.get(w) else { return Vec::new() };
+        self.b.mods.iter().filter(|m| &m.0 == wc).map(|m| m.1.clone()).collect()
+    }
+    fn rows(&self) -> Vec<Vec<String>> {
+        let p = lo_prices();
+        let items = lo_sorted(&p.items);
+        let cap = crate::deathmatch::rules().is_some_and(|r| r.full_loadouts);
+        self.layout()
+            .into_iter()
+            .map(|r| match r {
+                LRow::Which => vec!["Loadout".into(), if self.idx < self.c.loadouts.len() { format!("{} of {}", self.idx + 1, self.c.loadouts.len()) } else { "New loadout".into() }],
+                LRow::Class => vec!["Class".into(), crate::deathmatch::class_template(&self.b.class).map_or_else(|| "Custom".into(), |t| format!("{} ({})", t.name, t.perk))],
+                LRow::Points => {
+                    let used = p.cost(&self.b);
+                    let probs = crate::dmchar::problems(&self.c, &self.b);
+                    let state = if probs.is_empty() { "OK" } else { "won't be used: see help" };
+                    vec!["Points".into(), if cap { format!("{used} (no cap in this room) - {state}") } else { format!("{used} of {} - {state}", p.budget) }]
+                }
+                LRow::Credits => vec!["Credits".into(), format!("{} to spend ({} earned)", self.c.credits, self.c.credits_total)],
+                LRow::Weapon(i) => {
+                    let w = self.b.weapons.get(i);
+                    vec![format!("Weapon {}", i + 1), w.map_or_else(|| "None".into(), |w| format!("{} [{}]{}", crate::dmchar::label(w), p.weapons.get(w).copied().unwrap_or(0), self.lock_note(w)))]
+                }
+                LRow::Item(i) => {
+                    let it = &items[i];
+                    let n = self.b.items.iter().find(|x| &x.0 == it).map_or(0, |x| x.1);
+                    vec![crate::dmchar::label(it), format!("{n} [{} each]{}", p.items.get(it).copied().unwrap_or(0), self.lock_note(it))]
+                }
+                LRow::Skill(i) => {
+                    let sk = LO_SKILLS[i];
+                    let l = self.b.skills.iter().find(|x| x.0 == sk).map_or(0, |x| x.1);
+                    let name = ["Trained", "Advanced", "Master"][l.min(2) as usize];
+                    let cost: u32 = p.skill_steps.iter().take(l as usize).sum();
+                    vec![crate::dmchar::label(sk), if l == 0 { name.to_string() } else { format!("{name} [{cost}]") }]
+                }
+                LRow::Aug(i) => {
+                    let a = self.b.augs.get(i);
+                    vec![format!("Augmentation {}", i + 1), a.map_or_else(|| "None".into(), |a| format!("{} [{}]{}", crate::dmchar::label(a), p.augs.get(a).copied().unwrap_or(0), self.lock_note(a)))]
+                }
+                LRow::Mod(w, k) => {
+                    let wc = self.b.weapons.get(w).cloned().unwrap_or_default();
+                    let m = self.mods_of(w).get(k).cloned();
+                    vec![
+                        format!("{} mod {}", crate::dmchar::label(&wc), k + 1),
+                        m.map_or_else(|| "None".into(), |m| format!("{} [{}]{}", crate::dmchar::label(&m), p.mods.get(&m).copied().unwrap_or(0), self.lock_note(&format!("mod:{wc}:{m}")))),
+                    ]
+                }
+            })
+            .collect()
+    }
+    /// Change the selected row (Enter / click / Right: next; Left: back).
+    fn step(&mut self, dir: i32) -> Option<String> {
+        let row = *self.layout().get(self.sel?)?;
+        let p = lo_prices();
+        let cyc = |list: &[String], cur: Option<&String>, dir: i32| -> Option<String> {
+            // None, then the list.
+            let n = list.len() as i32 + 1;
+            let i = cur.and_then(|c| list.iter().position(|x| x == c)).map_or(0, |i| i as i32 + 1);
+            let j = (i + dir).rem_euclid(n);
+            (j > 0).then(|| list[(j - 1) as usize].clone())
+        };
+        match row {
+            LRow::Which => {
+                let n = self.c.loadouts.len() + 1;
+                let next = (self.idx as i32 + dir).rem_euclid(n as i32) as usize;
+                let mut c = self.c.clone();
+                c.loadout = next;
+                let sel = self.sel;
+                *self = LoadEdit::new(c);
+                self.idx = next;
+                self.sel = sel;
+            }
+            LRow::Class => {
+                let t = &crate::deathmatch::data().loadouts.classes;
+                if t.is_empty() {
+                    return None;
+                }
+                let i = t.iter().position(|x| x.id == self.b.class).map_or(-1, |i| i as i32);
+                let j = (i + dir).rem_euclid(t.len() as i32) as usize;
+                self.b = t[j].build.clone();
+                let name: Vec<char> = t[j].name.chars().collect();
+                if self.name.get().trim().is_empty() || t.iter().any(|x| x.name == self.name.get().trim()) {
+                    self.name.text = name;
+                    self.name.cur = self.name.text.len();
+                }
+            }
+            LRow::Points | LRow::Credits => {}
+            LRow::Weapon(i) => {
+                let all: Vec<String> = lo_sorted(&p.weapons).into_iter().filter(|w| !self.b.weapons.iter().enumerate().any(|(k, x)| k != i && x == w)).collect();
+                let next = cyc(&all, self.b.weapons.get(i), dir);
+                let old = self.b.weapons.get(i).cloned();
+                match next {
+                    Some(w) if i < self.b.weapons.len() => self.b.weapons[i] = w,
+                    Some(w) => self.b.weapons.push(w),
+                    None if i < self.b.weapons.len() => {
+                        self.b.weapons.remove(i);
+                    }
+                    None => {}
+                }
+                // Mods on a weapon no longer carried go with it.
+                if let Some(o) = old {
+                    if !self.b.weapons.contains(&o) {
+                        self.b.mods.retain(|m| m.0 != o);
+                    }
+                }
+            }
+            LRow::Item(i) => {
+                let it = lo_sorted(&p.items)[i].clone();
+                let max = p.item_max.get(&it).copied().unwrap_or(1) as i32;
+                let n = self.b.items.iter().find(|x| x.0 == it).map_or(0, |x| x.1) as i32;
+                let m = (n + dir).rem_euclid(max + 1) as u32;
+                self.b.items.retain(|x| x.0 != it);
+                if m > 0 {
+                    self.b.items.push((it, m));
+                }
+            }
+            LRow::Skill(i) => {
+                let sk = LO_SKILLS[i].to_string();
+                let max = p.skill_steps.len() as i32;
+                let l = self.b.skills.iter().find(|x| x.0 == sk).map_or(0, |x| x.1) as i32;
+                let m = (l + dir).rem_euclid(max + 1) as u8;
+                self.b.skills.retain(|x| x.0 != sk);
+                if m > 0 {
+                    self.b.skills.push((sk, m));
+                }
+            }
+            LRow::Aug(i) => {
+                let all: Vec<String> = lo_sorted(&p.augs).into_iter().filter(|a| !self.b.augs.iter().enumerate().any(|(k, x)| k != i && x == a)).collect();
+                match cyc(&all, self.b.augs.get(i), dir) {
+                    Some(a) if i < self.b.augs.len() => self.b.augs[i] = a,
+                    Some(a) => self.b.augs.push(a),
+                    None if i < self.b.augs.len() => {
+                        self.b.augs.remove(i);
+                    }
+                    None => {}
+                }
+            }
+            LRow::Mod(w, k) => {
+                let Some(wc) = self.b.weapons.get(w).cloned() else { return None };
+                let fits: Vec<String> = LO_MODS.iter().filter(|m| crate::dmchar::can_have(&wc, m)).map(|m| m.to_string()).collect();
+                if fits.is_empty() {
+                    return Some(format!("The {} takes no mods.", crate::dmchar::label(&wc)));
+                }
+                let mut mine = self.mods_of(w);
+                let next = cyc(&fits, mine.get(k), dir);
+                match next {
+                    Some(m) if k < mine.len() => mine[k] = m,
+                    Some(m) => mine.push(m),
+                    None if k < mine.len() => {
+                        mine.remove(k);
+                    }
+                    None => {}
+                }
+                self.b.mods.retain(|x| x.0 != wc);
+                self.b.mods.extend(mine.into_iter().map(|m| (wc.clone(), m)));
+            }
+        }
+        None
+    }
+    fn move_sel(&mut self, d: i32) {
+        let n = self.layout().len() as i32;
+        let next = (self.sel.map_or(-1, |s| s as i32) + d).clamp(0, n - 1);
+        self.sel = Some(next as usize);
+        let (y, h) = (next * ROW_H, 268 - 22);
+        if y < self.scroll {
+            self.scroll = y;
+        }
+        if y + ROW_H > self.scroll + h {
+            self.scroll = y + ROW_H - h;
+        }
+    }
+    /// The selected row's locked entry (for Unlock).
+    fn locked_here(&self) -> Option<String> {
+        let row = *self.layout().get(self.sel?)?;
+        let p = lo_prices();
+        let id = match row {
+            LRow::Weapon(i) => self.b.weapons.get(i).cloned(),
+            LRow::Item(i) => lo_sorted(&p.items).get(i).cloned(),
+            LRow::Aug(i) => self.b.augs.get(i).cloned(),
+            _ => None,
+        }?;
+        (!crate::dmchar::unlocked(&self.c, &self.b.class, &id)).then_some(id)
+    }
+    fn unlock(&mut self) -> String {
+        let Some(id) = self.locked_here() else { return "Select a locked weapon, item or augmentation to unlock it.".into() };
+        let cost = crate::dmchar::unlock_cost(&id).unwrap_or(0);
+        if self.c.credits < cost {
+            return format!("The {} costs {cost} credits to unlock; you have {}. Credits come from kills, takedowns, hacks, assists, heals and matches.", crate::dmchar::label(&id), self.c.credits);
+        }
+        match crate::dmchar::buy(&mut self.c, &id, cost) {
+            Ok(()) => {
+                crate::dmchar::store(self.c.clone());
+                format!("{} unlocked for {cost} credits.", crate::dmchar::label(&id))
+            }
+            Err(e) => e.to_string(),
+        }
+    }
+    /// Save & Use: kept in the character's loadouts and used from the next spawn. Ok(Some) = saved with a warning.
+    fn save(&mut self) -> Result<Option<String>, String> {
+        let name = self.name.get().trim().to_string();
+        if name.is_empty() {
+            return Err("Name the loadout.".into());
+        }
+        let l = crate::dmchar::Loadout { name, build: self.b.clone(), ..Default::default() };
+        // Same name replaces; a new loadout goes at the end (a renamed one is a new one).
+        let i = crate::dmchar::set_loadout(&mut self.c, l).map_err(|e| e.to_string())?;
+        self.c.loadout = i;
+        self.idx = i;
+        crate::dmchar::store(self.c.clone());
+        let probs = crate::dmchar::problems(&self.c, &self.b);
+        Ok((!probs.is_empty()).then(|| format!("Saved, but it won't be used as it is: {}. You'll get the standard kit until it's fixed.", lo_problems(&probs))))
+    }
+    fn help(&self) -> String {
+        let Some(row) = self.sel.and_then(|s| self.layout().get(s).copied()) else { return "Name the loadout above.".into() };
+        let p = lo_prices();
+        let lock = |id: &str| {
+            if crate::dmchar::unlocked(&self.c, &self.b.class, id) {
+                String::new()
+            } else {
+                format!(" Locked: Unlock costs {} credits (you have {}).", crate::dmchar::unlock_cost(id).unwrap_or(0), self.c.credits)
+            }
+        };
+        match row {
+            LRow::Which => "Your character's saved loadouts, or a new one. Save & Use makes it the one you spawn with in Modern deathmatch.".into(),
+            LRow::Class => crate::deathmatch::class_template(&self.b.class).map_or_else(
+                || "Pick a class to start from; its signature perk comes with it whatever you change.".into(),
+                |t| format!("{}: {} Click to start from another class (your changes are replaced).", t.name, t.text),
+            ),
+            LRow::Points => {
+                let probs = crate::dmchar::problems(&self.c, &self.b);
+                if probs.is_empty() {
+                    format!("Everything here is paid for out of the same budget as every other player ({} points). Unlocks add choices, never points.", p.budget)
+                } else {
+                    format!("Not usable as it is: {}.", lo_problems(&probs))
+                }
+            }
+            LRow::Credits => "Credits buy unlocks (weapons, items and augmentations marked locked). Weapon mods unlock with mastery: kills with that weapon.".into(),
+            LRow::Weapon(i) => self.b.weapons.get(i).map_or_else(|| format!("Up to {} weapons.", p.max_weapons), |w| format!("{}{}", crate::dmchar::description(w), lock(w))),
+            LRow::Item(i) => {
+                let it = lo_sorted(&p.items)[i].clone();
+                format!("{} Up to {}.{}", crate::dmchar::description(&it), p.item_max.get(&it).copied().unwrap_or(1), lock(&it))
+            }
+            LRow::Skill(_) => format!("Skills start Trained; Advanced costs {}, Master {} more.", p.skill_steps.first().copied().unwrap_or(0), p.skill_steps.get(1).copied().unwrap_or(0)),
+            LRow::Aug(i) => self.b.augs.get(i).map_or_else(|| format!("Up to {} augmentations, at their top level (slots permitting).", p.max_augs), |a| format!("{}{}", crate::dmchar::description(a), lock(a))),
+            LRow::Mod(w, k) => {
+                let wc = self.b.weapons.get(w).cloned().unwrap_or_default();
+                let (lvl, next) = crate::dmchar::mastery(&self.c, &wc);
+                let m = self.mods_of(w).get(k).cloned();
+                let need = m.as_ref().and_then(|m| crate::deathmatch::data().loadouts.mod_mastery.get(m).copied()).unwrap_or(0);
+                format!(
+                    "Mods on the {}: mastery level {lvl}{}. {}",
+                    crate::dmchar::label(&wc),
+                    next.map_or(String::new(), |n| format!(" (next at {n} kills)")),
+                    if need > lvl { format!("This mod needs mastery {need}.") } else { "Each mod costs points.".into() }
+                )
+            }
+        }
+    }
+}
+
+fn lo_problems(probs: &[imsim_core::loadout::Problem]) -> String {
+    use imsim_core::loadout::Problem as P;
+    probs
+        .iter()
+        .map(|p| match p {
+            P::OverBudget(c, b) => format!("{c} points is over the budget of {b}"),
+            P::Unknown(x) => format!("{} isn't allowed", crate::dmchar::label(x)),
+            P::Locked(x) => format!("{} is locked", x),
+            P::TooManyWeapons => "too many weapons".into(),
+            P::TooManyAugs => "too many augmentations".into(),
+            P::TooManyOf(x) => format!("too many of {}", crate::dmchar::label(x)),
+            P::BadMod(x) => format!("mod problem: {x}"),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn draw_loadout(u: &mut Ui<W>, d: &mut LoadEdit, cx: i32, cy: i32) {
+    header_button(u, W::Header(0), cx + 10, cy + 3, 62, "Name");
+    u.c.fill(cx + 73, cy + 3, 262, 18, Style::Normal, BLACK);
+    edit_field(u, W::Edit(5), cx + 75, cy + 3, 257, &mut d.name, true, true);
+    let rows = d.rows();
+    list(u, 0, (cx + 11, cy + 23, 369, 268), &[150, 219], &rows, d.sel, &mut d.scroll, false);
+}
+
 /// The creator: Name field over the list's headers, the rows.
 fn draw_dm_char(u: &mut Ui<W>, d: &mut DmEdit, cx: i32, cy: i32) {
     header_button(u, W::Header(0), cx + 10, cy + 3, 62, "Name");
@@ -6875,6 +7342,8 @@ mod tests {
             "MenuScreenLoadGame",
             "MenuScreenAchievements",
             "MenuScreenWelcome",
+            "MenuScreenLoadout",
+            "MenuScreenMatchSettings",
             "KEYPAD",
             "MSG",
         ] {

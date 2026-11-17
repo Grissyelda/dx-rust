@@ -329,6 +329,9 @@ struct Cam {
     /// Classic multiplayer (SecurityCamera.safeTarget / team, MakeCameraAlly): who switched it on - it never
     /// watches him or his team.
     mp_safe: Option<u8>,
+    /// Modern living level: seconds left before a hacked camera goes back to the level, and to the next ping.
+    own_t: f32,
+    ping_t: f32,
 }
 
 struct Turret {
@@ -379,11 +382,49 @@ struct Turret {
     mp_team: Option<u8>,
     switch_t: f32,
     beep_t: f32,
+    /// Modern living level: seconds left before a hacked turret goes back to the level.
+    own_t: f32,
 }
 
 /// A Classic multiplayer match is on (AutoTurret's NetMode != NM_Standalone branches).
 fn mp() -> bool {
     crate::deathmatch::mp_body()
+}
+
+/// Players own security this match: Classic (the original patch), or Modern's living level (living.rs: hacked
+/// security changes hands for a while).
+fn owned_mode() -> bool {
+    mp() || crate::living::active()
+}
+
+/// The level's own cameras that are watching (living.rs: shots near them are heard), refreshed each frame.
+static LEVEL_CAMS: Mutex<Vec<DVec3>> = Mutex::new(Vec::new());
+
+/// A level camera (on, nobody's) within `r` of `at`.
+pub fn level_camera_near(at: DVec3, r: f64) -> bool {
+    LEVEL_CAMS.lock().map(|v| v.iter().any(|c| c.distance(at) <= r)).unwrap_or(false)
+}
+
+/// Modern: credits for a hack, on the hacker's own machine.
+fn credit_hack(who: u8) {
+    if who == crate::deathmatch::my_id() {
+        crate::dmchar::note_hack();
+    } else {
+        crate::netplay::credit_out(who, "hack");
+    }
+}
+
+/// Modern: the player nearest a device (who used it), the host's own or another's body.
+fn nearest_player(at: DVec3, me: DVec3) -> u8 {
+    let mine = crate::deathmatch::my_id();
+    let mut best = (me.distance(at), mine);
+    for (id, p) in crate::netplay::remote_bodies() {
+        let d = p.distance(at);
+        if d < best.0 {
+            best = (d, id);
+        }
+    }
+    best.1
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -685,6 +726,10 @@ pub fn security_system(
     for (kind, tag, a, b, peer) in crate::netplay::take_sec_controls() {
         match kind {
             0 => {
+                if crate::living::active() && !mp() {
+                    control::set_camera_by(st, &tag, a > 0.5, peer);
+                    continue;
+                }
                 let mp = mp();
                 for c in st.cams.iter_mut().filter(|c| !c.gone && c.tag.eq_ignore_ascii_case(&tag)) {
                     if mp {
@@ -708,7 +753,7 @@ pub fn security_system(
     }
     let mission = MISSION.lock().map(|mut m| std::mem::take(&mut *m)).unwrap_or(false);
 
-    apply_hacks(st, hacked, lvl);
+    apply_hacks(st, hacked, lvl, player.body.location);
     apply_events(st, &events);
     apply_blasts(st, &blasts);
     if mission {
@@ -730,8 +775,39 @@ pub fn security_system(
     let mut cx = DevCx { f, lvl, world, blockers: &blockers, movers: &movers.rt, alarms: &mut alarms, sk };
 
     // ---------------------------------------------------------------- cameras
+    // A Modern deathmatch (living.rs): the level's cameras watch with the level on (Light / Full) and do nothing
+    // with it Off; a hacked one goes back to the level when its hold runs out or its owner leaves.
+    let modern = crate::living::modern_match();
+    let living = crate::living::active() && !mp();
+    let me_id = crate::deathmatch::my_id();
+    let mut level_cams = Vec::new();
     for c in st.cams.iter_mut() {
+        if modern && !c.gone {
+            if !living {
+                c.mp_safe = None;
+                if c.active {
+                    cam_untrigger(c, false);
+                }
+            } else {
+                if let Some(o) = c.mp_safe {
+                    c.own_t -= dt;
+                    if c.own_t <= 0.0 || (o != me_id && !crate::netplay::has_player(o)) {
+                        c.mp_safe = None;
+                        cam_event(c, false);
+                    }
+                }
+                if !c.active && !c.confused {
+                    cam_trigger(c, false);
+                }
+                if c.mp_safe.is_none() && c.active && !c.confused {
+                    level_cams.push(c.pos);
+                }
+            }
+        }
         camera_tick(c, &mut cx, &mut decos, &children, &part_mats);
+    }
+    if let Ok(mut v) = LEVEL_CAMS.lock() {
+        *v = level_cams;
     }
 
     // ---------------------------------------------------------------- turrets
@@ -745,6 +821,30 @@ pub fn security_system(
     };
     let mut dead_turrets: Vec<usize> = Vec::new();
     for (i, t) in st.turrets.iter_mut().enumerate() {
+        // A Modern deathmatch: the level's turrets guard against wanted players with the level on Full, a hacked
+        // one shoots its owner's rivals until its hold runs out; with the level Off or Light they stay off.
+        if modern && !t.gone && !t.confused {
+            if let Some(o) = t.mp_safe.filter(|_| living) {
+                t.own_t -= dt;
+                if t.own_t <= 0.0 || (o != me_id && !crate::netplay::has_player(o)) {
+                    t.mp_safe = None;
+                    t.mp_team = None;
+                    t.switch_t = 2.5;
+                    t.beep_t = 0.0;
+                }
+            }
+            if !living {
+                t.mp_safe = None;
+            }
+            if t.mp_safe.is_none() {
+                let on = living && crate::living::full();
+                t.disabled = !on;
+                t.active = on;
+                t.hum = on;
+                t.players_only = true;
+                t.pawns_only = false;
+            }
+        }
         if turret_tick(t, &mut cx, &pawns, &mut decos, &children, &part_mats, &mut meshes, &mut shot) {
             dead_turrets.push(i);
         }
@@ -985,8 +1085,39 @@ fn client_devices(
 }
 
 /// SecurityCamera / AutoTurretGun.HackAction for the devices bypassed this frame.
-fn apply_hacks(st: &mut Security, hacked: Vec<usize>, lvl: &dx_level::Level) {
+fn apply_hacks(st: &mut Security, hacked: Vec<usize>, lvl: &dx_level::Level, me: DVec3) {
+    // Modern living level: a hacked camera or turret is the hacker's (and his team's) for a while.
+    let living = crate::living::active() && !mp();
     for b in hacked {
+        if living {
+            let hold = crate::living::tuning().hacked_secs;
+            if let Some(c) = st.cams.iter_mut().find(|c| c.blocker == Some(b) && !c.gone) {
+                let who = nearest_player(c.pos, me);
+                c.mp_safe = Some(who);
+                c.own_t = hold;
+                cam_event(c, false);
+                c.active = true;
+                c.hum = true;
+                println!("LIVING camera {} hacked by {who}", lvl.actors[c.actor].name);
+                credit_hack(who);
+            }
+            if let Some(t) = st.turrets.iter_mut().find(|t| t.gun_blocker == b && !t.gone) {
+                let who = nearest_player(t.gun_pos, me);
+                t.mp_safe = Some(who);
+                t.mp_team = crate::deathmatch::team_of(who);
+                t.own_t = hold;
+                t.switch_t = 2.5;
+                t.beep_t = 0.0;
+                t.disabled = false;
+                t.active = true;
+                t.hum = true;
+                t.players_only = true;
+                t.pawns_only = false;
+                println!("LIVING turret {} hacked by {who}", lvl.actors[t.actor].name);
+                credit_hack(who);
+            }
+            continue;
+        }
         if let Some(c) = st.cams.iter_mut().find(|c| c.blocker == Some(b) && !c.gone) {
             // SecurityCamera.HackAction: toggle (not while EMP'd).
             if !c.confused {
@@ -1336,9 +1467,55 @@ fn camera_watch(c: &mut Cam, cx: &mut DevCx) -> (&'static str, Option<u8>, Optio
             let range = crate::smartai::camera_range(c.range);
             // (Classic multiplayer: AcquireMultiplayerTarget skips its owner and his team.)
             let me_id = crate::deathmatch::my_id();
-            let friend = mp() && c.mp_safe.is_some_and(|s| s == me_id || (crate::deathmatch::team_mode() && crate::deathmatch::allied(s, me_id)));
+            let friend = owned_mode() && c.mp_safe.is_some_and(|s| s == me_id || (crate::deathmatch::team_mode() && crate::deathmatch::allied(s, me_id)));
             let host_seen = !friend && cx.f.detectable && !cx.f.radar_trans && me.distance(c.pos) <= range && sees_player(&cx.world, &cx.f, c.pos);
-            let seen_at = if host_seen {
+            let living = crate::living::active() && !mp();
+            let seen_at = if living {
+                // Modern living level: every player it can see (the host's own and the others' bodies).
+                let mut seen: Vec<(u8, DVec3)> = Vec::new();
+                if host_seen {
+                    seen.push((me_id, me));
+                }
+                if crate::netplay::is_host() {
+                    for (id, p) in crate::netplay::remote_bodies() {
+                        let mine = c.mp_safe.is_some_and(|s| s == id || (crate::deathmatch::team_mode() && crate::deathmatch::allied(s, id)));
+                        if mine || crate::netplay::remote_aug(id, "AugRadarTrans") || p.distance(c.pos) > range {
+                            continue;
+                        }
+                        let (rp, ry) = rotator(p - c.pos);
+                        if wrap(c.rot.1 - ry).abs() < c.fov && wrap(c.rot.0 - rp).abs() < c.fov && cx.lvl.collision.trace(c.pos, p, DVec3::ZERO).fraction >= 0.999 {
+                            seen.push((id, p));
+                        }
+                    }
+                }
+                match c.mp_safe {
+                    // A hacked camera reports the rivals it sees to whoever owns it (and his team).
+                    Some(owner) => {
+                        c.ping_t -= 0.1;
+                        if c.ping_t <= 0.0 {
+                            if let Some(&(id, p)) = seen.first() {
+                                c.ping_t = crate::living::tuning().owned_ping_every;
+                                let audience = match crate::deathmatch::team_of(owner).filter(|_| crate::deathmatch::team_mode()) {
+                                    Some(t) => crate::living::Audience::Team(t),
+                                    None => crate::living::Audience::Player(owner),
+                                };
+                                crate::living::ping_for(p, id, audience);
+                            }
+                        }
+                        None
+                    }
+                    // The level's camera: heat for what it sees, the alarm for a wanted player.
+                    None => {
+                        let mut first = None;
+                        for &(id, p) in &seen {
+                            if crate::living::camera_sight(cx.lvl, id, p, 0.1) && first.is_none() {
+                                first = Some(p);
+                            }
+                        }
+                        first
+                    }
+                }
+            } else if host_seen {
                 Some(me)
             } else if crate::netplay::is_host() {
                 crate::netplay::remote_bodies().into_iter().map(|(_, p)| p).find(|p| {
@@ -1469,6 +1646,15 @@ fn turret_tick(
             t.confusion_dur = 10.0;
         }
     }
+    if owned_mode() && !mp() && t.switch_t > 0.0 {
+        // Modern living level: the switch-over beeps after a hack (as Classic's UpdateSwitch).
+        t.switch_t -= dt;
+        t.beep_t -= dt;
+        if t.beep_t <= 0.0 && t.switch_t > 0.0 {
+            crate::sound::play("DeusExSounds.Generic.TurretSwitch", t.gun_pos, 1.0, t.max_range as f32, 1.0);
+            t.beep_t = 0.75;
+        }
+    }
     if mp() {
         // AutoTurret.Tick in a net game: nobody's (or its owner gone / on another team now) = disabled; the
         // switch-over beeps (UpdateSwitch).
@@ -1512,15 +1698,21 @@ fn turret_target(t: &mut Turret, cx: &mut DevCx, pawns: &[(usize, DVec3, bool, O
     let (lvl, blockers, movers, me) = (cx.lvl, cx.blockers, cx.movers, cx.f.me);
     let (detectable, radar_trans) = (cx.f.detectable, cx.f.radar_trans);
     let mut dest = t.want;
-    if on && mp() {
+    if on && owned_mode() {
         // AcquireMultiplayerTarget: players only - not its owner, not his teammates, not with Radar Transparency
-        // on, in range and in sight; none while switching owners.
+        // on, in range and in sight; none while switching owners. (Modern living level: the level's own turret
+        // shoots wanted players only.)
+        let level_own = t.mp_safe.is_none() && !mp();
         let had = t.target;
         t.target = None;
         if !t.confused && t.switch_t <= 0.0 {
             let w = World { level: lvl, blockers: &[], ignore: None, pushable: None, movers: Some(movers) };
             let clear = |to: DVec3| w.trace(t.gun_pos, to, DVec3::ZERO).fraction >= 0.999;
-            let ok = |id: u8| t.mp_safe != Some(id) && !t.mp_safe.is_some_and(|s| crate::deathmatch::team_mode() && crate::deathmatch::allied(s, id));
+            let ok = |id: u8| {
+                t.mp_safe != Some(id)
+                    && !t.mp_safe.is_some_and(|s| crate::deathmatch::team_mode() && crate::deathmatch::allied(s, id))
+                    && (!level_own || crate::living::wanted(id))
+            };
             let me_id = crate::deathmatch::my_id();
             let mut best: Option<(f64, TurretTarget)> = None;
             if ok(me_id) && detectable && !radar_trans && !crate::computers::player_ignored() {
@@ -2170,8 +2362,10 @@ fn fire(
     let dir = (end - start).normalize_or_zero();
     if player_hit {
         // In a net game the turret's owner gets the kill (AutoTurret.Fire: attacker = safetarget).
-        if let Some(owner) = t.mp_safe.filter(|_| mp()) {
+        if let Some(owner) = t.mp_safe.filter(|_| owned_mode()) {
             crate::netplay::note_hurt_by(owner);
+        } else {
+            crate::living::hurt_by_staff();
         }
         ph.damage(t.damage, "AutoShot", crate::ai::player_offset(player_cyl.center, player_yaw, at));
         // A spark where it hits and the player bleeds (SpawnBlood: pawns that aren't robots).
@@ -2211,13 +2405,13 @@ fn fire(
             if find(&a.props, "GroundSpeed").is_some() {
                 // The pawn it meant to shoot blames the player (attacker = GetPlayerPawn()); in a net game its
                 // owner (safetarget), nobody's = the world's.
-                let (attacker, world) = match t.mp_safe.filter(|_| mp()) {
+                let (attacker, world) = match t.mp_safe.filter(|_| owned_mode()) {
                     Some(o) if o == crate::deathmatch::my_id() => (None, false),
                     Some(o) => match crate::netplay::body_blocker(o) {
                         Some(bb) => (Some(bb), false),
                         None => (None, true),
                     },
-                    None if mp() => (None, true),
+                    None if owned_mode() => (None, true),
                     None => (None, false),
                 };
                 pawn_hits.0.push(crate::damage::PawnHit { world,
@@ -2434,6 +2628,8 @@ fn new_camera(
         msg_off: { let m = sv(&d, "msgDeactivated"); if m.is_empty() { "Camera deactivated".into() } else { m } },
         net_lens: 0,
         mp_safe: None,
+        own_t: 0.0,
+        ping_t: 0.0,
     }
 }
 
@@ -2647,6 +2843,7 @@ fn new_turret(i: usize, p: &[Property], gun: GunSpawn, by_actor: &HashMap<usize,
         mp_team: None,
         switch_t: 0.0,
         beep_t: 0.0,
+        own_t: 0.0,
     }
 }
 
@@ -2684,10 +2881,20 @@ pub mod control {
 
     /// The same by player `owner` (DeusExPlayer.ToggleCameraState: switching it on makes it his, MakeCameraAlly).
     pub fn set_camera_by(st: &mut Security, tag: &str, on: bool, owner: u8) {
-        let mp = mp();
+        let mp = owned_mode();
+        let living = crate::living::active() && !super::mp();
         for c in st.cams.iter_mut().filter(|c| !c.gone && c.tag.eq_ignore_ascii_case(tag)) {
             if mp {
                 c.mp_safe = on.then_some(owner);
+            }
+            // Modern living level: his for a while, then the level's again (switching it off hands it back now).
+            if living {
+                c.own_t = if on { crate::living::tuning().hacked_secs } else { 0.0 };
+                if !on {
+                    c.mp_safe = None;
+                    cam_trigger(c, true);
+                    continue;
+                }
             }
             if on {
                 cam_trigger(c, true);
@@ -2743,8 +2950,12 @@ pub mod control {
     /// The same by player `owner` (the host, for a joiner's computer). In a Classic match the turret becomes
     /// his (DeusExPlayer.SetTurretTrackMode: SetSafeTarget + team).
     pub fn set_turret_by(st: &mut Security, tag: &str, mode: u8, owner: u8) {
-        let mp = mp();
+        let mp = owned_mode();
+        let living = crate::living::active() && !super::mp();
         for t in st.turrets.iter_mut().filter(|t| !t.gone && t.tag.eq_ignore_ascii_case(tag)) {
+            if living {
+                t.own_t = if mode == 0 { 0.0 } else { crate::living::tuning().hacked_secs };
+            }
             if mp {
                 if mode == 0 {
                     t.mp_safe = None;

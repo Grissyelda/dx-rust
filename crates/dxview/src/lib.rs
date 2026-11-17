@@ -169,6 +169,7 @@ mod bodyfx;
 mod healui;
 mod optfixes;
 mod alertui;
+mod living;
 mod fps;
 mod hudfade;
 mod upscale;
@@ -788,6 +789,8 @@ pub fn run() {
     let root = game_root(&args);
     prof::mem_mark("start");
     setup_mods(&root);
+    // Modern deathmatch: the living level's guards are added to maps as they are read.
+    living::install();
     prof::mem_mark("mods set up");
     if platform::android() {
         remaster::force_classic();
@@ -1154,6 +1157,7 @@ fn add_render_systems(app: &mut App) {
         .add_systems(Update, audiofx::soundscape_system)
         .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system, clouds::clouds_system, clouds::lightning_sky_system.after(clouds::clouds_system), wisp::wisp_system.after(fly)))
         .add_systems(Update, alertui::alert_ui_system.after(ai::npc_system))
+        .add_systems(Update, living::living_hud_system.after(ai::npc_system))
         .add_systems(Update, hudfade::hud_fade_system)
         .add_plugins(upscale::UpscalePlugin)
         .add_plugins(lmlights::LmLightsPlugin)

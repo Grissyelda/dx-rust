@@ -155,6 +155,14 @@ impl AllianceTable {
         self.find(name).map(|e| e.level).unwrap_or(0.0)
     }
 
+    /// Drop the entry for `name` (neutral again, agitation gone). Not the own alliance. Ours: a living level's
+    /// staff stop hunting a player who is no longer wanted.
+    pub fn forget(&mut self, name: &str) {
+        if !name.eq_ignore_ascii_case(&self.own) {
+            self.entries.retain(|e| !e.name.eq_ignore_ascii_case(name));
+        }
+    }
+
     /// Anyone this character could fight (CheckEnemyPresence's bCheck: a negative level or full agitation).
     pub fn has_enemies(&self) -> bool {
         self.entries.iter().any(|e| e.level < 0.0 || e.agitation >= 1.0)

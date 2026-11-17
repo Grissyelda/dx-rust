@@ -44,11 +44,14 @@ pub struct DmChar {
     pub loadout: usize,
 }
 
-/// A loadout: the weapons and items a Modern match starts with.
+/// A loadout: what a Modern match starts with (MULTIPLAYER Phase 2: weapons, items, skill levels above Trained,
+/// augmentations, mods), on the points budget (imsim_core::loadout).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct Loadout {
     pub name: String,
+    pub build: imsim_core::loadout::Build,
+    // (Phase 0's first draft; not used.)
     pub primary: String,
     pub secondary: String,
     pub items: Vec<String>,
@@ -59,7 +62,14 @@ pub struct Loadout {
 #[serde(default)]
 pub struct ProfileTuning {
     pub per_kill: u32,
+    /// A rival downed with a non-lethal weapon (prod, baton, pepper spray, gas).
+    pub per_takedown: u32,
+    /// Damage on a rival someone else then killed (within 10 s).
+    pub per_assist: u32,
+    /// A camera, turret or security computer hacked.
+    pub per_hack: u32,
     pub per_heal: u32,
+    pub per_objective: u32,
     pub per_match: u32,
     pub per_win: u32,
     /// Kills with a weapon for each mastery level.
@@ -69,7 +79,18 @@ pub struct ProfileTuning {
 
 impl Default for ProfileTuning {
     fn default() -> Self {
-        ProfileTuning { per_kill: 10, per_heal: 5, per_match: 25, per_win: 75, mastery: vec![10, 25, 50, 100, 200, 350, 500], max_loadouts: 5 }
+        ProfileTuning {
+            per_kill: 10,
+            per_takedown: 15,
+            per_assist: 5,
+            per_hack: 8,
+            per_heal: 5,
+            per_objective: 20,
+            per_match: 25,
+            per_win: 75,
+            mastery: vec![10, 25, 50, 100, 200, 350, 500],
+            max_loadouts: 5,
+        }
     }
 }
 
@@ -128,6 +149,143 @@ pub fn note_heal() {
         earn(c, tuning().per_heal);
         save(c);
     }
+    drop(g);
+    ledger_add("Heals", tuning().per_heal);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The match's credits, by what earned them (shown with the results).
+
+static LEDGER: Mutex<Vec<(&'static str, u32, u32)>> = Mutex::new(Vec::new());
+
+/// A new match: the breakdown starts empty.
+pub fn begin_match() {
+    LEDGER.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+fn ledger_add(what: &'static str, credits: u32) {
+    let mut l = LEDGER.lock().unwrap_or_else(|e| e.into_inner());
+    match l.iter_mut().find(|x| x.0 == what) {
+        Some(x) => {
+            x.1 += 1;
+            x.2 += credits;
+        }
+        None => l.push((what, 1, credits)),
+    }
+}
+
+/// This match's credits: (what, how many, credits).
+pub fn ledger() -> Vec<(&'static str, u32, u32)> {
+    LEDGER.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Credits for a thing done (Modern only): the character's purse and the match's breakdown.
+fn reward(what: &'static str, credits: u32) {
+    if crate::deathmatch::classic() || !crate::deathmatch::playing() {
+        return;
+    }
+    let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = g.as_mut() {
+        earn(c, credits);
+        save(c);
+    }
+    drop(g);
+    ledger_add(what, credits);
+}
+
+/// A camera, turret or security computer hacked in a Modern match (living.rs).
+pub fn note_hack() {
+    reward("Hacks", tuning().per_hack);
+}
+
+/// Damage on a rival someone else killed.
+pub fn note_assist() {
+    reward("Assists", tuning().per_assist);
+}
+
+/// The weapons whose kills are takedowns (non-lethal).
+pub fn non_lethal(weapon: &str) -> bool {
+    matches!(weapon, "WeaponProd" | "WeaponBaton" | "WeaponPepperGun" | "WeaponGasGrenade")
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Loadouts and unlocks.
+
+/// The credits that unlock an entry (None: open from the start).
+pub fn unlock_cost(id: &str) -> Option<u32> {
+    crate::deathmatch::data().loadouts.unlock.get(id).copied()
+}
+
+/// An entry this character may take: open, bought, or part of the build's class template. Mods ("mod:W:M") need
+/// the weapon's mastery level (or come with the class).
+pub fn unlocked(c: &DmChar, class: &str, id: &str) -> bool {
+    let tmpl = crate::deathmatch::class_template(class).map(|t| &t.build);
+    if let Some(rest) = id.strip_prefix("mod:") {
+        let (w, m) = rest.split_once(':').unwrap_or((rest, ""));
+        if tmpl.is_some_and(|b| b.mods.iter().any(|x| x.0 == w && x.1 == m)) {
+            return true;
+        }
+        let need = crate::deathmatch::data().loadouts.mod_mastery.get(m).copied().unwrap_or(0);
+        return mastery(c, w).0 >= need;
+    }
+    if tmpl.is_some_and(|b| b.weapons.iter().any(|x| x == id) || b.augs.iter().any(|x| x == id) || b.items.iter().any(|x| x.0 == id)) {
+        return true;
+    }
+    unlock_cost(id).is_none() || c.unlocks.iter().any(|u| u == id)
+}
+
+/// What's wrong with a build for this character and the room's rules (empty: fine).
+pub fn problems(c: &DmChar, b: &imsim_core::loadout::Build) -> Vec<imsim_core::loadout::Problem> {
+    let p = &crate::deathmatch::data().loadouts.prices;
+    let full = crate::deathmatch::rules().is_some_and(|r| r.full_loadouts);
+    p.check(b, if full { None } else { Some(p.budget) }, |id| unlocked(c, &b.class, id))
+}
+
+/// The build this player brings into a Modern match: his character's chosen loadout when it passes, else None
+/// (the plain start kit).
+pub fn active_build() -> Option<imsim_core::loadout::Build> {
+    let c = last()?;
+    let l = c.loadouts.get(c.loadout)?;
+    if l.build.weapons.is_empty() && l.build.items.is_empty() {
+        return None;
+    }
+    let probs = problems(&c, &l.build);
+    if !probs.is_empty() {
+        println!("LOADOUT {} not used: {probs:?}", l.name);
+        return None;
+    }
+    println!("LOADOUT {} ({}): {:?} {:?} augs {:?} mods {:?}", l.name, l.build.class, l.build.weapons, l.build.items, l.build.augs, l.build.mods);
+    Some(l.build.clone())
+}
+
+/// The class of the loadout in use (its signature perk), in a Modern match.
+pub fn class_perk() -> String {
+    if !crate::deathmatch::playing() || crate::deathmatch::classic() {
+        return String::new();
+    }
+    static CACHE: Mutex<(u64, String)> = Mutex::new((u64::MAX, String::new()));
+    let gen = crate::loader::generation();
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if g.0 != gen {
+        *g = (gen, active_build().map(|b| b.class).unwrap_or_default());
+    }
+    g.1.clone()
+}
+
+/// Spend credits to unlock an entry for the current character (and keep it). Err with why not.
+pub fn buy_unlock(id: &str) -> Result<(), String> {
+    let cost = unlock_cost(id).ok_or("That's open already.")?;
+    let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+    let c = g.as_mut().ok_or("Make a deathmatch character first.")?;
+    buy(c, id, cost).map_err(|e| e.to_string())?;
+    save(c);
+    Ok(())
+}
+
+/// Replace the current character (after editing loadouts on the screen) and keep him.
+pub fn store(mut c: DmChar) {
+    save(&mut c);
+    set_current(c);
 }
 
 fn now() -> u64 {
@@ -324,7 +482,9 @@ pub fn credit_kill(weapon: &str) -> Option<String> {
     let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     let c = g.as_mut()?;
     c.total_kills += 1;
-    earn(c, tuning().per_kill);
+    let (what, n) = if non_lethal(weapon) { ("Takedowns", tuning().per_takedown) } else { ("Kills", tuning().per_kill) };
+    earn(c, n);
+    ledger_add(what, n);
     if weapon.is_empty() {
         save(c);
         return None;
@@ -365,12 +525,70 @@ pub fn note_match(won: bool) {
     if let Some(c) = g.as_mut() {
         c.matches += 1;
         earn(c, tuning().per_match);
+        ledger_add("Match played", tuning().per_match);
         if won {
             c.wins += 1;
             earn(c, tuning().per_win);
+            ledger_add("Win", tuning().per_win);
         }
         save(c);
     }
+}
+
+/// A class's default properties (cached; the game's System folder).
+fn class_defaults(class: &str) -> Vec<unreal_pkg::props::Property> {
+    type Cache = Option<(unreal_pkg::classes::ClassDb, std::collections::HashMap<String, Vec<unreal_pkg::props::Property>>)>;
+    static DB: Mutex<Cache> = Mutex::new(None);
+    let mut g = DB.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        let root = unreal_pkg::paths::root();
+        let Some(root) = root else { return Vec::new() };
+        *g = Some((unreal_pkg::classes::ClassDb::open(&root.join("System")), Default::default()));
+    }
+    let (db, cache) = g.as_mut().unwrap();
+    cache.entry(class.to_string()).or_insert_with(|| db.defaults(class)).clone()
+}
+
+/// A class's name for the screens: ItemName (weapons, items), SkillName, AugmentationName, else the class.
+pub fn label(class: &str) -> String {
+    let d = class_defaults(class);
+    for p in ["ItemName", "SkillName", "AugmentationName"] {
+        if let Some(unreal_pkg::props::Value::Str(s)) = unreal_pkg::props::find(&d, p) {
+            if !s.is_empty() {
+                return s.clone();
+            }
+        }
+    }
+    class.trim_start_matches("Weapon").trim_start_matches("Skill").trim_start_matches("Aug").to_string()
+}
+
+/// A class's description for the screens (Description / description).
+pub fn description(class: &str) -> String {
+    let d = class_defaults(class);
+    for p in ["Description", "description"] {
+        if let Some(unreal_pkg::props::Value::Str(s)) = unreal_pkg::props::find(&d, p) {
+            if !s.is_empty() {
+                return s.replace("|n", " ").replace("|N", " ");
+            }
+        }
+    }
+    String::new()
+}
+
+/// The weapon takes this mod (its bCanHave* default, as WeaponMod.CanUpgradeWeapon reads it).
+pub fn can_have(weapon: &str, m: &str) -> bool {
+    let prop = match m {
+        "WeaponModAccuracy" => "bCanHaveModBaseAccuracy",
+        "WeaponModClip" => "bCanHaveModReloadCount",
+        "WeaponModRange" => "bCanHaveModAccurateRange",
+        "WeaponModReload" => "bCanHaveModReloadTime",
+        "WeaponModRecoil" => "bCanHaveModRecoilStrength",
+        "WeaponModScope" => "bCanHaveScope",
+        "WeaponModSilencer" => "bCanHaveSilencer",
+        "WeaponModLaser" => "bCanHaveLaser",
+        _ => return false,
+    };
+    matches!(unreal_pkg::props::find(&class_defaults(weapon), prop), Some(unreal_pkg::props::Value::Bool(true)))
 }
 
 /// "Pistol" for WeaponPistol (the class's ItemName when it can be read).

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Multiplayer: the living level (Modern deathmatch)
+In a Modern deathmatch the level's own security is a third side. Cameras, turrets and guards are neutral to every
+player until one of them gives a reason: shooting where staff can hear, a camera seeing a drawn weapon, being
+seen with a lockpick or multitool, or hurting staff. Each player has his own heat: suspicious, then wanted, and
+only a wanted player is hunted; out of sight the heat drains away. Becoming wanted raises the alarm: a news line
+for everyone and a mark on everyone's screen where he was seen. Hacking a camera or turret (or switching it at a
+security computer) makes it yours and your team's for two minutes: your turret shoots your rivals, your camera
+marks them for you. On Full, guards walk the patrol routes the multiplayer maps already have. A new Match
+Settings choice, Level Activity (Off / Light / Full), sets how much of this is on; deaths to security don't
+cost a point. Shown on screen: "SECURITY: SUSPICIOUS" or "WANTED" under the compass.
+
+### Multiplayer: loadouts and progression (Modern deathmatch)
+Modern deathmatch characters now earn credits for kills, non-lethal takedowns, assists, hacks, heals, matches
+and wins, with this match's breakdown on the results screen. Deathmatch Character > Loadouts... builds loadouts
+on a points budget everyone shares: up to three weapons, items, skill levels above Trained, up to three
+augmentations, and weapon mods. Start from one of six classes - Infiltrator, Netrunner, Enforcer, Medic,
+Saboteur, Marksman - each with a signature perk. Credits unlock the strongest weapons and augmentations; kills
+with a weapon unlock its mods. A new Match Settings choice, Loadouts, can lift the budget for private rooms.
+
 ### Swimming: breath at the surface
 Swimming against a wall, a dock edge or a ceiling no longer pulls you under: each bump stepped the swimmer down a full
 step height instead of only the height it had stepped up, so near structures JC sank in short jerks while the view

@@ -3521,6 +3521,22 @@ pub fn npc_system(
 
     fill_snaps(snaps, q.iter().map(|(n, d, ..)| (n, d)));
     let pawns: &[Snap] = snaps;
+    // A Modern deathmatch's living level (living.rs): heat from what the level's staff hear, suffer and see.
+    if crate::living::host_active() {
+        let staff: Vec<crate::living::StaffEye> = q
+            .iter()
+            .filter(|(n, ..)| n.net.is_none() && n.net_player.is_none() && !n.animal && n.state != NpcState::Dead)
+            .filter_map(|(n, ..)| {
+                let c = blockers.list.get(n.blocker)?;
+                (c.radius > 0.0).then(|| crate::living::StaffEye { blocker: n.blocker, eye: eye_of(c), yaw: n.yaw, sight: n.sight_radius })
+            })
+            .collect();
+        let mut players: Vec<(u8, DVec3)> = pawns.iter().filter(|p| !p.dead).filter_map(|p| p.net_player.map(|id| (id, p.pos))).collect();
+        if !ph.dead {
+            players.push((crate::deathmatch::my_id(), player_center));
+        }
+        crate::living::observe(lvl, dt, &heard, &hits_by, &staff, &players);
+    }
 
     let ai_log = walk_test.is_some() || env_on!("DXVIEW_AILOG");
     // Orders wait while their pawn is in a conversation (ConvOrders, applied when it ends).
@@ -3614,6 +3630,9 @@ pub fn npc_system(
             player_dead: ph.dead,
         };
         npc.alliances.tick(dt);
+        if !npc.animal && crate::living::host_active() {
+            crate::living::staff_table(&mut npc.alliances);
+        }
         npc.cycle += dt;
         npc.think -= dt;
         sight_check(
@@ -7534,6 +7553,7 @@ fn trace_shot(npc: &Npc, w: &crate::weapons::WeaponStats, cx: &mut ActCx, dir: D
             crate::sound::play(snd, me.center, 1.0, 1024.0, 1.0);
         }
         let off = player_offset(cx.player_center, cx.player_yaw, at);
+        crate::living::hurt_by_staff();
         cx.ph.damage(dmg, dtype, off);
         return;
     }

@@ -134,6 +134,11 @@ fn glyph(rows: &[&str; 9], col: [u8; 3]) -> Vec<[u8; 4]> {
     px
 }
 
+/// The exclamation mark as an image (living.rs alarm pings).
+pub(crate) fn bang_icon(col: [u8; 3]) -> Image {
+    image(glyph(&B, col))
+}
+
 fn image(px: Vec<[u8; 4]>) -> Image {
     let mut img = Image::new(
         Extent3d { width: S as u32, height: S as u32, depth_or_array_layers: 1 },

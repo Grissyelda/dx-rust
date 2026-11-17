@@ -16,7 +16,7 @@ The general project roadmap is [ROADMAP.md](ROADMAP.md).
 |---|---|---|
 | 0 | Groundwork | Done |
 | 1 | Classic deathmatch | Built; needs playtests against the original |
-| 2 | Modern foundations | Not started |
+| 2 | Modern foundations | In progress: living level and progression built |
 | 3 | Modern mechanics | Not started |
 | 4 | Modern modes | Not started |
 | 5 | Maps | Not started |
@@ -107,35 +107,41 @@ Delivers Modern Deathmatch and Team Deathmatch with a living level and progressi
 mode builds on it.
 
 ### The living level
-- [ ] **Neutral security.** Guards, cameras and turrets belong to the level, neutral to all players until provoked
+- [x] **Neutral security.** Guards, cameras and turrets belong to the level, neutral to all players until provoked
   (unsilenced fire, being seen in restricted rooms, attacking staff, a camera spotting a drawn weapon).
-- [ ] **Heat per player.** Each player has their own alert level; guards hunt whoever caused it, not everyone.
-- [ ] **Hacked security changes hands.** A hacked turret or camera works for the hacker (and their team) for a
-  while; another player can hack it back.
-- [ ] **Level activity setting**: Off / Light (cameras and alarms only) / Full, set by the host.
+  (`living.rs`. Restricted areas are per-map data; none are set on the five maps yet.)
+- [x] **Heat per player.** Each player has their own alert level; guards hunt whoever caused it, not everyone.
+  (`imsim_core::heat`: suspicious, then wanted; the heat drains out of sight. Becoming wanted raises an alarm:
+  everyone's news, and a ping on everyone's screen.)
+- [x] **Hacked security changes hands.** A hacked turret or camera works for the hacker (and their team) for a
+  while; another player can hack it back. (Two minutes; a hacked camera pings the rivals it sees to its owner.)
+- [x] **Level activity setting**: Off / Light (cameras and alarms only) / Full, set by the host.
+- [x] **Guards** on Full: one per patrol route the map already has (Area 51 Bunker, Vandenberg Command and the
+  Missile Silo have them), people first, then security bots.
 
 ### Progression between matches
-- [ ] **Credits** for objectives, non-lethal takedowns, hacks, assists and kills, with a breakdown after each match.
-- [ ] **Loadout budget.** Each loadout spends a fixed number of points on skills, augmentations and perks; unlocks
-  widen the choice, never the budget. Host option: *Equal* (default) or *Full*.
-- [ ] **Six class templates** to start from and edit:
+- [x] **Credits** for objectives, non-lethal takedowns, hacks, assists and kills, with a breakdown after each match.
+- [x] **Loadout budget.** Each loadout spends a fixed number of points on weapons, items, skills, augmentations and
+  mods; unlocks widen the choice, never the budget. Host option: *Equal* (default) or *Full*.
+  (`imsim_core::loadout`; prices in `data/deathmatch.ron`.)
+- [x] **Six class templates** to start from and edit:
 
 | Class | Plays as | Signature perk |
 |---|---|---|
-| Infiltrator | cloak, silent movement, lockpicks | uniforms last longer |
+| Infiltrator | cloak, silent movement, lockpicks | quiet feet now; uniforms last longer with Phase 3 |
 | Netrunner | hacking, turret and camera control | remote hacking range |
 | Enforcer | heavy weapons, ballistic protection | melee bash |
-| Medic | revives, healing others | extra medkits |
-| Saboteur | mines, EMP, explosives | traps on terminals |
+| Medic | revives, healing others | extra medkits, heals teammates twice as much |
+| Saboteur | mines, EMP, explosives | an extra LAM now; traps on terminals with Phase 3 |
 | Marksman | rifles, steady scope | spotting marks rivals for the team |
 
-- [ ] **Weapon mastery.** Kills and hits with a weapon unlock its original mods (accuracy, clip, range, recoil,
+- [x] **Weapon mastery.** Kills and hits with a weapon unlock its original mods (accuracy, clip, range, recoil,
   reload, scope, silencer, laser) and its skins; fitting a mod costs loadout points.
 - [ ] **Mods shown on the weapon**: scope, laser and silencer visible in first and third person (needed before
   mastery ships).
 - [ ] **Cosmetics**: outfits, the existing kill-earned skins, name-tag colours, calling cards.
-- [ ] **Loadout screen** in the Multiplayer menu: class, skills, augmentations, perks, weapons, mods and outfit,
-  with the budget shown.
+- [x] **Loadout screen** in the Multiplayer menu: class, skills, augmentations, perks, weapons, mods and outfit,
+  with the budget shown. (Deathmatch Character > Loadouts...; outfits stay on the character screen.)
 
 ### Modern combat
 - [ ] Every Modern enhancement works in PvP: live-lens scope, aim-down-sights and sway, mantling, smooth lean,

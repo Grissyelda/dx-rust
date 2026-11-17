@@ -328,6 +328,15 @@ impl ClassDb {
         }
         Some(merged)
     }
+
+    /// An actor the game adds to a map itself (not from the map file): the class's defaults with `own` on top and
+    /// the class override layers, as a placed one would read.
+    pub fn added_actor(&mut self, class: &str, own: Vec<Property>) -> Vec<Property> {
+        let mut merged = self.defaults(class);
+        overlay(&mut merged, own);
+        apply_class_overrides(class, &mut merged);
+        merged
+    }
 }
 
 /// A function that may change one placed actor's properties as a map is read: (map, class, actor name, props).

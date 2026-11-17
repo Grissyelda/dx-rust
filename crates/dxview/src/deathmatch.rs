@@ -63,6 +63,33 @@ pub enum After {
     Room,
 }
 
+/// Modern: how alive the level is during a match (MULTIPLAYER roadmap Phase 2, living.rs). Off = pure deathmatch
+/// (the level's security does nothing), Light = cameras and alarms, Full = cameras, alarms, turrets and guards.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
+pub enum Activity {
+    Off,
+    Light,
+    #[default]
+    Full,
+}
+
+impl Activity {
+    pub fn name(self) -> &'static str {
+        match self {
+            Activity::Off => "Off",
+            Activity::Light => "Light",
+            Activity::Full => "Full",
+        }
+    }
+    pub fn from_index(i: usize) -> Activity {
+        match i {
+            0 => Activity::Off,
+            1 => Activity::Light,
+            _ => Activity::Full,
+        }
+    }
+}
+
 /// Which deathmatch: the original multiplayer patch as it was (Classic: no mods, its own rules, maps and HUD), or
 /// ours (Modern: the Modern look, Augmentique characters, balanced pickups and the damage table).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
@@ -174,6 +201,10 @@ pub struct DmRules {
     pub family: Family,
     /// Classic: the game type and its settings.
     pub classic: ClassicRules,
+    /// Modern: the level's own security (living.rs).
+    pub activity: Activity,
+    /// Modern: loadouts without the points budget (the host's Full setting; Equal = everyone has the same budget).
+    pub full_loadouts: bool,
 }
 
 impl Default for DmRules {
@@ -188,6 +219,8 @@ impl Default for DmRules {
             friendly_fire: false,
             family: Family::Modern,
             classic: ClassicRules { game: ClassicGame::Deathmatch, skills_avail: 2000, skills_per_kill: 2000, initial_augs: 2, augs_per_kill: 2, skill_level: 1, augs_allowed: true, victory: Victory::Frags, score_to_win: 20, friendly_fire: 0.5 },
+            activity: Activity::Full,
+            full_loadouts: false,
         }
     }
 }
@@ -239,6 +272,8 @@ pub fn rules_from_settings(mode: Mode, friendly_fire: bool) -> DmRules {
         friendly_fire,
         family: Family::Modern,
         classic: ClassicRules::default(),
+        activity: if crate::settings::has("DmLevel") { Activity::from_index(idx("DmLevel", 3)) } else { Activity::Full },
+        full_loadouts: crate::settings::get("DmLoadouts") > 0.5,
     }
 }
 
@@ -293,6 +328,8 @@ pub fn classic_rules_from_settings(game: ClassicGame) -> DmRules {
         friendly_fire: game.team() && c.friendly_fire > 0.0,
         family: Family::Classic,
         classic: c,
+        activity: Activity::Off,
+        full_loadouts: false,
     }
 }
 
@@ -304,8 +341,8 @@ pub fn rules() -> Option<DmRules> {
     g.clone().or_else(env_rules)
 }
 
-/// DXVIEW_DM=dm|tdm|cdm|cbasic|cadv|ctdm[,map][,frags][,minutes]: deathmatch rules without the menus (test runs;
-/// the c* ones are Classic game types).
+/// DXVIEW_DM=dm|tdm|cdm|cbasic|cadv|ctdm[,map][,frags][,minutes][,off|light|full]: deathmatch rules without the
+/// menus (test runs; the c* ones are Classic game types; the last is Modern's level activity).
 fn env_rules() -> Option<DmRules> {
     let v = env_val!("DXVIEW_DM")?;
     let mut it = v.split(',');
@@ -333,6 +370,14 @@ fn env_rules() -> Option<DmRules> {
     }
     if let Some(t) = it.next().and_then(|t| t.parse().ok()) {
         r.time_limit = t;
+    }
+    match it.next() {
+        Some("off") => r.activity = Activity::Off,
+        Some("light") => r.activity = Activity::Light,
+        _ => {}
+    }
+    if r.classic() {
+        r.activity = Activity::Off;
     }
     Some(r)
 }
@@ -415,10 +460,24 @@ pub struct MapEntry {
     /// Codes made fresh each match for keypads / computers (written in datacubes and notes by the modes).
     #[serde(default)]
     pub codes: Vec<CodeSpot>,
+    /// Modern: the level's guards on this map (living.rs; None = the defaults on its patrol routes).
+    #[serde(default)]
+    pub staff: Option<crate::living::StaffSpec>,
+    /// Modern: restricted areas (living.rs): being seen in one by the level's staff raises heat.
+    #[serde(default)]
+    pub restricted: Vec<RestrictedArea>,
 }
 
 /// A position in map units.
 pub type Pos = (f32, f32, f32);
+
+/// A restricted area: a sphere (living.rs).
+#[derive(Deserialize, Clone, Debug)]
+pub struct RestrictedArea {
+    pub name: String,
+    pub at: Pos,
+    pub radius: f32,
+}
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct SpawnSet {
@@ -626,6 +685,41 @@ pub struct Data {
     /// Operative profile (dmchar.rs): credits and weapon mastery.
     #[serde(default)]
     pub profile: crate::dmchar::ProfileTuning,
+    /// Modern: the living level (living.rs): heat, hacked security, guards.
+    #[serde(default)]
+    pub living: crate::living::LivingTuning,
+    /// Modern: loadouts on a budget, class templates, unlocks (dmchar.rs).
+    #[serde(default)]
+    pub loadouts: LoadoutData,
+}
+
+/// Modern loadouts (data `loadouts`).
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct LoadoutData {
+    pub prices: imsim_core::loadout::Prices,
+    /// Credits that unlock an entry (weapon, item or augmentation class); anything not listed is open.
+    pub unlock: HashMap<String, u32>,
+    /// The weapon mastery level a mod needs on that weapon.
+    pub mod_mastery: HashMap<String, usize>,
+    /// Rounds that come with a weapon.
+    pub ammo: HashMap<String, u32>,
+    pub classes: Vec<ClassTemplate>,
+}
+
+/// A class template: a loadout to start from and the class's signature perk.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct ClassTemplate {
+    pub id: String,
+    pub name: String,
+    pub perk: String,
+    pub text: String,
+    pub build: imsim_core::loadout::Build,
+}
+
+pub fn class_template(id: &str) -> Option<&'static ClassTemplate> {
+    data().loadouts.classes.iter().find(|c| c.id.eq_ignore_ascii_case(id))
 }
 
 pub fn data() -> &'static Data {
@@ -822,32 +916,107 @@ pub fn cam_yaw(unreal_yaw: f64) -> f32 {
 
 /// RestartPlayer + GiveInitialInventory: a fresh inventory (the start kit), skills at the MP start level and the
 /// mode's starting augmentations.
+/// Into the inventory: a weapon with `n` rounds of its ammo, or `n` of an item.
+fn give_class(inv: &mut imsim_core::inventory::Inventory, classes: &mut unreal_pkg::classes::ClassDb, class: &str, n: u32) {
+    let p = classes.defaults(class);
+    if p.is_empty() {
+        return;
+    }
+    let def = crate::pickups::item_def(class, &p);
+    if def.kind == imsim_core::inventory::ItemKind::Weapon {
+        let had = inv.items.iter().any(|i| i.def.class == class);
+        if !had {
+            let _ = inv.pick_up(&def, 1);
+        }
+        if let Some(unreal_pkg::props::Value::Path(a)) = unreal_pkg::props::find(&p, "AmmoName") {
+            let ammo = a.rsplit('.').next().unwrap_or("").to_string();
+            if !ammo.is_empty() && !ammo.eq_ignore_ascii_case("AmmoNone") {
+                let have = inv.ammo.iter().find(|x| x.0 == ammo).map_or(0, |x| x.1);
+                inv.ammo.retain(|x| x.0 != ammo);
+                inv.ammo.push((ammo, have + n));
+            }
+        } else if had && n > 1 {
+            // Grenades: more of the same weapon.
+            let _ = inv.pick_up(&def, n - 1);
+        }
+    } else {
+        let _ = inv.pick_up(&def, n.max(1));
+    }
+}
+
+/// Mods to fit to the loadout's weapons once the weapon system can (match_system).
+static LOADOUT_MODS: Mutex<Option<Vec<(String, crate::weapons::ModState)>>> = Mutex::new(None);
+
+pub fn take_loadout_mods() -> Option<Vec<(String, crate::weapons::ModState)>> {
+    LOADOUT_MODS.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+/// WeaponMod*.ApplyMod bookkeeping for a list of mods on one weapon (the Loadout screen only offers mods the
+/// weapon takes; each step stops at the original's 0.5).
+fn mod_state(mods: &[&str]) -> crate::weapons::ModState {
+    let mut m = crate::weapons::ModState::default();
+    let step = |v: &mut f32, d: f32| {
+        if (v.abs() + 1e-4) < 0.5 {
+            *v += d;
+        }
+    };
+    for x in mods {
+        match *x {
+            "WeaponModAccuracy" => step(&mut m.accuracy, 0.1),
+            "WeaponModClip" => step(&mut m.clip, 0.1),
+            "WeaponModRange" => step(&mut m.range, 0.1),
+            "WeaponModReload" => step(&mut m.reload, -0.1),
+            "WeaponModRecoil" => step(&mut m.recoil, -0.1),
+            "WeaponModScope" => m.scope = true,
+            "WeaponModSilencer" => m.silencer = true,
+            "WeaponModLaser" => m.laser = true,
+            _ => {}
+        }
+    }
+    m
+}
+
 pub fn reset_player(inv: &mut imsim_core::inventory::Inventory, classes: &mut unreal_pkg::classes::ClassDb) {
     let d = data();
     *inv = imsim_core::inventory::Inventory::default();
-    for (class, n) in &d.start_kit {
-        let p = classes.defaults(class);
-        if p.is_empty() {
-            continue;
-        }
-        let def = crate::pickups::item_def(class, &p);
-        if def.kind == imsim_core::inventory::ItemKind::Weapon {
-            let _ = inv.pick_up(&def, 1);
-            if let Some(unreal_pkg::props::Value::Path(a)) = unreal_pkg::props::find(&p, "AmmoName") {
-                let ammo = a.rsplit('.').next().unwrap_or("").to_string();
-                if !ammo.is_empty() && !ammo.eq_ignore_ascii_case("AmmoNone") {
-                    inv.ammo.retain(|x| x.0 != ammo);
-                    inv.ammo.push((ammo, *n));
+    // Modern: the character's loadout when it passes (dmchar::active_build), else the start kit.
+    let build = if classic() { None } else { crate::dmchar::active_build() };
+    match &build {
+        Some(b) => {
+            for w in &b.weapons {
+                let n = d.loadouts.ammo.get(w).copied().unwrap_or(60);
+                give_class(inv, classes, w, n);
+            }
+            for (i, n) in &b.items {
+                give_class(inv, classes, i, *n);
+            }
+            // Signature perks that are things to carry.
+            match b.class.as_str() {
+                "medic" => give_class(inv, classes, "MedKit", 2),
+                "saboteur" => give_class(inv, classes, "WeaponLAM", 1),
+                _ => {}
+            }
+            let mut mods: Vec<(String, crate::weapons::ModState)> = Vec::new();
+            for w in &b.weapons {
+                let list: Vec<&str> = b.mods.iter().filter(|m| &m.0 == w).map(|m| m.1.as_str()).collect();
+                if !list.is_empty() {
+                    mods.push((w.clone(), mod_state(&list)));
                 }
             }
-        } else {
-            let _ = inv.pick_up(&def, (*n).max(1));
+            *LOADOUT_MODS.lock().unwrap_or_else(|e| e.into_inner()) = Some(mods);
+        }
+        None => {
+            for (class, n) in &d.start_kit {
+                give_class(inv, classes, class, *n);
+            }
+            *LOADOUT_MODS.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
         }
     }
     let mut g = crate::abilities::lock();
     if let Some(a) = g.as_mut() {
         for s in a.skills.list.iter_mut() {
-            s.level = d.skill_level.min(3);
+            let bought = build.as_ref().and_then(|b| b.skills.iter().find(|x| x.0.eq_ignore_ascii_case(&s.def.class))).map_or(0, |x| x.1 as usize);
+            s.level = (d.skill_level + bought).min(3);
         }
         let _ = a.augs.deactivate_all();
         // ResetAugmentations: everything but the default ones (light, IFF, infolink) comes out.
@@ -863,9 +1032,22 @@ pub fn reset_player(inv: &mut imsim_core::inventory::Inventory, classes: &mut un
             }
         }
     }
+    // The loadout's augmentations, at their top level.
+    if let (Some(b), Some(a)) = (&build, g.as_mut()) {
+        for aug in &b.augs {
+            if let Some(i) = a.augs.index(aug) {
+                if a.augs.give(aug, false) == imsim_core::augs::Give::Added {
+                    let x = &mut a.augs.list[i];
+                    x.level = x.def.max_level;
+                }
+            }
+        }
+    }
     drop(g);
-    let (start, _) = if team_mode() { d.team_augs } else { d.dm_augs };
-    grant_augs(start);
+    if build.is_none() {
+        let (start, _) = if team_mode() { d.team_augs } else { d.dm_augs };
+        grant_augs(start);
+    }
 }
 
 /// AmmoCrate.RestockWeapon for every weapon carried: its first ammo type up to the weapon's PickupAmmoCount
@@ -1185,6 +1367,8 @@ fn class_defaults(class: &str) -> Vec<unreal_pkg::props::Property> {
 /// the victory check). `method`: method() for the line.
 pub fn host_died(victim: u8, killer: Option<u8>, weapon: &str, method: &str) -> KillNews {
     let mut news = KillNews::default();
+    // A new life starts with no heat (living.rs).
+    crate::living::died(victim);
     let r = rules().unwrap_or_default();
     let mut g = HOST.lock().unwrap_or_else(|e| e.into_inner());
     let Some(h) = g.as_mut() else { return news };
@@ -1206,6 +1390,10 @@ pub fn host_died(victim: u8, killer: Option<u8>, weapon: &str, method: &str) -> 
         return news;
     }
     match killer {
+        // Modern living level: a guard or the level's turret. Nobody's kill, and it costs the victim nothing.
+        Some(crate::living::LEVEL) => {
+            news.line = format!("{vname} was taken down by security.");
+        }
         Some(k) if k != victim => {
             let kname = name(h, k);
             news.line = format!("{kname} killed {vname}{method}");
@@ -1250,6 +1438,32 @@ pub fn host_died(victim: u8, killer: Option<u8>, weapon: &str, method: &str) -> 
         on_match_end();
     }
     news
+}
+
+/// Host: who hurt whom lately (victim, attacker, when), for assists.
+static HURTS: Mutex<Vec<(u8, u8, std::time::Instant)>> = Mutex::new(Vec::new());
+
+/// Host: player `attacker` hurt player `victim` (Modern matches count assists from it).
+pub fn note_damage(victim: u8, attacker: u8) {
+    if victim == attacker || !playing() || classic() {
+        return;
+    }
+    let mut h = HURTS.lock().unwrap_or_else(|e| e.into_inner());
+    h.retain(|x| x.2.elapsed().as_secs_f32() < 10.0 && !(x.0 == victim && x.1 == attacker));
+    h.push((victim, attacker, std::time::Instant::now()));
+}
+
+/// Host: `victim` died to `killer`: the others who hurt him in the last 10 seconds (rivals, not teammates).
+pub fn assists(victim: u8, killer: Option<u8>) -> Vec<u8> {
+    let mut h = HURTS.lock().unwrap_or_else(|e| e.into_inner());
+    let out: Vec<u8> = h
+        .iter()
+        .filter(|x| x.0 == victim && Some(x.1) != killer && x.2.elapsed().as_secs_f32() < 10.0)
+        .filter(|x| !(team_mode() && allied(x.0, x.1)))
+        .map(|x| x.1)
+        .collect();
+    h.retain(|x| x.0 != victim);
+    out
 }
 
 fn team_of_rows(rows: &[ScoreRow], id: u8) -> Option<u8> {
@@ -1737,12 +1951,21 @@ pub fn match_system(
     mut inv: ResMut<crate::pickups::PlayerInventory>,
     mut assets: ResMut<crate::weapons::RuntimeAssets>,
     mut cams: Query<&mut crate::FlyCam>,
+    mut weapons: ResMut<crate::weapons::Weapons>,
 ) {
     if !playing() || crate::loader::busy() || crate::loader::settling() {
         return;
     }
+    // The loadout's mods on its weapons (reset_player leaves them here).
+    if let Some(mods) = take_loadout_mods() {
+        weapons.mods.clear();
+        for (class, m) in mods {
+            weapons.mods.insert(class, m);
+        }
+    }
     let gen = crate::loader::generation();
     if SPAWNED_GEN.swap(gen, std::sync::atomic::Ordering::Relaxed) != gen {
+        crate::dmchar::begin_match();
         if crate::netplay::is_host() || !crate::netplay::active() {
             let mut players = vec![(0u8, crate::travel::player_name())];
             players.extend(crate::netplay::players().into_iter().map(|p| (p.0, p.1)));

@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The game messages' version (Hello / Welcome).
-pub const PROTO: u32 = 4;
+pub const PROTO: u32 = 5;
 /// Seconds before a dead player gets up again near the host (Easy / Medium).
 pub const RESPAWN_SECS: f32 = 4.0;
 /// Hard and Realistic co-op: the wait is longer, and if every player is down at once the level restarts for all.
@@ -288,6 +288,14 @@ enum Msg {
     PickupGrant(u32),
     /// Host -> all: the placed deathmatch pickups that are there (map hash, actors).
     Pickups(u32, Vec<u32>),
+    /// Host -> all (Modern living level): every player's heat level (id, 1 suspicious / 2 wanted).
+    Heat(Vec<(u8, u8)>),
+    /// Host -> all: an alarm's ping (where `who` was seen), for everyone or one team.
+    Ping { at: [f32; 3], who: u8, secs: f32, team: Option<u8> },
+    /// Joiner -> host: his Marksman's Spotter marked a rival (the host pings it for the joiner's team).
+    Spot { at: [f32; 3], who: u8 },
+    /// Host -> a player: credits for something the host saw him do ("assist").
+    Credit(String),
 }
 
 /// A grenade the host runs, as it comes into the world.
@@ -589,7 +597,8 @@ fn my_look() -> Look {
     // Deathmatch characters dress in their outfit and skins for everyone (they need Augmentique).
     let dm = crate::deathmatch::versus();
     Look {
-        name: s.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "JC Denton".into()),
+        // (DXVIEW_MP_NAME: a name for headless two-copy runs, which share the session file.)
+        name: env_val!("DXVIEW_MP_NAME").map(str::to_owned).or_else(|| s.as_ref().map(|s| s.name.clone())).unwrap_or_else(|| "JC Denton".into()),
         female: s.as_ref().is_some_and(|s| s.female),
         skin: s.as_ref().map_or(0, |s| s.skin.min(4)),
         outfit: if dm && !crate::deathmatch::classic() { crate::augmentique::worn_look() } else { None },
@@ -1091,8 +1100,12 @@ pub fn puppet_hits(actor: usize, peer: Option<u8>, hits: &[crate::damage::PawnHi
                         // dealt it (a joiner's grenade or mine: the host throws it from his body), else nobody.
                         let peer_body = h.attacker.and_then(|b| n.remotes.iter().find(|r| r.blocker == Some(b)).map(|r| r.id));
                         let by = match (h.attacker, peer_body) {
+                            // Modern living level: the level's own turret.
+                            (None, _) if h.world && h.damage_type == "AutoShot" && crate::living::active() => Some(crate::living::LEVEL),
                             (None, _) if h.world => None,
                             (None, _) => Some(0),
+                            // A guard (a pawn that isn't a player's body).
+                            (Some(_), None) if crate::living::active() => Some(crate::living::LEVEL),
                             (Some(_), pb) => pb,
                         };
                         // Where on him (from his body's centre) and with what (the host's own weapon for his shots).
@@ -1102,6 +1115,9 @@ pub fn puppet_hits(actor: usize, peer: Option<u8>, hits: &[crate::damage::PawnHi
                             Some(k) => n.remotes.iter().find(|r| r.id == k).map(|r| (r.st.weapon.clone(), r.st.scoped)).unwrap_or_default(),
                             None => (String::new(), false),
                         };
+                        if let Some(k) = by.filter(|k| *k != crate::living::LEVEL) {
+                            crate::deathmatch::note_damage(p, k);
+                        }
                         send_to(n, p, &Msg::Damage { damage: h.damage, kind: h.damage_type.to_string(), from, by, at: local, weapon, scoped }, true);
                     }
                 }
@@ -1469,6 +1485,7 @@ pub fn net_in_system(
                     }
                     // The shooter's weapon, and where it hit (from the victim's centre).
                     let (weapon, scoped) = with(|n| n.remotes.iter().find(|r| r.id == from_peer).map(|r| (r.st.weapon.clone(), r.st.scoped))).flatten().unwrap_or_default();
+                    crate::deathmatch::note_damage(p, from_peer);
                     if p == 0 {
                         with(|n| n.last_by = Some(from_peer));
                         let c = player.body.location;
@@ -1796,6 +1813,29 @@ pub fn my_weapon() -> String {
     MY_WEAPON.lock().map(|w| w.clone()).unwrap_or_default()
 }
 
+/// Joiner: his Marksman marked rival `who` at `at` (the host pings it for his team).
+pub fn spot_out(at: DVec3, who: u8) {
+    with(|n| {
+        if n.role == Role::Client && n.welcomed {
+            send_host(n, &Msg::Spot { at: [at.x as f32, at.y as f32, at.z as f32], who }, true);
+        }
+    });
+}
+
+/// Host: credits for player `peer` (his own machine keeps his profile).
+pub fn credit_out(peer: u8, what: &str) {
+    with(|n| {
+        if n.role == Role::Host {
+            send_to(n, peer, &Msg::Credit(what.to_string()), true);
+        }
+    });
+}
+
+/// What another player holds (his state's weapon class; empty when unknown).
+pub fn held_by(peer: u8) -> String {
+    with(|n| n.remotes.iter().find(|r| r.id == peer).map(|r| r.st.weapon.clone())).flatten().unwrap_or_default()
+}
+
 /// A hit on this player from another machine: in a deathmatch through the match mode (matchmode.rs: Modern's
 /// table by body region and the attacker's weapon; Classic's multiplayer body and the sniper rifle's scope rule;
 /// teammates' share in a team game), else as the game worked it out.
@@ -2003,6 +2043,14 @@ fn died(n: &mut Net, who: u8, by: Option<u8>, kind: &str) {
         None => String::new(),
     };
     let method = crate::deathmatch::method(&weapon, kind);
+    // Modern: everyone else who hurt him in the last seconds gets an assist.
+    for a in crate::deathmatch::assists(who, by) {
+        if a == 0 {
+            crate::dmchar::note_assist();
+        } else {
+            send_to(n, a, &Msg::Credit("assist".into()), true);
+        }
+    }
     let news = crate::deathmatch::host_died(who, by, &weapon, &method);
     if crate::deathmatch::playing() {
         if !news.line.is_empty() {
@@ -2089,7 +2137,12 @@ fn spawn_body(id: u8, look: &Look, st: &PState) {
         k => k as u32 + 3,
     };
     let mut props = vec![
-        Property { name: "Alliance".into(), index: 0, value: Value::Name("Player".into()) },
+        // A Modern deathmatch: each player is his own alliance to the level's staff (living.rs).
+        Property {
+            name: "Alliance".into(),
+            index: 0,
+            value: Value::Name(if crate::deathmatch::versus() && !crate::deathmatch::classic() { crate::living::body_alliance(id) } else { "Player".into() }),
+        },
         Property { name: "bInvincible".into(), index: 0, value: Value::Bool(true) },
         Property { name: "Orders".into(), index: 0, value: Value::Name("Standing".into()) },
         Property { name: "BindName".into(), index: 0, value: Value::Str(format!("NetPlayer{id}")) },
@@ -2480,6 +2533,20 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
             crate::matchmode::current().reward_kill();
         }
         (Role::Client, Msg::PickupGrant(a)) => crate::deathmatch::grant_placed(a),
+        (Role::Client, Msg::Heat(v)) => crate::living::set_levels(v),
+        (Role::Client, Msg::Credit(what)) => {
+            match what.as_str() {
+                "assist" => crate::dmchar::note_assist(),
+                "hack" => crate::dmchar::note_hack(),
+                _ => {}
+            }
+        }
+        (Role::Host, Msg::Spot { at, who }) => {
+            crate::living::spotted(peer, DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64), who);
+        }
+        (Role::Client, Msg::Ping { at, who, secs, team }) => {
+            crate::living::add_ping(DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64), who, secs, team)
+        }
         (Role::Client, Msg::Pickups(map, there)) => {
             if map == map_hash(&_lvl.name) {
                 crate::deathmatch::set_pickup_state(there);
@@ -2582,6 +2649,18 @@ pub fn net_out_system(
     }
     let placed = crate::save::placed_count().min(lvl.actors.len());
     let my_map = map_hash(&lvl.name);
+    // The living level's heat and alarm pings (Modern deathmatch).
+    if role == Role::Host && crate::living::active() {
+        let (levels, pings) = crate::living::take_out(dt);
+        with(|n| {
+            if let Some(l) = levels {
+                send_all(n, &Msg::Heat(l), true, None);
+            }
+            for p in pings {
+                send_all(n, &Msg::Ping { at: [p.at.x as f32, p.at.y as f32, p.at.z as f32], who: p.who, secs: p.left, team: p.audience.code() }, true, None);
+            }
+        });
+    }
     // My body.
     let send_me = with(|n| {
         n.me_t += dt;
