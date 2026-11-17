@@ -1,0 +1,155 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "repo": "Grissyelda/dx-rust",
+  "name": "DX RUST",
+  "game": {
+    "kind": "folder",
+    "label": "Your Deus Ex folder (the Game of the Year Edition or the original, from Steam, GOG or a disc install): the one with the System and Maps folders in it.",
+    "check": { "file": "System/DeusEx.u" }
+  },
+  "start": {
+    "program": ["dxview.exe", "dxview", "DX RUST.app"],
+    "args": ["--game", "{game}"]
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "ini",
+      "file": [
+        { "path": "{home}/Library/Application Support/DX RUST/settings.txt", "if": "{install}/DX RUST.app" },
+        { "path": "{install}/settings.txt" }
+      ]
+    }
+  ],
+  "saves": [
+    "{install}/Save",
+    "{install}/settings.txt",
+    "{install}/keybinds.txt",
+    "{install}/padbinds.txt",
+    "{home}/Library/Application Support/DX RUST/Save"
+  ],
+  "folders": {
+    "saves": [
+      { "path": "{home}/Library/Application Support/DX RUST/Save", "if": "{install}/DX RUST.app" },
+      { "path": "{install}/Save" }
+    ],
+    "logs": [
+      { "path": "{home}/Library/Application Support/DX RUST", "if": "{install}/DX RUST.app" },
+      { "path": "{install}" }
+    ]
+  },
+  "exit_codes": {
+    "2": "DX RUST couldn't find Deus Ex in the folder you picked (it looks for System/DeusEx.u). Pick your Deus Ex folder again on the game's page."
+  },
+  "settings": [
+    {
+      "id": "window",
+      "label": "Window",
+      "group": "Display",
+      "help": "Borderless fills your screen and lets you switch apps quickly. Full screen gives the game the screen to itself.",
+      "choices": [
+        { "label": "Windowed", "set": { "DisplayMode": "1" } },
+        { "label": "Borderless", "set": { "DisplayMode": "2" } },
+        { "label": "Full screen", "set": { "DisplayMode": "0" } }
+      ],
+      "defaults": { "DisplayMode": "1" }
+    },
+    {
+      "id": "vsync",
+      "label": "V-Sync",
+      "group": "Display",
+      "help": "Waits for the screen's refresh: no tearing. Off lets the frame rate run free (pair it with a frame rate cap).",
+      "choices": [
+        { "label": "On", "set": { "VSync": "1" } },
+        { "label": "Off", "set": { "VSync": "0" } }
+      ],
+      "defaults": { "VSync": "1" }
+    },
+    {
+      "id": "fps_cap",
+      "label": "Frame rate cap",
+      "group": "Display",
+      "help": "The most frames the game draws each second. 60 is smooth and saves battery on a Steam Deck.",
+      "choices": [
+        { "label": "Off", "set": { "FPSLimit": "0" } },
+        { "label": "30", "set": { "FPSLimit": "1" } },
+        { "label": "60", "set": { "FPSLimit": "2" } },
+        { "label": "120", "set": { "FPSLimit": "3" } },
+        { "label": "144", "set": { "FPSLimit": "4" } },
+        { "label": "200", "set": { "FPSLimit": "5" } },
+        { "label": "240", "set": { "FPSLimit": "6" } }
+      ],
+      "defaults": { "FPSLimit": "0" }
+    },
+    {
+      "id": "fov",
+      "label": "Field of view",
+      "group": "Display",
+      "help": "How wide you see, in degrees. 75 is the original game's.",
+      "slider": { "key": "FOV", "min": 60, "max": 130, "step": 5, "format": "%g" },
+      "defaults": { "FOV": "75" }
+    },
+    {
+      "id": "upscaling",
+      "label": "Upscaling",
+      "group": "Display",
+      "help": "Draws the world at a lower resolution and sharpens it up to your screen (AMD FSR 1): more frames on a Steam Deck or an older card. Native AA keeps full resolution and smooths edges.",
+      "choices": [
+        { "label": "Off", "set": { "Upscaling": "0" } },
+        { "label": "Native AA", "set": { "Upscaling": "1" } },
+        { "label": "Quality", "set": { "Upscaling": "2" } },
+        { "label": "Balanced", "set": { "Upscaling": "3" } },
+        { "label": "Performance", "set": { "Upscaling": "4" } },
+        { "label": "Ultra performance", "set": { "Upscaling": "5" } }
+      ],
+      "defaults": { "Upscaling": "0" }
+    },
+    {
+      "id": "brightness",
+      "label": "Brightness",
+      "group": "Display",
+      "help": "The original game's brightness slider. The middle is the default.",
+      "slider": { "key": "AdjustBrightness", "min": 0, "max": 1, "step": 0.05, "format": "%g" },
+      "defaults": { "AdjustBrightness": "0.5" }
+    },
+    {
+      "id": "hud_size",
+      "label": "HUD size",
+      "group": "Interface",
+      "help": "How big the HUD, menus and screens are drawn. Large reads well on a Steam Deck.",
+      "choices": [
+        { "label": "Small", "set": { "HUDScale": "0" } },
+        { "label": "Medium", "set": { "HUDScale": "1" } },
+        { "label": "Large", "set": { "HUDScale": "2" } }
+      ],
+      "defaults": { "HUDScale": "1" }
+    },
+    {
+      "id": "subtitles",
+      "label": "Subtitles",
+      "group": "Interface",
+      "help": "Spoken lines written out in conversations and infolinks.",
+      "choices": [
+        { "label": "On", "set": { "Subtitles": "1" } },
+        { "label": "Off", "set": { "Subtitles": "0" } }
+      ],
+      "defaults": { "Subtitles": "1" }
+    },
+    {
+      "id": "fps",
+      "label": "Show FPS",
+      "group": "Interface",
+      "help": "The frame rate in a corner of the screen.",
+      "choices": [
+        { "label": "Off", "set": { "FPSCounter": "0" } },
+        { "label": "On", "set": { "FPSCounter": "1" } }
+      ],
+      "defaults": { "FPSCounter": "0" }
+    }
+  ],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your saved games and achievements.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "crash.log and hitch.log, if the game wrote any, beside your settings.", "open": "logs" }
+  ]
+}

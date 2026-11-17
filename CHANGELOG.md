@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Mod manager with installer support
+*Settings > Mods* lists every mod DX RUST supports, with its authors and a *Get It* button that opens the mod's own
+page. Save the download in your Downloads folder and press *Install*: DX RUST unpacks zip and 7z archives and the
+7-Zip / zip self-extracting `.exe` installers itself (pure Rust, on Windows, Linux, the Steam Deck and macOS) into its
+own Mods folder and switches the mod on - no Windows PC needed to run an installer and copy files over. *Turn
+On / Off*, *Remove* and a restart prompt complete it. The launcher's Mods page gained *Install Download...* for a file
+you pick. RAR archives and Inno Setup / NSIS / MSI installers are recognised and you're told how to unpack them.
+
+### The Nameless Mod mode
+The launcher's new **Game** row plays The Nameless Mod (Off Topic Productions) from your own copy of it: its maps,
+characters, decorations and items, both halves of its conversations with their speech, and its Ogg soundtrack
+(ambient, combat, conversation and death tracks). Trestkon starts in his apartment; saves are kept apart. Its own
+scripted gameplay isn't rewritten yet, so the levels play with the Deus Ex rules they build on.
+
+### RecompLauncher support
+DX RUST can be added to RecompLauncher: `recomplauncher.json` describes the game folder, how to start it
+(`--game <folder>`), its settings file and a page of display settings, and ships in every release package. The game
+answers RecompLauncher's Big Picture and controller hints, and exits with a clear message (code 2) when the folder it's
+given isn't Deus Ex. Release files are now named `dxrust-windows-x64.zip`, `dxrust-linux-x64.tar.gz`,
+`dxrust-macos-arm64.zip` and `dxrust-android-arm64.apk`.
+
 ### Multiplayer: downed, revive and interrogation (Modern deathmatch)
 In a Modern deathmatch a blow from a non-lethal weapon - the prod, the baton, pepper spray, gas, tranquilizer darts -
 that would kill leaves a player down instead: on the floor, weapon away, for 30 seconds, then he comes round with a

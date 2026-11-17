@@ -1,8 +1,8 @@
 //! DX RUST Release Builder: one window that builds the three releases into the project's dist\ folder.
-//! - Windows: here, with Rust (what BUILD_RELEASE.bat did): dxrust-windows.zip.
-//! - Linux / Steam Deck: in WSL on this PC (tools/release/build_linux.sh), or on GitHub: dxrust-steamdeck.tar.xz.
-//! - Android (Classic): on GitHub (tools/release/build_android.sh): dxrust-android.apk.
-//! - macOS: on GitHub's Mac runners (.github/workflows/release.yml, through the GitHub CLI): dxrust-macos.zip.
+//! - Windows: here, with Rust (what BUILD_RELEASE.bat did): dxrust-windows-x64.zip.
+//! - Linux / Steam Deck: in WSL on this PC (tools/release/build_linux.sh), or on GitHub: dxrust-linux-x64.tar.gz.
+//! - Android (Classic): on GitHub (tools/release/build_android.sh): dxrust-android-arm64.apk.
+//! - macOS: on GitHub's Mac runners (.github/workflows/release.yml, through the GitHub CLI): dxrust-macos-arm64.zip.
 //! Settings are kept in builder.txt beside the exe.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -299,7 +299,7 @@ fn fast_env(c: &mut std::process::Command, fast: bool) {
 }
 
 /// BUILD_RELEASE.bat: the game and the launcher with the C runtime linked in, in their own build folders, then
-/// dist\dxrust-windows.zip with the notices.
+/// dist\dxrust-windows-x64.zip with the notices.
 fn build_windows(job: &Shared, ctl: &Ctl, ctx: &egui::Context, cfg: &Cfg) -> Result<(), String> {
     let root = cfg.root();
     let dist = cfg.dist();
@@ -328,6 +328,8 @@ fn build_windows(job: &Shared, ctl: &Ctl, ctx: &egui::Context, cfg: &Cfg) -> Res
         (root.join("LICENSE"), "LICENSE.txt"),
         (root.join("README.md"), "README.md"),
         (root.join("THIRD_PARTY.md"), "THIRD_PARTY.md"),
+        // RecompLauncher reads it beside the program (recomplauncher.com).
+        (root.join("recomplauncher.json"), "recomplauncher.json"),
     ];
     let mut files = Vec::new();
     for (from, name) in copies {
@@ -335,7 +337,7 @@ fn build_windows(job: &Shared, ctl: &Ctl, ctx: &egui::Context, cfg: &Cfg) -> Res
         std::fs::copy(&from, &to).map_err(|e| format!("copy {}: {e}", from.display()))?;
         files.push(to);
     }
-    let zip = dist.join("dxrust-windows.zip");
+    let zip = dist.join("dxrust-windows-x64.zip");
     let _ = std::fs::remove_file(&zip);
     let ps = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
     let list: Vec<String> = files.iter().map(|p| ps(p)).collect();
@@ -435,13 +437,13 @@ fn github_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, g
         lock(g).begin(Some(dist.join("build_github.log")));
         let mut targets: Vec<(&str, &Shared, &str, &str)> = Vec::new();
         if mac {
-            targets.push(("macos", &jobs.mac, "dxrust-macos", "dxrust-macos.zip"));
+            targets.push(("macos", &jobs.mac, "dxrust-macos", "dxrust-macos-arm64.zip"));
         }
         if linux {
-            targets.push(("linux", &jobs.linux, "dxrust-steamdeck", "dxrust-steamdeck.tar.xz"));
+            targets.push(("linux", &jobs.linux, "dxrust-steamdeck", "dxrust-linux-x64.tar.gz"));
         }
         if android {
-            targets.push(("android", &jobs.android, "dxrust-android", "dxrust-android.apk"));
+            targets.push(("android", &jobs.android, "dxrust-android", "dxrust-android-arm64.apk"));
         }
         for (_, j, _, _) in &targets {
             let mut j = lock(j);
@@ -647,7 +649,7 @@ fn release_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, 
         lock(g).begin(Some(dist.join("release_github.log")));
         lock(g).set(Status::Running("making the draft release".into()));
         let tag = format!("v{}", cfg.version());
-        let files: Vec<PathBuf> = ["dxrust-windows.zip", "dxrust-steamdeck.tar.xz", "dxrust-macos.zip", "dxrust-android.apk"]
+        let files: Vec<PathBuf> = ["dxrust-windows-x64.zip", "dxrust-linux-x64.tar.gz", "dxrust-macos-arm64.zip", "dxrust-android-arm64.apk"]
             .iter()
             .map(|f| dist.join(f))
             .filter(|p| p.is_file())

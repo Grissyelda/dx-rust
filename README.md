@@ -7,6 +7,8 @@ and deathmatch multiplayer.**
 
 <p align="center"><a href="https://discord.gg/cY9kJ7fETm"><img src="https://img.shields.io/badge/Discord-Join%20the%20DX%20RUST%20community-5865F2?logo=discord&logoColor=white" alt="Join the DX RUST Discord"></a></p>
 
+<p align="center"><a href="https://recomplauncher.com/game/dx-rust"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a></p>
+
 **[Join the DX RUST Discord](https://discord.gg/cY9kJ7fETm)** to report bugs, suggest enhancements and find
 multiplayer matches.
 
@@ -49,18 +51,23 @@ underneath.
 ## Getting started
 Download your platform's file from [Releases](../../releases).
 
+### RecompLauncher
+[RecompLauncher](https://recomplauncher.com/game/dx-rust) installs DX RUST, keeps it up to date and starts it:
+pick your Deus Ex folder on its setup screen, set the display options on the game's page, press Play. Command line
+and shortcuts: `dxview --game "path to Deus Ex"`.
+
 ### Windows
-1. Unzip `dxrust-windows.zip` anywhere and run **dxlauncher.exe**.
+1. Unzip `dxrust-windows-x64.zip` anywhere and run **dxlauncher.exe**.
 2. It finds your Deus Ex folder (or click *Game Folder...*). Choose a display mode and resolution, then **Play**.
 
 ### Steam Deck / Linux
 1. Install *Deus Ex: Game of the Year Edition* through Steam (you don't have to run it).
-2. In Desktop Mode, extract `dxrust-steamdeck.tar.xz` (for example to `~/Games/dxrust`) and run `dxlauncher` once
+2. In Desktop Mode, extract `dxrust-linux-x64.tar.gz` (for example to `~/Games/dxrust`) and run `dxlauncher` once
    to check that it found the game. Steam libraries and SD cards are searched.
 3. Add `dxrust.sh` to Steam as a *Non-Steam Game* to play from Game Mode, with Steam Input's *Gamepad* template.
 
 ### macOS (Apple Silicon)
-1. Unzip `dxrust-macos.zip` and move *DX RUST* to Applications. The first time, right-click it and choose *Open*
+1. Unzip `dxrust-macos-arm64.zip` and move *DX RUST* to Applications. The first time, right-click it and choose *Open*
    (or run `xattr -dr com.apple.quarantine "/Applications/DX RUST.app"`).
 2. Get the Windows game files (they're the same on every platform) into `~/Games/Deus Ex`:
    - **Steam:** run `open steam://open/console`, type `download_depot 6910 6911`, and leave or move the
@@ -76,7 +83,7 @@ standard function keys* for the aug keys.
 ### Android (Classic)
 For 64-bit phones and tablets on Android 10 or newer with Vulkan, in Classic (no mods or Modern features).
 1. Copy your whole *Deus Ex* folder (with `System`, `Maps`, `Textures`, `Sounds`) to the phone or SD card.
-2. Install `dxrust-android.apk`, start it and allow *All files access*: it searches the phone and starts the game.
+2. Install `dxrust-android-arm64.apk`, start it and allow *All files access*: it searches the phone and starts the game.
 
 **Touch:** the left half is a floating move stick; drag on the right half to look, tap to fire, hold still to keep
 firing. Use, Jump, Duck, Reload and Zoom sit above the belt, Lean on the left edge. Tap the HUD: belt slots, aug
@@ -118,20 +125,36 @@ server with no graphics stack, build it without the window (`cargo build --relea
 `--name` and `--key-file` set it up. Players point the game at it with `LobbyServer=host:port` in `launcher.txt`.
 
 ### Mods (optional)
-1. Unzip each mod into its own folder:
-   [Lay D Denton Project](https://www.moddb.com/mods/the-lay-d-denton-project),
-   [HDTP](https://www.moddb.com/mods/project-hdtp),
-   [New Vision](https://www.moddb.com/mods/deus-ex-new-vision),
-   [Augmentique](https://www.moddb.com/mods/augmentique),
-   [GMDX](https://www.moddb.com/mods/gmdx) (Augmented Edition), Visible Attachments, Helios, Precipitation, and the
-   [Parallax Occlusion Mapping](https://www.moddb.com/games/deus-ex/addons) addon (*Half Size-Full Depth*).
-2. On the launcher's **Mods** page, click *Mod Assets Folder...* and choose the folder that holds them all (or set
-   each mod on its own button; right-click turns one off).
-3. Lay D Denton: on a new game, every other portrait is the female JC. HDTP, New Vision and Helios have switches in
-   *Settings > Enhancements > Mods*.
+**In the game:** *Settings > Mods* lists the mods DX RUST supports with their authors. *Get It* opens a mod's own
+page (ModDB) in your browser; save the download in your Downloads folder and press *Install*. DX RUST unpacks it
+itself - `.zip`, `.7z`, and the 7-Zip or zip self-extracting `.exe` installers many mods use - into its own Mods
+folder and switches it on, so a Steam Deck needs no Windows PC to run an installer. *Turn Off* / *Turn On* and
+*Remove* work the same way; the change takes effect when the game restarts. RAR archives and Inno Setup / NSIS / MSI
+installers can't be unpacked this way: run or unpack those once yourself, then point the launcher at the folder.
 
-Nothing in your Deus Ex install is changed and no mod files are included. GMDX's perks are rewritten in Rust and
-read their data from your copy of the mod.
+**In the launcher:** the **Mods** page's *Install Download...* does the same for a file you pick; *Mod Assets
+Folder...* takes one folder holding mods you unpacked yourself (or set each mod on its own button; right-click turns
+one off).
+
+Supported: [Lay D Denton Project](https://www.moddb.com/mods/the-lay-d-denton-project),
+[HDTP](https://www.moddb.com/mods/project-hdtp), [New Vision](https://www.moddb.com/mods/new-vision),
+[Augmentique](https://www.moddb.com/mods/augmentique),
+[GMDX: Augmented Edition](https://www.moddb.com/mods/give-me-deus-ex-augmented-edition) (with Visible Attachments and
+Precipitation), [Helios](https://www.moddb.com/mods/helios-texture-overhaul) and its
+[Parallax Occlusion addon](https://www.moddb.com/mods/helios-texture-overhaul/downloads/parallax-occlusion-addon)
+(*Half Size-Full Depth*). Lay D Denton: on a new game, every other portrait is the female JC. HDTP, New Vision and
+Helios have switches in *Settings > Enhancements > Mods*.
+
+Nothing in your Deus Ex install is changed and no mod files are included: every mod is downloaded by you from its
+authors' page. GMDX's perks are rewritten in Rust and read their data from your copy of the mod.
+
+### The Nameless Mod
+[The Nameless Mod](https://www.moddb.com/mods/the-nameless-mod) (Off Topic Productions) is a whole game made on Deus
+Ex. Download it from its page and install it with the mod manager (its installer `.exe` unpacks directly), or point
+the launcher at a folder you installed it to (right-click the **Game** row). Then set the launcher's **Game** row to
+*Nameless Mod* and press Play. DX RUST reads its maps, characters, conversations and Ogg music from your copy; saves
+go to their own `TNMSave` folder. Work in progress: The Nameless Mod's own scripted gameplay (its player class, mission
+scripts and menus) isn't rewritten yet, so its levels play with the Deus Ex rules they build on.
 
 ## Building from source
 You need Rust (stable, 1.95 or later) and a C compiler: the Visual Studio C++ build tools on Windows, the Xcode
@@ -150,7 +173,7 @@ Then:
     cargo build --release --manifest-path crates/dxlauncher/Cargo.toml    # the launcher
     target/release/dxview "C:\path\to\Deus Ex"                            # or run the launcher
 
-- **macOS app:** `./BUILD_MAC.sh` makes `dist/DX RUST.app` and `dist/dxrust-macos.zip` (the first build takes
+- **macOS app:** `./BUILD_MAC.sh` makes `dist/DX RUST.app` and `dist/dxrust-macos-arm64.zip` (the first build takes
   10-30 minutes).
 - **Linux / Steam Deck archive:** `tools/release/build_linux.sh` (cargo-zigbuild, glibc 2.35).
 - **Android APK:** `tools/release/build_android.sh` (Android SDK + NDK and `cargo-apk`).
@@ -202,7 +225,7 @@ and what you did.
 - *Deus Ex* is a trademark of its owners. All game content belongs to them and is read from your own copy at run
   time.
 - The Lay D Denton Project is used with its authors' permission. HDTP, New Vision, Visible Attachments, Augmentique,
-  Helios, Precipitation and GMDX belong to their authors. No mod's files are redistributed here.
+  Helios, Precipitation, GMDX and The Nameless Mod belong to their authors. No mod's files are redistributed here.
 - The rebuilt human bodies, rig and animations in `assets/rig` are the Machine God team's, included with their
   permission (credit them if you reuse them). They contain no Deus Ex data.
 - DX RUST's own source code is licensed under the **GNU GPL v3.0 or later** (see [LICENSE](LICENSE)).
@@ -211,7 +234,8 @@ and what you did.
 - Ion Storm Austin, for Deus Ex.
 - The Lay D Denton Project team, for the mod and permission to support it.
 - The HDTP team, the New Vision team, and the authors of Visible Attachments, Augmentique, Helios, Precipitation and
-  GMDX (CyberP, and Sarge and the Augmented Edition team), for their mods.
+  GMDX (CyberP, and Sarge and the Augmented Edition team), for their mods; Off Topic Productions, for The Nameless
+  Mod.
 - The Machine God team, for the rebuilt human bodies, rig and animations behind Skeletal Characters.
 - Joe Wintergreen, whose lipsync mod's timings Smooth Lip Sync follows.
 - Contributors: JohnUzoka (the Performance settings, Lean Rendering / Lean Updates, the FPS counter, Open Sea and many

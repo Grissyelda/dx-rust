@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DX RUST for Android (Classic): dist/dxrust-android.apk, arm64, Android 10 or newer.
+# DX RUST for Android (Classic): dist/dxrust-android-arm64.apk, arm64, Android 10 or newer.
 #
 # Needs the Android SDK (a platform and build-tools) and NDK, cargo-apk and Rust's aarch64-linux-android target.
 # Paths: ANDROID_HOME (or ANDROID_SDK_ROOT) and ANDROID_NDK_ROOT (or ANDROID_NDK_HOME / ANDROID_NDK_LATEST_HOME, else
@@ -42,5 +42,5 @@ if [ "${DXR_FAST:-0}" = "1" ]; then
 fi
 cargo apk build --release -p dxandroid --target-dir "$TARGET"
 mkdir -p dist
-cp "$TARGET/release/apk/dxrust.apk" dist/dxrust-android.apk
-ls -l dist/dxrust-android.apk
+cp "$TARGET/release/apk/dxrust.apk" dist/dxrust-android-arm64.apk
+ls -l dist/dxrust-android-arm64.apk

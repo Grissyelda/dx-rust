@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds a shareable copy for Apple Silicon: dist/DX RUST.app (the launcher and the game) and dist/dxrust-macos.zip.
+# Builds a shareable copy for Apple Silicon: dist/DX RUST.app (the launcher and the game) and dist/dxrust-macos-arm64.zip.
 # No game files are copied: the player picks their own Deus Ex folder in the launcher.
 # RUST_TOOLCHAIN=<name> selects a rustup toolchain (Bevy needs Rust 1.95 or later).
 set -e
@@ -37,6 +37,11 @@ rm -rf "$(dirname "$ICONSET")"
 
 # An ad-hoc signature: an Apple Silicon Mac runs nothing unsigned, and this one needs no developer account.
 codesign --force --deep --sign - "$APP"
-rm -f dist/dxrust-macos.zip
-ditto -c -k --keepParent "$APP" dist/dxrust-macos.zip
-echo "Built $APP and dist/dxrust-macos.zip"
+rm -f dist/dxrust-macos-arm64.zip
+# The zip's top: the app and recomplauncher.json (RecompLauncher reads it beside the program).
+PACK="$(mktemp -d "${TMPDIR:-/tmp}/dxrust-pack.XXXXXX")"
+ditto "$APP" "$PACK/DX RUST.app"
+cp recomplauncher.json "$PACK/"
+ditto -c -k "$PACK" dist/dxrust-macos-arm64.zip
+rm -rf "$PACK"
+echo "Built $APP and dist/dxrust-macos-arm64.zip"

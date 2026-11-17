@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the Linux / Steam Deck release: <out>/dxrust-steamdeck.tar.xz (dxview, dxlauncher, dxrust.sh and the
+# Builds the Linux / Steam Deck release: <out>/dxrust-linux-x64.tar.gz (dxview, dxlauncher, dxrust.sh and the
 # notices; nothing of the game's). Runs on any x86_64 Linux with the tools from setup_linux.sh, including WSL on a
 # Windows PC (the DX RUST Release Builder runs it there) and GitHub's Ubuntu runners.
 # The binaries are linked against glibc 2.35 (cargo-zigbuild), so they start on SteamOS and on older distros too.
@@ -43,9 +43,9 @@ mkdir -p "$STAGE/dxrust"
 cp "$TD/game/$TRIPLE/release/dxview" "$TD/launcher/$TRIPLE/release/dxlauncher" "$STAGE/dxrust/"
 cp tools/release/dxrust.sh "$STAGE/dxrust/"
 cp LICENSE "$STAGE/dxrust/LICENSE.txt"
-cp README.md THIRD_PARTY.md "$STAGE/dxrust/"
+cp README.md THIRD_PARTY.md recomplauncher.json "$STAGE/dxrust/"
 sed -i 's/\r$//' "$STAGE/dxrust/dxrust.sh"
 chmod +x "$STAGE/dxrust/dxview" "$STAGE/dxrust/dxlauncher" "$STAGE/dxrust/dxrust.sh"
-rm -f "$OUT/dxrust-steamdeck.tar.xz"
-tar -C "$STAGE" -cJf "$OUT/dxrust-steamdeck.tar.xz" dxrust
-echo "Built $OUT/dxrust-steamdeck.tar.xz ($(du -h "$OUT/dxrust-steamdeck.tar.xz" | cut -f1))"
+rm -f "$OUT/dxrust-linux-x64.tar.gz"
+tar -C "$STAGE" -czf "$OUT/dxrust-linux-x64.tar.gz" dxrust
+echo "Built $OUT/dxrust-linux-x64.tar.gz ($(du -h "$OUT/dxrust-linux-x64.tar.gz" | cut -f1))"
