@@ -338,6 +338,8 @@ impl PlayerHealth {
                 self.parts[P_HEAD] = self.parts[P_HEAD].max(10.0);
             }
         }
+        // Modern multiplayer: a non-lethal blow that would kill downs instead; a hit while down finishes.
+        crate::downed::intercept(&mut self.parts, damage_type);
         self.total();
         // Human.PlayDyingSound / PlayTakeHitSound (at most one cry every 0.5..1.5 s).
         if self.dead && !was_dead {
@@ -3827,8 +3829,12 @@ fn puppet_step(
             let two = npc.two_handed();
             npc.shot_timer = (npc.shot_timer - dt).max(0.0);
             let shooting = npc.shot_timer > 0.0 && npc.weapon.is_some();
+            // Down (downed.rs): lying as in a fall, alive.
+            let lying = dead || p.down;
             let (name, fallback, mult): (&'static str, &'static str, f32) = if dead {
                 ("DeathBack", "Still", 1.0)
+            } else if p.down {
+                ("DeathFront", "Still", 1.0)
             } else if shooting && !p.swim {
                 let melee = npc.weapon.as_ref().is_some_and(|w| w.hand_to_hand);
                 match (melee, p.crouch, p.speed > 20.0, two) {
@@ -3852,7 +3858,7 @@ fn puppet_step(
             } else {
                 ("BreatheLight", "Still", 1.0)
             };
-            if dead {
+            if lying {
                 if npc.anim != name {
                     if let Some(m) = level.0.mesh_actors[an.mesh_actor].anim.as_ref() {
                         if let Some(c) = Clip::named(&m.mesh, name, false) {
@@ -8533,6 +8539,8 @@ pub struct HeldModel {
     pub lit_sig: Option<u64>,
     /// Weapon class this model shows; a different weapon in hand rebuilds it.
     pub class: String,
+    /// A player's body: the mods showing on it (attach.rs bits); a change rebuilds it.
+    pub wmods: u8,
 }
 
 /// Fleeing.PickDestination: up to three HidePoints the enemy can't see, scored by how directly they lead away
@@ -8682,6 +8690,9 @@ pub fn npc_weapon_models(
             } else {
                 None
             };
+            // A player's body: the mods on his gun show on it.
+            let wmods = npc.net_player.map_or(0, crate::netplay::remote_wmods);
+            crate::attach::third_person(&mut commands, &mut meshes, &mut materials, root, &parts, wmods);
             commands.entity(e).insert(HeldModel {
                 root,
                 flash,
@@ -8692,6 +8703,7 @@ pub fn npc_weapon_models(
                 lit_at: None,
                 lit_sig: None,
                 class: w.class.clone(),
+                wmods,
             });
         } else {
             commands.entity(root).despawn();
@@ -8706,13 +8718,16 @@ pub fn npc_weapon_models(
                 lit_at: None,
                 lit_sig: None,
                 class: w.class.clone(),
+                wmods: 0,
             });
         }
     }
     let dt = time.delta_secs();
     for (e, npc, an, tf, mut hm) in &mut held {
         // Switched weapons (SwitchToBestWeapon): drop this model; a new one is made next frame.
-        if npc.weapon.as_ref().map(|w| w.class.as_str()) != Some(hm.class.as_str()) {
+        if npc.weapon.as_ref().map(|w| w.class.as_str()) != Some(hm.class.as_str())
+            || npc.net_player.is_some_and(|p| crate::netplay::remote_wmods(p) != hm.wmods && hm.root != Entity::PLACEHOLDER)
+        {
             if hm.root != Entity::PLACEHOLDER {
                 commands.entity(hm.root).despawn();
             }

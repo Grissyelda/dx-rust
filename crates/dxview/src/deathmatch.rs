@@ -205,6 +205,10 @@ pub struct DmRules {
     pub activity: Activity,
     /// Modern: loadouts without the points budget (the host's Full setting; Equal = everyone has the same budget).
     pub full_loadouts: bool,
+    /// Modern: rivals' footsteps and shots show as marks round the crosshair (cover.rs).
+    pub radar: bool,
+    /// Modern: non-lethal takedowns leave a player down instead of dead (downed.rs).
+    pub downed: bool,
 }
 
 impl Default for DmRules {
@@ -221,6 +225,8 @@ impl Default for DmRules {
             classic: ClassicRules { game: ClassicGame::Deathmatch, skills_avail: 2000, skills_per_kill: 2000, initial_augs: 2, augs_per_kill: 2, skill_level: 1, augs_allowed: true, victory: Victory::Frags, score_to_win: 20, friendly_fire: 0.5 },
             activity: Activity::Full,
             full_loadouts: false,
+            radar: false,
+            downed: true,
         }
     }
 }
@@ -274,6 +280,8 @@ pub fn rules_from_settings(mode: Mode, friendly_fire: bool) -> DmRules {
         classic: ClassicRules::default(),
         activity: if crate::settings::has("DmLevel") { Activity::from_index(idx("DmLevel", 3)) } else { Activity::Full },
         full_loadouts: crate::settings::get("DmLoadouts") > 0.5,
+        radar: crate::settings::get("DmRadar") > 0.5,
+        downed: !crate::settings::has("DmDowned") || crate::settings::get("DmDowned") > 0.5,
     }
 }
 
@@ -330,6 +338,8 @@ pub fn classic_rules_from_settings(game: ClassicGame) -> DmRules {
         classic: c,
         activity: Activity::Off,
         full_loadouts: false,
+        radar: false,
+        downed: false,
     }
 }
 
@@ -341,8 +351,8 @@ pub fn rules() -> Option<DmRules> {
     g.clone().or_else(env_rules)
 }
 
-/// DXVIEW_DM=dm|tdm|cdm|cbasic|cadv|ctdm[,map][,frags][,minutes][,off|light|full]: deathmatch rules without the
-/// menus (test runs; the c* ones are Classic game types; the last is Modern's level activity).
+/// DXVIEW_DM=dm|tdm|cdm|cbasic|cadv|ctdm[,map][,frags][,minutes][,off|light|full][,radar][,nodown]: deathmatch rules without
+/// the menus (test runs; the c* ones are Classic game types; then Modern's level activity, sound radar, no downed state).
 fn env_rules() -> Option<DmRules> {
     let v = env_val!("DXVIEW_DM")?;
     let mut it = v.split(',');
@@ -375,6 +385,13 @@ fn env_rules() -> Option<DmRules> {
         Some("off") => r.activity = Activity::Off,
         Some("light") => r.activity = Activity::Light,
         _ => {}
+    }
+    for extra in it {
+        match extra {
+            "radar" => r.radar = true,
+            "nodown" => r.downed = false,
+            _ => {}
+        }
     }
     if r.classic() {
         r.activity = Activity::Off;
@@ -691,6 +708,9 @@ pub struct Data {
     /// Modern: loadouts on a budget, class templates, unlocks (dmchar.rs).
     #[serde(default)]
     pub loadouts: LoadoutData,
+    /// Modern: name-tag colours and calling cards (cards.rs).
+    #[serde(default)]
+    pub cosmetics: crate::cards::Cosmetics,
 }
 
 /// Modern loadouts (data `loadouts`).
@@ -1931,6 +1951,7 @@ pub fn respawn_here(
 ) -> Option<f32> {
     let (at, yaw) = spawn_point(lvl, team_of(my_id()), &others())?;
     *ph = crate::ai::PlayerHealth::default();
+    crate::downed::reset();
     player.body = imsim_core::movement::Character::new(at);
     player.body.physics = imsim_core::movement::Physics::Falling;
     player.noclip = false;

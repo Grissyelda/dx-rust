@@ -42,6 +42,12 @@ pub struct DmChar {
     /// Loadouts, and the one in use.
     pub loadouts: Vec<Loadout>,
     pub loadout: usize,
+    /// Rivals taken down with non-lethal weapons.
+    pub takedowns: u32,
+    /// Cosmetics (cards.rs): the name-tag colour and calling card chosen, and the earned ones already announced.
+    pub tag_color: String,
+    pub card: String,
+    pub cosmetics_seen: Vec<String>,
 }
 
 /// A loadout: what a Modern match starts with (MULTIPLAYER Phase 2: weapons, items, skill levels above Trained,
@@ -198,6 +204,17 @@ pub fn note_hack() {
     reward("Hacks", tuning().per_hack);
 }
 
+/// A rival downed (downed.rs; the host saw it): a takedown.
+pub fn note_takedown() {
+    if !crate::deathmatch::classic() {
+        let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = g.as_mut() {
+            c.takedowns += 1;
+        }
+    }
+    reward("Takedowns", tuning().per_takedown);
+}
+
 /// Damage on a rival someone else killed.
 pub fn note_assist() {
     reward("Assists", tuning().per_assist);
@@ -322,6 +339,8 @@ pub fn save(c: &mut DmChar) {
         c.id = new_id(&c.name);
     }
     c.saved = now();
+    // Cosmetics this record just earned are announced once.
+    crate::cards::announce_new(c);
     if c.created == 0 {
         c.created = c.saved;
     }
@@ -482,6 +501,9 @@ pub fn credit_kill(weapon: &str) -> Option<String> {
     let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     let c = g.as_mut()?;
     c.total_kills += 1;
+    if non_lethal(weapon) {
+        c.takedowns += 1;
+    }
     let (what, n) = if non_lethal(weapon) { ("Takedowns", tuning().per_takedown) } else { ("Kills", tuning().per_kill) };
     earn(c, n);
     ledger_add(what, n);

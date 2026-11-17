@@ -2043,6 +2043,26 @@ fn match_choices() -> Vec<Choice> {
             "Equal: every player's loadout is paid for out of the same points budget; unlocks only add choices. Full: no budget, for private rooms - whatever your character has unlocked.",
             ["Equal", "Full"].iter().map(|s| s.to_string()).collect(),
         ),
+        {
+            // On unless the host turned it off.
+            let mut c = e(
+            "DmDowned",
+            "|&Downed State",
+            "On: a blow from a non-lethal weapon (prod, baton, pepper spray, gas, tranquilizer darts) that would kill leaves a player down for 30 seconds instead. A teammate's medkit revives him, any hit finishes him, and a rival with a multitool can interrogate him to learn where everyone else is. Off: non-lethal kills are kills.",
+            ["Off", "On"].iter().map(|s| s.to_string()).collect(),
+        );
+            if !crate::settings::has("DmDowned") {
+                c.value = 1.0;
+                c.saved = 1.0;
+            }
+            c
+        },
+        e(
+            "DmRadar",
+            "|&Sound Radar",
+            "On: rivals' footsteps and gunfire show as marks round your crosshair, pointing where the sound came from. Crouching, walking slowly and silenced weapons stay off it. Off: you listen for yourself.",
+            ["Off", "On"].iter().map(|s| s.to_string()).collect(),
+        ),
     ]
 }
 
@@ -6573,7 +6593,7 @@ struct DmEdit {
 }
 
 /// The creator's fixed rows before the weapons.
-const DM_ROWS: usize = 5;
+const DM_ROWS: usize = 7;
 
 impl DmEdit {
     fn new(c: crate::dmchar::DmChar) -> DmEdit {
@@ -6591,6 +6611,8 @@ impl DmEdit {
             vec!["Face".into(), format!("{} of 5", c.skin.min(4) + 1)],
             vec!["Augmentique Outfit".into(), crate::dmchar::outfit_name(c)],
             vec!["Record".into(), format!("{} kills, {} deaths, {} wins, {} credits", c.total_kills, c.deaths, c.wins, c.credits)],
+            vec!["Name-Tag Colour".into(), crate::cards::tag_label(c)],
+            vec!["Calling Card".into(), crate::cards::card_label(c)],
         ];
         for w in &self.weapons {
             let skins = crate::dmchar::skins_for(c, w);
@@ -6627,6 +6649,8 @@ impl DmEdit {
             2 => self.c.skin = ((self.c.skin as i32 + dir).rem_euclid(5)) as u8,
             3 => crate::dmchar::cycle_outfit(&mut self.c, dir),
             4 => {}
+            5 => crate::cards::cycle_tag(&mut self.c, dir),
+            6 => crate::cards::cycle_card(&mut self.c, dir),
             i => {
                 if let Some(w) = self.weapons.get(i - DM_ROWS).cloned() {
                     crate::dmchar::cycle_skin(&mut self.c, &w, dir);
@@ -6654,7 +6678,9 @@ impl DmEdit {
             Some(1) => if crate::dmchar::female_possible() { "Male, or Lay D Denton's female JC.".into() } else { "Male. The female body needs the Lay D Denton mod.".into() },
             Some(2) => "Your face: the five new-game faces.".into(),
             Some(3) => "Every Augmentique outfit for this body. The other players see you in it.".into(),
-            Some(4) => format!("{} matches played. Kills with each weapon earn its skins.", c.matches),
+            Some(4) => format!("{} matches played, {} takedowns, {} teammates healed. Kills with each weapon earn its skins.", c.matches, c.takedowns, c.heals),
+            Some(5) => "Your name tag's colour for everyone else (Team Deathmatch shows the team's). More colours come with your record.".into(),
+            Some(6) => "Your calling card: the player you take down sees it, and everyone does when you win a match. More cards come with your record; a locked one shows what it needs (until it's earned you show the Operative card).".into(),
             Some(i) if i >= DM_ROWS => {
                 let Some(w) = self.weapons.get(i - DM_ROWS) else { return String::new() };
                 let kills = crate::dmchar::kills_with(c, w);

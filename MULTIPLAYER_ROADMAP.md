@@ -137,17 +137,20 @@ mode builds on it.
 
 - [x] **Weapon mastery.** Kills and hits with a weapon unlock its original mods (accuracy, clip, range, recoil,
   reload, scope, silencer, laser) and its skins; fitting a mod costs loadout points.
-- [ ] **Mods shown on the weapon**: scope, laser and silencer visible in first and third person (needed before
-  mastery ships).
-- [ ] **Cosmetics**: outfits, the existing kill-earned skins, name-tag colours, calling cards.
+- [x] **Mods shown on the weapon**: scope, laser and silencer visible in first and third person (needed before
+  mastery ships). (`attach.rs`: shapes fitted to each gun's barrel; Visible Attachments' own parts when installed;
+  HDTP's view models not yet.)
+- [x] **Cosmetics**: outfits, the existing kill-earned skins, name-tag colours, calling cards. (`cards.rs`: earned
+  from the character's record; the card shows to the player you take down and on the results when you win.)
 - [x] **Loadout screen** in the Multiplayer menu: class, skills, augmentations, perks, weapons, mods and outfit,
   with the budget shown. (Deathmatch Character > Loadouts...; outfits stay on the character screen.)
 
 ### Modern combat
 - [ ] Every Modern enhancement works in PvP: live-lens scope, aim-down-sights and sway, mantling, smooth lean,
   cover, ragdolls, fluid blood, fire and water interactions, real-time shadows.
-- [ ] **Light and sound as cover.** Players see each other by the same light levels guards use; footsteps by
-  surface, thrown objects and unsilenced shots carry, with an optional sound radar.
+- [x] **Light and sound as cover.** Players see each other by the same light levels guards use; footsteps by
+  surface, thrown objects and unsilenced shots carry, with an optional sound radar. (`cover.rs`: a rival you can't
+  make out gets no name tag and no red crosshair; Sound Radar is a Match Settings choice.)
 - [ ] **Gate:** an 8-player Modern Team Deathmatch with the level on *Full* holds 60 fps on a mid-range PC and stays
   within the network budget.
 
@@ -156,10 +159,13 @@ mode builds on it.
 What no other shooter has. Each is its own module with a host switch, built in this order because each leans on the
 one before.
 
-- [ ] **Downed state and revive.** Non-lethal takedowns (prod, baton, tranquilizer darts, gas) leave a player down
+- [x] **Downed state and revive.** Non-lethal takedowns (prod, baton, tranquilizer darts, gas) leave a player down
   for a while instead of dead. Teammates revive with a medkit; rivals can finish, carry or hide the body.
-- [ ] **Interrogation.** A multitool on a downed rival for about four seconds reveals rival positions, his objective
-  progress, or one killphrase fragment.
+  (`downed.rs`: down 30 s, a teammate's medkit revives, any hit finishes; Match Settings Downed State. Still to
+  come: carrying and hiding a downed player.)
+- [x] **Interrogation.** A multitool on a downed rival for about four seconds reveals rival positions, his objective
+  progress, or one killphrase fragment. (Rival positions now; objective progress and killphrase fragments come with
+  Phase 4 modes and killphrases.)
 - [ ] **Uniforms.** Wear a knocked-out guard's uniform and the level treats you as staff. Running, a drawn weapon
   near guards or a restricted room gives you away (guards grow suspicious first). Rival players see a guard until
   they look closely or use the Vision augmentation.

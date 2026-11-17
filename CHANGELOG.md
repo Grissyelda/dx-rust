@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Multiplayer: downed, revive and interrogation (Modern deathmatch)
+In a Modern deathmatch a blow from a non-lethal weapon - the prod, the baton, pepper spray, gas, tranquilizer darts -
+that would kill leaves a player down instead: on the floor, weapon away, for 30 seconds, then he comes round with a
+little health. A teammate's medkit gets him up at once; any hit finishes him (and the finisher gets the kill); a
+rival who uses a multitool on him for four seconds makes him talk, and every other rival shows on the interrogator's
+screen for 15 seconds. Downing a rival counts as a takedown. A new Match Settings choice, Downed State, turns it off.
+
+### Multiplayer: light and sound as cover (Modern deathmatch)
+A rival standing in the dark no longer gives himself away through the HUD: his name tag stays off and the crosshair
+doesn't turn red on him until you could make him out by the same light rule the guards use (thermoptic camo hides him
+outright; anyone brushing past is seen). A new Match Settings choice, Sound Radar, shows rivals' gunfire and running
+footsteps as marks round the crosshair pointing where they came from; crouching, walking, quiet feet and silenced or
+melee weapons stay off it.
+
+### Multiplayer: name-tag colours and calling cards (Modern deathmatch)
+Deathmatch characters earn name-tag colours and calling cards from their record - kills, takedowns, wins, matches
+played, teammates healed and credits earned - and pick them on the character screen. Others see your name tag in your
+colour (Team Deathmatch keeps the team colours); the player you take down sees your card, and everyone does when you
+win the match. Twelve cards, all our own designs.
+
+### Weapon mods show on the weapon
+A silencer, scope or laser sight fitted to a weapon now shows on it, in your hands and in other players' hands, as
+simple parts sized to each gun (the laser's lens lights while it's on). With the Visible Attachments mod installed its
+own modelled parts are used instead; HDTP's weapon models aren't fitted yet.
+
 ### Multiplayer: the living level (Modern deathmatch)
 In a Modern deathmatch the level's own security is a third side. Cameras, turrets and guards are neutral to every
 player until one of them gives a reason: shooting where staff can hear, a camera seeing a drawn weapon, being

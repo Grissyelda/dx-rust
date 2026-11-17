@@ -1,6 +1,7 @@
 //! Multiplayer name tags: other players' names over their bodies, small, in FontMenuSmall_DS like the frob label.
 //! Shown within TAG_RANGE (deathmatch: DM_RANGE) when the head can be seen; one image node per player, redrawn
-//! only when the name or the UI scale changes.
+//! only when the name, its colour or the UI scale changes. The tag is in the player's own colour (Modern
+//! cosmetics, cards.rs), Team Deathmatch's in the team's.
 
 use crate::classic_hud::HudLayer;
 use crate::hud::ui_scale;
@@ -56,8 +57,12 @@ pub fn nametag_system(
     let Some(font) = hud.font(&mut assets, "FontMenuSmall_DS") else { return };
     // Which tags show, and where (UI units, centred above the head).
     let mut shown: Vec<(String, Vec2)> = Vec::new();
-    for (name, head, coop) in targets {
+    for (name, head, coop, own) in targets {
         let range = if coop { TAG_RANGE } else { DM_RANGE };
+        // Light and sound as cover: a rival this player can't make out shows no tag.
+        if crate::cover::hidden_name(&name) {
+            continue;
+        }
         if head.distance(eye) > range || lvl.collision.trace(eye, head, DVec3::ZERO).fraction < 0.99 {
             continue;
         }
@@ -65,8 +70,10 @@ pub fn nametag_system(
         if let Ok(v) = camera.world_to_viewport(gt, b) {
             // Team Deathmatch: the tag in the team's colour (the team is part of the tag's key, so a change of
             // sides redraws it).
+            // Otherwise his own tag colour (Modern cosmetics), as six hex digits after the team mark.
             let team = crate::deathmatch::team_of_name(&name).map_or('-', |t| (b'0' + t) as char);
-            shown.push((format!("{team}{name}"), v / px));
+            let rgb = own.unwrap_or(crate::menuui::h_col(7));
+            shown.push((format!("{team}{:02x}{:02x}{:02x}{name}", rgb[0], rgb[1], rgb[2]), v / px));
         }
     }
     let mut free: Vec<Entity> = Vec::new();
@@ -77,7 +84,7 @@ pub fn nametag_system(
             continue;
         };
         let (name, at) = shown.remove(i);
-        let (w, h) = (font.width(&name[1..]) + 6, font.height + 4);
+        let (w, h) = (font.width(&name[7..]) + 6, font.height + 4);
         if tag.scale != si {
             // Redraw at the new scale.
             let img = draw(&font, &name, w, h, si);
@@ -97,7 +104,7 @@ pub fn nametag_system(
         }
     }
     for (name, at) in shown {
-        let (w, h) = (font.width(&name[1..]) + 6, font.height + 4);
+        let (w, h) = (font.width(&name[7..]) + 6, font.height + 4);
         let img = images.add(draw(&font, &name, w, h, si));
         let tex = img.clone();
         let (x, y) = ((at.x - w as f32 / 2.0).floor() * k, (at.y - h as f32).floor() * k);
@@ -123,11 +130,13 @@ pub fn nametag_system(
 /// The tag picture: the name in the HUD's text colour over a light shade.
 fn draw(font: &crate::uicanvas::UiFont, key: &str, w: i32, h: i32, s: i32) -> Image {
     use crate::uicanvas::{Canvas, HAlign, VAlign};
-    let (team, name) = key.split_at(key.chars().next().map_or(0, |c| c.len_utf8()));
+    let (team, rest) = key.split_at(1);
+    let (hex, name) = rest.split_at(6);
+    let own = u32::from_str_radix(hex, 16).map_or(crate::menuui::h_col(7), |v| [(v >> 16) as u8, (v >> 8) as u8, v as u8]);
     let col = match team {
         "0" => [120, 170, 255],
         "1" => [255, 90, 90],
-        _ => crate::menuui::h_col(7),
+        _ => own,
     };
     let mut c = Canvas::new(w, h, s);
     c.shade(0, 0, w, h, 0.45);

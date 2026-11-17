@@ -293,7 +293,9 @@ pub fn crosshair_system(
     } else if let Some(b) = hit.actor {
         target_dist = Some(8000.0 * hit.fraction);
         let a = &level.0.actors[blockers.list[b].actor];
-        if find(&a.props, "GroundSpeed").is_some() {
+        // Light and sound as cover: a rival player in the dark doesn't turn the crosshair.
+        let unseen = npcs.iter().find(|n| n.blocker == b).and_then(|n| n.net_player).is_some_and(crate::cover::hidden);
+        if find(&a.props, "GroundSpeed").is_some() && !unseen {
             let hostile = npcs
                 .iter()
                 .find(|n| n.blocker == b)

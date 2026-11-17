@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The game messages' version (Hello / Welcome).
-pub const PROTO: u32 = 5;
+pub const PROTO: u32 = 6;
 /// Seconds before a dead player gets up again near the host (Easy / Medium).
 pub const RESPAWN_SECS: f32 = 4.0;
 /// Hard and Realistic co-op: the wait is longer, and if every player is down at once the level restarts for all.
@@ -89,6 +89,14 @@ pub struct Look {
     /// Classic: the multiplayer class he plays (MPNSF / MPUnatco / MPMJ12; None = JC Denton).
     #[serde(default)]
     pub mp_class: Option<String>,
+    /// Modern cosmetics (cards.rs): his name tag's colour and his calling card ("" = none).
+    #[serde(default)]
+    pub tag: Option<[u8; 3]>,
+    #[serde(default)]
+    pub card: String,
+    /// His loadout's class has quiet feet (Infiltrator): rivals' sound radar doesn't hear his steps.
+    #[serde(default)]
+    pub quiet: bool,
 }
 
 /// One player's body, 30 times a second.
@@ -123,6 +131,10 @@ pub struct PState {
     pub gen: u32,
     /// Looking through a scope (Classic: the sniper rifle hits hard only zoomed).
     pub scoped: bool,
+    /// The mods on the weapon in hand that show on it (attach.rs: 1 silencer, 2 laser, 4 scope, 8 laser on).
+    pub wmods: u8,
+    /// Down (downed.rs): on the floor, alive.
+    pub down: bool,
 }
 
 /// The augmentations whose glow shows on a body.
@@ -296,6 +308,12 @@ enum Msg {
     Spot { at: [f32; 3], who: u8 },
     /// Host -> a player: credits for something the host saw him do ("assist").
     Credit(String),
+    /// Player -> host: I went down (downed.rs), last hurt by `by`.
+    Downed { by: Option<u8> },
+    /// A teammate's medkit on a downed player (routed by the host).
+    Revive { to: u8, by: String },
+    /// A line for one player only (routed by the host).
+    Tell { to: u8, text: String },
 }
 
 /// A grenade the host runs, as it comes into the world.
@@ -604,6 +622,9 @@ fn my_look() -> Look {
         outfit: if dm && !crate::deathmatch::classic() { crate::augmentique::worn_look() } else { None },
         skins: if dm && !crate::deathmatch::classic() { crate::dmchar::current().map(|c| c.weapon_skins).unwrap_or_default() } else { Vec::new() },
         mp_class: crate::deathmatch::classic_class(),
+        tag: if dm && !crate::deathmatch::classic() { crate::dmchar::current().map(|c| crate::cards::tag_rgb(&c)) } else { None },
+        card: if dm && !crate::deathmatch::classic() { crate::dmchar::current().map(|c| crate::cards::card_id(&c)).unwrap_or_default() } else { String::new() },
+        quiet: dm && crate::dmchar::class_perk() == "infiltrator",
     }
 }
 
@@ -1194,6 +1215,8 @@ pub struct NetPose {
     pub shots: u8,
     pub shots_seen: u8,
     pub seen: bool,
+    /// A player's body that is down (downed.rs): lying on the floor, alive.
+    pub down: bool,
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1617,6 +1640,7 @@ pub fn net_in_system(
                         shots: r.st.shots,
                         shots_seen: 0,
                         seen: true,
+                        down: r.st.down,
                     },
                 )
             })
@@ -1737,6 +1761,7 @@ pub fn net_in_system(
                 shots: p.shots,
                 shots_seen: seen,
                 seen: true,
+                down: false,
             }));
         }
         with(|n| n.net_hidden = net_hidden);
@@ -1900,6 +1925,17 @@ fn respawn_tick(
     // A Classic death screen: (killer's name, weapon, streak, health, augs), a suicide, the method.
     type Killer = (String, String, u32, u8, Vec<String>);
     let mut down: Option<(Option<Killer>, bool, String)> = None;
+    // Downed (not dead): the host hears who did it.
+    if crate::downed::take_just() {
+        with(|n| {
+            let by = n.last_by;
+            match n.role {
+                Role::Host => downed(n, 0, by),
+                Role::Client => send_host(n, &Msg::Downed { by }, true),
+                Role::Off => {}
+            }
+        });
+    }
     let up = with(|n| {
         let hard = n.rules.coop && n.rules.difficulty >= 2.0;
         // Hard / Realistic: everyone down at once (each stays down RESPAWN_HARD_SECS, so the windows overlap) - the
@@ -1945,6 +1981,12 @@ fn respawn_tick(
                 });
                 let weapon = killer.as_ref().map(|k| k.1.clone()).unwrap_or_default();
                 down = Some((killer, by == Some(me), crate::deathmatch::method(&weapon, &kind)));
+            } else if crate::deathmatch::playing() {
+                // Modern: the killer's calling card.
+                let me = crate::deathmatch::my_id();
+                if let Some(r) = by.filter(|k| *k != me).and_then(|k| n.remotes.iter().find(|r| r.id == k)) {
+                    crate::cards::show_killer(&r.look.name, &r.look.card);
+                }
             }
             match n.role {
                 Role::Host => died(n, 0, by, &kind),
@@ -2004,6 +2046,7 @@ fn respawn_tick(
     };
     let at = near.unwrap_or(player.body.location);
     *ph = PlayerHealth::default();
+    crate::downed::reset();
     player.body = imsim_core::movement::Character::new(spot_near(lvl, blockers, at, player.params.radius, player.params.height));
     player.body.physics = imsim_core::movement::Physics::Falling;
     player.noclip = false;
@@ -2032,6 +2075,27 @@ fn dm_spot(lvl: &dx_level::Level, others: &[DVec3]) -> Option<DVec3> {
             let d = |p: &DVec3| others.iter().map(|o| (*o - *p).length()).fold(f64::MAX, f64::min);
             d(a).total_cmp(&d(b))
         })
+}
+
+/// Host: a player was downed (downed.rs) - the line for everyone and a takedown for whoever did it (the kill, and
+/// the score, go to whoever finishes him).
+fn downed(n: &mut Net, who: u8, by: Option<u8>) {
+    let name = |n: &Net, id: u8| if id == 0 { n.look.name.clone() } else { n.remotes.iter().find(|r| r.id == id).map_or_else(|| format!("Player {id}"), |r| r.look.name.clone()) };
+    let vname = name(n, who);
+    let line = match by.filter(|k| *k != who && *k != crate::living::LEVEL) {
+        Some(k) => {
+            let kname = name(n, k);
+            if k == 0 {
+                crate::dmchar::note_takedown();
+            } else {
+                send_to(n, k, &Msg::Credit("takedown".into()), true);
+            }
+            format!("{kname} took {vname} down.")
+        }
+        None => format!("{vname} is down."),
+    };
+    feed(&line, DEATH);
+    send_all(n, &Msg::Note(line), true, None);
 }
 
 /// Host: a player went down - the line for everyone, and the deathmatch score.
@@ -2425,6 +2489,24 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         }
         (Role::Host, Msg::Noise { at, radius }) => n.noises_in.push((peer, at, radius)),
         (Role::Host, Msg::Died { by, kind }) => died(n, peer, by, &kind),
+        (Role::Host, Msg::Downed { by }) => downed(n, peer, by),
+        (Role::Host, Msg::Revive { to, by }) => {
+            if to == 0 {
+                crate::downed::revive(&by);
+            } else {
+                send_to(n, to, &Msg::Revive { to, by }, true);
+            }
+            crate::deathmatch::host_heal(peer);
+        }
+        (Role::Host, Msg::Tell { to, text }) => {
+            if to == 0 {
+                crate::classic_hud::client_message(&text);
+            } else {
+                send_to(n, to, &Msg::Tell { to, text }, true);
+            }
+        }
+        (Role::Client, Msg::Revive { by, .. }) => crate::downed::revive(&by),
+        (Role::Client, Msg::Tell { text, .. }) => crate::classic_hud::client_message(&text),
         (Role::Host, Msg::DecoMove(_, d)) => sync(|s| s.deco_moves.push(d)),
         (Role::Host, Msg::DecoHit { actor, damage, kind }) => sync(|s| s.deco_hits.push((actor, damage, kind))),
         (Role::Host, Msg::ItemSpawn(_, it)) => sync(|s| s.item_spawns.push((0, it))),
@@ -2537,6 +2619,7 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Client, Msg::Credit(what)) => {
             match what.as_str() {
                 "assist" => crate::dmchar::note_assist(),
+                "takedown" => crate::dmchar::note_takedown(),
                 "hack" => crate::dmchar::note_hack(),
                 _ => {}
             }
@@ -2695,6 +2778,8 @@ pub fn net_out_system(
             camo: ph.camo,
             gen: crate::loader::generation() as u32,
             scoped: crate::weapons::ZOOMED.load(std::sync::atomic::Ordering::Relaxed),
+            wmods: weapons.held.as_ref().map_or(0, |h| crate::attach::bits(h.fitted())),
+            down: crate::downed::is_down(),
         };
         MY_YAW.store(yaw.to_bits(), std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut w) = MY_WEAPON.lock() {
@@ -3227,9 +3312,50 @@ pub fn mate(id: u8) -> Option<(String, u8, bool)> {
     with(|n| n.remotes.iter().find(|r| r.id == id).map(|r| (r.look.name.clone(), r.st.health, r.st.dead))).flatten()
 }
 
+/// Another player is down (downed.rs), and on our side (a teammate or co-op).
+pub fn mate_down(id: u8) -> Option<(bool, bool)> {
+    let me = crate::deathmatch::my_id();
+    with(|n| n.remotes.iter().find(|r| r.id == id).map(|r| (r.st.down, n.rules.coop || crate::deathmatch::allied(me, r.id)))).flatten()
+}
+
+/// Tell one player something (shown in his message line).
+pub fn tell(to: u8, text: &str) {
+    with(|n| {
+        let m = Msg::Tell { to, text: text.to_string() };
+        if n.role == Role::Host {
+            send_to(n, to, &m, true);
+        } else {
+            send_host(n, &m, true);
+        }
+    });
+}
+
+/// Revive downed teammate `to` (one of our medkits, used up by the caller).
+pub fn revive_player(to: u8) {
+    if crate::deathmatch::versus() {
+        crate::dmchar::note_heal();
+    }
+    with(|n| {
+        let m = Msg::Revive { to, by: n.look.name.clone() };
+        if n.role == Role::Host {
+            crate::deathmatch::host_heal(0);
+            send_to(n, to, &m, true);
+        } else {
+            send_host(n, &m, true);
+        }
+    });
+}
+
 /// The frob label over another player: his name, and what Use would do with the medkits we carry.
 pub fn mate_label(id: u8, medkits: u32) -> String {
     let Some((name, health, dead)) = mate(id) else { return "Player".into() };
+    if let Some((true, ours)) = mate_down(id) {
+        return if ours {
+            if medkits == 0 { format!("{name}\nDown (no medkit to revive)") } else { format!("{name}\nDown: Use to revive") }
+        } else {
+            format!("{name}\nDown: finish, or Use with a multitool to interrogate")
+        };
+    }
     if dead {
         format!("{name}\nDown")
     } else if health >= 100 {
@@ -3381,6 +3507,9 @@ static CHATBOX: Mutex<Chat> = Mutex::new(Chat { open: false, text: String::new()
 
 /// A line of news for the top of the screen (and the log).
 pub fn feed(line: &str, colour: [u8; 3]) {
+    if env_on!("DXVIEW_NETLOG") {
+        println!("NET feed: {line}");
+    }
     if let Ok(mut f) = FEED.lock() {
         f.push((Instant::now(), line.to_string(), colour));
         if f.len() > 32 {
@@ -4633,16 +4762,77 @@ pub fn item_sync_system(mut commands: Commands, time: Res<Time>, items: Query<(E
 // --- Name tags and the player list --------------------------------------------------------------------------------
 
 /// Other players' bodies here that a name tag goes over: (name, head position).
-pub fn tag_targets() -> Vec<(String, DVec3, bool)> {
+pub fn tag_targets() -> Vec<(String, DVec3, bool, Option<[u8; 3]>)> {
     with(|n| {
         let coop = n.rules.coop;
         n.remotes
             .iter()
             .filter(|r| r.at.is_some() && r.body.is_some() && !r.st.dead && !r.st.camo)
-            .map(|r| (r.look.name.clone(), d3(r.st.pos) + DVec3::Z * 50.0, coop))
+            .map(|r| (r.look.name.clone(), d3(r.st.pos) + DVec3::Z * 50.0, coop, r.look.tag))
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// Another player as this one perceives him (cover.rs: light and sound as cover in a Modern versus match).
+pub struct Rival {
+    pub id: u8,
+    pub name: String,
+    pub pos: DVec3,
+    pub vel: DVec3,
+    pub crouch: bool,
+    pub swim: bool,
+    pub shots: u8,
+    pub weapon: String,
+    pub quiet: bool,
+    pub light: f32,
+    pub camo: bool,
+    /// Down (downed.rs).
+    pub down: bool,
+    /// On the other side (not a teammate, not co-op).
+    pub rival: bool,
+}
+
+/// Every other living player on this map with a body.
+pub fn rivals() -> Vec<Rival> {
+    let me = crate::deathmatch::my_id();
+    with(|n| {
+        let coop = n.rules.coop;
+        n.remotes
+            .iter()
+            .filter(|r| r.at.is_some() && !r.st.dead)
+            .map(|r| Rival {
+                id: r.id,
+                name: r.look.name.clone(),
+                pos: d3(r.st.pos),
+                vel: d3(r.st.vel),
+                crouch: r.st.crouch,
+                swim: r.st.swim,
+                shots: r.st.shots,
+                weapon: r.st.weapon.clone(),
+                quiet: r.look.quiet,
+                light: r.st.light,
+                camo: r.st.camo,
+                down: r.st.down,
+                rival: !coop && !crate::deathmatch::allied(me, r.id),
+            })
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The mods showing on a player's weapon (attach.rs bits; 0 for anyone else).
+pub fn remote_wmods(id: u8) -> u8 {
+    with(|n| n.remotes.iter().find(|r| r.id == id).map(|r| r.st.wmods)).flatten().unwrap_or(0)
+}
+
+/// A player's name and calling card by id (this player's own for `my_id`).
+pub fn card_of(id: u8) -> Option<(String, String)> {
+    if id == crate::deathmatch::my_id() {
+        let l = my_look();
+        return Some((l.name, l.card));
+    }
+    with(|n| n.remotes.iter().find(|r| r.id == id).map(|r| (r.look.name.clone(), r.look.card.clone()))).flatten()
 }
 
 /// Everyone in the game for the player list (held key): name, ping (ms), alive, host.
@@ -4667,6 +4857,11 @@ pub fn player_list() -> Vec<(String, f32, bool, bool)> {
 }
 
 static ME_DEAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This player is dead (as last sent).
+pub fn me_dead() -> bool {
+    ME_DEAD.load(std::sync::atomic::Ordering::Relaxed)
+}
 static LIST_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The player list key ("Player list (multiplayer)", P by default) is held.

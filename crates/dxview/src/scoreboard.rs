@@ -100,7 +100,7 @@ pub fn scoreboard_system(
     } else {
         Vec::new()
     };
-    let extra = extra ^ ledger.iter().map(|l| l.2 as u64 * 31 + l.1 as u64).sum::<u64>() << 8;
+    let extra = extra ^ board.ended.as_ref().and_then(|e| e.winner_id).and_then(crate::netplay::card_of).map_or(0, |c| crate::util::fnv1a(&c.1)) ^ ledger.iter().map(|l| l.2 as u64 * 31 + l.1 as u64).sum::<u64>() << 8;
     let h = hash(&board, extra);
     if deathmatch::classic() {
         // The original's own layout: full screen, no panel (DeusExMPGame.ShowDMScoreboard / the win screens).
@@ -124,7 +124,15 @@ pub fn scoreboard_system(
         board.rows.len()
     };
     let ended = board.ended.clone();
-    let head_h = if ended.is_some() { 78 } else { 40 };
+    // Modern: the winner's calling card under the headline.
+    let win_card = ended
+        .as_ref()
+        .and_then(|e| e.winner_id)
+        .filter(|_| mode != deathmatch::Mode::Coop)
+        .and_then(crate::netplay::card_of)
+        .and_then(|(name, id)| crate::cards::card(&id).map(|c| (name, c)));
+    let card_h = if win_card.is_some() { crate::cards::CARD_H + 6 } else { 0 };
+    let head_h = if ended.is_some() { 78 } else { 40 } + card_h;
     let ledger_h = if ledger.is_empty() { 0 } else { 30 };
     let hgt = head_h + 30 + rows_n.max(1) as i32 * 14 + if team { 22 } else { 6 } + if ended.is_some() { 20 } else { 0 } + ledger_h;
     let pos = Vec2::new((win.width() - w as f32 * k) / 2.0, (win.height() * 0.18).max(8.0));
@@ -151,6 +159,10 @@ pub fn scoreboard_system(
             c.text(&small, 4, y, w - 8, small.height, HAlign::Center, VAlign::Top, text, &e.last_kill);
         }
         y += small.height + 4;
+        if let Some((name, card)) = &win_card {
+            crate::cards::draw_card(&mut c, (w - crate::cards::CARD_W) / 2, y, card, name, &small, &title);
+            y += crate::cards::CARD_H + 6;
+        }
     }
     // ShowVictoryConditions + the map.
     let map = deathmatch::map_title(&level.0.name);

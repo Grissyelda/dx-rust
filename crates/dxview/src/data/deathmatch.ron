@@ -185,6 +185,35 @@
     //   objectives: [(name: "unatco_flag", kind: "flag", at: (0, 0, 0), radius: 120, team: Some(0))],
     //   loot: [(name: "crates", actors: ["CrateUnbreakableSmall3"], points: [(0, 0, 0)], items: [("MedKit", 2), ("BioelectricCell", 1)], picks: 2)],
     //   codes: [(name: "vault", devices: ["Keypad0"], digits: 4)],
+    // Modern cosmetics (cards.rs): earned by the character's record, never bought. `need` what: kills, takedowns,
+    // wins, matches, heals, credits (ever earned). The first of each list is the default.
+    cosmetics: (
+        tag_colors: [
+            (id: "white", name: "White", rgb: (230, 230, 230)),
+            (id: "cyan", name: "Cyan", rgb: (90, 220, 255)),
+            (id: "amber", name: "Amber", rgb: (255, 190, 60), need: Some((what: "kills", n: 10))),
+            (id: "green", name: "Medic Green", rgb: (90, 255, 120), need: Some((what: "heals", n: 5))),
+            (id: "violet", name: "Violet", rgb: (190, 130, 255), need: Some((what: "matches", n: 5))),
+            (id: "teal", name: "Teal", rgb: (60, 230, 190), need: Some((what: "takedowns", n: 10))),
+            (id: "red", name: "Crimson", rgb: (255, 80, 80), need: Some((what: "kills", n: 50))),
+            (id: "gold", name: "Gold", rgb: (255, 220, 70), need: Some((what: "wins", n: 3))),
+            (id: "magenta", name: "Magenta", rgb: (255, 90, 220), need: Some((what: "credits", n: 2000))),
+        ],
+        cards: [
+            (id: "operative", name: "Operative", title: "OPERATIVE", pattern: "plain", emblem: "ring", accent: (80, 120, 170)),
+            (id: "nightshift", name: "Night Shift", title: "NIGHT SHIFT", pattern: "stripes", emblem: "eye", accent: (110, 80, 180)),
+            (id: "firstblood", name: "First Blood", title: "FIRST BLOOD", pattern: "chevrons", emblem: "triangle", accent: (190, 50, 50), need: Some((what: "kills", n: 1))),
+            (id: "ghost", name: "Ghost", title: "GHOST", pattern: "dots", emblem: "crescent", accent: (150, 160, 175), need: Some((what: "takedowns", n: 5))),
+            (id: "fieldmedic", name: "Field Medic", title: "FIELD MEDIC", pattern: "hex", emblem: "cross", accent: (50, 170, 90), need: Some((what: "heals", n: 10))),
+            (id: "deadeye", name: "Deadeye", title: "DEADEYE", pattern: "grid", emblem: "crosshair", accent: (200, 140, 40), need: Some((what: "kills", n: 50))),
+            (id: "wiretap", name: "Wiretap", title: "WIRETAP", pattern: "circuit", emblem: "diamond", accent: (40, 170, 190), need: Some((what: "credits", n: 1000))),
+            (id: "silent", name: "Silent Running", title: "SILENT RUNNING", pattern: "waves", emblem: "bolt", accent: (40, 150, 140), need: Some((what: "takedowns", n: 25))),
+            (id: "veteran", name: "Veteran", title: "VETERAN", pattern: "rings", emblem: "star", accent: (170, 140, 60), need: Some((what: "matches", n: 25))),
+            (id: "ironclad", name: "Ironclad", title: "IRONCLAD", pattern: "plates", emblem: "shield", accent: (150, 100, 60), need: Some((what: "kills", n: 100))),
+            (id: "champion", name: "Champion", title: "CHAMPION", pattern: "rays", emblem: "crown", accent: (210, 170, 40), need: Some((what: "wins", n: 5))),
+            (id: "orbital", name: "Orbital", title: "ORBITAL", pattern: "rings", emblem: "orbit", accent: (200, 200, 220), need: Some((what: "wins", n: 25))),
+        ],
+    ),
     maps: [
         // DXMP_Area51Bunker: 67 kept, starts 24, value near starts min 14 max 44 mean 32.3; quadrants [14, 39, 37, 38]
         // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 8, Lockpick 9, MedKit 6, Multitool 10, AssaultGun 2, AssaultShotgun 3, CombatKnife 2, EMPGrenade 2, Flamethrower 1, GEPGun 1, GasGrenade 2, LAM 2, LAW 1, MiniCrossbow 2, NanoSword 1, Pistol 3, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 2, StealthPistol 2

@@ -236,6 +236,27 @@ struct FrobCx<'a> {
 fn frob_mate(cx: &mut FrobCx, id: u8) {
     let Some((name, health, dead)) = crate::netplay::mate(id) else { return };
     let has = cx.inv.0.items.iter().any(|i| i.def.class == "MedKit");
+    // Downed (downed.rs): a teammate's medkit revives; a rival's multitool interrogates.
+    if let Some((true, ours)) = crate::netplay::mate_down(id) {
+        let msg = if ours {
+            if has {
+                cx.inv.0.use_one("MedKit");
+                crate::netplay::revive_player(id);
+                crate::sound::play_player("DeusExSounds.Generic.MedicalHiss", 1.0, 256.0);
+                format!("You got {name} back on his feet.")
+            } else {
+                format!("You need a medkit to revive {name}.")
+            }
+        } else if cx.inv.0.items.iter().any(|i| i.def.class == "Multitool") {
+            crate::downed::begin_interrogation(id, cx.player.body.location);
+            format!("Interrogating {name}...")
+        } else {
+            format!("{name} is down: finish him, or bring a multitool to make him talk.")
+        };
+        cx.hud.text = msg;
+        cx.hud.time_left = 2.0;
+        return;
+    }
     let msg = if dead {
         format!("{name} is down.")
     } else if health >= 100 {

@@ -497,6 +497,8 @@ fn reset_modules() {
     crate::netplay::reset_level();
     crate::deathmatch::reset_level();
     crate::living::reset_level();
+    crate::cards::reset_level();
+    crate::downed::reset_level();
     crate::mphud::reset_level();
     crate::info::reset_level();
     crate::zones::reset_level();

@@ -153,6 +153,15 @@ pub struct ModState {
 }
 
 /// WeaponMod*.ApplyMod on a weapon's default stats.
+impl WeaponStats {
+    /// Dev aid (DXVIEW_WEAPON_MODS): these mods on.
+    pub fn scope_or(&mut self, scope: bool, laser: bool, silencer: bool) {
+        self.has_scope |= scope;
+        self.has_laser |= laser;
+        self.silenced |= silencer;
+    }
+}
+
 pub fn apply_mods(w: &mut WeaponStats, m: &ModState) {
     let base_acc = w.base_accuracy;
     if m.accuracy > 0.0 {
@@ -1161,6 +1170,11 @@ pub fn fov_system(
 }
 
 /// Unreal view space (X forward, Y right, Z up) to the view camera's space (Bevy: -Z forward, +X right, +Y up).
+/// Unreal view axes (scaled units) into the view-model camera's space (attach.rs).
+pub fn view_to_cam_pub(v: [f32; 3]) -> [f32; 3] {
+    view_to_cam(v)
+}
+
 fn view_to_cam(v: [f32; 3]) -> [f32; 3] {
     [
         v[1] * METERS_PER_UNIT,
@@ -1772,15 +1786,20 @@ pub fn visattach_refit_system(
     mut dev: Local<bool>,
 ) {
     // Dev aid: DXVIEW_WEAPON_MODS="WeaponPistol=scope,laser,silencer,lasing;..." fits mods at start.
-    if !*dev {
-        *dev = true;
-        if let Ok(v) = std::env::var("DXVIEW_WEAPON_MODS") {
-            for one in v.split(';') {
-                if let Some((c, list)) = one.split_once('=') {
-                    let m = weapons.mods.entry(c.trim().to_string()).or_default();
+    // (Kept fitted: a new map's reset clears the mods, and the weapon in hand takes them too.)
+    let _ = &mut dev;
+    if let Some(v) = env_val!("DXVIEW_WEAPON_MODS") {
+        for one in v.split(';') {
+            if let Some((c, list)) = one.split_once('=') {
+                let c = c.trim();
+                if !weapons.mods.contains_key(c) {
+                    let m = weapons.mods.entry(c.to_string()).or_default();
                     m.scope |= list.contains("scope");
                     m.laser |= list.contains("laser");
                     m.silencer |= list.contains("silencer");
+                }
+                if let Some(h) = weapons.held.as_mut().filter(|h| h.stats.class == c) {
+                    h.stats.scope_or(list.contains("scope"), list.contains("laser"), list.contains("silencer"));
                 }
             }
         }
@@ -2817,7 +2836,7 @@ pub fn weapon_system(
     }
     // Dead: nothing in hand is used, fired or reloaded any more (GitHub issue #60 - a medkit or a
     // grenade still worked from the death screen).
-    if cx.ph.dead {
+    if cx.ph.dead || crate::downed::is_down() {
         return;
     }
     let locked = cursor.grab_mode == CursorGrabMode::Locked || injected_fire;

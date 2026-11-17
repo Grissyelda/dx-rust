@@ -28,6 +28,10 @@ mod matchmode;
 mod mphud;
 mod dmchar;
 mod scoreboard;
+mod cards;
+mod cover;
+mod attach;
+mod downed;
 mod queue;
 mod util;
 mod uinode;
@@ -1088,7 +1092,7 @@ fn add_input_systems(app: &mut App) {
         .init_resource::<keybinds::Bindings>()
         .add_systems(Startup, (gamepad::setup, || dualsense::setup(), || haptics::setup()))
         .add_systems(Update, (touch::draw_system, platform::lifecycle_system, platform::window_log_system))
-        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, scoreboard::scoreboard_system, mphud::mphud_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
+        .add_systems(Update, (augwheel::augwheel_system, dualsense::dualsense_system, gamepad::rumble_system, prompts::prompts_system, scoreboard::scoreboard_system, cards::killcard_system, cover::cover_system, downed::downed_system, mphud::mphud_system, winicon::window_icon_system, menus::fullscreen_when_ready_system))
         .init_resource::<inventory_screen::InvScreen>()
         .init_resource::<destruct::ItemThrows>()
         .add_systems(
@@ -1276,6 +1280,7 @@ fn add_material_plugins(app: &mut App) {
                 gore::gore_system.after(ai::npc_system),
                 bodyfx::bleed_system.after(bodyfx::wounds_system).before(gore::gore_system),
                 viewblood::view_blood_system.after(gore::gore_system).after(weapons::weapon_system),
+                attach::view_attach_system.after(weapons::weapon_system),
             ),
         );
 }
@@ -2907,6 +2912,12 @@ fn face_free_cam(cx: &FlyCx, w: &Walk, tf: &mut Mut<Transform>, cam: &mut Mut<Fl
 fn drone_step(cx: &FlyCx, w: &mut Walk, player: &mut ResMut<Player>) {
     let keys = cx.keys;
     let drone = augdisplay::drone_flying();
+    if crate::downed::is_down() {
+        // Downed (multiplayer): he can't get anywhere.
+        w.wish = DVec3::ZERO;
+        player.body.velocity.x = 0.0;
+        player.body.velocity.y = 0.0;
+    }
     if drone {
         let (f, r) = (w.f, w.r);
         let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64);
@@ -3123,7 +3134,8 @@ fn crouch_step(
         player.crouch_on = false;
         player.was_crouch_on = false;
     }
-    let want_duck = duck_key || legless || player.swimming;
+    // (Downed in multiplayer: on the floor.)
+    let want_duck = duck_key || legless || player.swimming || crate::downed::is_down();
     let duck_h = 16.0;
     let (stand_h, stand_eye) = (player.stand_height, player.stand_eye);
     let delta_eye = stand_h - stand_eye;
