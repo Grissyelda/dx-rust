@@ -289,6 +289,8 @@ pub struct Play {
     pub player_line: bool,
     pub choices: Vec<(Choice, bool)>,
     pub focus: usize,
+    /// The choice row the pointer was on the frame before (`step_focus`).
+    hover_was: Option<usize>,
     speaker: Option<Who>,
     speaking_to: Option<Who>,
     initial_radius: f64,
@@ -1500,6 +1502,7 @@ impl ConState {
             player_line: false,
             choices: Vec::new(),
             focus: 0,
+            hover_was: None,
             speaker: None,
             speaking_to: None,
             initial_radius,
@@ -1976,6 +1979,7 @@ impl ConState {
                 } else {
                     p.choices = shown;
                     p.focus = 0;
+                    p.hover_was = None;
                     p.wait = Wait::Input;
                     p.restrict = false;
                 }
@@ -2617,6 +2621,24 @@ static MOUSE_DY: Mutex<f32> = Mutex::new(0.0);
 static HOVER: Mutex<Option<usize>> = Mutex::new(None);
 static CURSOR_FREED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The highlighted choice after a frame's input (`n` choices): Up / Down (the arrow keys, a pad's D-pad, the wheel) step
+/// it, wrapping, and the pointer takes it when it comes onto a row (`hover`, against `hover_was` the frame before), not
+/// while it rests there. The pointer stays where it was when the choices come up, often on one of them, so a step
+/// undone every frame by the row under it left the D-pad dead while only the stick, moving the pointer, worked.
+fn step_focus(focus: usize, n: usize, up: bool, down: bool, hover: Option<usize>, hover_was: Option<usize>) -> usize {
+    let mut f = focus;
+    if up {
+        f = (f + n - 1) % n;
+    }
+    if down {
+        f = (f + 1) % n;
+    }
+    match hover {
+        Some(i) if hover_was != Some(i) => i,
+        _ => f,
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct ConSetup {
     tried: bool,
@@ -2998,16 +3020,10 @@ pub fn consys_system(
                 Wait::Input => {
                     if !p.choices.is_empty() {
                         let n = p.choices.len();
-                        if input.up {
-                            p.focus = (p.focus + n - 1) % n;
-                        }
-                        if input.down {
-                            p.focus = (p.focus + 1) % n;
-                        }
                         let hover = HOVER.lock().ok().and_then(|h| *h).filter(|&i| i < n);
-                        if let Some(i) = hover {
-                            p.focus = i;
-                        } else if mouse_dy.abs() > 0.0 && !CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed) {
+                        p.focus = step_focus(p.focus, n, input.up, input.down, hover, p.hover_was);
+                        p.hover_was = hover;
+                        if hover.is_none() && mouse_dy.abs() > 0.0 && !CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed) {
                             let acc = MOUSE_ACC.lock().map(|mut a| {
                                 *a += mouse_dy;
                                 let steps = (*a / 24.0) as i32;
@@ -3023,9 +3039,10 @@ pub fn consys_system(
                         if let Some(k) = input.pick.filter(|&k| k < n) {
                             p.focus = k;
                             st.choose(fl, k);
-                        } else if (input.click && (hover.is_some() || !CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed)))
-                            || keys_enter(&input)
-                        {
+                        } else if let Some(k) = hover.filter(|_| input.click) {
+                            p.focus = k;
+                            st.choose(fl, k);
+                        } else if (input.click && !CURSOR_FREED.load(std::sync::atomic::Ordering::Relaxed)) || keys_enter(&input) {
                             let f = p.focus;
                             st.choose(fl, f);
                         }
@@ -3702,6 +3719,32 @@ mod tests {
         let l = st.speech_len(ci, 576).expect("length");
         println!("DL_StartGame speech: {l:.2}s");
         assert!(l > 5.0 && l < 30.0);
+    }
+
+    #[test]
+    fn a_step_stays_while_the_pointer_rests_on_a_choice() {
+        // The choices come up under the pointer: the row under it is highlighted.
+        let mut focus = step_focus(0, 3, false, false, Some(1), None);
+        assert_eq!(focus, 1);
+        // D-pad Down with the pointer still on row 1: the step holds over the following frames.
+        focus = step_focus(focus, 3, false, true, Some(1), Some(1));
+        assert_eq!(focus, 2);
+        for _ in 0..3 {
+            focus = step_focus(focus, 3, false, false, Some(1), Some(1));
+        }
+        assert_eq!(focus, 2);
+        // Up from the first choice wraps to the last.
+        assert_eq!(step_focus(0, 3, true, false, Some(1), Some(1)), 2);
+    }
+
+    #[test]
+    fn the_pointer_takes_the_highlight_when_it_moves_to_another_choice() {
+        // After a step to row 2, the pointer moving from row 1 onto row 0 highlights row 0.
+        assert_eq!(step_focus(2, 3, false, false, Some(0), Some(1)), 0);
+        // The pointer leaving the rows keeps the highlight where it was.
+        assert_eq!(step_focus(2, 3, false, false, None, Some(0)), 2);
+        // Coming back onto a row takes it again.
+        assert_eq!(step_focus(2, 3, false, false, Some(0), None), 0);
     }
 }
 
