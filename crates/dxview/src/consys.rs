@@ -492,7 +492,8 @@ pub fn warm_db(sys: PathBuf) {
 
 pub(crate) fn cached_db(sys: &std::path::Path) -> Option<std::sync::Arc<ConDb>> {
     static DB: Mutex<Option<(PathBuf, std::sync::Arc<ConDb>)>> = Mutex::new(None);
-    let path = unreal_pkg::paths::find_ci(sys, "DeusExConText.u")?;
+    let text = if unreal_pkg::tnm::active().is_some() { "TNMConvos1Text.u" } else { "DeusExConText.u" };
+    let path = unreal_pkg::paths::find_ci(sys, text)?;
     let mut g = DB.lock().ok()?;
     if let Some((p, db)) = g.as_ref() {
         if *p == path {
@@ -1263,7 +1264,7 @@ impl ConState {
             .or_insert_with(|| ConAudio::load(&sys, &pkg))
             .as_ref()?;
         let e = au.export(sound_id)?;
-        let path = format!("DeusExConAudio{pkg}.{}", e.name);
+        let path = format!("{}.{}", dx_level::conversations::audio_file(&pkg), e.name);
         match crate::sound::cached(&path) {
             // Decoded already (prefetched in the background when the conversation began): its exact length and lips.
             Some(Some(clip)) => {
@@ -1310,7 +1311,7 @@ impl ConState {
             .or_insert_with(|| ConAudio::load(&sys, &pkg))
             .as_ref()?;
         let e = au.export(sound_id)?;
-        Some(format!("DeusExConAudio{pkg}.{}", e.name))
+        Some(format!("{}.{}", dx_level::conversations::audio_file(&pkg), e.name))
     }
 
     /// CanStartConversation (the player side).
@@ -2663,6 +2664,8 @@ pub fn consys_system(
                 _ => None,
             })
             .unwrap_or(0);
+        // The Nameless Mod: the half of its conversations this map's ConversationPackage names.
+        let mission = dx_level::conversations::mission_key(mission, &info.map(|a| sv(&a.props, "ConversationPackage")).unwrap_or_default());
         let location = info
             .map(|a| sv(&a.props, "MissionLocation"))
             .unwrap_or_default();
@@ -2697,7 +2700,7 @@ pub fn consys_system(
                     }
                 }
                 // Who can take part: the player, and every placed actor with a BindName.
-                let jc = assets.classes.defaults("JCDentonMale");
+                let jc = assets.classes.defaults(crate::tnmmode::player_class());
                 st.by_bind.insert("jcdenton".into(), Who::Player);
                 st.actors.insert(
                     Who::Player,

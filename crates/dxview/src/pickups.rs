@@ -124,11 +124,8 @@ pub fn starting_inventory(root: &std::path::Path) -> PlayerInventory {
                 .collect()
         })
         .unwrap_or_default();
-    let base = [
-        "WeaponPistol",
-        "WeaponProd",
-        "MedKit",
-    ];
+    // The Nameless Mod's Trestkon.ResetPlayer gives none of JC's kit (his key ring and fists only).
+    let base: &[&str] = if crate::tnmmode::active() { &[] } else { &["WeaponPistol", "WeaponProd", "MedKit"] };
     for class in base.iter().map(|s| s.to_string()).chain(extra) {
         let class = class.as_str();
         let d = db.defaults(class);
@@ -138,7 +135,7 @@ pub fn starting_inventory(root: &std::path::Path) -> PlayerInventory {
         }
     }
     // ResetPlayer: Credits = Default.Credits (JCDentonMale: 500).
-    inv.credits = match unreal_pkg::props::find(&db.defaults("JCDentonMale"), "Credits") {
+    inv.credits = match unreal_pkg::props::find(&db.defaults(crate::tnmmode::player_class()), "Credits") {
         Some(Value::Int(n)) => (*n).max(0) as u32,
         _ => 500,
     };

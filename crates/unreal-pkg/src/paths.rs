@@ -103,7 +103,7 @@ pub fn set_hd_textures_on(on: bool) {
 
 /// The overlay folders (none while mods are suspended).
 pub fn overlays() -> Vec<PathBuf> {
-    if crate::mods::suspended() {
+    if crate::mods::suspended() && crate::tnm::active().is_none() {
         return Vec::new();
     }
     STATE.read().ok().and_then(|g| g.as_ref().map(|s| s.1.clone())).unwrap_or_default()
@@ -126,7 +126,7 @@ fn ci_in(dir: &Path, name: &str) -> Option<PathBuf> {
 pub fn resolve(path: &Path) -> PathBuf {
     let g = STATE.read();
     let Some((root, ovs)) = g.as_ref().ok().and_then(|g| g.as_ref()) else { return path.to_path_buf() };
-    let off = crate::mods::suspended();
+    let off = crate::mods::suspended() && crate::tnm::active().is_none();
     if ovs.is_empty() || off {
         if path.exists() {
             return path.to_path_buf();

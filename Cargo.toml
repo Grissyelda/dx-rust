@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/imsim-core", "crates/unreal-pkg", "crates/dx-level", "crates/dxtool", "crates/dxview", "crates/imsim-audio", "crates/imsim-plants", "crates/imsim-net", "crates/dxandroid"]
+members = ["crates/imsim-core", "crates/unreal-pkg", "crates/dx-level", "crates/dxtool", "crates/dxview", "crates/imsim-audio", "crates/imsim-plants", "crates/imsim-net", "crates/dxandroid", "crates/modkit"]
 exclude = ["crates/dxlauncher", "vendor/winit"]
 resolver = "2"
 

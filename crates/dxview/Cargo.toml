@@ -12,6 +12,7 @@ winresource = "0.1"
 wgpu = { version = "29.0.4", default-features = false }
 bevy = { version = "0.19.1", default-features = false, features = ["3d", "ui", "experimental_pbr_pcss"] }
 dx-level = { path = "../dx-level" }
+modkit = { path = "../modkit" }
 imsim-core = { path = "../imsim-core" }
 unreal-pkg = { path = "../unreal-pkg" }
 imsim-audio = { path = "../imsim-audio" }

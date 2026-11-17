@@ -155,7 +155,7 @@ pub fn build(classes: &mut unreal_pkg::classes::ClassDb) -> Abilities {
             class: c,
         });
     }
-    let player = classes.defaults("JCDentonMale");
+    let player = classes.defaults(crate::tnmmode::player_class());
     let points = match at(&player, "SkillPointsAvail", 0) {
         Some(Value::Int(v)) => *v,
         _ => 5000,

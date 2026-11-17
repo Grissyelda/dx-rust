@@ -57,7 +57,7 @@ fn write_kv(path: &Path, header: &str, kv: &[(String, String)]) -> std::io::Resu
 
 // ------------------------------------------------------------------------------------------------ window layout
 // MenuScreenDisplay's frame (UI units): client 391 x 408 on four 256 tiles, rows from y 27 every 36, value boxes
-// at x 270 (98 wide), help line at 354. Five rows are used; the four spare choice wells are cut out (like dxview's
+// at x 270 (98 wide), help line at 354. Six rows are used; the three spare choice wells are cut out (like dxview's
 // Frame::cuts) and the window closes up.
 
 const TITLE_H: i32 = 23;
@@ -65,7 +65,7 @@ const LEFT_BOTTOM: (i32, i32) = (10, 53);
 const BAR_H: i32 = 21;
 const CW: i32 = 391;
 const CH_ART: i32 = 408;
-const CUT: (i32, i32) = (27 + 36 * 5 - 9, 36 * 4);
+const CUT: (i32, i32) = (27 + 36 * 6 - 9, 36 * 3);
 const CH: i32 = CH_ART - CUT.1;
 const HELP_Y: i32 = 354 - CUT.1;
 const MARGIN: i32 = 8;
@@ -95,10 +95,22 @@ enum Wid {
     Back,
     Prev,
     Next,
+    /// The main page's Game row: Deus Ex or The Nameless Mod (right click: choose its folder).
+    Game,
+    /// The Mods page's Install Download... button (modkit: archives and self-extracting installers).
+    Install,
 }
 
-/// Mods shown per page (the window's five rows, the first being the Mod Assets folder).
-const MODS_PER_PAGE: usize = 4;
+/// Mods shown per page (the window's six rows, the first being the Mod Assets folder).
+const MODS_PER_PAGE: usize = 5;
+
+/// An install running on its thread: progress, the file being written, the result.
+#[derive(Default)]
+struct Job {
+    frac: f32,
+    file: String,
+    done: Option<Result<modkit::install::Installed, String>>,
+}
 
 type Rect = (i32, i32, i32, i32);
 
@@ -132,6 +144,11 @@ struct Launcher {
     /// Whether a mod folder holds its mod, by (id, path): the check walks folders (the Parallax Maps one walks
     /// a whole tree of maps), so it's done once, not every frame.
     found: std::cell::RefCell<std::collections::HashMap<(&'static str, String), bool>>,
+    /// The Nameless Mod's folder (launcher.txt TNMPath=, holding System/TNM.u) and whether it's the game played
+    /// (launcher.txt Game=tnm).
+    tnm: String,
+    play_tnm: bool,
+    job: Option<std::sync::Arc<std::sync::Mutex<Job>>>,
 }
 
 impl Launcher {
@@ -177,6 +194,9 @@ impl Launcher {
             tex: None,
             sized: false,
             found: Default::default(),
+            tnm: lk.iter().find(|(k, _)| k == "TNMPath").map(|(_, v)| v.clone()).unwrap_or_default(),
+            play_tnm: lk.iter().any(|(k, v)| k == "Game" && v.eq_ignore_ascii_case("tnm")),
+            job: None,
         };
         l.try_art();
         if !assets.is_empty() {
@@ -225,10 +245,22 @@ impl Launcher {
         let mut lk = vec![("GamePath".to_string(), self.game.clone())];
         // Keep lines the launcher doesn't edit (DiscordAppId and the like).
         for (k, v) in read_kv(&dir.join("launcher.txt")) {
-            if k != "GamePath" && k != "LDDPPath" && k != "ModPath" && k != "ModAssets" && !k.starts_with("Mod.") && !k.starts_with("ModOn.") {
+            if k != "GamePath"
+                && k != "LDDPPath"
+                && k != "ModPath"
+                && k != "ModAssets"
+                && k != "TNMPath"
+                && k != "Game"
+                && !k.starts_with("Mod.")
+                && !k.starts_with("ModOn.")
+            {
                 lk.push((k, v));
             }
         }
+        if !self.tnm.is_empty() {
+            lk.push(("TNMPath".to_string(), self.tnm.clone()));
+        }
+        lk.push(("Game".to_string(), if self.play_tnm && self.tnm_found() { "tnm" } else { "dx" }.to_string()));
         if !self.assets.is_empty() {
             lk.push(("ModAssets".to_string(), self.assets.clone()));
         }
@@ -267,6 +299,97 @@ impl Launcher {
             Err(e) => {
                 self.status = format!("Can't start {}: {e}", exe.display());
                 false
+            }
+        }
+    }
+
+    fn tnm_found(&self) -> bool {
+        !self.tnm.is_empty() && modkit::install::find_tnm(Path::new(&self.tnm)).is_some()
+    }
+
+    /// Choose The Nameless Mod's folder (the one holding System/TNM.u, or a folder above it).
+    fn browse_tnm(&mut self) -> bool {
+        let Some(p) = rfd::FileDialog::new().set_title("The Nameless Mod's folder").pick_folder() else { return false };
+        match modkit::install::find_tnm(&p) {
+            Some(d) => {
+                self.tnm = d.display().to_string();
+                true
+            }
+            None => {
+                self.status = "That folder doesn't hold The Nameless Mod (its System\\TNM.u). Install its download on the Mods page, \
+                               or choose the folder it's in."
+                    .into();
+                false
+            }
+        }
+    }
+
+    /// Install a mod download (an archive or a self-extracting installer) on a thread.
+    fn install_download(&mut self) {
+        if self.job.is_some() {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("A mod download (.exe installer, .7z or .zip)")
+            .add_filter("Mod downloads", &["exe", "7z", "zip", "rar"])
+            .pick_file()
+        else {
+            return;
+        };
+        let job = std::sync::Arc::new(std::sync::Mutex::new(Job::default()));
+        self.job = Some(job.clone());
+        std::thread::spawn(move || {
+            let mut last = std::time::Instant::now();
+            let r = modkit::install::install(&path, &mut |frac, file| {
+                if last.elapsed().as_millis() > 50 {
+                    last = std::time::Instant::now();
+                    if let Ok(mut j) = job.lock() {
+                        j.frac = frac;
+                        j.file = file.to_string();
+                    }
+                }
+            });
+            if let Ok(mut j) = job.lock() {
+                j.done = Some(r);
+            }
+        });
+    }
+
+    /// A running install: its progress in the help line, and once done the mods it set up (launcher.txt).
+    fn poll_job(&mut self) -> bool {
+        let Some(job) = self.job.clone() else { return false };
+        let Ok(mut j) = job.lock() else { return false };
+        match j.done.take() {
+            None => {
+                let file = j.file.rsplit(['/', '\\']).next().unwrap_or("").to_string();
+                self.status = format!("Installing... {:.0}%  {file}", j.frac * 100.0);
+                true
+            }
+            Some(r) => {
+                drop(j);
+                self.job = None;
+                // modkit wrote the new mods into launcher.txt: take them in (and keep what's set here).
+                let lk = read_kv(&unreal_pkg::paths::data_dir().join("launcher.txt"));
+                for s in unreal_pkg::mods::from_lines(&lk) {
+                    self.mods.retain(|m| m.id != s.id);
+                    self.mods.push(s);
+                }
+                self.found.borrow_mut().clear();
+                self.status = match r {
+                    Ok(done) => {
+                        let names: Vec<String> = done
+                            .mods
+                            .iter()
+                            .map(|(id, _)| if *id == "tnm" { "The Nameless Mod".to_string() } else { unreal_pkg::mods::def(id).map_or(id.to_string(), |m| m.name.to_string()) })
+                            .collect();
+                        if let Some((_, p)) = done.mods.iter().find(|(id, _)| *id == "tnm") {
+                            self.tnm = p.display().to_string();
+                        }
+                        format!("Installed {} ({} files).", names.join(", "), done.files)
+                    }
+                    Err(e) => e,
+                };
+                true
             }
         }
     }
@@ -356,7 +479,9 @@ impl Launcher {
             Some(Wid::Path) => "Type or paste the path of the Deus Ex folder",
             Some(Wid::Mode) => "Change how the game's window is shown",
             Some(Wid::Res) => "Change the video resolution",
-            Some(Wid::Mod) => "Choose the mods to play with (Lay D Denton, HDTP, New Vision and others)",
+            Some(Wid::Mod) => "Choose the mods to play with (Lay D Denton, HDTP, New Vision and others), or install a download",
+            Some(Wid::Game) => "Play Deus Ex, or The Nameless Mod from its own files (right click chooses its folder)",
+            Some(Wid::Install) => "Unpack a mod you downloaded (an .exe installer, .7z or .zip) and set it up - no Windows needed",
             Some(Wid::Assets) => "Choose one folder holding all your mods, each in its own folder (right click forgets it)",
             Some(Wid::ModPick(i)) => unreal_pkg::mods::MODS[i].help,
             Some(Wid::ModToggle(_)) => "Turn this mod on or off (right click on its name forgets the folder)",
@@ -413,7 +538,9 @@ impl Launcher {
         let (editing, cur, game) = (self.editing, self.cur, self.game.clone());
         let (mode, res, translucent) = (self.mode, self.res, self.translucent);
         let mods_summary = self.mods_summary();
+        let game_label = if self.play_tnm && self.tnm_found() { "Nameless Mod" } else { "Deus Ex" };
         let page = self.mods_page;
+        let installing = self.job.is_some();
         let n_mods = unreal_pkg::mods::MODS.len();
         let pages = n_mods.div_ceil(MODS_PER_PAGE).max(1);
         let assets_label = if self.assets.is_empty() {
@@ -519,6 +646,13 @@ impl Launcher {
                 info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(4), INFO_W, &mods_summary, vcol);
                 hits.push((Wid::Mod, (cx + ROW_X, row_y(4), INFO_X + INFO_W, 19), true));
             }
+            // Row 5: which game.
+            {
+                action_button(&mut c, a, cx + ROW_X, row_y(5), LABEL_W, "Game", stof(Wid::Game));
+                let vcol = a.btn(if stof(Wid::Game) >= 1 { 1 } else { 0 });
+                info_button(&mut c, a, cx + ROW_X + INFO_X, row_y(5), INFO_W, game_label, vcol);
+                hits.push((Wid::Game, (cx + ROW_X, row_y(5), INFO_X + INFO_W, 19), true));
+            }
         } else {
             // The Mods page: the Mod Assets folder, then one row per mod - its folder button and On / Off.
             {
@@ -572,6 +706,12 @@ impl Launcher {
             let w = action_width(a, lbl);
             action_button(&mut c, a, bx, by, w, lbl, stof(lw));
             hits.push((lw, (bx, by, w, 19), true));
+            if page.is_some() {
+                let lbl = "Install Download...";
+                let w2 = action_width(a, lbl);
+                action_button(&mut c, a, bx + w + 2, by, w2, lbl, if installing { 3 } else { stof(Wid::Install) });
+                hits.push((Wid::Install, (bx + w + 2, by, w2, 19), !installing));
+            }
         }
         // Left edge.
         {
@@ -646,6 +786,19 @@ impl Launcher {
                 }
             }
             Wid::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Wid::Game if back => {
+                if self.browse_tnm() {
+                    self.play_tnm = true;
+                }
+            }
+            Wid::Game => {
+                if self.play_tnm && self.tnm_found() {
+                    self.play_tnm = false;
+                } else if self.tnm_found() || self.browse_tnm() {
+                    self.play_tnm = true;
+                }
+            }
+            Wid::Install => self.install_download(),
         }
     }
 
@@ -818,6 +971,9 @@ impl eframe::App for Launcher {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+        if self.poll_job() && self.job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let blink = ctx.input(|i| i.time).rem_euclid(1.0) < 0.5;
         let Some(c) = self.draw(blink) else { return };
         let img = egui::ColorImage::from_rgba_premultiplied([(w * SCALE) as usize, (h * SCALE) as usize], &c.to_rgba8());
@@ -845,6 +1001,8 @@ fn main() -> eframe::Result<()> {
             "play" => Some(Wid::Play),
             "quit" => Some(Wid::Quit),
             "save" => Some(Wid::Save),
+            "game" => Some(Wid::Game),
+            "install" => Some(Wid::Install),
             _ => None,
         };
         app.editing = std::env::var("DXL_EDIT").is_ok();

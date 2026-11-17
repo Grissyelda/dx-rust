@@ -423,6 +423,10 @@ pub fn dir() -> PathBuf {
     if let Some(d) = env_val!("DXVIEW_SAVE_DIR") {
         return PathBuf::from(d);
     }
+    // The Nameless Mod keeps its saves apart (its own TNM2Save, as TNMDefault.ini has it).
+    if crate::tnmmode::active() {
+        return unreal_pkg::paths::data_dir().join("TNMSave");
+    }
     unreal_pkg::paths::data_dir().join("Save")
 }
 

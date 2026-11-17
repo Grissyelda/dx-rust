@@ -8,7 +8,7 @@ description = "Small software mixer for immersive sims: positional one-shot and 
 [dependencies]
 xmrs = "0.15"
 xmrsplayer = "0.15"
-symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis"] }
 
 # cpal 0.15 on the desktop; Android uses 0.17, whose AAudio backend is pure Rust (0.15's Oboe needs a C++ build).
 [target.'cfg(not(target_os = "android"))'.dependencies]

@@ -210,6 +210,10 @@ pub fn jc_mesh() -> String {
 
 /// JC's mesh without an Augmentique outfit.
 pub fn jc_base_mesh() -> String {
+    // The Nameless Mod: Trestkon's own body.
+    if crate::tnmmode::active() {
+        return "TNM.GM_Trestkon_Jumpsuit".into();
+    }
     if female() {
         return "DeusExCharacters.GFM_Trench".into();
     }
@@ -346,7 +350,10 @@ pub fn jc_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unreal_pkg
 /// jc_defaults without an Augmentique outfit (its "default" textures are these).
 pub fn jc_base_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unreal_pkg::props::Property> {
     use unreal_pkg::props::{Property, Value};
-    let mut d = classes.defaults("JCDentonMale");
+    let mut d = classes.defaults(crate::tnmmode::player_class());
+    if crate::tnmmode::active() {
+        return d;
+    }
     if female() {
         d.retain(|p| !["MultiSkins", "Mesh", "CarcassType"].iter().any(|n| p.name.eq_ignore_ascii_case(n)));
         for (i, t) in female_skins().into_iter().enumerate() {

@@ -22,6 +22,22 @@ pub const CODE_PACKAGES: &[&str] = &[
 /// Project's FemJC (its NPCs and JC's female carcass).
 pub const MOD_PACKAGES: &[&str] = &["FemJC", "Augmentique", "Precipitation"];
 
+/// More code packages for this run, loaded after the game's and the mods' (The Nameless Mod's: TNM, TNMCharacters
+/// and the rest, found through its folders - paths.rs overlays).
+static EXTRA: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+/// Set the extra code packages (before any ClassDb is opened).
+pub fn set_extra_packages(list: &[&str]) {
+    if let Ok(mut e) = EXTRA.write() {
+        *e = list.iter().map(|s| s.to_string()).collect();
+    }
+}
+
+/// The extra code packages (`set_extra_packages`).
+pub fn extra_packages() -> Vec<String> {
+    EXTRA.read().map(|e| e.clone()).unwrap_or_default()
+}
+
 /// Packages opened by `ClassDb::package` (not code packages), shared process-wide.
 static SHARED: std::sync::Mutex<Option<HashMap<String, Option<std::sync::Arc<Package>>>>> = std::sync::Mutex::new(None);
 
@@ -59,6 +75,9 @@ impl ClassDb {
         for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES) {
             db.load(p);
         }
+        for p in extra_packages() {
+            db.load(&p);
+        }
         db
     }
 
@@ -77,6 +96,9 @@ impl ClassDb {
         }
         for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES) {
             db.load(p);
+        }
+        for p in extra_packages() {
+            db.load(&p);
         }
         db
     }
@@ -152,6 +174,14 @@ impl ClassDb {
     /// Find which loaded package defines class `class` (search order: CODE_PACKAGES).
     pub fn package_of(&self, class: &str) -> Option<String> {
         for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES) {
+            let k = p.to_ascii_lowercase();
+            if let Some(pkg) = self.packages.get(&k) {
+                if pkg.exports.iter().any(|e| e.class_index == 0 && e.name.eq_ignore_ascii_case(class)) {
+                    return Some(k);
+                }
+            }
+        }
+        for p in extra_packages() {
             let k = p.to_ascii_lowercase();
             if let Some(pkg) = self.packages.get(&k) {
                 if pkg.exports.iter().any(|e| e.class_index == 0 && e.name.eq_ignore_ascii_case(class)) {

@@ -1,0 +1,15 @@
+[package]
+name = "modkit"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Mod downloads for DX RUST: a catalog with each mod's page, and unpacking of zip / 7z archives and 7-Zip / zip self-extracting installers (pure Rust)."
+
+[dependencies]
+sevenz-rust2 = { version = "0.20.2", default-features = false, features = ["ppmd", "deflate", "util"] }
+zip = { version = "2.4.2", default-features = false, features = ["deflate", "deflate64", "lzma"] }
+crc32fast = "1"
+unreal-pkg = { path = "../unreal-pkg" }
+
+[dev-dependencies]
+sevenz-rust2 = { version = "0.20.2", default-features = false, features = ["compress", "util"] }

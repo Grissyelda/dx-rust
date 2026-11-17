@@ -189,8 +189,32 @@ fn class_ref(pkg: &Package, o: &Obj, name: &str) -> Option<String> {
 }
 
 impl ConDb {
-    /// Load DeusExConText.u from the game's System folder.
+    /// Load DeusExConText.u from the game's System folder. The Nameless Mod: both halves of its conversations
+    /// (TNMConvos1Text.u, TNMConvos2Text.u), each line's speech in its own half's audio packages.
     pub fn load(system_dir: &Path) -> Option<ConDb> {
+        if unreal_pkg::tnm::active().is_some() {
+            let mut db: Option<ConDb> = None;
+            for text in unreal_pkg::tnm::CON_TEXT {
+                let Some(path) = unreal_pkg::paths::find_ci(system_dir, &format!("{text}.u")) else { continue };
+                let Ok(pkg) = Package::open(path) else { continue };
+                let mut half = Self::from_package(&pkg);
+                let base = text.trim_end_matches("Text");
+                for c in &mut half.cons {
+                    c.audio_package = format!("{base}:{}", c.audio_package);
+                }
+                match &mut db {
+                    None => db = Some(half),
+                    Some(d) => {
+                        let off = d.cons.len();
+                        d.cons.extend(half.cons);
+                        for (m, list) in half.missions {
+                            d.missions.entry(m + TNM_HALF2).or_default().extend(list.into_iter().map(|i| i + off));
+                        }
+                    }
+                }
+            }
+            return db;
+        }
         let path = unreal_pkg::paths::find_ci(system_dir, "DeusExConText.u")?;
         let pkg = Package::open(path).ok()?;
         Some(Self::from_package(&pkg))
@@ -396,6 +420,28 @@ impl ConDb {
     }
 }
 
+/// The Nameless Mod's second half (TNMConvos2Text) keeps its mission lists under missionNumber + this, so a map
+/// sees only the half its DeusExLevelInfo.ConversationPackage names (`mission_key`).
+pub const TNM_HALF2: i32 = 10_000;
+
+/// The ConDb mission list a map uses: its missionNumber, moved for The Nameless Mod's second half.
+pub fn mission_key(mission: i32, conversation_package: &str) -> i32 {
+    if unreal_pkg::tnm::active().is_some() && conversation_package.eq_ignore_ascii_case("TNMConvos2") {
+        mission + TNM_HALF2
+    } else {
+        mission
+    }
+}
+
+/// The speech package a conversation's audio_package names: DeusExConAudio<name>, or for The Nameless Mod's
+/// conversations ("TNMConvos1:Mission20") TNMConvos1AudioMission20.
+pub fn audio_file(audio_package: &str) -> String {
+    match audio_package.split_once(':') {
+        Some((base, rest)) => format!("{base}Audio{rest}"),
+        None => format!("DeusExConAudio{audio_package}"),
+    }
+}
+
 /// Speech audio of one package (DeusExConAudio<name>.u): soundID -> Sound object name.
 pub struct ConAudio {
     pub package: Package,
@@ -404,7 +450,7 @@ pub struct ConAudio {
 
 impl ConAudio {
     pub fn load(system_dir: &Path, audio_package: &str) -> Option<ConAudio> {
-        let want = format!("DeusExConAudio{audio_package}.u");
+        let want = format!("{}.u", audio_file(audio_package));
         let path = unreal_pkg::paths::find_ci(system_dir, &want)?;
         let package = Package::open(path).ok()?;
         let k = package.exports.iter().position(|e| package.class_name(e.class_index) == "ConAudioList")?;

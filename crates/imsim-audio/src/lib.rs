@@ -57,6 +57,15 @@ pub fn decode(b: &[u8]) -> Option<Clip> {
 
 /// Decode MPEG-1/2 layer III to f32 PCM.
 pub fn decode_mp3(b: &[u8]) -> Option<Clip> {
+    decode_hinted(b, "mp3")
+}
+
+/// Decode an Ogg Vorbis file (The Nameless Mod's music, read through DXOgg in the original).
+pub fn decode_ogg(b: &[u8]) -> Option<Clip> {
+    decode_hinted(b, "ogg")
+}
+
+fn decode_hinted(b: &[u8], ext: &str) -> Option<Clip> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::formats::FormatOptions;
@@ -66,7 +75,7 @@ pub fn decode_mp3(b: &[u8]) -> Option<Clip> {
     let cursor = std::io::Cursor::new(b.to_vec());
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
     let mut hint = Hint::new();
-    hint.with_extension("mp3");
+    hint.with_extension(ext);
     let probed = symphonia::default::get_probe()
         .format(
             &hint,
@@ -505,8 +514,49 @@ impl Transition {
     }
 }
 
+/// What a music track plays: a tracker module, or decoded PCM (an intro played once, then a loop).
+enum Src {
+    Tracker(xmrsplayer::prelude::XmrsPlayer<'static>),
+    Clips { intro: Option<Arc<Clip>>, main: Arc<Clip>, pos: f64, in_intro: bool },
+}
+
+impl Src {
+    /// The next output frame (-1..1 scale), None at the end.
+    #[inline]
+    fn next(&mut self, out_rate: u32) -> Option<(f32, f32)> {
+        match self {
+            Src::Tracker(p) => {
+                let (l, r) = (p.next()?, p.next()?);
+                // Tracker output sits well below full scale; lift it toward the level of the sound effects.
+                Some((l as f32 * 1.6 / 32768.0, r as f32 * 1.6 / 32768.0))
+            }
+            Src::Clips { intro, main, pos, in_intro } => loop {
+                let c = if *in_intro { intro.as_ref().unwrap_or(main) } else { &*main };
+                let frames = c.frames();
+                let i = *pos as usize;
+                if i + 1 >= frames {
+                    *pos = 0.0;
+                    if *in_intro {
+                        *in_intro = false;
+                    } else if frames < 2 {
+                        return None;
+                    }
+                    continue;
+                }
+                let t = (*pos - i as f64) as f32;
+                let ch = c.channels.max(1) as usize;
+                let rc = if ch > 1 { 1 } else { 0 };
+                let l = c.at(i * ch) * (1.0 - t) + c.at((i + 1) * ch) * t;
+                let r = c.at(i * ch + rc) * (1.0 - t) + c.at((i + 1) * ch + rc) * t;
+                *pos += c.rate as f64 / out_rate.max(1) as f64;
+                return Some((l, r));
+            },
+        }
+    }
+}
+
 struct Track {
-    player: xmrsplayer::prelude::XmrsPlayer<'static>,
+    player: Src,
     gain: f32,
     target: f32,
     /// Gain change per output frame.
@@ -673,9 +723,10 @@ impl State {
             rv.process(&send, &mut buf);
         }
         let mv = self.music_volume;
+        let rate = self.rate;
         for t in self.tracks.iter_mut() {
             for f in 0..frames {
-                let (Some(l), Some(r)) = (t.player.next(), t.player.next()) else {
+                let Some((l, r)) = t.player.next(rate) else {
                     break;
                 };
                 if t.gain != t.target {
@@ -685,10 +736,9 @@ impl State {
                         (t.gain - t.step).max(t.target)
                     };
                 }
-                // Tracker output sits well below full scale; lift it toward the level of the sound effects.
-                let g = t.gain * mv * 1.6 / 32768.0;
-                buf[f * 2] += l as f32 * g;
-                buf[f * 2 + 1] += r as f32 * g;
+                let g = t.gain * mv;
+                buf[f * 2] += l * g;
+                buf[f * 2 + 1] += r * g;
             }
         }
         self.tracks.retain(|t| !(t.target == 0.0 && t.gain <= 0.0));
@@ -991,7 +1041,21 @@ impl Audio {
         let secs = transition.seconds();
         let step = if secs <= 0.0 { 1.0 } else { 1.0 / (secs * rate as f32) };
         let start = if secs <= 0.0 { 1.0 } else { 0.0 };
-        self.send(Cmd::Music(Box::new(Track { player, gain: start, target: 1.0, step }), step));
+        self.send(Cmd::Music(Box::new(Track { player: Src::Tracker(player), gain: start, target: 1.0, step }), step));
+    }
+
+    /// Play decoded music: `intro` once (if any), then `main` looping, fading out whatever was playing.
+    pub fn play_music_clips(&self, intro: Option<Arc<Clip>>, main: Arc<Clip>, transition: Transition) {
+        if !self.live {
+            return;
+        }
+        let rate = self.sample_rate();
+        let secs = transition.seconds();
+        let step = if secs <= 0.0 { 1.0 } else { 1.0 / (secs * rate as f32) };
+        let start = if secs <= 0.0 { 1.0 } else { 0.0 };
+        let in_intro = intro.is_some();
+        let src = Src::Clips { intro, main, pos: 0.0, in_intro };
+        self.send(Cmd::Music(Box::new(Track { player: src, gain: start, target: 1.0, step }), step));
     }
 
     pub fn stop_music(&self, transition: Transition) {

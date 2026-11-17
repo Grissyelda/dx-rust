@@ -489,7 +489,7 @@ pub fn fullscreen_when_ready_system(
     if *done || !cfg!(target_os = "linux") {
         return;
     }
-    let want = setting!("DisplayMode").round() as i32;
+    let want = crate::recomp::display_mode(setting!("DisplayMode")).round() as i32;
     let Ok(mut w) = windows.single_mut() else { return };
     if want == 1 {
         *done = true;
@@ -637,6 +637,8 @@ enum MsgPurpose {
     MpLeave,
     /// Ours: the Achievements screen's Reset All.
     AchReset,
+    /// Ours: the Mods screen's Restart.
+    ModRestart,
 }
 
 /// Open the controller layout picture (paddiagram).
@@ -839,6 +841,8 @@ enum Body {
     DmChar(DmEdit),
     /// Ours: Modern deathmatch loadouts (dmchar.rs, MULTIPLAYER Phase 2).
     Loadout(LoadEdit),
+    /// Ours: Settings > Mods, the mod manager (modscreen.rs).
+    Mods(crate::modscreen::ModsView),
 }
 
 struct AchieveView {
@@ -1600,6 +1604,21 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                     at,
                     MenuBtn { label: "Enhancements".into(), y, action: 1, invoke: "MenuScreenEnhancements".into(), key: String::new(), enabled: true },
                 );
+                // Ours: Mods (the mod manager; not on Android, which plays without mods).
+                if !crate::platform::android() {
+                    // The art has no well for it: the Enhancements well is drawn twice (as the main menu's
+                    // Achievements) and Previous Menu moves down a row.
+                    f.dups.push((y - 9, 36));
+                    f.ch += 36;
+                    let at = at + 1;
+                    buttons.insert(
+                        at,
+                        MenuBtn { label: "Mods".into(), y: y + 36, action: 1, invoke: "MenuScreenMods".into(), key: String::new(), enabled: true },
+                    );
+                    for b in buttons.iter_mut().skip(at + 1) {
+                        b.y += 36;
+                    }
+                }
             }
             if class == "MenuMain" {
                 // Our title.
@@ -1631,7 +1650,7 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             let mut order: Vec<usize> = (0..skills.list.len()).collect();
             order.sort_by_key(|&i| skills.list[i].def.name.to_lowercase());
             let mut name = Edit::new(32);
-            name.text = "JC Denton".chars().collect();
+            name.text = crate::tnmmode::default_name().chars().collect();
             name.cur = name.text.len();
             name.anchor = 0;
             Body::NewGame(NewGame {
@@ -1684,6 +1703,18 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             f.actions = vec![(0, 22, "Reset All".into(), String::new()), (2, 4, prev, String::new())];
             let (chars, global) = crate::achievements::all_characters();
             Body::Achieve(AchieveView { scroll: 0, chars, global })
+        }
+        "MenuScreenMods" => {
+            f = frame(assets, "MenuScreenCustomizeKeys");
+            f.class = class.to_string();
+            f.title = "Mods".into();
+            f.actions = vec![
+                (2, 2, "Close".into(), String::new()),
+                (2, ACT_MOD_INSTALL, "Install".into(), String::new()),
+                (0, ACT_MOD_PAGE, "Get It".into(), String::new()),
+                (0, ACT_MOD_REMOVE, "Remove".into(), String::new()),
+            ];
+            Body::Mods(crate::modscreen::ModsView::new())
         }
         "MenuScreenEnhancements" => {
             f = frame(assets, "MenuScreenCustomizeKeys");
@@ -2365,6 +2396,7 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             hash_debug(h, &d.c);
             (d.sel, d.scroll, d.others.len(), &d.weapons).hash(h);
         }
+        Body::Mods(m) => m.key(h),
         Body::Loadout(l) => {
             edit_key(&l.name, h);
             hash_debug(h, &l.c);
@@ -2602,6 +2634,7 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
         Body::Wait(w) => draw_mp_wait(u, w, cx, cy),
         Body::DmChar(d) => draw_dm_char(u, d, cx, cy),
         Body::Loadout(l) => draw_loadout(u, l, cx, cy),
+        Body::Mods(m) => draw_mods(u, m, cx, cy),
         Body::Choices { choices } => draw_choices(u, choices, &win.f, &mut win.drop, cx, cy),
         Body::NewGame(ng) => draw_new_game(u, ng, focus, fonts, cx, cy),
         Body::Keys(k) if k.pad => draw_pad_keys(u, k, cx, cy, waiting_keys),
@@ -3343,6 +3376,7 @@ pub fn menu_system(
     keypad_tick(st, dt);
     quick_save_load(st, &binds, &ph, others || others_before, &mut hud, &mut assets);
     mp_tick(st, dt, &mut hud, &mut assets);
+    mods_tick(st, &mut hud, &mut assets);
     let was_open = OPEN.load(Ordering::Relaxed);
     let is_open = !st.stack.is_empty();
     // The key that opened the menu this frame (Escape) mustn't also close it.
@@ -3509,7 +3543,16 @@ fn intro_flyby(
     hud: &mut ResMut<ClassicHud>,
     assets: &mut ResMut<RuntimeAssets>,
 ) {
-    let Some((pts, it)) = st.intro.as_mut() else { return };
+    let Some((pts, it)) = st.intro.as_mut() else {
+        // A title map without the IntroCam path (The Nameless Mod's DX.dx moves its camera by its own script):
+        // the main menu at once.
+        if st.built && intro_map() && st.stack.is_empty() && !st.intro_menu_shown && crate::tnmmode::active() {
+            st.intro_menu_shown = true;
+            let w = open_window(hud, assets, "MenuMain");
+            st.push(w);
+        }
+        return;
+    };
     it.tick(pts, vtime.delta_secs_f64());
     let to_rad = |u: f64| (u / 65536.0 * std::f64::consts::TAU) as f32;
     let rot = Quat::from_rotation_y(-to_rad(it.rot[1]) - std::f32::consts::FRAC_PI_2)
@@ -3535,7 +3578,9 @@ fn intro_flyby(
             || binds.keys.just_pressed(KeyCode::Escape)
             || binds.keys.just_pressed(KeyCode::Enter)
             || binds.keys.just_pressed(KeyCode::Space);
-        if clicked || (at_rest && !st.intro_menu_shown) {
+        // (The Nameless Mod's title flyby never stops: its menu comes after a while.)
+        let waited = crate::tnmmode::active() && st.clock > 12.0;
+        if clicked || ((at_rest || waited) && !st.intro_menu_shown) {
             st.intro_menu_shown = true;
             let w = open_window(hud, assets, "MenuMain");
             st.push(w);
@@ -3950,6 +3995,14 @@ fn left_press(cx: &mut InCx) -> Option<&'static str> {
                             }
                             d.sel = Some(r);
                         }
+                        Body::Mods(m) if l == 0 => {
+                            m.sel = Some(r);
+                            if double {
+                                if let Some((t, ask)) = m.main_action() {
+                                    acts.push(mods_msg(t, ask));
+                                }
+                            }
+                        }
                         Body::Loadout(lo) if l == 0 => {
                             if lo.sel == Some(r) {
                                 if let Some(m) = lo.step(1) {
@@ -4133,6 +4186,25 @@ fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
         if !matches!(k, KeyCode::Escape | KeyCode::Tab | KeyCode::Enter | KeyCode::NumpadEnter) || en.sel.is_some() && matches!(k, KeyCode::Enter | KeyCode::NumpadEnter) {
             return true;
         }
+    }
+    // The mod manager: arrows move, Enter installs.
+    if let Body::Mods(m) = &mut win.body {
+        let msg = match k {
+            KeyCode::ArrowUp => {
+                m.move_sel(-1);
+                None
+            }
+            KeyCode::ArrowDown => {
+                m.move_sel(1);
+                None
+            }
+            KeyCode::Enter | KeyCode::NumpadEnter => m.main_action(),
+            _ => return false,
+        };
+        if let Some((t, ask)) = msg {
+            acts.push(mods_msg(t, ask));
+        }
+        return true;
     }
     // The loadout screen: the same, typing the loadout's name.
     if let Body::Loadout(d) = &mut win.body {
@@ -4476,13 +4548,14 @@ fn apply_acts(
             }
             Act::NewGame(ng) => {
                 crate::settings::save();
-                let start = assets.classes.defaults("JCDentonMale");
+                let start = assets.classes.defaults(crate::tnmmode::player_class());
                 let map = match find(&start, "strStartMap") {
                     Some(Value::Str(s)) if !s.is_empty() => format!("{s}.dx"),
                     _ => "01_NYC_UNATCOIsland.dx".into(),
                 };
-                // MenuScreenNewGame: ShowIntro(True) - the intro cut scene, then the new game on strStartMap.
-                if root.0.join("Maps").join("00_Intro.dx").exists() {
+                // MenuScreenNewGame: ShowIntro(True) - the intro cut scene, then the new game on strStartMap. (The
+                // Nameless Mod's own intro is a scripted scene of its own: straight to its start map.)
+                if !crate::tnmmode::active() && root.0.join("Maps").join("00_Intro.dx").exists() {
                     crate::loader::request("00_Intro.dx", crate::loader::Goal::Intro(Some((ng, map))));
                 } else {
                     crate::loader::request(&map, crate::loader::Goal::NewGame(ng));
@@ -4495,7 +4568,8 @@ fn apply_acts(
             }
             Act::Training => {
                 crate::settings::save();
-                crate::loader::request("00_Training.dx", crate::loader::Goal::NewGame(crate::travel::NewGame::default()));
+                let training = if crate::tnmmode::active() { "25_TNMTraining.dx" } else { "00_Training.dx" };
+                crate::loader::request(training, crate::loader::Goal::NewGame(crate::travel::NewGame::default()));
                 st.stack.clear();
             }
             Act::ToggleFullscreen => {
@@ -4572,6 +4646,7 @@ fn help_text(top_w: &Win, assets: &mut RuntimeAssets) -> String {
         (Body::Host(h), focus) => mp_host_help(h, focus, &top_w.f),
         (Body::DmChar(d), _) => d.help(),
         (Body::Loadout(l), _) => l.help(),
+        (Body::Mods(m), _) => m.help(),
         (Body::Addr(_), _) => "The online services' host name or IP address, with :port when it isn't 27962 (ask whoever runs \
              the server). Empty: this PC. Save & Connect or [Enter].".into(),
         (Body::Join(_), _) => "Type the host's room code: four characters from online services, or the long direct code (Ctrl+V pastes it). Then Join Room or [Enter].".into(),
@@ -4767,6 +4842,7 @@ fn scroll_by(win: &mut Win, id: u8, d: i32) {
         Body::Browse(b) if id == 0 => b.scroll = (b.scroll + d).max(0),
         Body::Chars(c) if id == 0 => c.scroll = (c.scroll + d).max(0),
         Body::Wait(w) if id == 0 => w.scroll = (w.scroll + d).max(0),
+        Body::Mods(m) if id == 0 => m.scroll = (m.scroll + d).max(0),
         Body::Welcome(sc) if id == 0 => *sc = (*sc + d).max(0),
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = (ng.desc_scroll + d).max(0),
         _ => {}
@@ -4788,6 +4864,7 @@ fn set_scroll(win: &mut Win, id: u8, v: i32) {
         Body::Browse(b) if id == 0 => b.scroll = v,
         Body::Chars(c) if id == 0 => c.scroll = v,
         Body::Wait(w) if id == 0 => w.scroll = v,
+        Body::Mods(m) if id == 0 => m.scroll = v,
         Body::Welcome(sc) if id == 0 => *sc = v,
         Body::NewGame(ng) if id == 1 => ng.desc_scroll = v,
         _ => {}
@@ -4823,6 +4900,11 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
                 if let Some((p, d)) = st.box_save.take() {
                     acts.push(Act::SaveGame(p, d));
                 }
+            }
+        }
+        MsgPurpose::ModRestart => {
+            if yes {
+                crate::modscreen::restart();
             }
         }
         MsgPurpose::AchReset => {
@@ -5190,7 +5272,11 @@ const ACT_DMCHAR: u8 = 54;
 const ACT_LOADOUT: u8 = 55;
 const ACT_LOADOUT_SAVE: u8 = 56;
 const ACT_LOADOUT_UNLOCK: u8 = 57;
-const ACT_LAST: u8 = ACT_LOADOUT_UNLOCK;
+/// The mod manager (Settings > Mods).
+const ACT_MOD_INSTALL: u8 = 58;
+const ACT_MOD_PAGE: u8 = 59;
+const ACT_MOD_REMOVE: u8 = 60;
+const ACT_LAST: u8 = ACT_MOD_REMOVE;
 /// Host Room widgets: Copy Code, and a Kick per player row (40 + row).
 const HDR_COPY: u8 = 29;
 const HDR_KICK: u8 = 40;
@@ -6036,6 +6122,16 @@ fn mp_action(win: &mut Win, action: u8, acts: &mut Vec<Act>) -> bool {
             }
             Err(m) => acts.push(Act::Msg("Loadout".into(), m, false, MsgPurpose::Info)),
         },
+        (ACT_MOD_INSTALL | ACT_MOD_PAGE | ACT_MOD_REMOVE, Body::Mods(m)) => {
+            let msg = match action {
+                ACT_MOD_INSTALL => m.main_action(),
+                ACT_MOD_PAGE => m.page().map(|t| (t, false)),
+                _ => m.remove().map(|t| (t, true)),
+            };
+            if let Some((t, ask)) = msg {
+                acts.push(mods_msg(t, ask));
+            }
+        }
         (ACT_LOADOUT_UNLOCK, Body::Loadout(l)) => {
             let m = l.unlock();
             acts.push(Act::Msg("Unlock".into(), m, false, MsgPurpose::Info));
@@ -7054,6 +7150,40 @@ fn lo_problems(probs: &[imsim_core::loadout::Problem]) -> String {
         .join("; ")
 }
 
+/// The mod manager: the catalog with each mod's state.
+fn draw_mods(u: &mut Ui<W>, m: &mut crate::modscreen::ModsView, cx: i32, cy: i32) {
+    header_button(u, W::Header(0), cx + 10, cy + 3, 199, "Mod");
+    header_button(u, W::Header(1), cx + 210, cy + 3, 170, "State");
+    let rows = m.rows();
+    list(u, 0, (cx + 11, cy + 23, 369, 268), &[199, 170], &rows, m.sel, &mut m.scroll, false);
+}
+
+/// A message from the mod manager; `ask`: a Yes / No box offering to restart the game (the mods are chosen at
+/// start-up).
+fn mods_msg(t: String, ask: bool) -> Act {
+    if ask {
+        Act::Msg("Mods".into(), t, true, MsgPurpose::ModRestart)
+    } else {
+        Act::Msg("Mods".into(), t, false, MsgPurpose::Info)
+    }
+}
+
+/// The mod manager: the main button's label for the selected mod, and the install running on its thread (its
+/// row's progress, the message when it's done).
+fn mods_tick(st: &mut Menus, hud: &mut ClassicHud, assets: &mut RuntimeAssets) {
+    let Some(Win { f, body: Body::Mods(m), .. }) = st.stack.last_mut() else { return };
+    let label = m.main_label();
+    if let Some(a) = f.actions.iter_mut().find(|a| a.1 == ACT_MOD_INSTALL) {
+        if a.2 != label {
+            a.2 = label.to_string();
+        }
+    }
+    if let Some((t, ask)) = m.poll() {
+        let w = msg_box(hud, assets, "Mods", &t, ask, if ask { MsgPurpose::ModRestart } else { MsgPurpose::Info });
+        st.push(w);
+    }
+}
+
 fn draw_loadout(u: &mut Ui<W>, d: &mut LoadEdit, cx: i32, cy: i32) {
     header_button(u, W::Header(0), cx + 10, cy + 3, 62, "Name");
     u.c.fill(cx + 73, cy + 3, 262, 18, Style::Normal, BLACK);
@@ -7369,6 +7499,7 @@ mod tests {
             "MenuScreenAchievements",
             "MenuScreenWelcome",
             "MenuScreenLoadout",
+            "MenuScreenMods",
             "MenuScreenMatchSettings",
             "KEYPAD",
             "MSG",

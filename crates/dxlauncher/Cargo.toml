@@ -13,6 +13,7 @@ eframe = { version = "0.31.1", default-features = false, features = ["glow", "de
 rfd = "0.15.3"
 unreal-pkg = { path = "../unreal-pkg" }
 dx-level = { path = "../dx-level" }
+modkit = { path = "../modkit" }
 
 [[bin]]
 name = "dxlauncher"

@@ -326,6 +326,7 @@ const SPEECH_BUDGET: usize = 64 << 20;
 
 fn is_speech(path: &str) -> bool {
     path.len() >= 14 && path[..14].eq_ignore_ascii_case("DeusExConAudio")
+        || path.len() >= 9 && path[..9].eq_ignore_ascii_case("TNMConvos") && crate::util::contains_ci(path, "Audio")
 }
 
 fn clip_bytes(c: &Option<Arc<Clip>>) -> usize {
@@ -612,6 +613,11 @@ pub struct SoundState {
     hq_sent: Option<bool>,
     /// The zone echo last sent to the mixer.
     echo_sent: Option<Option<imsim_audio::EchoParams>>,
+    /// The Nameless Mod's Ogg music (tnmmode.rs) instead of the level's tracker song: the tracks, the one asked
+    /// for while it decodes, whether the conversation track is on.
+    ogg: Option<crate::tnmmode::OggMusic>,
+    ogg_want: Option<(crate::tnmmode::Track, Transition)>,
+    ogg_convo: bool,
 }
 
 /// ClientSetMusic with another song (Some(package.name)) or back to the level's song and section (None).
@@ -688,9 +694,10 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
         warm.reverse();
         prefetch(warm);
     }
+    let ogg = crate::tnmmode::OggMusic::from_level(level);
     let (mut song, default_section) = match &level.song {
-        Some((path, sec)) => (bank.song(path), *sec),
-        None => (None, 0),
+        Some((path, sec)) if ogg.is_none() => (bank.song(path), *sec),
+        _ => (None, 0),
     };
     // Load the sections UpdateDynamicMusic switches between now, so a fight doesn't hitch.
     if let Some(s) = song.as_mut() {
@@ -729,6 +736,9 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
         room_t: 0.0,
         hq_sent: None,
         echo_sent: None,
+        ogg,
+        ogg_want: None,
+        ogg_convo: false,
     }
 }
 
@@ -1122,8 +1132,16 @@ pub fn sound_system(
     if st.other_song.is_some() {
         return;
     }
-    // Music: UpdateDynamicMusic.
-    if st.song.is_none() {
+    // Music: UpdateDynamicMusic (The Nameless Mod: TNMOggMusicManager's Ogg tracks, started once decoded).
+    if let (Some((tr, t)), Some(ogg)) = (st.ogg_want, st.ogg.as_mut()) {
+        if let Some((intro, main)) = ogg.ready(tr) {
+            st.audio.play_music_clips(intro, main, t);
+            st.ogg_want = None;
+        } else if !ogg.has(tr) {
+            st.ogg_want = None;
+        }
+    }
+    if st.song.is_none() && st.ogg.is_none() {
         return;
     }
     if !st.started {
@@ -1137,6 +1155,19 @@ pub fn sound_system(
         play_section(st, 1, Transition::Fade);
         st.mode = MusicMode::Dying;
         return;
+    }
+    // TNMOggMusicManager: its conversation track while a conversation plays (back to the ambient one after).
+    if st.ogg.as_ref().is_some_and(|o| o.has(crate::tnmmode::Track::Conversation)) {
+        let talking = crate::consys::third_person();
+        if talking != st.ogg_convo {
+            st.ogg_convo = talking;
+            st.ogg_want = Some((if talking { crate::tnmmode::Track::Conversation } else { crate::tnmmode::Track::Ambient }, Transition::Fade));
+            st.mode = MusicMode::Ambient;
+            st.saved_section = 255;
+        }
+        if talking {
+            return;
+        }
     }
     st.check_timer += dt;
     st.change_timer += dt;
@@ -1387,6 +1418,16 @@ pub fn key_of(s: &str) -> u64 {
 
 /// ClientSetMusic(Level.Song, section, ...): start that song section with the given transition.
 fn play_section(st: &mut SoundState, section: usize, t: Transition) {
+    if st.ogg.is_some() {
+        use crate::tnmmode::Track;
+        let tr = match section {
+            3 => Track::Combat,
+            1 => Track::Death,
+            _ => Track::Ambient,
+        };
+        st.ogg_want = Some((tr, t));
+        return;
+    }
     let Some(song) = st.song.as_mut() else { return };
     if let Some(m) = song.section(section).or_else(|| song.section(0)) {
         st.audio.play_music(m, t);

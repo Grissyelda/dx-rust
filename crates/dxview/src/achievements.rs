@@ -260,7 +260,8 @@ fn now_secs() -> u64 {
 /// Achievements are for the story: none in a deathmatch room or on a deathmatch map (GitHub issue #57 - spawning
 /// in, with the match's augmentations and skills handed out, unlocked a row of them).
 fn earning() -> bool {
-    !(crate::deathmatch::versus() || crate::deathmatch::playing() || DM_MAP.load(std::sync::atomic::Ordering::Relaxed))
+    // Deus Ex's achievements are for Deus Ex: none in The Nameless Mod.
+    !crate::tnmmode::active() && !(crate::deathmatch::versus() || crate::deathmatch::playing() || DM_MAP.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 static DM_MAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

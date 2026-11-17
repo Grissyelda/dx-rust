@@ -157,6 +157,8 @@ pub fn glyph_kind() -> PadKind {
     match setting!("PadGlyphs") as i32 {
         1 => PadKind::Xbox,
         2 => PadKind::PlayStation,
+        // Automatic: the pad we read; before one has been seen, the one RecompLauncher saw plugged in.
+        _ if !frame().connected => crate::recomp::pad_hint().unwrap_or(frame().kind),
         _ => frame().kind,
     }
 }

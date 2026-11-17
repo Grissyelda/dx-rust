@@ -7,6 +7,7 @@
 pub mod classes;
 pub mod paths;
 pub mod mods;
+pub mod tnm;
 pub mod gamedir;
 pub mod mesh;
 pub mod objects;

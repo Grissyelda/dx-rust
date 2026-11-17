@@ -18,6 +18,8 @@ use bevy::{
 };
 #[macro_use]
 mod env;
+mod modscreen;
+mod tnmmode;
 mod nullmask;
 mod online;
 mod netplay;
@@ -32,6 +34,7 @@ mod cards;
 mod cover;
 mod attach;
 mod downed;
+mod recomp;
 mod queue;
 mod util;
 mod uinode;
@@ -249,7 +252,7 @@ pub struct Player {
 pub fn player_params(root: &std::path::Path) -> (MoveParams, f64, f64) {
     use unreal_pkg::props::{find, Value};
     let mut db = unreal_pkg::classes::ClassDb::open(&root.join("System"));
-    let d = db.defaults("JCDentonMale");
+    let d = db.defaults(tnmmode::player_class());
     let z = db.defaults("ZoneInfo");
     let f = |list: &[unreal_pkg::props::Property], n: &str, dflt: f64| match find(list, n) {
         Some(Value::Float(v)) => *v as f64,
@@ -741,7 +744,9 @@ fn startup_map(args: &[String]) -> String {
         .unwrap_or_else(|| {
             // No map named: boot to the logo map and its main menu, like the original (DXVIEW_SKIP_MENU=1 goes
             // straight to Liberty Island as before).
-            if env_on!("DXVIEW_SKIP_MENU") || travel::session().is_some() {
+            if tnmmode::active() && (env_on!("DXVIEW_SKIP_MENU") || travel::session().is_some()) {
+                "20_PhasApartment.dx".to_string()
+            } else if env_on!("DXVIEW_SKIP_MENU") || travel::session().is_some() {
                 "01_NYC_UNATCOIsland.dx".to_string()
             } else {
                 "DX.dx".to_string()
@@ -756,9 +761,12 @@ fn load_first_level(root: &String, map: &String) -> Level {
     let level = match dx_level::load_level(&PathBuf::from(root), map) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("ERROR: {e}\nUsage: dxview [\"path to Deus Ex\"] [map.dx]");
-            eprintln!("Press Enter to close.");
-            let _ = std::io::stdin().read_line(&mut String::new());
+            eprintln!("ERROR: {e}\nUsage: dxview [\"path to Deus Ex\" | --game \"path to Deus Ex\"] [map.dx]");
+            // (Under RecompLauncher nobody is at a console to press Enter.)
+            if !recomp::launched() {
+                eprintln!("Press Enter to close.");
+                let _ = std::io::stdin().read_line(&mut String::new());
+            }
             std::process::exit(1);
         }
     };
@@ -786,13 +794,31 @@ pub fn run() {
     // DXT1 textures go to the GPU compressed (desktop GPUs and the Steam Deck take BC formats; checked again once
     // the render device exists). DXVIEW_NO_BC1 decodes them as before.
     dx_level::set_bc1_supported(!env_on!("DXVIEW_NO_BC1"));
-    let args: Vec<String> = std::env::args().collect();
-    #[cfg(target_os = "android")]
-    let root = android_root;
+    // `--game <folder>` (RecompLauncher, scripts, Steam shortcuts) is taken out; the rest keep their places.
+    let (mut args, game_arg) = recomp::take_game_arg(std::env::args().collect());
+    // The launcher's Game row (or `--tnm <folder>`): The Nameless Mod instead of Deus Ex.
     #[cfg(not(target_os = "android"))]
-    let root = game_root(&args);
+    let tnm = tnmmode::pick(&mut args);
+    #[cfg(target_os = "android")]
+    let tnm: Option<PathBuf> = None;
+    #[cfg(target_os = "android")]
+    let root = {
+        let _ = &game_arg;
+        android_root
+    };
+    #[cfg(not(target_os = "android"))]
+    let root = game_arg.clone().unwrap_or_else(|| game_root(&args));
+    // Started by RecompLauncher with a folder that isn't Deus Ex: say so and stop (its exit_codes entry tells the
+    // player to pick the folder again) instead of failing later.
+    if recomp::launched() && !recomp::is_game_folder(&root) {
+        eprintln!("DX RUST: no Deus Ex in \"{root}\" (System/DeusEx.u is missing). Pick your Deus Ex folder again.");
+        std::process::exit(recomp::EXIT_NO_GAME);
+    }
     prof::mem_mark("start");
-    setup_mods(&root);
+    match &tnm {
+        Some(t) => tnmmode::setup(std::path::Path::new(&root), t),
+        None => setup_mods(&root),
+    }
     // Modern deathmatch: the living level's guards are added to maps as they are read.
     living::install();
     prof::mem_mark("mods set up");
@@ -857,7 +883,7 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
         .disable::<bevy::animation::AnimationPlugin>()
         .set(WindowPlugin {
             primary_window: Some(Window {
-                title: "DX RUST".into(),
+                title: if tnmmode::active() { "DX RUST - The Nameless Mod".into() } else { "DX RUST".into() },
                 // Settings > Display: the saved resolution and display mode (Windowed by default).
                 resolution: menus::RESOLUTIONS
                     .get(setting!("Resolution").max(-1.0) as isize as usize)
@@ -869,7 +895,7 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
                 mode: if platform::android() {
                     bevy::window::WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
                 } else {
-                    menus::start_window_mode(setting!("DisplayMode"))
+                    menus::start_window_mode(recomp::display_mode(setting!("DisplayMode")))
                 },
                 position: menus::start_window_position(),
                 present_mode: menus::present_mode(setting!("VSync")),
