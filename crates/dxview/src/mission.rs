@@ -242,6 +242,7 @@ pub fn mission_system(
                 let mut c = ctx(lvl, fl, &map, mission, &npcs, &decos, &mut movers, &mut assets, &player, &ph, &mut st.vars, &mut st.seed, time.elapsed_secs_f64());
                 c.credits = inv.0.credits as i64;
                 c.has_multitool = inv.0.items.iter().any(|i| i.def.class == "Multitool");
+                c.inv_classes = inv.0.items.iter().map(|i| i.def.class.clone()).collect();
                 crate::missions::first_frame(&mut c);
             }
         }
@@ -252,6 +253,9 @@ pub fn mission_system(
         let mut c = ctx(lvl, fl, &map, mission, &npcs, &decos, &mut movers, &mut assets, &player, &ph, &mut st.vars, &mut st.seed, time.elapsed_secs_f64());
         c.credits = inv.0.credits as i64;
         c.has_multitool = inv.0.items.iter().any(|i| i.def.class == "Multitool");
+        if crate::tnmmode::active() {
+            c.inv_classes = inv.0.items.iter().map(|i| i.def.class.clone()).collect();
+        }
         crate::missions::timer(&mut c);
         return;
     }
@@ -532,6 +536,7 @@ fn ctx<'a>(
                 standing: n.orders == crate::ai::Orders::Standing && n.state == crate::ai::NpcState::Idle,
                 pos: d.body.location,
                 emp_hp: n.emp_hp,
+                hostile: n.hates("Player"),
             });
         } else if !n.carried && !n.hp_body.robot {
             // The body: a placed carcass is its own class, a pawn leaves its CarcassType.
@@ -579,5 +584,6 @@ fn ctx<'a>(
         seed,
         credits: 0,
         has_multitool: false,
+        inv_classes: Vec::new(),
     }
 }

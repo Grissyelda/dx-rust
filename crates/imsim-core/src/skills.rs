@@ -65,6 +65,13 @@ impl Skills {
         self.find(class).map_or(0, |s| s.level)
     }
 
+    /// Set a skill's level outright (a script's tutorial: CurrentLevel = n), capped at master.
+    pub fn set_level(&mut self, class: &str, level: usize) {
+        if let Some(s) = self.list.iter_mut().find(|s| s.def.class.eq_ignore_ascii_case(class)) {
+            s.level = level.min(3);
+        }
+    }
+
     /// GetCost: points for the next level (None at master).
     pub fn cost(&self, class: &str) -> Option<i32> {
         self.find(class).and_then(|s| s.def.cost.get(s.level).copied())

@@ -22,6 +22,8 @@ use unreal_pkg::props::{find, Property, Value};
 #[derive(Debug, Clone)]
 enum Kind {
     Plain,
+    /// The Nameless Mod's own trigger classes (tnmtriggers.rs).
+    Tnm(crate::tnmtriggers::TnmKind),
     /// The Nameless Mod's MSCallbackTrigger: touched or triggered, it asks the mission script to run ScriptFunction.
     Callback(String),
     /// UnTrigger: touching it (relevant) or triggering it untriggers its Event (no once-only, delay or message).
@@ -165,6 +167,14 @@ impl Triggers {
     }
 }
 
+/// Triggers used up (destroyed or no longer touchable), by actor index: kept for the map being played.
+static SPENT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// A trigger actor of this map has been used up (Destroy or bCollideActors off).
+pub fn spent(actor: usize) -> bool {
+    SPENT.lock().is_ok_and(|s| s.contains(&actor))
+}
+
 /// Events dispatched this frame, for the triggers to look at next frame.
 static INBOX: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
 
@@ -294,7 +304,7 @@ const CLASSES: [&str; 14] = [
 fn build(level: &dx_level::Level) -> Vec<Trig> {
     let mut out = Vec::new();
     for (ai, a) in level.actors.iter().enumerate() {
-        if !CLASSES.contains(&a.class.as_str()) {
+        if !CLASSES.contains(&a.class.as_str()) && !crate::tnmtriggers::is_class(&a.class) {
             continue;
         }
         let p = &a.props;
@@ -372,8 +382,12 @@ fn build(level: &dx_level::Level) -> Vec<Trig> {
                 time: None,
             },
             "UnTrigger" => Kind::Un,
+            c if crate::tnmtriggers::is_class(c) => Kind::Tnm(crate::tnmtriggers::kind_for(c, p)),
             _ => Kind::Plain,
         };
+        if let Kind::Tnm(crate::tnmtriggers::TnmKind::AiEvent(k)) = &kind {
+            crate::tnmtriggers::listen(out.len(), k, DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64), b(p, "bTriggerOnceOnly", false));
+        }
         out.push(Trig {
             actor: ai,
             class: a.class.clone(),
@@ -665,6 +679,32 @@ fn touch(
                 start_fade(t);
             }
         }
+        Kind::Tnm(mut k) => {
+            let rel = relevant(t, by_player);
+            let act = crate::tnmtriggers::on_touch(&mut k, &t.event, t.once, by_player, rel, flags);
+            t.kind = Kind::Tnm(k);
+            apply_act(t, act, now, out, true);
+        }
+    }
+}
+
+/// What a Nameless Mod trigger asked for after it ran (tnmtriggers.rs).
+fn apply_act(t: &mut Trig, act: crate::tnmtriggers::Act, now: f32, out: &mut Out, touch: bool) {
+    if act.base {
+        if touch {
+            base_touch(t, now, out);
+        } else {
+            trigger_state(t);
+        }
+    }
+    for (e, on) in act.events {
+        if !e.is_empty() {
+            out.emit(&e, &t.group, on);
+        }
+    }
+    out.messages.extend(act.messages);
+    if act.destroy {
+        t.destroyed = true;
     }
 }
 
@@ -708,6 +748,17 @@ fn untouch(t: &mut Trig, by_player: bool, flags: &mut imsim_core::flags::FlagBas
             if relevant(t, by_player) => {
                 base_untouch(t, out);
             }
+        Kind::Tnm(mut k) => {
+            let rel = relevant(t, by_player);
+            let act = crate::tnmtriggers::on_untouch(&mut k, &t.event, t.once, rel);
+            let base = act.base;
+            t.kind = Kind::Tnm(k);
+            if base {
+                base_untouch(t, out);
+            }
+            let act = crate::tnmtriggers::Act { base: false, ..act };
+            apply_act(t, act, 0.0, out, true);
+        }
         _ => {}
     }
 }
@@ -752,6 +803,12 @@ fn triggered(
     out: &mut Out,
 ) {
     let _ = now;
+    if let Kind::Tnm(mut k) = t.kind.clone() {
+        let act = crate::tnmtriggers::on_trigger(&mut k, &t.event, t.once, on, flags);
+        t.kind = Kind::Tnm(k);
+        apply_act(t, act, now, out, false);
+        return;
+    }
     if !on {
         if let Kind::Flag {
             name,
@@ -897,6 +954,7 @@ fn triggered(
             trigger_state(t);
             start_fade(t);
         }
+        Kind::Tnm(_) => {}
     }
 }
 
@@ -1036,6 +1094,20 @@ pub fn trigger_system(
             triggered(t, on, fl, now, &mut out);
         }
     }
+    // The Nameless Mod: AIEventTriggers whose event reached them fire their Event; the relay's touches.
+    for i in crate::tnmtriggers::take_ai_fired() {
+        if let Some(t) = tr.list.get(i) {
+            if !t.destroyed && !t.event.is_empty() {
+                let (e, g) = (t.event.clone(), t.group.clone());
+                out.emit(&e, &g, true);
+            }
+        }
+    }
+    for tag in crate::tnmtriggers::take_touches() {
+        for t in tr.list.iter_mut().filter(|t| !t.destroyed && t.tag.eq_ignore_ascii_case(&tag)) {
+            touch(t, true, fl, now, &mut out);
+        }
+    }
     // Infolinks that finished: DatalinkFinished -> Trigger.Touch (fires Event, collision off).
     for a in crate::consys::take_finished_triggers() {
         if let Some(t) = tr.list.iter_mut().find(|t| t.actor == a) {
@@ -1154,6 +1226,11 @@ pub fn trigger_system(
             }
         }
         let _ = &t.class;
+    }
+    // Which triggers are used up, for whoever asks (spent).
+    if let Ok(mut sp) = SPENT.lock() {
+        sp.clear();
+        sp.extend(tr.list.iter().filter(|t| t.destroyed || !t.collide).map(|t| t.actor));
     }
     for e in out.events {
         events.0.push(e);

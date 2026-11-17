@@ -58,6 +58,15 @@ pub fn frob(blocker: usize) {
     }
 }
 
+/// Switches set on or off without being used (The Nameless Mod's LightSwitchFlipper: the pose and bOn only).
+static SWITCHES: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_switch(blocker: usize, on: bool) {
+    if let Ok(mut q) = SWITCHES.lock() {
+        q.push((blocker, on));
+    }
+}
+
 #[derive(Default)]
 struct State {
     on: bool,
@@ -144,6 +153,18 @@ pub fn fixture_system(
                 if let Some(b) = blockers.list.iter().position(|c| lvl.actors[c.actor].name.eq_ignore_ascii_case(name)) {
                     frobs.push(b);
                 }
+            }
+        }
+    }
+    for (b, want) in SWITCHES.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        let s = st.state.entry(b).or_default();
+        if s.on == want {
+            continue;
+        }
+        s.on = want;
+        if let Some(&e) = blockers.deco.get(&b) {
+            if let Ok((_, Some(mut an))) = decos.get_mut(e) {
+                play_anim(lvl, &mut an, if want { "On" } else { "Off" }, false);
             }
         }
     }

@@ -26,6 +26,15 @@ use unreal_pkg::props::{find, Property, Value};
 static INBOX: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
 static BARREL_HITS: Mutex<Vec<(usize, usize, bool)>> = Mutex::new(Vec::new());
 
+/// Generators set spewing or not by a mission script (whatever state they're in).
+static SETS: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+
+pub fn set_spewing(tag: &str, on: bool) {
+    if let Ok(mut q) = SETS.lock() {
+        q.push((tag.to_string(), on));
+    }
+}
+
 pub fn event(name: &str, on: bool) {
     if let Ok(mut q) = INBOX.lock() {
         q.push((name.to_string(), on));
@@ -327,6 +336,11 @@ pub fn projgen_system(
     let pc = player.body.location;
 
     // ---- events
+    for (tag, on) in SETS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        for g in st.gens.iter_mut().filter(|g| g.tag.eq_ignore_ascii_case(&tag)) {
+            g.spewing = on;
+        }
+    }
     for (name, on) in &inbox {
         for g in st.gens.iter_mut().filter(|g| !g.tag.is_empty() && g.tag.eq_ignore_ascii_case(name)) {
             // ProjectileGenerator.Trigger (UnTrigger does nothing).

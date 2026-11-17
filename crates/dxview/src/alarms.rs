@@ -160,6 +160,7 @@ impl Alarms {
             if !u.event.is_empty() {
                 self.events.push((u.event.clone(), true));
             }
+            crate::tnmtriggers::ai_event("alarm", u.pos, u.hear_radius());
             println!("ALARM {} triggered", j);
         }
         if raised {
@@ -197,6 +198,9 @@ impl Alarms {
     /// AIStartEvent / AIEndEvent('Alarm') for an external source.
     pub fn set_external(&mut self, i: usize, active: bool, seek: DVec3, instigator: Option<Target>) {
         if let Some(u) = self.units.get_mut(i) {
+            if active && !u.active {
+                crate::tnmtriggers::ai_event("alarm", u.pos, u.hear_radius());
+            }
             u.active = active;
             u.seek = seek;
             u.instigator = if active { instigator } else { None };

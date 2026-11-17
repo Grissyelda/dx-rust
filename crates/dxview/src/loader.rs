@@ -405,10 +405,18 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
     // What travels with the player, from the map being left.
     if matches!(goal, Goal::Travel(_)) {
         // MissionScript.PreTravel of the map being left.
+        // Placed actors still in the world (not destroyed or taken): The Nameless Mod remembers some across maps.
+        let present: std::collections::HashSet<usize> = {
+            let mut q = world.query::<&crate::actors::MeshActorRef>();
+            let lvl = &world.resource::<crate::LevelRes>().0;
+            q.iter(world).filter_map(|r| lvl.mesh_actors.get(r.0).map(|m| m.actor)).collect()
+        };
         world.resource_scope(|world, mut flags: Mut<crate::ai::GameFlags>| {
             let lvl = &world.resource::<crate::LevelRes>().0;
             let movers = world.resource::<crate::movers::Movers>();
-            crate::missions::pre_travel_current(&mut flags.0, lvl, movers);
+            let meshed: std::collections::HashSet<usize> = lvl.mesh_actors.iter().map(|m| m.actor).collect();
+            let present = |a: usize| if meshed.contains(&a) { present.contains(&a) } else { !crate::triggers::spent(a) };
+            crate::missions::pre_travel_current(&mut flags.0, lvl, movers, &present);
         });
     }
     let carry = matches!(goal, Goal::Travel(_)).then(|| crate::save::capture_travel(world));
@@ -498,6 +506,9 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// is put back afterwards from the captured save.
 fn reset_modules() {
     crate::frobui::reset_level();
+    crate::tnmtriggers::reset_level();
+    crate::carry::set_carried_bind("");
+    crate::devices::reset_events();
     crate::destruct::reset_vulnerable();
     crate::netplay::reset_level();
     crate::deathmatch::reset_level();
@@ -899,10 +910,7 @@ fn dev_goto(world: &mut World) {
             if let Some(i) = lvl.actors.iter().position(|a| a.name.eq_ignore_ascii_case(map)) {
                 let class = lvl.actors[i].class.clone();
                 let ev = crate::devices::name_prop(&lvl.actors[i].props, "Event");
-                let code = match unreal_pkg::props::find(&lvl.actors[i].props, "validCode") {
-                    Some(unreal_pkg::props::Value::Str(s)) => s.clone(),
-                    _ => "1234".to_string(),
-                };
+                let code = Some(crate::devices::code_of(&lvl.actors[i].props)).filter(|c| !c.is_empty()).unwrap_or_else(|| "1234".to_string());
                 if crate::computers::is_terminal(&class) {
                     crate::computers::frob(i);
                 } else if class.starts_with("Keypad") {

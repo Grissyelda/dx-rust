@@ -23,6 +23,7 @@ mod runlog;
 mod rlach;
 mod sdl3pad;
 mod tnmmode;
+mod tnmtriggers;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1169,6 +1170,8 @@ fn add_mission_systems(app: &mut App) {
         .init_resource::<triggers::Triggers>()
         .init_resource::<logic::LogicActors>()
         .add_systems(Update, logic::logic_system.after(devices::device_system))
+        .init_resource::<tnmtriggers::TnmMovers>()
+        .add_systems(Update, tnmtriggers::tnm_system.after(devices::device_system))
         .add_systems(Update, scriptworld::scriptworld_system.after(mission::mission_system))
         .add_systems(Update, missions::mission_fx_system.after(mission::mission_system))
         .add_systems(Update, credits::credits_system)

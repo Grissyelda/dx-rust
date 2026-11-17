@@ -54,6 +54,30 @@ pub fn carrying() -> bool {
     CARRYING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The BindName (else Tag) of the body in our hands; empty when none (The Nameless Mod's scripts check whose
+/// body the player brings: tnmpovcorpse.givenbindname).
+static CARRIED_BIND: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+pub fn set_carried_bind(name: &str) {
+    if let Ok(mut b) = CARRIED_BIND.lock() {
+        b.clear();
+        b.push_str(name);
+    }
+}
+static DISCARD_BODY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The body in our hands is taken away (gone, not dropped).
+pub fn discard_body() {
+    DISCARD_BODY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn take_discard_body() -> bool {
+    DISCARD_BODY.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn carried_bind() -> String {
+    CARRIED_BIND.lock().map(|b| b.clone()).unwrap_or_default()
+}
+
 pub fn carry_system(
     _keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,

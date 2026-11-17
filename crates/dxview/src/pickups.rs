@@ -913,6 +913,11 @@ fn frob_body(
             v.set_if_neq(Visibility::Hidden);
         }
         cx.weapons.want_corpse = Some(e);
+        let bind = match find(&level.actors[npc.actor].props, "BindName") {
+            Some(Value::Str(b)) if !b.is_empty() => b.clone(),
+            _ => crate::ai::actor_tag(&level.actors[npc.actor]).to_string(),
+        };
+        crate::carry::set_carried_bind(&bind);
         println!("CARRY body {}", level.actors[npc.actor].name);
         return;
     }

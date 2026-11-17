@@ -43,6 +43,8 @@ pub struct MoverRt {
     pub frobbable: Option<bool>,
     /// Mover.WaitingPawn: the pawn (blocker) that frobbed it open (ScriptedPawn.FrobDoor); others leave it alone.
     pub waiting_pawn: Option<usize>,
+    /// A script timed this move and it stops at its key (no chaining on through the keyframes).
+    pub held: bool,
 }
 
 #[derive(Resource)]
@@ -116,6 +118,7 @@ pub fn spawn_movers(
             old_rot: info.rotation,
             close_timer: None,
             waiting_pawn: None,
+            held: false,
             opening: false,
             locked: info.locked,
             moved_since_lit: false,
@@ -252,6 +255,16 @@ fn do_close(info: &MoverInfo, rt: &mut MoverRt) {
     rt.opening = false;
     let k = rt.key_num.saturating_sub(1);
     interpolate_to(info, rt, k, info.move_time as f64);
+}
+
+/// InterpolateTo(key, seconds) for a script that times the move itself (The Nameless Mod's CaroneElevator).
+pub fn move_to(info: &MoverInfo, rt: &mut MoverRt, key: u8, seconds: f64) {
+    if rt.destroyed {
+        return;
+    }
+    rt.opening = key > rt.key_num;
+    interpolate_to(info, rt, key, seconds);
+    rt.held = true;
 }
 
 /// ElevatorMover.SetSeq (SequenceTrigger): go to keyframe `seq` unless already moving or there.
@@ -471,7 +484,9 @@ pub fn tick_movers(
                     let old = rt.prev_key_num;
                     rt.prev_key_num = rt.key_num;
                     rt.alpha = 0.0;
-                    if rt.key_num > 0 && rt.key_num < old {
+                    if rt.held {
+                        rt.held = false;
+                    } else if rt.key_num > 0 && rt.key_num < old {
                         let k = rt.key_num - 1;
                         interpolate_to(info, rt, k, info.move_time as f64);
                     } else if rt.key_num + 1 < info.num_keys && rt.key_num > old {

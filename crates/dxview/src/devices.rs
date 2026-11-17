@@ -83,6 +83,63 @@ pub fn wireless_target(
     best
 }
 
+/// Decorations whose Event a script changed: (Tag, new Event). Cleared on a new map.
+static EVENT_SET: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Actor.Event = `event` for the decorations with this Tag (The Nameless Mod's TV switch).
+pub fn set_event(tag: &str, event: &str) {
+    if let Ok(mut q) = EVENT_SET.lock() {
+        q.retain(|(t, _)| !t.eq_ignore_ascii_case(tag));
+        q.push((tag.to_string(), event.to_string()));
+    }
+}
+
+/// Keypads whose code a script set: (Tag, code) - The Nameless Mod's archive keypad picks one of five.
+static CODE_SET: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_code(tag: &str, code: &str) {
+    if let Ok(mut q) = CODE_SET.lock() {
+        q.retain(|(t, _)| !t.eq_ignore_ascii_case(tag));
+        q.push((tag.to_string(), code.to_string()));
+    }
+}
+
+/// A keypad's validCode, as a script last set it.
+pub fn code_of(p: &[Property]) -> String {
+    let tag = name_prop(p, "Tag");
+    if let Ok(q) = CODE_SET.lock() {
+        if let Some((_, c)) = q.iter().find(|(t, _)| !tag.is_empty() && t.eq_ignore_ascii_case(&tag)) {
+            return c.clone();
+        }
+    }
+    match find(p, "validCode") {
+        Some(Value::Str(v)) => v.clone(),
+        _ => String::new(),
+    }
+}
+
+pub fn reset_events() {
+    if let Ok(mut q) = EVENT_SET.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = CODE_SET.lock() {
+        q.clear();
+    }
+    crate::ai::clear_player_hitter();
+}
+
+fn event_of(p: &[Property]) -> String {
+    let tag = name_prop(p, "Tag");
+    if !tag.is_empty() {
+        if let Ok(q) = EVENT_SET.lock() {
+            if let Some((_, e)) = q.iter().find(|(t, _)| t.eq_ignore_ascii_case(&tag)) {
+                return e.clone();
+            }
+        }
+    }
+    name_prop(p, "Event")
+}
+
 pub fn name_prop(p: &[Property], n: &str) -> String {
     match find(p, n) {
         Some(Value::Name(s)) if s != "None" => s.clone(),
@@ -170,10 +227,7 @@ pub fn frob_device(
         if tool.is_none() {
             if class.starts_with("Keypad") {
                 // Keypad.HackAction -> ActivateKeypadWindow: HUDKeypadWindow; a bypassed keypad grants access at once.
-                let valid = match find(p, "validCode") {
-                    Some(Value::Str(v)) => v.clone(),
-                    _ => String::new(),
-                };
+                let valid = code_of(p);
                 crate::menus::open_keypad(blocker, valid, strength <= 0.0);
                 return None;
             }
@@ -187,8 +241,8 @@ pub fn frob_device(
         }
         return None;
     }
-    // Plain decorations (buttons, switches): DeusExDecoration.Frob triggers Event.
-    let e = name_prop(p, "Event");
+    // Plain decorations (buttons, switches): DeusExDecoration.Frob triggers Event (as a script last set it).
+    let e = event_of(p);
     if !e.is_empty() {
         crate::triggers::note_source(&e, &crate::triggers::group_of(p));
         events.0.push((e, true));
@@ -346,10 +400,13 @@ pub fn device_system(
         crate::zones::event(lvl, &name, on);
         crate::sound::tag_state(&name, on);
         for (j, info) in lvl.movers.iter().enumerate() {
-            if on && info.tag.eq_ignore_ascii_case(&name) {
+            // A CaroneElevator has no Trigger of its own (The Nameless Mod: tnmtriggers.rs answers its door
+            // buttons).
+            if on && info.tag.eq_ignore_ascii_case(&name) && lvl.actors[info.actor].class != "CaroneElevator" {
                 crate::movers::trigger(info, &mut movers.rt[j]);
             }
         }
+        crate::tnmtriggers::event(&name, on);
         for mut e in &mut emitters {
             if e.tag.eq_ignore_ascii_case(&name) {
                 e.set_on(on);

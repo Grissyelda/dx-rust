@@ -29,6 +29,8 @@ pub struct PawnInfo {
     pub standing: bool,
     pub pos: DVec3,
     pub emp_hp: f32,
+    /// Hostile to the player (GetPawnAllianceType = ALLIANCE_Hostile).
+    pub hostile: bool,
 }
 
 /// A body on the floor (DeusExCarcass).
@@ -73,10 +75,36 @@ pub struct Ctx<'a> {
     pub credits: i64,
     /// The player carries a multitool.
     pub has_multitool: bool,
+    /// Classes of everything the player carries.
+    pub inv_classes: Vec<String>,
 }
 
 /// Mission-script functions asked for by the map (The Nameless Mod's MSCallbackTrigger), run on the next tick.
 static GAME_EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The player took a pawn out: (class, tag, knocked out) - The Nameless Mod's PawnKilled.
+static KILLS: Mutex<Vec<(String, String, bool)>> = Mutex::new(Vec::new());
+
+pub fn tnm_kill(by_player: bool, class: &str, tag: &str, knocked_out: bool) {
+    if by_player && crate::tnmmode::active() {
+        if let Ok(mut q) = KILLS.lock() {
+            q.push((class.to_string(), tag.to_string(), knocked_out));
+        }
+    }
+}
+
+/// Pawns that just turned on the player (placed actor index): The Nameless Mod's PlayerDetected.
+pub(crate) static DETECTED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+pub fn player_detected(actor: usize) {
+    if crate::tnmmode::active() {
+        if let Ok(mut q) = DETECTED.lock() {
+            if q.len() < 64 {
+                q.push(actor);
+            }
+        }
+    }
+}
 
 pub fn game_event(f: &str) {
     if !f.is_empty() {
@@ -102,6 +130,12 @@ pub enum PlayerReq {
     RemoveAll,
     /// Mission04: caught while dying - alive again (the lab's FirstFrame heals).
     Captured,
+    /// Each body part (head, torso, left leg, right leg, left arm, right arm) set to max(part x scale, floor).
+    Wounds([f32; 6], [f32; 6]),
+    /// Back from the dead (The Nameless Mod's capture: the player wakes in a cell).
+    Revive,
+    /// Player.SetLocation.
+    Teleport(DVec3),
     /// MissionEndgame: the quote, shown centred for `secs`.
     Quote(Vec<String>, f32),
     /// MissionEndgame.FinishCinematic: ShowCredits.
@@ -178,6 +212,15 @@ pub fn reset_level() {
         q.clear();
     }
     if let Ok(mut q) = GAME_EVENTS.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = KILLS.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = DETECTED.lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = tnm::PAWNS.lock() {
         q.clear();
     }
 }
@@ -427,6 +470,9 @@ pub fn timer(c: &mut Ctx) {
         for f in take(&GAME_EVENTS) {
             tnm::game_event(c, &f);
         }
+        for (class, tag, ko) in take(&KILLS) {
+            tnm::pawn_killed(c, &class, &tag, ko);
+        }
         tnm::timer(c);
         return;
     }
@@ -457,10 +503,10 @@ pub fn set_current(mission: i32, map: &str) {
     }
 }
 
-pub fn pre_travel_current(fl: &mut FlagBase, lvl: &dx_level::Level, movers: &crate::movers::Movers) {
+pub fn pre_travel_current(fl: &mut FlagBase, lvl: &dx_level::Level, movers: &crate::movers::Movers, present: &dyn Fn(usize) -> bool) {
     let (m, map) = CURRENT.lock().map(|c| c.clone()).unwrap_or_default();
     if crate::tnmmode::active() {
-        tnm::pre_travel(fl, m, &map, movers, lvl);
+        tnm::pre_travel(fl, m, &map, movers, lvl, present);
         return;
     }
     pre_travel(fl, m, &map);
@@ -2004,6 +2050,23 @@ pub fn mission_fx_system(
         match r {
             PlayerReq::Shake(t, roll, vert) => crate::shake::shake_view(t, roll, vert),
             PlayerReq::Push(v) => player.body.velocity += v,
+            PlayerReq::Wounds(scale, floor) => {
+                for (i, p) in ph.parts.iter_mut().enumerate() {
+                    *p = (*p * scale[i]).max(floor[i]);
+                }
+                ph.recompute();
+            }
+            PlayerReq::Revive => {
+                ph.dead = false;
+                for p in ph.parts.iter_mut() {
+                    *p = p.max(1.0);
+                }
+                ph.recompute();
+            }
+            PlayerReq::Teleport(pos) => {
+                player.body.location = pos;
+                player.body.velocity = DVec3::ZERO;
+            }
             PlayerReq::HealMin(m) => {
                 for p in ph.parts.iter_mut() {
                     *p = p.max(m);
@@ -2156,6 +2219,10 @@ pub fn mission_fx_system(
     for (class, pos, props) in take(&tnm::ITEMS) {
         println!("MISSION item {class} at {pos:?}");
         throws.0.push((class, pos, DVec3::ZERO, None, props));
+    }
+    for (class, pos, yaw, props) in take(&tnm::PAWNS) {
+        println!("MISSION pawn {class} at {pos:?}");
+        crate::spawn::pawn_with(&class, pos, yaw, props);
     }
     for (class, tag, pos, yaw, order) in take(&SPAWNS) {
         // Spawn + InitializePawn, SetOrders('Patrolling', orderTag), ChangeAlly('Player', -1, True),

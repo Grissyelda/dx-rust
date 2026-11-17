@@ -631,6 +631,33 @@ struct LaserGfx {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// What mission scripts may ask about the devices: (camera tag, active), and the tags of lasers / beams still
+/// there. Refreshed twice a second.
+static LIVE: std::sync::Mutex<(Vec<(String, bool)>, Vec<String>)> = std::sync::Mutex::new((Vec::new(), Vec::new()));
+static LIVE_TICK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn publish(st: &Security) {
+    if LIVE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 != 0 {
+        return;
+    }
+    if let Ok(mut l) = LIVE.lock() {
+        l.0.clear();
+        l.0.extend(st.cams.iter().filter(|c| !c.gone).map(|c| (c.tag.clone(), c.active)));
+        l.1.clear();
+        l.1.extend(st.lasers.iter().filter(|x| !x.gone).map(|x| x.tag.clone()));
+    }
+}
+
+/// A camera with this Tag is there and switched on.
+pub fn camera_active(tag: &str) -> bool {
+    LIVE.lock().map(|l| l.0.iter().any(|(t, a)| *a && t.eq_ignore_ascii_case(tag))).unwrap_or(false)
+}
+
+/// Lasers / beam triggers with this Tag still in the world.
+pub fn lasers_left(tag: &str) -> usize {
+    LIVE.lock().map(|l| l.1.iter().filter(|t| t.eq_ignore_ascii_case(tag)).count()).unwrap_or(0)
+}
+
 pub fn security_system(
     mut commands: Commands,
     time: Res<Time>,
@@ -671,6 +698,7 @@ pub fn security_system(
     let dt = time.delta_secs().min(0.1);
     let dtd = dt as f64;
     let st = &mut *st;
+    publish(st);
 
     if !st.init {
         st.init = true;
@@ -1150,6 +1178,13 @@ fn apply_hacks(st: &mut Security, hacked: Vec<usize>, lvl: &dx_level::Level, me:
 /// every camera).
 fn apply_events(st: &mut Security, events: &[(String, bool)]) {
     for (tag, on) in events {
+        // "*noalarm:<Tag>": those cameras' bNoAlarm set (true) or cleared (The Nameless Mod's scripts).
+        if let Some(t) = tag.strip_prefix("*noalarm:") {
+            for c in st.cams.iter_mut().filter(|c| c.tag.eq_ignore_ascii_case(t)) {
+                c.no_alarm = *on;
+            }
+            continue;
+        }
         // "*cameras" = every camera only (The Nameless Mod's "cameras offline" scripts).
         for c in st.cams.iter_mut().filter(|c| !c.gone && (tag == "*" || tag == "*cameras" || c.tag.eq_ignore_ascii_case(tag))) {
             if *on {

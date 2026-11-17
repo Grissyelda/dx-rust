@@ -1048,6 +1048,29 @@ fn set_played(flags: &mut FlagBase, name: &str) {
     }
 }
 
+/// A pawn's BindName changed (The Nameless Mod's TNMBindNameTrigger): its conversations follow the new name.
+pub fn rebind(blocker: usize, bind: &str) {
+    let mut g = lock();
+    let Some(s) = g.as_mut() else { return };
+    let who = Who::Actor(blocker);
+    s.by_bind.retain(|_, w| *w != who);
+    s.by_bind.insert(fold(bind), who);
+    if let Some(a) = s.actors.get_mut(&who) {
+        a.bind = bind.to_string();
+    }
+}
+
+/// Actors given a BindName by a script (a decoration that had none, like The Nameless Mod's helicopter that
+/// becomes "ROFLCopter"): (Tag, BindName, FamiliarName), applied on the next frame.
+static TAG_BINDS: std::sync::Mutex<Vec<(String, String, String, u32)>> = std::sync::Mutex::new(Vec::new());
+
+/// Give every actor with this Tag a BindName (and familiar name when not empty) - its conversations follow.
+pub fn bind_tag(tag: &str, bind: &str, familiar: &str) {
+    if let Ok(mut q) = TAG_BINDS.lock() {
+        q.push((tag.to_string(), bind.to_string(), familiar.to_string(), 0));
+    }
+}
+
 /// DeusExPlayer.StartConversationByName (ConversationTrigger, mission scripts): within 800 units.
 pub fn start_named(flags: &mut FlagBase, con: &str, bind: &str) -> bool {
     let mut g = lock();
@@ -1088,6 +1111,24 @@ pub fn start_forced(flags: &mut FlagBase, con: &str, bind: &str) -> bool {
     let ok = s.start_conversation(flags, who, Invoke::Forced, Some(ci));
     s.force_next = false;
     ok
+}
+
+/// A forced (cut scene) conversation by name, with whoever owns it.
+pub fn start_forced_con(flags: &mut FlagBase, con: &str) -> bool {
+    let owner = {
+        let g = lock();
+        let Some(s) = g.as_ref() else { return false };
+        s.owners
+            .iter()
+            .find(|(_, l)| l.iter().any(|&i| s.db.cons[i].name.eq_ignore_ascii_case(con)))
+            .map(|(o, _)| o.clone())
+    };
+    owner.is_some_and(|o| start_forced(flags, con, &o))
+}
+
+/// Seconds since the last third-person conversation ended (Trestkon.lastThirdPersonConvoTime).
+pub fn since_third_person() -> f32 {
+    lock().as_ref().and_then(|s| s.last_third.map(|(_, t)| s.time - t)).unwrap_or(f32::MAX)
 }
 
 /// A forced (cut scene) conversation is playing.
@@ -1576,7 +1617,7 @@ impl ConState {
             if l.start_con == ci || self.link_queue.contains(&ci) {
                 return false;
             }
-            if self.link_queue.len() >= 8 {
+            if self.link_queue.len() >= 12 {
                 return false;
             }
             self.link_queue.push(ci);
@@ -2813,6 +2854,49 @@ pub fn consys_system(
         a.eye = player.eye_height;
         let f = cam.forward();
         a.yaw = (f.z as f64).atan2(f.x as f64);
+    }
+    let binds = TAG_BINDS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    let mut again = Vec::new();
+    for (tag, bind, familiar, tries) in binds {
+        let mut found = false;
+        for (b, c) in blockers.list.iter().enumerate() {
+            let Some(a) = lvl.actors.get(c.actor) else { continue };
+            if !crate::ai::actor_tag(a).eq_ignore_ascii_case(&tag) {
+                continue;
+            }
+            found = true;
+            let who = Who::Actor(b);
+            if !bind.is_empty() {
+                st.by_bind.retain(|_, w| *w != who);
+                st.by_bind.insert(fold(&bind), who);
+            }
+            let e = st.actors.entry(who).or_insert_with(|| Actor {
+                pos: c.center,
+                radius: c.radius,
+                height: c.height,
+                eye: c.height * 0.75,
+                base_eye: c.height * 0.75,
+                alive: true,
+                ..Default::default()
+            });
+            if !bind.is_empty() {
+                e.bind = bind.clone();
+                e.bark_bind = bind.clone();
+            }
+            if !familiar.is_empty() {
+                e.familiar = familiar.clone();
+                e.unfamiliar = familiar.clone();
+            }
+        }
+        // A pawn a script just spawned isn't there yet: try again for a few seconds.
+        if !found && tries < 240 {
+            again.push((tag, bind, familiar, tries + 1));
+        }
+    }
+    if !again.is_empty() {
+        if let Ok(mut q) = TAG_BINDS.lock() {
+            q.extend(again);
+        }
     }
     for (w, a) in st.actors.iter_mut() {
         if let Who::Actor(b) = w {

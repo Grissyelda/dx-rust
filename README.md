@@ -162,9 +162,9 @@ Ex. Download it from its page and install it with the mod manager (its installer
 the launcher at a folder you installed it to (right-click the **Game** row). Then set the launcher's **Game** row to
 *Nameless Mod* and press Play. DX RUST reads its maps, characters, conversations and Ogg music from your copy; saves
 go to their own `TNMSave` folder. In game, *Settings > Mods* switches between Deus Ex and The Nameless Mod (the game
-restarts). Work in progress: its difficulty rules, its script triggers and most of Mission 20's script (the opening act
-in Forum City) are rewritten; the later missions' scripts, Trestkon's own abilities, its menus and achievements aren't
-yet, so those parts play with the Deus Ex rules they build on.
+restarts). Work in progress: its difficulty rules, its trigger classes and elevators, and the mission scripts of the
+whole story (missions 20 to 25, the endings and the epilogue) are rewritten; a few cinematic set pieces, Trestkon's own
+abilities, its menus and achievements aren't yet, so those parts play with the Deus Ex rules they build on.
 
 ## Building from source
 You need Rust (stable, 1.95 or later) and a C compiler: the Visual Studio C++ build tools on Windows, the Xcode

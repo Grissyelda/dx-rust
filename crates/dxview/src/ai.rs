@@ -1549,6 +1549,9 @@ impl Npc {
         self.last_seen = seen_at;
         self.readiness = 1.0;
         if matches!(self.state, NpcState::Idle | NpcState::Seeking) {
+            if matches!(t, Target::Player) {
+                crate::missions::player_detected(self.actor);
+            }
             self.combat_anchor = None;
             self.stand_up();
             self.seek = None;
@@ -1990,9 +1993,28 @@ pub enum WorldReq {
     TeleportOrders(Sel, DVec3, i32, String),
     /// ScriptedPawn.CatchFire (The Nameless Mod's scripts).
     Ignite(Sel),
+    /// Robots shut down (EMPHitPoints 0, state Disabled): The Nameless Mod's BotDisablerTrigger.
+    Disable(Sel),
+    /// A new BindName (and the conversations that go with it): The Nameless Mod's TNMBindNameTrigger, only for
+    /// pawns whose BindName is the second value when it's set.
+    Rebind(Sel, String, Option<String>),
+    /// Each body part at least this much, as the scripts list them (head, torso, left leg, right leg, left arm,
+    /// right arm); GenerateTotalHealth after.
+    MinParts(Sel, [f32; 6]),
 }
 
 static WORLD: std::sync::Mutex<Vec<WorldReq>> = std::sync::Mutex::new(Vec::new());
+
+/// The placed actor (index + 1, 0 = none) whose shot last hit the player: Level.Game's PlayerKiller for the mission
+/// scripts (The Nameless Mod's capture in the ABI ruins).
+static LAST_PLAYER_HITTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn last_player_hitter() -> Option<usize> {
+    LAST_PLAYER_HITTER.load(std::sync::atomic::Ordering::Relaxed).checked_sub(1)
+}
+pub fn clear_player_hitter() {
+    LAST_PLAYER_HITTER.store(0, std::sync::atomic::Ordering::Relaxed);
+}
 /// Seats already taken by sitting pawns (Sitting.SitPosition).
 static TAKEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
@@ -2114,6 +2136,21 @@ pub fn world_system(
                         attacker_pos: deco.body.location,
                     });
                 }
+                WorldReq::Disable(sel) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead && npc.hp_body.robot => {
+                    npc.emp_hp = 0.0;
+                    npc.state = NpcState::Stunned(1.0e9);
+                    npc.target = None;
+                    npc.anim = "";
+                    println!("PAWN {class} {tag} disabled by a trigger");
+                }
+                WorldReq::Rebind(sel, new, check)
+                    if sel_matches_tag(sel, class, &npc.bind_name, &tag)
+                        && check.as_ref().is_none_or(|c| c == &npc.bind_name) =>
+                {
+                    npc.bind_name = new.clone();
+                    crate::consys::rebind(npc.blocker, new);
+                    println!("REBIND {class} {tag} -> {new}");
+                }
                 WorldReq::Ignite(sel) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead && out.is_none() => {
                     // Set alight the way fire damage does it.
                     hits.0.push(crate::damage::PawnHit { world: false,
@@ -2164,6 +2201,14 @@ pub fn world_system(
                 }
                 WorldReq::Invincible(sel, on) if sel_matches_tag(sel, class, &npc.bind_name, &tag) => {
                     npc.hp_body.invincible = *on;
+                }
+                WorldReq::MinParts(sel, m) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead => {
+                    // Ours keeps arms before legs.
+                    let want = [m[0], m[1], m[4], m[5], m[2], m[3]];
+                    for (p, w) in npc.hp_body.parts.iter_mut().zip(want) {
+                        *p = p.max(w);
+                    }
+                    npc.hp_body.total();
                 }
                 WorldReq::MinHealth(sel, v) if sel_matches_tag(sel, class, &npc.bind_name, &tag) => {
                     npc.min_health = *v;
@@ -3973,6 +4018,20 @@ fn gather_heard(heard_buf: &mut Vec<Noise>, noises: &mut Vec<Noise>) -> Vec<Nois
     heard.clear();
     heard.append(noises);
     heard.extend(crate::smartai::take_noises());
+    // The Nameless Mod's AIEventTriggers listen for the same events.
+    if crate::tnmmode::active() {
+        for n in &heard {
+            let kind = match n.kind {
+                NoiseKind::Distress => "distress",
+                NoiseKind::WeaponFire => "weaponfire",
+                _ => "loudnoise",
+            };
+            crate::tnmtriggers::ai_event(kind, n.pos, n.radius as f64);
+            if kind == "weaponfire" {
+                crate::tnmtriggers::ai_event("loudnoise", n.pos, n.radius as f64);
+            }
+        }
+    }
     heard
 }
 
@@ -4570,6 +4629,24 @@ fn check_carcass(
     // or any friend for bHateCarcass) and can see: search there; bHateCarcass also makes the killers' alliance
     // an enemy on sight for 15 s. Unconscious bodies don't count (bEmitCarcass).
     npc.carcass_check -= dt;
+    // The Nameless Mod: a pawn that hates break-ins (TNMPawn.bHateBreakAndEnter, set by its AllianceToggleTrigger)
+    // takes the player standing where he shouldn't as if he were carrying a body killed by the player.
+    if looking
+        && cx.lf.carcass
+        && npc.carcass_check <= 0.0
+        && crate::tnmmode::active()
+        && crate::tnmtriggers::break_enter_hated(actor_tag(&lvl.actors[npc.actor]))
+        && sees(cx.player_center, 40.0, true, None).is_some()
+    {
+        npc.carcass_check = 0.5;
+        if npc.hate_carcass {
+            npc.potential_enemy = Some(("Player".to_string(), 15.0));
+        }
+        if npc.state == NpcState::Idle {
+            npc.set_seek_location(cx.player_center, SeekKind::Carcass, false);
+            npc.enter_seeking();
+        }
+    }
     if looking
         && cx.lf.carcass
         && (npc.hate_carcass || npc.react_carcass || npc.fear_carcass)
@@ -7573,6 +7650,7 @@ fn trace_shot(npc: &Npc, w: &crate::weapons::WeaponStats, cx: &mut ActCx, dir: D
         }
         let off = player_offset(cx.player_center, cx.player_yaw, at);
         crate::living::hurt_by_staff();
+        LAST_PLAYER_HITTER.store(npc.actor + 1, std::sync::atomic::Ordering::Relaxed);
         cx.ph.damage(dmg, dtype, off);
         return;
     }
@@ -8031,6 +8109,7 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
             by_player: h.attacker.is_none(),
             damage_type: h.damage_type,
         });
+        crate::missions::tnm_kill(h.attacker.is_none(), &lvl.actors[npc.actor].class, actor_tag(&lvl.actors[npc.actor]), false);
         crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
         crate::netplay::credit_pawn_kill(h.attacker);
         if npc.important && !npc.bind_name.is_empty() {
@@ -8112,6 +8191,7 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         by_player: h.attacker.is_none(),
         damage_type: h.damage_type,
     });
+    crate::missions::tnm_kill(h.attacker.is_none(), &lvl.actors[npc.actor].class, actor_tag(&lvl.actors[npc.actor]), knocked_out);
     crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
     crate::netplay::credit_pawn_kill(h.attacker);
     blockers.list[npc.blocker].radius = 0.0;

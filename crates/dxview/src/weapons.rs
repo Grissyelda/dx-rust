@@ -1971,7 +1971,19 @@ pub fn select_system(
         }
         return;
     }
-    if weapons.corpse.is_some() {
+    if let Some(body) = weapons.corpse {
+        // A script took the body off the player (The Nameless Mod: AJ lays Kevo on the slab).
+        if crate::carry::take_discard_body() {
+            if let Ok(ch) = children.get(*root) {
+                for c in ch.iter() {
+                    commands.entity(c).despawn();
+                }
+            }
+            commands.entity(body).despawn();
+            weapons.corpse = None;
+            weapons.held = None;
+            crate::carry::set_carried_bind("");
+        }
         return;
     }
     // Weapons and the usable pickups that have a first-person view (medkit, food, lockpick, binoculars...).
@@ -3391,6 +3403,7 @@ fn throw_corpse(
         + DVec3::new(0.0, 0.0, player.eye_height);
     corpse_drops.0.push((body, pos, vel, flat.y.atan2(flat.x)));
     weapons.corpse = None;
+    crate::carry::set_carried_bind("");
     weapons.held = None;
     true
 }

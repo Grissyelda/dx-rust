@@ -805,6 +805,21 @@ pub fn cinematic_system(
     cams.p1().rotation = rotq;
 }
 
+/// A mission script points every MapExit (DestMap) and Teleporter (URL) elsewhere, or with None shuts them all
+/// (DestMap = "", bEnabled = False).
+pub fn redirect_exits(redirect: Option<(&str, &str)>) {
+    if let Ok(mut e) = EXITS.lock() {
+        match redirect {
+            Some((map_exit, teleporter)) => {
+                for x in e.iter_mut() {
+                    x.dest = if x.teleporter { teleporter } else { map_exit }.to_string();
+                }
+            }
+            None => e.clear(),
+        }
+    }
+}
+
 /// A mission script turns a Teleporter off (bEnabled = False): it no longer takes the player anywhere.
 pub fn set_teleporter_enabled(tag: &str, on: bool) {
     if on {

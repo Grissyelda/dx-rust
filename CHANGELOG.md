@@ -19,13 +19,17 @@ and installing it there offers to start it straight away.
 
 Its gameplay is being rewritten piece by piece. Done so far: enemies and items appear or not by the difficulty you
 picked, as in the mod; characters, bodies and datacubes it keeps out of the world wait until the story brings them in;
-its map triggers that call the mission script work; and most of Mission 20's script, the opening act in Forum City
-(Phasmatis's apartment, downtown, the slums, the corporate district, PDX and the Wild Cards' towers, the cults, the
-server complexes) - who is where after each choice, doors sealed or opened, private messages from your contacts, goals
-closed when the person behind a job is taken out, rewards and skill awards, the count of the living that closes Sol's
-bar and the Party Zone after trouble. Not yet: Mission 20's set pieces (the Quad launcher, the sewer flush, the PDX
-"mark" sequence), the later missions' scripts (21 to 25 and the bonus maps), The Nameless Mod's own player abilities,
-menus, achievements and its intro.
+its own trigger classes and its elevators work; and the mission scripts of the whole story, written anew for DX RUST:
+Mission 20 and 22 (both days in Forum City - who is where after each choice, sealed and opened doors, private
+messages from your contacts, goals closed when the person behind a job is taken out, rewards, the hostage crisis and
+the kidnapping in the slums, the air-traffic-control landing, the cult jobs, Firewall Alpha's four-phase fight in the
+registration office with its reinforcements, the UC constructions including the quad rocket launcher, the Citadel's
+lava), Mission 21 (DXI), Mission 23 (the ABI complex: the archive's code, the rescue jobs, being captured in the
+ruins, the mirror-Trestkon fight), Mission 24 (the space station: holograms, Kylie and Deus Diablo, the respawning
+GameSpy firewalls and their switched loyalties, the airlocks, the station shaking apart) and Mission 25 (the training
+course, the endings and the epilogue with their forced conversations). Guards noticing you clear the mod's "not
+seen" flags. Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, oxygen zones, the mod's ending
+quotes and credits, slow motion, The Nameless Mod's own player abilities, menus and achievements, and its bonus maps.
 
 ### Run logs, portable mode and data folders
 Every run writes a log to a `logs` folder (the newest ten are kept), and a crash leaves its own `crash-<time>.log`

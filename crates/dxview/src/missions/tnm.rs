@@ -4,11 +4,16 @@
 //! the mission script's own defaults in the player's files (`load_text`).
 //!
 //! Covered: the shared mission-script layer (count of the living per map, flag-held countdowns, the last map, the
-//! killed-important-characters rule), and Mission 20 (the first half of the game, Forum City) - each map's set-up on
-//! arrival, its once-a-second checks and what it records on leaving. Missions 21 to 25 run the shared layer only.
+//! killed-important-characters rule), Mission 20 (the first day in Forum City) and 21 (DXI) here - each map's set-up
+//! on arrival, its once-a-second checks and what it records on leaving - and missions 22 to 25 in their own modules.
 
 use super::*;
 use std::collections::HashMap;
+
+mod m22;
+mod m23;
+mod m24;
+mod m25;
 
 /// The mission script's own strings (its localized defaults), by property name.
 static TEXT: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
@@ -52,6 +57,9 @@ const COUNT_EXCLUDED: [&str; 2] = ["ZeroPresence", "WCSpy"];
 
 /// Items a script puts in the world: (class, location, property overrides).
 pub(super) static ITEMS: Mutex<Vec<(String, DVec3, Vec<Property>)>> = Mutex::new(Vec::new());
+
+/// Pawns a script spawns: (class, where, yaw, property overrides).
+pub(super) static PAWNS: Mutex<Vec<(String, DVec3, i32, Vec<Property>)>> = Mutex::new(Vec::new());
 
 fn prop(name: &str, value: Value) -> Property {
     Property { name: name.to_string(), index: 0, value }
@@ -121,6 +129,16 @@ impl Ctx<'_> {
         let t = text(text_key);
         if let Some(cs) = crate::consys::lock().as_mut() {
             cs.add_goal(name, &t, primary);
+            if completed {
+                cs.goal_completed(name);
+            }
+        }
+    }
+
+    /// AddGoal with a text of our own (the script's own text for it isn't one of its localized strings).
+    fn add_goal_text(&mut self, name: &str, text: &str, primary: bool, completed: bool) {
+        if let Some(cs) = crate::consys::lock().as_mut() {
+            cs.add_goal(name, text, primary);
             if completed {
                 cs.goal_completed(name);
             }
@@ -244,6 +262,11 @@ impl Ctx<'_> {
     }
 }
 
+/// Mission 25's script also runs the intro, ending and epilogue maps (TNMIntro, TNMEndgame*, TNMDenouement).
+fn is_m25(c: &Ctx) -> bool {
+    c.mission == 25 || c.map.starts_with("TNM")
+}
+
 /// Every TNM mission script on its first tick (after Deus Ex's own MissionScript part in mission.rs).
 pub fn first_frame(c: &mut Ctx) {
     // The first count on a map is the number later visits are measured against.
@@ -259,12 +282,133 @@ pub fn first_frame(c: &mut Ctx) {
     if c.mission == 20 {
         m20_first(c, &map);
     }
+    if c.mission == 21 {
+        m21_first(c, &map);
+    }
+    if c.mission == 22 {
+        m22::first(c, &map);
+    }
+    if c.mission == 23 {
+        m23::first(c, &map);
+    }
+    if c.mission == 24 {
+        m24::first(c, &map);
+    }
+    if is_m25(c) {
+        m25::first(c, &map);
+    }
+}
+
+/// The player took someone out (TNMMissionScript.PawnKilled): in PDX's headquarters, killing anyone but its
+/// animals, robots and invaders, unless allied with the Wild Cards, turns PDX on him.
+pub fn pawn_killed(c: &mut Ctx, class: &str, tag: &str, knocked_out: bool) {
+    let _ = tag;
+    if c.mission == 23 {
+        m23::pawn_killed(c, class, knocked_out);
+    }
+    if c.mission == 24 && !knocked_out {
+        m24::pawn_killed(c, class);
+    }
+    if !(c.mission == 20 || c.mission == 22) {
+        return;
+    }
+    let pdx = c.map.ends_with("_PDXHQ01") || c.map.ends_with("_PDXHQ02");
+    if !pdx || c.b("ALLIED_WC") || c.b("MS_PDX_Murderer") {
+        return;
+    }
+    let is = |k: &str| crate::classtree::is_a(class, k);
+    if is("NBDRat") || is("TNMCat") || is("Invader") || is("TNMRobot") || !is("TNMPawn") {
+        return;
+    }
+    if !knocked_out || !is("Jonas") {
+        c.set("PDX_Dead", !knocked_out, 21);
+        pdx_murder(c);
+    } else {
+        c.pm("PM_Evil_JonasKnockout");
+    }
+}
+
+/// PDXHQMurder: everyone in the building turns on the player, Kashue comes for him and every way out is shut.
+fn pdx_murder(c: &mut Ctx) {
+    if c.b("MS_KashueKilling") {
+        return;
+    }
+    c.set("MS_KashueKilling", true, 23);
+    let kashue_here = c.pawns.iter().any(|p| p.in_world && (p.tag.eq_ignore_ascii_case("KingKashue_Evil") || p.tag.eq_ignore_ascii_case("KingKashue")));
+    c.leave_tag("KingKashue_Evil");
+    c.leave_tag("KingKashue");
+    if !kashue_here {
+        c.pm("PM_Kashue_KilledFriend");
+    }
+    for t in ["Krissy", "Evil", "Jonas", "Winquman"] {
+        c.hostile(t);
+    }
+    c.enter_tag("KingKashue_Attack");
+    for d in ["PDXMainDoor", "PDXSewerGrate", "StaircaseDoor"] {
+        c.seal_door(d);
+    }
+    crate::cinematic::redirect_exits(None);
+    crate::triggers::set_active("Exit1Trigger", false);
+    crate::triggers::set_active("Exit2Trigger", false);
+}
+
+/// Missions 20 and 22's shared checks, once a second.
+fn m20and22_timer(c: &mut Ctx, map: &str) {
+    if c.b("Scara_Dead") {
+        crate::cinematic::redirect_exits(Some(("20_WCFloor4#Narcissus", "Narcissus")));
+    }
+    if !c.b("CheckedSubwayPass") && c.inv_classes.iter().any(|k| k.eq_ignore_ascii_case("SubwayPass")) {
+        c.add_goal("SubwayMoney", "strHasSubPass", true, true);
+        c.set("CheckedSubwayPass", true, 23);
+    }
+    if map == "20_FCSLUMS" || map == "22_FCDOWNTOWN" {
+        if map == "20_FCSLUMS" && c.down("PJ") {
+            c.set("PJ_Dead_Early", true, 23);
+        }
+        if c.b("QR_SUB_Bugging") && !c.b("QC_SUB_Bugging") {
+            if c.b("PJ_Dead") {
+                c.add_goal("Bugging", "strPJDead", false, true);
+                c.set("QC_SUB_Bugging", true, 23);
+            } else if c.b("PJ_Unconscious") {
+                c.add_goal("Bugging", "strPJUnconscious", false, true);
+                c.set("QC_SUB_Bugging", true, 23);
+            }
+        }
+    }
+    let exp = if c.mission == 20 { 21 } else { 23 };
+    if map.ends_with("_LLAMATEMPLE") {
+        // Beefman turned hostile: his turrets drop and his force field goes; once they're destroyed, the field
+        // goes down again and Beefman fights in person.
+        if !c.b("CheckedBeefmanTurretsDrop") && c.pawns.iter().any(|p| p.tag.eq_ignore_ascii_case("Beefman") && p.hostile) {
+            c.trigger("BeefmanTurretHatches");
+            c.trigger("BeefmanForceField");
+            c.set("CheckedBeefmanTurretsDrop", true, exp);
+            c.set("CheckBeefmanTurretsDie", true, exp);
+        }
+        if c.b("CheckBeefmanTurretsDie") && c.deco_exists("DeusExDecoration", Some("BeefmanTurret")) == 0 {
+            c.hostile("Beefman");
+            c.trigger("BeefmanForceField");
+            c.set("CheckBeefmanTurretsDie", false, exp);
+        }
+    }
+    if map.ends_with("_PDXHQ01") {
+        if c.b("ALLIED_WC") && map != "22_PDXHQ01" && c.b("QR_SUB_PDXVirus") && c.b("Evil_Dead") {
+            c.pm("PM_Scara_EvilDead");
+        }
+        if !c.b("ALLIED_WC") && !c.b("MS_PDX_Murderer") && c.b("Jonas_Dead") {
+            c.set("PDX_Dead", true, 21);
+            pdx_murder(c);
+        }
+    }
 }
 
 /// Once a second.
 pub fn timer(c: &mut Ctx) {
     let map = c.map.clone();
     let _ = c.living(&map);
+    if c.mission == 20 || c.mission == 22 {
+        m20and22_timer(c, &map);
+    }
     if c.mission == 20 {
         for (s, l) in M20_TIMERS {
             c.timer_tick(s, l);
@@ -272,11 +416,57 @@ pub fn timer(c: &mut Ctx) {
         m20_countdowns(c, &map);
         m20_timer(c, &map);
     }
+    if c.mission == 21 {
+        m21_timer(c, &map);
+    }
+    if c.mission == 22 {
+        m22::timer(c, &map);
+    } else if c.mission == 23 {
+        m23::timer(c, &map);
+    } else if c.mission == 24 {
+        m24::timer(c, &map);
+    } else if is_m25(c) {
+        m25::timer(c, &map);
+        if let Ok(mut q) = super::DETECTED.lock() {
+            q.clear();
+        }
+    } else if let Ok(mut q) = super::DETECTED.lock() {
+        q.clear();
+    }
 }
 
 /// Leaving a map: what it records.
-pub fn pre_travel(fl: &mut FlagBase, mission: i32, map: &str, movers: &crate::movers::Movers, lvl: &dx_level::Level) {
+pub fn pre_travel(
+    fl: &mut FlagBase,
+    mission: i32,
+    map: &str,
+    movers: &crate::movers::Movers,
+    lvl: &dx_level::Level,
+    present: &dyn Fn(usize) -> bool,
+) {
     fl.set("TNMLastMap", FlagValue::Name(map.to_string()), 0);
+    if mission == 24 {
+        m24::pre_travel(fl);
+    }
+    // Forum City is visited twice (missions 20 and 22): what was taken or used up the first time stays gone.
+    if mission == 20 || mission == 22 {
+        if let Some((flag, tags)) = persistent(map, false) {
+            let mut bits = 0i32;
+            for (i, tag) in tags.iter().enumerate() {
+                let mut found = false;
+                for (ai, a) in lvl.actors.iter().enumerate() {
+                    if tag_of(&a.props).eq_ignore_ascii_case(tag) {
+                        found = present(ai);
+                        break;
+                    }
+                }
+                if !found {
+                    bits |= 1 << i;
+                }
+            }
+            fl.set(flag, FlagValue::Int(bits), 23);
+        }
+    }
     let b = |fl: &FlagBase, n: &str| fl.get_bool(n);
     if mission == 20 {
         match map {
@@ -284,14 +474,17 @@ pub fn pre_travel(fl: &mut FlagBase, mission: i32, map: &str, movers: &crate::mo
             "20_SOLSBAR" if b(fl, "MS_SolsTrouble") => fl.set("MS_SolsTrouble_Post", FlagValue::Bool(true), 23),
             _ => {}
         }
+    }
+    if mission == 20 || mission == 22 {
         // The Wild Cards HQ's sub-level hatch keeps its state between the floors.
-        if map.starts_with("20_WC") {
+        let exp = if mission == 20 { 21 } else { 23 };
+        if map.starts_with("20_WC") || map.starts_with("22_WC") {
             for (i, m) in lvl.movers.iter().enumerate() {
                 if m.tag.eq_ignore_ascii_case("SublevelKeypadHatch") {
                     let rt = &movers.rt[i];
-                    fl.set("WC_ElevatorHatch_Locked", FlagValue::Bool(rt.locked), 21);
-                    fl.set("WC_ElevatorHatch_Open", FlagValue::Bool(rt.key_num == 1), 21);
-                    fl.set("WC_ElevatorHatch_Known", FlagValue::Bool(true), 21);
+                    fl.set("WC_ElevatorHatch_Locked", FlagValue::Bool(rt.locked), exp);
+                    fl.set("WC_ElevatorHatch_Open", FlagValue::Bool(rt.key_num == 1), exp);
+                    fl.set("WC_ElevatorHatch_Known", FlagValue::Bool(true), exp);
                 }
             }
         }
@@ -300,8 +493,62 @@ pub fn pre_travel(fl: &mut FlagBase, mission: i32, map: &str, movers: &crate::mo
 
 // =================================================================================================== Missions 20/22
 
+/// Things placed in both visits to a Forum City map that only exist once: (map name after "20_" / "22_", the flag
+/// that remembers them, their Tags). Saved on leaving the mission-20 map, removed on arriving at the mission-22 one.
+const PERSISTENT: &[(&str, &str, &[&str])] = &[
+    ("GOATTEMPLAE", "PersistentLevel_GoatTemplae_1", &["TemplaeSkillAwardAOM", "TemplaeSkillAwardCave", "TemplaeAug", "TemplaeRebreatherCrate"]),
+    ("WCSUBLEVEL", "PersistentLevel_WCSublevel_1", &[
+        "SublevelAug", "SublevelAugUpgrade", "SublevelModRange", "SublevelModRecoil", "SublevelJumpShotgun", "SublevelJumpShell1",
+        "SublevelJumpShell2", "SublevelJumpSA", "SublevelExplosionSA", "SublevelUCSA", "SublevelPrisonKey", "SublevelGasroomMedkit",
+        "SublevelGasroomCrate", "KylieCredits", "ZPPistol", "SublevelLAMCrate", "FistPickupStun", "SublevelAugUpgradeZP",
+    ]),
+    ("WCFLOOR4", "PersistentLevel_WCFloor4_1", &["WC4Upgrade"]),
+    ("FCDOWNTOWN", "PersistentLevel_FCDowntown_1", &[
+        "DowntownApollo_SkillAward", "DowntownCanals_SkillAward", "DowntownCanals_Lockpick1", "DowntownCanals_Lockpick2",
+        "DowntownCanals_ReloadMod", "DowntownCanals_Liquor", "DowntownAlley_MedKit", "DowntownAlley_RecoilMod", "DowntownAlley_Sabot",
+        "DowntownShip_Shotgun", "DowntownShip_LAM1", "DowntownShip_LAM2",
+    ]),
+    ("WEAPONSHOP", "PersistentLevel_WeaponShop_1", &[
+        "FistPickupLethal", "Locker_Aug", "Locker_Credits", "Locker_EMPGrenade", "Locker_Ammo45", "Locker_BECell1", "Locker_BECell2",
+        "WeaponDoubleGuns", "Locker_Pistol", "Locker_10mm1", "Locker_10mm2", "Locker_GasGren1", "Locker_GasGren2", "Locker_GasGren3",
+        "Locker_Blowdart1", "Locker_Blowdart2", "Locker_20mm1", "Locker_20mm2", "Locker_EMPGrenade2", "Locker_Shell", "Locker_Scramble",
+        "Locker_3006", "Locker_Mine", "Locker_Plasma", "Locker_Prod", "Locker_ProdBattery", "Locker_Pepper1", "Locker_Pepper2",
+        "Locker_Darts", "Locker_Taser",
+    ]),
+    ("FCSLUMS", "PersistentLevel_Slums_1", &[
+        "YardbombAptAward", "FistPickupShock", "ElevatorLiquorBottle", "ElevatorVialCrack1", "ElevatorVialCrack2", "SewerCrate1",
+        "SewerCrate2", "SewerFlare1", "SewerFlare2",
+    ]),
+    ("DXO", "PersistentLevel_DXO_1", &[]),
+    ("FCCORPORATE", "PersistentLevel_FCCorporate_1", &[]),
+    ("PDXHQ01", "PersistentLevel_PDXHQ01_1", &[]),
+    ("PDXHQ02", "PersistentLevel_PDXHQ02_1", &["FistPickupBan"]),
+    ("GOATCITY", "PersistentLevel_GoatCity_1", &["SkillAward_Rock", "SkillAward_Cellar", "SkillAward_SpyRoom", "GoatCityTrapdoorKey"]),
+    ("FCCORPSEWERS", "PersistentLevel_FCCorpSewers_1", &[
+        "ItemCrate01", "ItemCrate02", "ItemCrate03", "ItemCrate04", "ItemCrate05", "ItemCrate06", "ItemCrate07", "ItemCrate08",
+        "ItemCrate09", "Molotov01", "Molotov02", "LAM01", "SniperRifle01", "SniperAmmo01", "Multitool01",
+    ]),
+    ("VOODOOSHOP", "PersistentLevel_VoodooShop_1", &["WeaponKatanaRonin", "WeaponBlowPipe"]),
+];
+
+/// The persistent entry of a map: leaving the mission-20 one (`load` false) or arriving at the mission-22 one.
+fn persistent(map: &str, load: bool) -> Option<(&'static str, &'static [&'static str])> {
+    let rest = map.strip_prefix(if load { "22_" } else { "20_" })?;
+    PERSISTENT.iter().find(|(m, ..)| m.eq_ignore_ascii_case(rest)).map(|(_, f, t)| (*f, *t))
+}
+
 fn m20and22_first(c: &mut Ctx, map: &str) {
     let m = map.trim_start_matches("20_").trim_start_matches("22_");
+    if let Some((flag, tags)) = persistent(map, true) {
+        let gone = c.int(flag);
+        for (i, tag) in tags.iter().enumerate() {
+            if gone & (1 << i) != 0 {
+                c.destroy_actors(ActorSel::tag(tag));
+                crate::ai::world_req(WorldReq::Destroy(Sel::tag(tag)));
+                crate::triggers::set_active(tag, false);
+            }
+        }
+    }
     if c.any(&["ALLIED_CULT_LLAMA", "DT_Pissed", "DarkTemplar_Dead", "Athena_Dead"]) {
         c.set("HOSTILE_CULT_GOAT", true, 25);
     }
@@ -733,8 +980,12 @@ fn m20_first(c: &mut Ctx, map: &str) {
         "20_FCCORPSEWERS" if c.b("WCHQ_CamerasOffline") => c.cameras_off(),
         _ => {}
     }
-    // The sub-level hatch as it was left on another floor.
-    if map.starts_with("20_WC") && c.b("WC_ElevatorHatch_Known") {
+    restore_hatch(c, map);
+}
+
+/// The Wild Cards' sub-level hatch as it was left on another floor (both visits).
+fn restore_hatch(c: &mut Ctx, map: &str) {
+    if (map.starts_with("20_WC") || map.starts_with("22_WC")) && c.b("WC_ElevatorHatch_Known") {
         let locked = c.b("WC_ElevatorHatch_Locked");
         for i in c.mover_ids("SublevelKeypadHatch") {
             c.movers.rt[i].locked = locked;
@@ -1093,6 +1344,21 @@ impl Ctx<'_> {
 /// A mission-script function the map asks for (MSCallbackTrigger's ScriptFunction).
 pub fn game_event(c: &mut Ctx, f: &str) {
     println!("MISSION game event {f}");
+    if c.mission == 21 && m21_event(c, f) {
+        return;
+    }
+    if c.mission == 22 && m22::event(c, f) {
+        return;
+    }
+    if c.mission == 23 && m23::event(c, f) {
+        return;
+    }
+    if c.mission == 24 && m24::event(c, f) {
+        return;
+    }
+    if is_m25(c) && m25::event(c, f) {
+        return;
+    }
     match f {
         "AbomOneliner02" => c.conversation("AbomKilledBG", "Abomination"),
         "AbomCutsceneEscape" => c.leave_tag("AbomBG"),
@@ -1141,4 +1407,198 @@ pub fn game_event(c: &mut Ctx, f: &str) {
         }
         _ => println!("MISSION game event {f}: not handled yet"),
     }
+}
+
+// =================================================================================================== Mission 21
+
+/// The people Mission 20 knocked out: on to Mission 21 they're remembered as "_M20" (some die in the bombing).
+const M20_KNOCKOUTS: [(&str, bool, i32); 8] = [
+    // (name, killed in the bombing unless allied with the Wild Cards, flag expiration)
+    ("AlphaOperator", true, 23),
+    ("Jackie", true, 23),
+    ("Jonas", false, 23),
+    ("Raving", false, 23),
+    ("Andreus", false, 23),
+    ("Kylie", false, 24),
+    ("NVShacker", false, 23),
+    ("NVShackerPet", false, 23),
+];
+
+fn m21_first(c: &mut Ctx, map: &str) {
+    remove_collapsed_bodies(c);
+    match map {
+        "21_DXI_FRONTEND" => {
+            if !c.b("Mission20Cleanup_Done") {
+                c.trigger("StartMissionCinematic");
+                if !c.b("KillCount_Mission20Done")
+                    && c.int("KillCount_FCDowntown") + c.int("KillCount_FCCorporate") + c.int("KillCount_FCSlums") >= num("FCAggressiveKills")
+                {
+                    c.set("Killer_FC", true, 23);
+                }
+                if c.b("QR_SUB_Bugging") {
+                    c.add_goal("Bugging", "strGoalBug", false, false);
+                }
+                for (who, bombed, exp) in M20_KNOCKOUTS {
+                    let ko = format!("{who}_Unconscious");
+                    if c.b(&ko) {
+                        c.set(&format!("{who}_Unconscious_M20"), true, exp);
+                        if bombed && !c.b("ALLIED_WC") {
+                            c.set(&format!("{who}_Dead"), true, 0);
+                        }
+                        c.fl.delete(&ko);
+                    }
+                }
+                for who in ["Abomination", "Slicer", "Zero"] {
+                    if c.b(&format!("{who}_Dead")) {
+                        c.set(&format!("{who}_Dead_M20"), true, 23);
+                    }
+                }
+                if c.b("NVShackerPet_Dead") {
+                    c.set("NVShackerPet_Dead_M20", true, 23);
+                    c.fl.delete("NVShackerPet_Dead");
+                }
+                if !c.b("NVShacker_Dead") && !c.b("NVShackerPet_Betrayed") {
+                    let wc = c.b("QC_SUB_SubwayMoneyAlt") || c.b("NVShacker_Unhappy");
+                    c.set(if wc { "NVShacker_WC" } else { "NVShacker_PDX" }, true, 24);
+                }
+                if !c.b("NVShackerPet_Dead_M20") {
+                    if c.b("NVShackerPet_Unconscious_M20") && (c.b("NVShacker_Dead") || c.b("NVShackerPet_Betrayed")) {
+                        c.set("NVShackerPet_Dead_M20", true, 0);
+                    } else if !c.b("MET_NVShacker") || c.b("NVShackerPet_Talked") || c.b("Abomination_Dead") {
+                        c.set("NVShackerPet_NVS", true, 24);
+                    } else {
+                        c.set("NVShackerPet_Abom", true, 24);
+                    }
+                }
+                c.set("Mission20Cleanup_Done", true, 22);
+            }
+            if c.b("DXI_ElevatorActive") {
+                c.trigger("LiftActiveFX");
+            }
+        }
+        "21_DXI_MCR" => {
+            if c.b("ALLIED_PDX") {
+                c.enter_tag("ZeroPresence");
+            }
+            if c.b("ALLIED_WC") {
+                c.enter_tag("Slicer");
+            }
+            if c.down("Beeblequix") && !c.b("Beeble_Greeting_Played") {
+                c.show("SoftlockDatacube", true);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// After the tunnel collapses, the knocked-out Zero or Slicer left behind there are gone.
+fn remove_collapsed_bodies(c: &mut Ctx) {
+    if c.b("MS_TunnelCollapsed") {
+        for who in ["Zero", "Slicer"] {
+            if c.carcs.iter().any(|b| b.unconscious && b.tag.eq_ignore_ascii_case(who)) {
+                c.hide(ActorSel { class: Some("TNMCarcass".into()), tag: Some(who.into()) }, true);
+            }
+        }
+    }
+}
+
+fn m21_timer(c: &mut Ctx, map: &str) {
+    if !c.b("Autosaved_DXI") {
+        crate::save::autosave("mission");
+        c.set("Autosaved_DXI", true, 21);
+    }
+    for (flag, class) in [("Jonas_SecretConvo_Played", "Jonas"), ("Phasmatis_SecretConvo_Played", "Phasmatis"), ("Winquman_SecretConvo_Played", "Winquman")] {
+        if c.b(flag) {
+            c.leave(Sel::isa(class));
+        }
+    }
+    match map {
+        "21_DXI_MCR" => {
+            if c.down("Zero") && !c.b("Zero_Dead_M20") {
+                c.pm("PM_Kylie_ZP");
+            }
+            if c.any(&["Zero_PreBossFight_Played", "Slicer_PreBossFight_Played"]) && !c.b("MS_DXI_HolosLeftWorld") {
+                c.leave_tag("ZeroPresenceHolo");
+                c.leave_tag("SlicerHolo");
+                c.set("MS_DXI_HolosLeftWorld", true, 22);
+            }
+            if !c.b("MS_GotStaff") && c.inv_classes.iter().any(|k| k.eq_ignore_ascii_case("WeaponFireStaff")) {
+                c.award(2000, "strEpicAward");
+                c.pm("PM_MAIN_GotStaff");
+                c.set("MS_GotStaff", true, 22);
+            }
+        }
+        "21_DXI_RUINS" => {
+            let guards = ["ThreadProtector01", "ThreadProtector02", "ThreadProtector03"];
+            if !c.b("DXI_ThreadsClosed") && guards.iter().all(|g| c.down(g)) {
+                c.blow_up("ThreadsFacilityFissure");
+                c.set("DXI_ThreadsClosed", true, 22);
+                c.add_goal("DestroyThreads", "strGoalThreadsClosed", true, true);
+                c.pm("PM_MAIN_ThreadsClosed");
+                for g in guards {
+                    c.fl.delete(&format!("{g}_Dead"));
+                    c.fl.delete(&format!("{g}_Unconscious"));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Mission 21's script functions asked for by its map.
+fn m21_event(c: &mut Ctx, f: &str) -> bool {
+    match f {
+        "BuzzAppear" => c.enter_tag("Buzz"),
+        "BuzzDisappear" => c.leave_tag("Buzz"),
+        "RoninAppear" => c.enter_tag("Ronin"),
+        "RoninDisappear" => c.leave_tag("Ronin"),
+        "GwogDisableCollision" => c.setd("Gwog_Spooked", true),
+        // The HUD static of Beeblequix's codes isn't drawn.
+        "StaticBurst" | "BeebleStatic" => {}
+        "ToggleVents" => {
+            let venting = !c.b("DXIHQ_VentingEnabled");
+            c.set("DXIHQ_VentingEnabled", venting, 22);
+            if c.b("DXIHQ_GasEnabled") {
+                crate::projgen::set_spewing("CompRoomGas", !venting);
+            }
+        }
+        "CeilingExplode" => {
+            c.breakable("CeilingExplodeMover", true);
+            c.blow_up("CeilingExplodeMover");
+        }
+        "PostCollapse" => {
+            crate::scriptworld::push(crate::scriptworld::ActorReq::Hide(ActorSel::class_tag("BlockPlayer", "TunnelBlocker"), false));
+            c.breakable("ThreadConsole", true);
+            c.set("MS_TunnelCollapsed", true, 22);
+            remove_collapsed_bodies(c);
+        }
+        "ThreadsHacked" => {
+            for g in ["ThreadProtector01", "ThreadProtector02", "ThreadProtector03"] {
+                crate::ai::world_req(WorldReq::Destroy(Sel::tag(g)));
+            }
+            c.set("DXI_ThreadsClosed", true, 22);
+            c.trigger("ThreadsSelfDestruct");
+            c.blow_up("ThreadsFacilityFissure");
+            c.pm("PM_MAIN_ThreadsClosed");
+        }
+        "BeebleOneLiner" | "BeebleRant" => {
+            if c.b("BEEBLE_GotHUDCodes") {
+                let (stem, n) = if f == "BeebleRant" { ("PM_Beeble_Rant", 10) } else { ("PM_Beeble_OneLiner", 5) };
+                for i in 1..=n {
+                    c.pm(&format!("{stem}{i:02}"));
+                }
+            }
+        }
+        "DXIBSP1" | "DXIBSP2" | "DXIBSP3" | "DXIBSP4" => {
+            let tag = &f[3..];
+            let flag = format!("MS_{f}");
+            if !c.b(&flag) {
+                crate::cinematic::set_teleporter_enabled(tag, false);
+                c.hide(ActorSel::class_tag("ScaledSprite", tag), true);
+                c.set(&flag, true, 22);
+            }
+        }
+        _ => return false,
+    }
+    true
 }

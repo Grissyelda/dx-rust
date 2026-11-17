@@ -547,7 +547,9 @@ pub static CHEAT_INVISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::A
 
 pub fn invisible_to(robot: bool, camo: bool) -> bool {
     // A player using a computer is bIgnore (Computers.ChangePlayerVisibility): pawns don't see him.
-    camo || CHEAT_INVISIBLE.load(std::sync::atomic::Ordering::Relaxed) || crate::computers::player_ignored() || if robot {
+    // The Nameless Mod's PlayerVisibilityTrigger hides the player (bHidden) in its scripted scenes.
+    camo || CHEAT_INVISIBLE.load(std::sync::atomic::Ordering::Relaxed) || crate::computers::player_ignored()
+        || crate::tnmtriggers::player_hidden() || if robot {
         aug_active("AugRadarTrans")
     } else {
         aug_active("AugCloak")
