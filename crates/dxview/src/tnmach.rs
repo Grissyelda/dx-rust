@@ -7,7 +7,7 @@
 //! Trestkon's strAchievement and the title in the message log, when notifications are on (the menu's checkbox;
 //! setting TnmAchNotify, default on).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use bevy::prelude::*;
 use std::sync::Mutex;
 use unreal_pkg::props::{Property, Value};
@@ -25,13 +25,13 @@ pub struct Ach {
 
 struct Store {
     list: Vec<Ach>,
-    earned: HashMap<String, u64>,
+    earned: BTreeMap<String, u64>,
     loaded: bool,
     /// Trestkon.strAchievement (the log line's start).
     prefix: String,
 }
 
-static STORE: Mutex<Store> = Mutex::new(Store { list: Vec::new(), earned: HashMap::new(), loaded: false, prefix: String::new() });
+static STORE: Mutex<Store> = Mutex::new(Store { list: Vec::new(), earned: BTreeMap::new(), loaded: false, prefix: String::new() });
 
 fn path() -> std::path::PathBuf {
     unreal_pkg::paths::data_dir().join("TNMSave").join("achievements.txt")
