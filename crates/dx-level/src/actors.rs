@@ -219,6 +219,25 @@ pub fn class_begin_play(classes: &mut ClassDb, class: &str, props: &mut Vec<Prop
             set(props, "Rotation", 0, Value::Rotator([r[0], r[1] - 16384, r[2]]));
         }
     }
+    // The Nameless Mod's books (tnmBookClosed / tnmBookOpen.PostBeginPlay) pick one of four covers, tex1..tex4.
+    // Ours: the pick follows the book's place, so a map always shows the same covers.
+    if !find(props, "MultiSkins").is_some_and(|_| props.iter().any(|p| p.name.eq_ignore_ascii_case("MultiSkins") && p.index == 0))
+        && classes.ancestry(class).iter().any(|c| c == "tnmbookclosed" || c == "tnmbookopen")
+    {
+        let d = classes.defaults(class);
+        let pick = |n: &str| find(props, n).or_else(|| find(&d, n)).cloned();
+        let h = match find(props, "Location") {
+            Some(Value::Vector(v)) => v.iter().fold(2166136261u32, |h, f| (h ^ f.to_bits()).wrapping_mul(16777619)),
+            _ => 0,
+        };
+        let texs: Vec<Value> = ["tex1", "tex2", "tex3", "tex4"].iter().filter_map(|n| pick(n)).collect();
+        if !texs.is_empty() {
+            let v = texs[(h as usize >> 3) % texs.len()].clone();
+            if matches!(&v, Value::Path(p) if p != "None") {
+                set(props, "MultiSkins", 0, v);
+            }
+        }
+    }
     if class.eq_ignore_ascii_case("AlarmLight") && !matches!(find(props, "bIsOn"), Some(Value::Bool(true))) {
         // AlarmLight.BeginPlay, off: the lens is masked black and it doesn't turn (the light goes out at run time,
         // projgen.rs, which also keeps the lit lens to put back: AlarmOnSkin).

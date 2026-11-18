@@ -1189,16 +1189,24 @@ fn info_window(
     // Min(width - 170, 800), the paragraphs word-wrapped to that; centred between the InfoLink and the belt.
     let info = crate::info::shown();
     let info_font = hud.font(assets, "FontMenuSmall_DS");
+    // The Nameless Mod's <B> windows use its boldFont (FontMenuHeaders); bit 0x10 of the alignment byte marks them.
+    let bold_font = if info.as_ref().is_some_and(|(_, p)| p.iter().any(|p| p.bold)) {
+        hud.font(assets, "FontMenuHeaders")
+    } else {
+        None
+    };
+    let font_of = |bold: bool| if bold { bold_font.as_ref().or(info_font.as_ref()) } else { info_font.as_ref() };
     let info_lines: Vec<(u8, [u8; 3], Vec<String>)> = match (&info, &info_font) {
-        (Some((_, paras)), Some(f)) => {
+        (Some((_, paras)), Some(_)) => {
             let max_w = (sw - 170).min(800);
-            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
+            let pref = paras.iter().map(|p| font_of(p.bold).map_or(0, |f| f.width(&p.text))).max().unwrap_or(0) + INFO_SIDE * 2;
             let inner = pref.min(max_w) - INFO_SIDE * 2;
             paras
                 .iter()
                 .map(|p| {
+                    let f = font_of(p.bold).unwrap();
                     let l = if p.text.is_empty() { vec![String::new()] } else { crate::uicanvas::wrap(f, &p.text, inner.max(1)) };
-                    (p.align, p.color, l)
+                    (p.align | if p.bold { 0x10 } else { 0 }, p.color, l)
                 })
                 .collect()
         }
@@ -1207,9 +1215,15 @@ fn info_window(
     let (info_w, info_h) = match (&info, &info_font) {
         (Some((_, paras)), Some(f)) => {
             let max_w = (sw - 170).min(800);
-            let pref = paras.iter().map(|p| f.width(&p.text)).max().unwrap_or(0) + INFO_SIDE * 2;
-            let lines: usize = info_lines.iter().map(|l| l.2.len()).sum();
-            (pref.min(max_w), (lines as i32 * f.height + INFO_TOP + INFO_BOTTOM).max(INFO_MIN_H))
+            let pref = paras.iter().map(|p| font_of(p.bold).map_or(0, |f| f.width(&p.text))).max().unwrap_or(0) + INFO_SIDE * 2;
+            let body: i32 = info_lines
+                .iter()
+                .map(|l| l.2.len() as i32 * font_of(l.0 & 0x10 != 0).map_or(f.height, |f| f.height))
+                .sum();
+            let body_h = (body + INFO_TOP + INFO_BOTTOM).max(INFO_MIN_H);
+            // TNMInformationDevices' page hints sit 10 units under the window.
+            let foot = crate::info::footer().map_or(0, |ft| footer_height(f, &ft, pref.min(max_w)));
+            (pref.min(max_w), body_h + foot)
         }
         _ => (1, 1),
     };
@@ -2160,20 +2174,66 @@ fn draw_info(
     let names = ["TL", "TR", "BL", "BR", "Left", "Right", "Top", "Bottom", "Center"];
     let bg: [Option<Arc<UiTex>>; 9] = names.map(|n| hud.ui(assets, &format!("HUDWindowBackground_{n}")));
     let border: [Option<Arc<UiTex>>; 9] = names.map(|n| hud.ui(assets, &format!("HUDWindowBorder_{n}")));
+    let footer = crate::info::footer();
     let (w, h) = (c.w, c.h);
-    c.borders(0, 0, w, h, &bg, crate::menuui::bg_style(), crate::menuui::h_col(0));
-    c.borders(0, 0, w, h, &border, crate::menuui::border_style(), crate::menuui::border_col());
+    let foot_h = match (font, &footer) {
+        (Some(f), Some(ft)) => footer_height(f, ft, w),
+        _ => 0,
+    };
+    let body_h = (h - foot_h).max(1);
+    c.borders(0, 0, w, body_h, &bg, crate::menuui::bg_style(), crate::menuui::h_col(0));
+    c.borders(0, 0, w, body_h, &border, crate::menuui::border_style(), crate::menuui::border_col());
     let Some(f) = font else { return };
+    let bold = if paras.iter().any(|p| p.0 & 0x10 != 0) { hud.font(assets, "FontMenuHeaders") } else { None };
     let mut y = INFO_TOP;
     for (align, col, lines) in paras {
-        let ha = match align {
+        let pf = if align & 0x10 != 0 { bold.as_deref().unwrap_or(f) } else { f };
+        let ha = match align & 0x0f {
             1 => HAlign::Center,
             2 => HAlign::Right,
             _ => HAlign::Left,
         };
         for l in lines {
-            c.text(f, INFO_SIDE, y, w - INFO_SIDE * 2, f.height, ha, VAlign::Top, *col, l);
-            y += f.height;
+            c.text(pf, INFO_SIDE, y, w - INFO_SIDE * 2, pf.height, ha, VAlign::Top, *col, l);
+            y += pf.height;
+        }
+    }
+    if let Some(ft) = footer {
+        draw_footer(c, f, &ft, body_h + 10, w);
+    }
+}
+
+/// Rows the page hints need under a window `w` wide: one, or two when the page count doesn't fit between the
+/// previous / next hints (TNMInformationDevices.Frob moves it out of their way).
+fn footer_height(f: &UiFont, ft: &crate::info::Footer, w: i32) -> i32 {
+    let rows = if footer_fits(f, ft, w) { 1 } else { 2 };
+    10 + rows * f.height
+}
+
+fn footer_fits(f: &UiFont, ft: &crate::info::Footer, w: i32) -> bool {
+    let side = |s: &Option<String>| s.as_ref().map_or(0, |s| f.width(s));
+    let page = ft.page.as_ref().map_or(0, |s| f.width(s));
+    let left = side(&ft.prev);
+    let right = side(&ft.next);
+    // Centred, it must clear both hints.
+    w / 2 - page / 2 >= left + 4 && w / 2 + page / 2 + 4 <= w - right
+}
+
+fn draw_footer(c: &mut Canvas, f: &UiFont, ft: &crate::info::Footer, y: i32, w: i32) {
+    let white = [255, 255, 255];
+    if let Some(p) = &ft.prev {
+        c.text(f, 0, y, w, f.height, HAlign::Left, VAlign::Top, white, p);
+    }
+    if let Some(n) = &ft.next {
+        c.text(f, 0, y, w, f.height, HAlign::Right, VAlign::Top, white, n);
+    }
+    if let Some(p) = &ft.page {
+        if footer_fits(f, ft, w) {
+            c.text(f, 0, y, w, f.height, HAlign::Center, VAlign::Top, white, p);
+        } else {
+            // The first page's count goes on the left, the last page's on the right, others on the left.
+            let ha = if ft.next.is_none() && ft.prev.is_some() { HAlign::Right } else { HAlign::Left };
+            c.text(f, 0, y + f.height, w, f.height, ha, VAlign::Top, white, p);
         }
     }
 }

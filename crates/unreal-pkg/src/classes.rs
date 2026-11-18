@@ -466,7 +466,9 @@ pub fn resolve_objects(pkg: &Package, list: &mut [Property]) {
         if let props::Value::Struct(name, bytes) = &p.value {
             let mut r = Reader::new(bytes, 0);
             match name.as_str() {
-                "InventoryItem" | "InventoryItemCarcass" => {
+                // The Nameless Mod's vending machines: VendingProduct {DispensedClass, Cost, DispensedSound} as
+                // (class, cost) - the sound is left out.
+                "InventoryItem" | "InventoryItemCarcass" | "VendingProduct" => {
                     if let (Ok(o), Ok(c)) = (r.compact_index(), r.i32()) {
                         p.value = props::Value::Item(obj_path(o), c);
                     }

@@ -397,6 +397,8 @@ pub fn frob_system(
 
     let best = nearest_target(level, &blockers, &mv, ray, &items, &bodies, &grenades);
     let best = narrow_target(best, level, &blockers, &hacking, ray, tool, only_tool, with_body);
+    // A test run's "frob this device" (loader GOTO "secs;<Actor>;frob"): as if the player looked at it.
+    let best = FORCE_DEVICE.lock().ok().and_then(|mut f| f.take()).map(|b| (Target::Device(b), 0.0)).or(best);
     let mut cx = FrobCx {
         level,
         player: &player,
@@ -1194,6 +1196,94 @@ fn frob_grenade(cx: &mut FrobCx, e: Entity, grenades: &mut FrobGrenades, command
     }
 }
 
+/// TNMInformationDevices.Frob and its subclasses' additions: the page turns, the notetag note, the image; papers
+/// that clear themselves away afterwards (POPaper, NWPaper, tnmDataCubeDisposable: destroyed, so their window goes
+/// at once); the source-code cube's flag and infolink (SourceCodeCube.Frob).
+fn frob_tnm_readable(cx: &mut FrobCx, b: usize, info: &mut ResMut<crate::info::InfoDisplay>) {
+    use unreal_pkg::props::Value;
+    let blockers = cx.blockers;
+    let actor = blockers.list[b].actor;
+    let a = &cx.level.actors[actor];
+    let assets = &mut cx.assets;
+    let defaults = assets.classes.defaults(&a.class);
+    // Placed values first, then the class's.
+    let get = |k: &str| find(&a.props, k).or_else(|| find(&defaults, k)).cloned();
+    let str_p = |k: &str, d: &str| match get(k) {
+        Some(Value::Str(v)) => v,
+        _ => d.to_string(),
+    };
+    let mut tags: Vec<String> = Vec::new();
+    for p in a.props.iter().filter(|p| p.name.eq_ignore_ascii_case("textTag")) {
+        if let Value::Name(n) = &p.value {
+            let i = p.index as usize;
+            if tags.len() <= i {
+                tags.resize(i + 1, String::new());
+            }
+            if n != "None" {
+                tags[i] = n.clone();
+            }
+        }
+    }
+    let pages = match get("numberofpages") {
+        Some(Value::Int(n)) => n,
+        _ => 1,
+    };
+    let note_tag = match get("notetag") {
+        Some(Value::Name(n)) if n != "None" => n,
+        _ => String::new(),
+    };
+    let is = |c: &str| crate::classtree::is_a(&a.class, c);
+    let source_cube = is("SourceCodeCube");
+    let alt = matches!(get("bAltTags"), Some(Value::Bool(true))) || source_cube;
+    let package = str_p("TextPackage", "tnmText");
+    let no_text = str_p("msgNoText", "There's nothing interesting to read");
+    let image_label = str_p("ImageLabel", "[Image: %s]");
+    let added = str_p("AddedToDatavaultLabel", "Image %s added to DataVault");
+    let next = str_p("nextpagetext", "next >");
+    let prev = str_p("prevpagetext", "< back");
+    let total = str_p("totalpagetext", "%d / %d");
+    let image = match get("imageClass") {
+        Some(Value::Path(p)) => p.rsplit('.').next().map(|c| {
+            let d = assets.classes.defaults(c);
+            let desc = match find(&d, "imageDescription") {
+                Some(Value::Str(v)) => v.clone(),
+                _ => c.to_string(),
+            };
+            (c.to_string(), desc)
+        }),
+        _ => None,
+    };
+    let system = assets.lib.system_dir().to_path_buf();
+    let r = crate::info::TnmReadable {
+        package: &package,
+        tags: &tags,
+        pages,
+        alt_prefix: alt.then_some("SourceCube_"),
+        note_tag: &note_tag,
+        page_texts: (&next, &prev, &total),
+    };
+    match info.frob_tnm(&system, &r, b, image.as_ref().map(|(c, d)| (c.as_str(), d.as_str())), (&image_label, &added)) {
+        crate::info::Frobbed::Opened(Some(v)) => crate::consys::add_vault_note(&v),
+        crate::info::Frobbed::NoText => crate::classic_hud::client_message(&no_text),
+        _ => {}
+    }
+    if source_cube {
+        // SourceCodeCube.Frob: a flag and an infolink, done by the mission script side.
+        crate::missions::game_event("#SourceCodeCubeFrob");
+    }
+    if is("POPaper") || is("NWPaper") || is("tnmDataCubeDisposable") {
+        // Destroyed() takes the window down with it.
+        info.open = None;
+        crate::scriptworld::mark_hidden(actor, true);
+        crate::scriptworld::push(crate::scriptworld::ActorReq::Destroy(crate::scriptworld::ActorSel::tag(&format!(
+            "#actor{actor}"
+        ))));
+    }
+}
+
+/// A device to frob on the next use request whatever the player looks at (test runs).
+pub static FORCE_DEVICE: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+
 /// Frobbing a device: Augmentique outfit boxes, computers and ATMs (log in), readables (InformationDevices.Frob),
 /// fixtures, then buttons / keypads / hackables (devices::frob_device).
 fn frob_device(
@@ -1210,6 +1300,17 @@ fn frob_device(
         .as_deref()
         .filter(|t| cx.only_tool && (*t == "Multitool" || *t == "Lockpick"));
     println!("FROB device {} ({})", a.name, a.class);
+    // The Nameless Mod's easter eggs (EasterEgg.Frob): recorded, 50 skill points, gone.
+    if crate::tnmeggs::is_egg(&a.class) {
+        let msg = crate::tnmeggs::frob(&a.props);
+        crate::classic_hud::client_message(&msg);
+        let actor = blockers.list[b].actor;
+        crate::scriptworld::mark_hidden(actor, true);
+        crate::scriptworld::push(crate::scriptworld::ActorReq::Destroy(crate::scriptworld::ActorSel::tag(&format!(
+            "#actor{actor}"
+        ))));
+        return;
+    }
     // The Nameless Mod's powerups (QuadDamage / RingofShadows.Frob).
     if crate::tnmpower::is_powerup(&a.class) {
         crate::tnmpower::take(cx.level, blockers.list[b].actor);
@@ -1235,6 +1336,11 @@ fn frob_device(
     // Computers and ATMs log you in (Computers.Frob / ATM.Frob).
     if crate::computers::is_terminal(&a.class) {
         crate::computers::frob(blockers.list[b].actor);
+        return;
+    }
+    // The Nameless Mod's readables (TNMInformationDevices.Frob: books, magazines, datacubes, papers).
+    if unreal_pkg::tnm::active().is_some() && crate::classtree::is_a(&a.class, "TNMInformationDevices") {
+        frob_tnm_readable(cx, b, info);
         return;
     }
     // Datacubes and other readables show their text (InformationDevices.Frob).

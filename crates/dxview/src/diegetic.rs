@@ -47,6 +47,19 @@ struct KeyGrid {
     above: f64,
 }
 
+/// The original terminal a placed actor is shown as on its own screen: its class's base terminal (computers::
+/// base_class), only while it still wears that terminal's model (the screen corners are measured on those meshes).
+fn screen_class(a: &dx_level::actors::ActorInfo) -> Option<&'static str> {
+    let base = crate::computers::base_class(&a.class)?;
+    if base == a.class {
+        return Some(base);
+    }
+    match unreal_pkg::props::find(&a.props, "Mesh") {
+        Some(unreal_pkg::props::Value::Path(m)) if m.eq_ignore_ascii_case(&format!("DeusExDeco.{base}")) => Some(base),
+        _ => None,
+    }
+}
+
 fn screen_def(class: &str) -> Option<ScreenDef> {
     Some(match class {
         // The middle of the three-panel monitor.
@@ -568,12 +581,13 @@ pub fn diegetic_system(
         let keypad = crate::menus::keypad_blocker();
         if let Some(actor) = comp {
             let a = &lvl.actors[actor];
-            if let (Some(def), Some(mi)) = (screen_def(&a.class), mesh_actor_of(lvl, actor)) {
+            let base = screen_class(a);
+            if let (Some(def), Some(mi)) = (base.and_then(screen_def), mesh_actor_of(lvl, actor)) {
                 let ma = &lvl.mesh_actors[mi];
                 let sc = draw_scale(a);
                 // The personal terminal's picture goes into its own glowing monitor panel as drawn (another model
                 // than the original's put the screen where the original's panel was: floating off the monitor).
-                let def = if a.class == "ComputerPersonal" { mesh_screen(ma, sc, &def).unwrap_or(def) } else { def };
+                let def = if base == Some("ComputerPersonal") { mesh_screen(ma, sc, &def).unwrap_or(def) } else { def };
                 if env_on!("DXVIEW_DGLOG") {
                     println!("DG screen {} bl {:?} br {:?} tl {:?}", a.class, def.bl, def.br, def.tl);
                 }
@@ -1097,18 +1111,19 @@ pub fn standby_system(
     if res.list.is_none() {
         let mut list = Vec::new();
         for (i, a) in lvl.actors.iter().enumerate() {
-            if !matches!(a.class.as_str(), "ComputerPersonal" | "ComputerPublic" | "ATM") {
+            let base = screen_class(a);
+            if !matches!(base, Some("ComputerPersonal" | "ComputerPublic" | "ATM")) {
                 continue;
             }
-            let (Some(def), Some(mi)) = (screen_def(&a.class), mesh_actor_of(lvl, i)) else { continue };
+            let (Some(def), Some(mi)) = (base.and_then(screen_def), mesh_actor_of(lvl, i)) else { continue };
             let ma = &lvl.mesh_actors[mi];
             let sc = draw_scale(a);
-            let def = if a.class == "ComputerPersonal" { mesh_screen(ma, sc, &def).unwrap_or(def) } else { def };
+            let def = if base == Some("ComputerPersonal") { mesh_screen(ma, sc, &def).unwrap_or(def) } else { def };
             let off = shift_of(&decos, mi);
             let rect = Rect3::new(to_world(ma, sc, def.bl) + off, to_world(ma, sc, def.br) + off, to_world(ma, sc, def.tl) + off)
                 .with_tr(def.tr.map(|t| to_world(ma, sc, t) + off));
             let (name, logo) = crate::computers::node_name_logo(lvl, i, &mut assets);
-            list.push((i, a.class.clone(), rect, name, logo));
+            list.push((i, base.unwrap_or("ComputerPersonal").to_string(), rect, name, logo));
         }
         res.list = Some(list);
     }

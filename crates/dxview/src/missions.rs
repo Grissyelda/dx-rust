@@ -106,6 +106,15 @@ pub fn player_detected(actor: usize) {
     }
 }
 
+/// TNMMissionScript.DisplayNews: whether a public terminal lists this bulletin (by its text name) now. Only The
+/// Nameless Mod's Mission 20 / 22 script filters; everything else shows everything.
+pub fn display_news(mission: u8, file: &str, fl: &imsim_core::flags::FlagBase) -> bool {
+    if unreal_pkg::tnm::active().is_none() || !(mission == 20 || mission == 22) {
+        return true;
+    }
+    tnm::display_news(file, fl)
+}
+
 pub fn game_event(f: &str) {
     if !f.is_empty() {
         if let Ok(mut q) = GAME_EVENTS.lock() {

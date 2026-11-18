@@ -91,7 +91,42 @@ pub fn player_ignored() -> bool {
 }
 
 pub fn is_terminal(class: &str) -> bool {
-    matches!(class, "ComputerSecurity" | "ComputerPersonal" | "ComputerPublic" | "ATM")
+    base_class(class).is_some() || is_vending(class)
+}
+
+/// The Nameless Mod's vending machines (TNMVendingMachine and its drink / food / PS20 kinds).
+pub fn is_vending(class: &str) -> bool {
+    unreal_pkg::tnm::active().is_some() && crate::classtree::is_a(class, "TNMVendingMachine")
+}
+
+/// The original terminal a class plays as: ComputerSecurity, ComputerPersonal, ComputerPublic or ATM - itself, a
+/// subclass, or one of The Nameless Mod's tnmComputers by the NetworkTerminal it opens (tnmNetworkTerminalSecurity /
+/// Public / Personal). Its vending machines, arcade and puzzle machines aren't terminals.
+pub fn base_class(class: &str) -> Option<&'static str> {
+    const BASES: [&str; 4] = ["ComputerSecurity", "ComputerPersonal", "ComputerPublic", "ATM"];
+    if let Some(b) = BASES.iter().find(|b| **b == class) {
+        return Some(b);
+    }
+    static CACHE: std::sync::Mutex<Option<HashMap<String, Option<&'static str>>>> = std::sync::Mutex::new(None);
+    if let Ok(mut g) = CACHE.lock() {
+        if let Some(v) = g.get_or_insert_with(HashMap::new).get(class) {
+            return *v;
+        }
+        let is = |c: &str| crate::classtree::is_a(class, c);
+        let mut v = BASES.iter().copied().find(|b| is(b));
+        if v.is_none() && unreal_pkg::tnm::active().is_some() {
+            if is("MyComputerSecurity") {
+                v = Some("ComputerSecurity");
+            } else if is("tnmComputerPublic") {
+                v = Some("ComputerPublic");
+            } else if is("tnmComputerPersonal") || is("TNMMonitor_FS") || is("TNMLaptopOpen") {
+                v = Some("ComputerPersonal");
+            }
+        }
+        g.as_mut().unwrap().insert(class.to_string(), v);
+        return v;
+    }
+    None
 }
 
 /// Computers.Frob / ATM.Frob for a level actor (handled next frame).
@@ -116,6 +151,8 @@ enum Kind {
     Personal,
     Public,
     Atm,
+    /// The Nameless Mod's vending machines (TNMVendingMachine: a product list, bought with credits).
+    Vending,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -169,7 +206,7 @@ struct CompData {
     specials: Vec<SpecialOption>,
     node: Node,
     text_package: String,
-    bulletin_tag: String,
+    bulletin_tags: Vec<String>,
     lockout_delay: f32,
     msg_locked_out: String,
     locked_out: bool,
@@ -181,6 +218,13 @@ struct CompData {
     alarm: Option<usize>,
     /// ATM.bSuckedDryByHack.
     sucked_dry: bool,
+    /// TNMVendingMachine: Products (class, cost), numUses left, bAcceptABIVouchers, Description (the title).
+    products: Vec<(String, i32)>,
+    vend_uses: i32,
+    vend_vouchers: bool,
+    vend_title: String,
+    /// The Nameless Mod's ATMs: the accounts are the game-wide ones (TNM_ACCOUNTS).
+    shared_accounts: bool,
 }
 
 fn fstr(r: &mut Reader) -> String {
@@ -223,10 +267,12 @@ fn pfloat(p: &[Property], n: &str, d: f32) -> f32 {
 }
 
 /// NodeInfo[ComputerNode] from the Computers class defaults (texture refs resolve in DeusEx.u).
-fn node_of(p: &[Property], assets: &mut RuntimeAssets) -> Node {
-    let node_i = pfloat(p, "ComputerNode", 0.0) as u32;
+fn node_of(class: &str, p: &[Property], assets: &mut RuntimeAssets) -> Node {
+    // The Nameless Mod's tnmComputers carry their own node list (NodeInfo) and pick from it by ComputerNodeNEW.
+    let tnm = unreal_pkg::tnm::active().is_some() && crate::classtree::is_a(class, "tnmComputers");
+    let node_i = if tnm { pfloat(p, "ComputerNodeNEW", 0.0) } else { pfloat(p, "ComputerNode", 0.0) } as u32;
     let mut node = Node::default();
-    let d = assets.classes.defaults("Computers");
+    let d = if tnm { p.to_vec() } else { assets.classes.defaults("Computers") };
     if let Some((_, b)) = structs(&d, "NodeInfo").into_iter().find(|x| x.0 == node_i) {
         let mut r = Reader::new(b, 0);
         node.name = fstr(&mut r);
@@ -234,8 +280,22 @@ fn node_of(p: &[Property], assets: &mut RuntimeAssets) -> Node {
         node.address = fstr(&mut r);
         let t = r.compact_index().unwrap_or(0);
         if t != 0 {
-            if let Some(pkg) = assets.classes.packages.get("deusex") {
-                node.texture = pkg.object_path(t);
+            // The logo reference counts in the package whose defaults hold the list: the class's own, else the
+            // nearest ancestor's.
+            let pkgs: Vec<String> = if tnm {
+                let chain = assets.classes.ancestry(class);
+                chain.iter().filter_map(|c| assets.classes.package_of(c)).collect()
+            } else {
+                vec!["deusex".to_string()]
+            };
+            for pk in pkgs {
+                if let Some(pkg) = assets.classes.packages.get(&pk) {
+                    let path = pkg.object_path(t);
+                    if path.contains('.') {
+                        node.texture = path;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -245,10 +305,10 @@ fn node_of(p: &[Property], assets: &mut RuntimeAssets) -> Node {
 /// A terminal's network node: its name and logo texture (diegetic.rs standby screens).
 pub fn node_name_logo(lvl: &dx_level::Level, actor: usize, assets: &mut RuntimeAssets) -> (String, String) {
     let Some(a) = lvl.actors.get(actor) else { return Default::default() };
-    if a.class == "ATM" {
+    if base_class(&a.class) == Some("ATM") {
         return (String::new(), String::new());
     }
-    let n = node_of(&a.props, assets);
+    let n = node_of(&a.class, &a.props, assets);
     (n.name, n.texture)
 }
 
@@ -256,7 +316,8 @@ impl CompData {
     fn load(lvl: &dx_level::Level, actor: usize, assets: &mut RuntimeAssets) -> CompData {
         let a = &lvl.actors[actor];
         let p = &a.props;
-        let kind = match a.class.as_str() {
+        let kind = match base_class(&a.class).unwrap_or(if is_vending(&a.class) { "Vending" } else { "ATM" }) {
+            "Vending" => Kind::Vending,
             "ComputerSecurity" => Kind::Security,
             "ComputerPersonal" => Kind::Personal,
             "ComputerPublic" => Kind::Public,
@@ -312,8 +373,20 @@ impl CompData {
             }
         }
         // NodeInfo[ComputerNode] from the Computers class defaults (texture refs resolve in DeusEx.u).
-        let node = if kind != Kind::Atm { node_of(p, assets) } else { Node::default() };
-        CompData {
+        let node = if kind != Kind::Atm { node_of(&a.class, p, assets) } else { Node::default() };
+        // The Nameless Mod's ATMs use the game-wide accounts instead of their own list.
+        let shared = kind == Kind::Atm && unreal_pkg::tnm::active().is_some() && crate::classtree::is_a(&a.class, "tnmATM");
+        if shared {
+            let map = lvl
+                .level_info()
+                .and_then(|i| match find(&i.props, "mapName") {
+                    Some(Value::Str(m)) => Some(m.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            accounts = tnm_accounts(assets, &map);
+        }
+        let mut d = CompData {
             kind,
             pos: DVec3::new(loc[0] as f64, loc[1] as f64, loc[2] as f64),
             users,
@@ -322,7 +395,29 @@ impl CompData {
             specials,
             node,
             text_package: pstr(p, "TextPackage", "DeusExText"),
-            bulletin_tag: pstr(p, "bulletinTag", ""),
+            bulletin_tags: {
+                // bulletinTags[0..10] up to the first empty one (tnmComputerPublic), else the original's bulletinTag.
+                let mut v: Vec<(u32, String)> = p
+                    .iter()
+                    .filter(|x| x.name.eq_ignore_ascii_case("bulletinTags"))
+                    .filter_map(|x| match &x.value {
+                        Value::Name(n) if n != "None" && !n.is_empty() => Some((x.index, n.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                v.sort();
+                let mut tags = Vec::new();
+                for (i, (k, n)) in v.into_iter().enumerate() {
+                    if k as usize != i {
+                        break;
+                    }
+                    tags.push(n);
+                }
+                if tags.is_empty() {
+                    tags.push(pstr(p, "bulletinTag", ""));
+                }
+                tags
+            },
             lockout_delay: pfloat(p, "lockoutDelay", 30.0),
             msg_locked_out: pstr(p, "msgLockedOut", "Terminal is locked out for %d more seconds"),
             locked_out: false,
@@ -332,7 +427,35 @@ impl CompData {
             alarm_timeout: pfloat(p, "alarmTimeout", 30.0) as f64,
             alarm: None,
             sucked_dry: false,
-        }
+            products: {
+                // Products[0..11] up to the first empty one (HUDVendingMachineWindow.init).
+                let mut v: Vec<(u32, String, i32)> = p
+                    .iter()
+                    .filter(|x| x.name.eq_ignore_ascii_case("Products"))
+                    .filter_map(|x| match &x.value {
+                        Value::Item(c, cost) if c != "None" && !c.is_empty() => {
+                            Some((x.index, c.rsplit('.').next().unwrap_or(c).to_string(), *cost))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                v.sort();
+                let mut out = Vec::new();
+                for (i, (k, c, cost)) in v.into_iter().enumerate() {
+                    if k as usize != i {
+                        break;
+                    }
+                    out.push((c, cost));
+                }
+                out
+            },
+            vend_uses: pfloat(p, "numUses", 10.0) as i32,
+            vend_vouchers: matches!(find(p, "bAcceptABIVouchers"), Some(Value::Bool(true))),
+            vend_title: pstr(p, "Description", ""),
+            shared_accounts: false,
+        };
+        d.shared_accounts = shared;
+        d
     }
 
     /// Computers.NumUsers / ATM.NumUsers.
@@ -369,9 +492,108 @@ impl CompData {
     }
 }
 
+// ------------------------------------------------------------------------------------------------ TNM ATMs
+
+/// The Nameless Mod's ATMs share one set of bank accounts for the whole game (tnmATMAccountManager, a travelling
+/// actor the player owns): what's taken from an account at one machine is gone at every other, in every map.
+static TNM_ACCOUNTS: Mutex<Option<Vec<Account>>> = Mutex::new(None);
+
+/// The accounts Trestkon.CreateATMAccountManager starts the game with: read from the player's own copy of the mod
+/// (the assignments in that function's script text; the training map has its own single account).
+fn tnm_starting_accounts(assets: &mut RuntimeAssets, training: bool) -> Vec<Account> {
+    let Some(src) = assets.classes.script_text("Trestkon") else { return Vec::new() };
+    let Some(start) = src.find("function CreateATMAccountManager") else { return Vec::new() };
+    let body = &src[start..];
+    let body = &body[..body.find("\nfunction ").or_else(|| body[1..].find("function ").map(|i| i + 1)).unwrap_or(body.len())];
+    // The training branch is the block after the first test of the training map's name; the rest is the game's.
+    let lower = body.to_ascii_lowercase();
+    let train_at = lower.find("25_tnmtraining");
+    let else_at = train_at.and_then(|t| lower[t..].find("else").map(|e| t + e));
+    let part = match (training, train_at, else_at) {
+        (true, Some(t), Some(e)) => &body[t..e],
+        (false, _, Some(e)) => &body[e..],
+        _ => body,
+    };
+    let mut out: Vec<Account> = Vec::new();
+    for stmt in part.split(';') {
+        let st = stmt.trim();
+        let lo = st.to_ascii_lowercase();
+        let Some(i) = lo.find("userlist[") else { continue };
+        let rest = &st[i + 9..];
+        let Some(close) = rest.find(']') else { continue };
+        let Ok(idx) = rest[..close].trim().parse::<usize>() else { continue };
+        let Some(eq) = rest.find('=') else { continue };
+        let field = rest[close + 1..eq].trim().trim_start_matches('.').to_ascii_lowercase();
+        let val = rest[eq + 1..].trim().trim_matches('"').to_string();
+        if idx >= 9 {
+            continue;
+        }
+        if out.len() <= idx {
+            out.resize(idx + 1, Account::default());
+        }
+        match field.as_str() {
+            "accountnumber" => out[idx].number = val,
+            "pin" => out[idx].pin = val,
+            "balance" => out[idx].balance = val.parse().unwrap_or(0),
+            _ => {}
+        }
+    }
+    out.retain(|a| !a.number.is_empty());
+    out
+}
+
+fn tnm_accounts(assets: &mut RuntimeAssets, map: &str) -> Vec<Account> {
+    let mut g = TNM_ACCOUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        let v = tnm_starting_accounts(assets, map.to_ascii_lowercase().starts_with("25_tnmtraining"));
+        println!("TNM ATM accounts: {} (total c{})", v.len(), v.iter().map(|a| a.balance).sum::<i32>());
+        *g = Some(v);
+    }
+    g.clone().unwrap_or_default()
+}
+
+/// A new game (and the intro, where the original destroys the manager): the accounts start over.
+pub fn tnm_accounts_reset() {
+    if let Ok(mut g) = TNM_ACCOUNTS.lock() {
+        *g = None;
+    }
+}
+
+/// The shared accounts for the save (empty when not made yet).
+pub fn tnm_accounts_save() -> Vec<(String, String, i32)> {
+    TNM_ACCOUNTS
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .map(|v| v.into_iter().map(|a| (a.number, a.pin, a.balance)).collect())
+        .unwrap_or_default()
+}
+
+pub fn tnm_accounts_restore(v: &[(String, String, i32)]) {
+    if let Ok(mut g) = TNM_ACCOUNTS.lock() {
+        *g = if v.is_empty() {
+            None
+        } else {
+            Some(v.iter().map(|(n, p, b)| Account { number: n.clone(), pin: p.clone(), balance: *b }).collect())
+        };
+    }
+}
+
 /// ATM.ModBalance with bSync: take credits from the account, and from the same account (number and PIN) on
 /// every other ATM in the map; hacked (-1), every account is zeroed.
 fn mod_balance(data: &mut HashMap<usize, CompData>, actor: usize, i: i32, n: i32) {
+    mod_balance_map(data, actor, i, n);
+    // The Nameless Mod's shared accounts: what this machine now shows is what every machine shows.
+    if let Some(d) = data.get(&actor) {
+        if d.shared_accounts {
+            if let Ok(mut g) = TNM_ACCOUNTS.lock() {
+                *g = Some(d.accounts.clone());
+            }
+        }
+    }
+}
+
+fn mod_balance_map(data: &mut HashMap<usize, CompData>, actor: usize, i: i32, n: i32) {
     let Some(d) = data.get_mut(&actor) else { return };
     if i < 0 {
         for a in &mut d.accounts {
@@ -535,6 +757,8 @@ enum Btn {
     /// GMDX Data Recovery: "Save To Datavault" (and its greyed "Saved To Datavault").
     SaveEmail,
     SavedEmail,
+    /// The Nameless Mod's vending machines.
+    Purchase,
 }
 
 /// Widgets the mouse can press.
@@ -626,6 +850,106 @@ enum Screen {
     Atm { acct: Edit, pin: Edit, err: String },
     Withdraw { amount: Edit, info: String, instr: String, modifier: f32, disabled_t: Option<f32> },
     Disabled,
+    Vending(Vend),
+}
+
+/// HUDVendingMachineWindow: the product picked (CurrentSelection), the two scroll areas and the status message
+/// (StatusMessage: shown in the status line until `status_until` on the terminal clock).
+struct Vend {
+    sel: usize,
+    list_scroll: i32,
+    body_scroll: i32,
+    status: String,
+    status_until: f32,
+    /// What the window shows of each product, the player's credits and vouchers (refreshed after a purchase).
+    rows: Vec<VendRow>,
+    credits: u32,
+    vouchers: i32,
+}
+
+struct VendRow {
+    name: String,
+    /// "c150" or FREE.
+    cost: String,
+    desc: String,
+    icon: String,
+    /// "Owned:" / "Viable:" and its value.
+    owned_label: String,
+    owned: String,
+}
+
+/// Fill the vending window's rows from the machine and the player's inventory.
+fn refresh_vend(v: &mut Vend, actor: usize, wx: &mut Wx) {
+    let w = "HUDVendingMachineWindow";
+    let (products, takes) = {
+        let d = wx.data.get(&actor).unwrap();
+        (d.products.clone(), d.vend_vouchers)
+    };
+    v.vouchers = if takes { vouchers(wx.flags) - VOUCHERS_SPENT.load(Ordering::Relaxed) } else { 0 };
+    v.credits = wx.inv.0.credits;
+    let free = txt(wx.hud, wx.assets, w, "strFree", "FREE");
+    v.rows = products
+        .iter()
+        .map(|(class, cost)| {
+            let name = vend_name(class, wx.hud, wx.assets);
+            let d = wx.hud.defaults(wx.assets, class).to_vec();
+            let desc = match find(&d, "Description") {
+                Some(Value::Str(t)) => t.clone(),
+                _ => String::new(),
+            };
+            let icon = match find(&d, "Icon") {
+                Some(Value::Path(t)) if t != "None" => t.clone(),
+                _ => String::new(),
+            };
+            let (key, owned) = vend_owned(class, wx.inv, wx.hud, wx.assets);
+            let owned_label = txt(wx.hud, wx.assets, w, key, if key == "strViable" { "Viable:" } else { "Owned:" });
+            let cost = if v.vouchers > 0 { free.clone() } else { format!("c{cost}") };
+            VendRow { name, cost, desc, icon, owned_label, owned }
+        })
+        .collect();
+    if v.sel >= v.rows.len() {
+        v.sel = 0;
+    }
+}
+
+/// The vending window (HUDVendingMachineWindow.CreateControls' layout): credits (and vouchers) at the top left, the
+/// product list with prices, and for the product picked its name, price, what the player has of it, the machine's
+/// stock line, its icon and its description.
+fn draw_vending(u: &mut Ui<Wid>, v: &mut Vend, wx: &Dv, actor: usize, dx: i32, dy: i32, g: &Geo) {
+    let w = "HUDVendingMachineWindow";
+    let f = u.f;
+    let fsm = f.small.clone();
+    let fh = f.headers.clone();
+    let credits = txt(u.hud, u.assets, w, "strCredits", "Credits: c%i").replacen("%i", &v.credits.to_string(), 1);
+    u.text(&fh, dx + 15, dy + 5, 140, 13, HAlign::Left, VAlign::Top, m_col(8), &credits);
+    if v.vouchers > 0 {
+        let s = txt(u.hud, u.assets, w, "strVouchers", "Vouchers: %i").replacen("%i", &v.vouchers.to_string(), 1);
+        u.text(&fh, dx + 157, dy + 5, 140, 13, HAlign::Left, VAlign::Top, m_col(8), &s);
+    }
+    let rows: Vec<Vec<String>> = v.rows.iter().map(|r| vec![r.name.clone(), r.cost.clone()]).collect();
+    list(u, L_LIST, (dx + 54, dy + 29, 340, 350), &[230, 100], &rows, Some(v.sel), &mut v.list_scroll, false);
+    let Some(r) = v.rows.get(v.sel) else { return };
+    let labels = [
+        txt(u.hud, u.assets, w, "strName", "Name:"),
+        txt(u.hud, u.assets, w, "strCost", "Cost:"),
+        r.owned_label.clone(),
+        txt(u.hud, u.assets, w, "strBuys", "Sells:"),
+    ];
+    let uses = wx.data.get(&actor).map_or(0, |d| d.vend_uses);
+    let values = [r.name.clone(), r.cost.clone(), r.owned.clone(), uses.max(0).to_string()];
+    for (k, (l, val)) in labels.iter().zip(values.iter()).enumerate() {
+        let y = dy + 26 + 14 * k as i32;
+        u.text(&fh, dx + 418, y, 60, 13, HAlign::Left, VAlign::Top, m_col(8), l);
+        u.text(&fsm, dx + 478, y, 200, 13, HAlign::Left, VAlign::Top, m_col(8), val);
+    }
+    if !r.icon.is_empty() {
+        if let Some(tx) = u.hud.tex(u.assets, &r.icon) {
+            u.c.texture(dx + 688, dy + 26, tx.w as i32, tx.h as i32, 0, 0, &tx, Style::Masked, WHITE);
+        }
+    }
+    let desc = r.desc.clone();
+    text_area(u, L_BODY, (dx + 413, dy + 88, 335, 290), &desc, false, &mut v.body_scroll);
+    let _ = g;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -638,6 +962,7 @@ enum Which {
     Atm,
     Withdraw,
     Disabled,
+    Vending,
 }
 
 /// ComputerScreenHack: the ICE Breaker.
@@ -714,6 +1039,7 @@ struct Wx<'a> {
     texts: &'a mut Texts,
     now: f64,
     mission: u8,
+    flags: &'a imsim_core::flags::FlagBase,
 }
 
 fn txt(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str, key: &str, d: &str) -> String {
@@ -885,6 +1211,21 @@ impl Term {
                 self.close_hack(wx);
                 Screen::Disabled
             }
+            Which::Vending => {
+                self.focus = Some(Wid::Row(L_LIST, 0));
+                let mut v = Vend {
+                    sel: 0,
+                    list_scroll: 0,
+                    body_scroll: 0,
+                    status: String::new(),
+                    status_until: 0.0,
+                    rows: Vec::new(),
+                    credits: 0,
+                    vouchers: 0,
+                };
+                refresh_vend(&mut v, self.actor, wx);
+                Screen::Vending(v)
+            }
             Which::Special => {
                 let user = self.user.clone();
                 let opts = self
@@ -944,8 +1285,15 @@ impl Term {
             }
             Which::Bulletins => {
                 let special = self.specials_available(wx, false);
-                let (pkg, tag) = { let d = self.d(wx); (d.text_package.clone(), d.bulletin_tag.clone()) };
-                let docs = wx.texts.get(wx.assets, &pkg, &tag).map(|p| p.files).unwrap_or_default();
+                let (pkg, tags) = { let d = self.d(wx); (d.text_package.clone(), d.bulletin_tags.clone()) };
+                // The Nameless Mod's public terminals list several bulletin texts (bulletinTags), each item shown
+                // only while the mission script's DisplayNews allows it.
+                let mut docs = Vec::new();
+                for tag in &tags {
+                    if let Some(p) = wx.texts.get(wx.assets, &pkg, tag) {
+                        docs.extend(p.files.into_iter().filter(|f| crate::missions::display_news(wx.mission, &f.name, wx.flags)));
+                    }
+                }
                 let mut m = Mail {
                     order: (0..docs.len()).collect(),
                     docs,
@@ -958,7 +1306,9 @@ impl Term {
                     body_scroll: 0,
                     special,
                 };
-                if tag.is_empty() {
+                // (The Nameless Mod's screen also says so when every bulletin is filtered out.)
+                let none = tags.iter().all(|t| t.is_empty()) || (unreal_pkg::tnm::active().is_some() && m.docs.is_empty());
+                if none {
                     m.body = txt(wx.hud, wx.assets, "ComputerScreenBulletins", "NoBulletinsTodayText", "No Bulletins Today!");
                     m.center = true;
                 } else if !m.docs.is_empty() {
@@ -1048,6 +1398,94 @@ impl Term {
     }
 
     /// ComputerScreenATMWithdraw.WithdrawCredits.
+    /// HUDVendingMachineWindow.AttemptPurchase: pay (or spend an ABI voucher), drop the product out of the slot
+    /// (TNMVendingMachine.SpawnProduct) and say so in the status line.
+    fn purchase(&mut self, wx: &mut Wx) {
+        let w = "HUDVendingMachineWindow";
+        let actor = self.actor;
+        let clock = self.clock;
+        let Some(Screen::Vending(v)) = self.screen.as_ref() else { return };
+        let sel = v.sel;
+        let (product, uses, takes_vouchers) = {
+            let d = wx.data.get(&actor).unwrap();
+            (d.products.get(sel).cloned(), d.vend_uses, d.vend_vouchers)
+        };
+        let vouchers_left = vouchers(wx.flags) - VOUCHERS_SPENT.load(Ordering::Relaxed);
+        let free = takes_vouchers && vouchers_left > 0;
+        let msg = match product {
+            None => txt(wx.hud, wx.assets, w, "strNoProduct", "Nothing to dispense."),
+            Some((class, cost)) if (wx.inv.0.credits as i64 >= cost as i64 || free) && uses > 0 => {
+                let name = match find(wx.hud.defaults(wx.assets, &class), "ItemName") {
+                    Some(Value::Str(n)) => n.clone(),
+                    _ => class.clone(),
+                };
+                let paid = if free {
+                    VOUCHERS_SPENT.fetch_add(1, Ordering::Relaxed);
+                    0
+                } else {
+                    wx.inv.0.credits -= cost.max(0) as u32;
+                    cost
+                };
+                let mut m = txt(wx.hud, wx.assets, w, "strBoughtProduct", "%s bought for c%i.")
+                    .replacen("%s", &name, 1)
+                    .replacen("%i", &paid.to_string(), 1);
+                if free && vouchers_left == 1 {
+                    m = txt(wx.hud, wx.assets, w, "strVoucherUsed", "No vouchers left.");
+                }
+                self.dispense(&class, wx);
+                m
+            }
+            Some(_) if uses <= 0 => txt(wx.hud, wx.assets, w, "strNoStock", "Out of stock."),
+            Some((class, cost)) => {
+                let name = match find(wx.hud.defaults(wx.assets, &class), "ItemName") {
+                    Some(Value::Str(n)) => n.clone(),
+                    _ => class.clone(),
+                };
+                let need = cost as i64 - wx.inv.0.credits as i64;
+                txt(wx.hud, wx.assets, w, "strNoCredits", "c%i for %s: %i credits short.")
+                    .replacen("%i", &cost.to_string(), 1)
+                    .replacen("%s", &name, 1)
+                    .replacen("%i", &need.to_string(), 1)
+            }
+        };
+        if let Some(Screen::Vending(v)) = self.screen.as_mut() {
+            v.status = msg;
+            v.status_until = clock + 3.0;
+            refresh_vend(v, actor, wx);
+        }
+    }
+
+    /// TNMVendingMachine.SpawnProduct: the coin sound, the product out of the slot (in front, or to the left for
+    /// the PS20 machine) at Vector(Rotation) x 100, and one use fewer.
+    fn dispense(&mut self, class: &str, wx: &mut Wx) {
+        let a = &wx.lvl.actors[self.actor];
+        let l = a.location();
+        let pos = DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
+        let yaw = match find(&a.props, "Rotation") {
+            Some(Value::Rotator(r)) => r[1] as f64 / 65536.0 * std::f64::consts::TAU,
+            _ => 0.0,
+        };
+        let f = |n: &str, d: f64| match find(&a.props, n) {
+            Some(Value::Float(v)) => *v as f64,
+            _ => d,
+        };
+        let (radius, height) = (f("CollisionRadius", 30.0), f("CollisionHeight", 50.0));
+        let fwd = DVec3::new(yaw.cos(), yaw.sin(), 0.0);
+        let right = DVec3::new(-yaw.sin(), yaw.cos(), 0.0);
+        let at = if crate::classtree::is_a(&a.class, "PS20VendingMachine") {
+            pos + fwd * (radius * 0.5) - right * (0.75 * radius) - DVec3::new(0.0, 0.0, height * 0.7)
+        } else {
+            pos + fwd * (radius * 0.8) - DVec3::new(0.0, 0.0, height * 0.7)
+        };
+        crate::sound::play("DeusExSounds.Generic.VendingCoin", pos, 1.0, 512.0, 1.0);
+        if let Ok(mut q) = DISPENSED.lock() {
+            q.push((class.to_string(), at, fwd * 100.0));
+        }
+        if let Some(d) = wx.data.get_mut(&self.actor) {
+            d.vend_uses -= 1;
+        }
+    }
+
     fn withdraw(&mut self, wx: &mut Wx) {
         let Some(Screen::Withdraw { amount, modifier, .. }) = self.screen.as_ref() else { return };
         let n = atoi(&amount.get());
@@ -1288,6 +1726,16 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
             let bal = d.balance(i, *modifier);
             g.buttons = vec![(Btn::Withdraw, true, !amount.text.is_empty() && bal > 0), (Btn::Close, true, true)];
         }
+        Some(Screen::Vending(_)) => {
+            g.class = "HUDVendingMachineWindow";
+            g.title = if d.vend_title.is_empty() { txt(hud, assets, g.class, "Title", "Vending Machine") } else { d.vend_title.clone() };
+            g.cw = 768;
+            g.ch = 412;
+            g.cols = 3;
+            g.textures = vend_textures(hud, assets);
+            g.status = Some((412 - 13 - 6, 18, 21));
+            g.buttons = vec![(Btn::Close, true, true), (Btn::Purchase, true, !d.products.is_empty())];
+        }
         Some(Screen::Disabled) => {
             g.class = "ComputerScreenATMDisabled";
             g.title = txt(hud, assets, g.class, "Title", "PageNet Global Banking System");
@@ -1301,6 +1749,104 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
         None => {}
     }
     g
+}
+
+/// HUDVendingMachineWindow's client art (clientTextures, three across, two down).
+fn vend_textures(hud: &mut ClassicHud, assets: &mut RuntimeAssets) -> Vec<&'static str> {
+    static TEX: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    TEX.get_or_init(|| {
+        let d = hud.defaults(assets, "HUDVendingMachineWindow");
+        let mut v: Vec<(u32, String)> = d
+            .iter()
+            .filter(|p| p.name.eq_ignore_ascii_case("clientTextures"))
+            .filter_map(|p| match &p.value {
+                Value::Path(t) if t != "None" => Some((p.index, t.clone())),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v.into_iter().map(|(_, t)| &*Box::leak(t.into_boxed_str())).collect()
+    })
+    .clone()
+}
+
+/// ABI_VoucherUses: free purchases at the machines that take them (Mission 23).
+fn vouchers(fl: &imsim_core::flags::FlagBase) -> i32 {
+    match fl.get("ABI_VoucherUses") {
+        Some(imsim_core::flags::FlagValue::Int(n)) => *n,
+        _ => 0,
+    }
+}
+
+/// Vouchers spent at a machine this frame (applied to the flags by computer_system).
+static VOUCHERS_SPENT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// Products dispensed: (class, where, velocity), thrown into the world by computer_system.
+static DISPENSED: Mutex<Vec<(String, DVec3, DVec3)>> = Mutex::new(Vec::new());
+
+/// HUDVendingMachineWindow.GetName: the product's ItemName, with a few long names shortened (LAM, EMP grenade,
+/// decaf coffee, and weapon mods reduced to what's in their brackets + "Mod").
+fn vend_name(class: &str, hud: &mut ClassicHud, assets: &mut RuntimeAssets) -> String {
+    let w = "HUDVendingMachineWindow";
+    let is = |c: &str| crate::classtree::is_a(class, c);
+    if is("WeaponLAM") || is("WeaponTNMLAM") {
+        return txt(hud, assets, w, "strShortLAM", "LAM");
+    }
+    if is("WeaponEMPGrenade") || is("WeaponTNMEMPGrenade") {
+        return txt(hud, assets, w, "strShortEMP", "EMP Grenade");
+    }
+    if is("PlasticCoffeeDecaf") {
+        return txt(hud, assets, w, "strShortCoffee", "Decaf Coffee");
+    }
+    let name = match find(hud.defaults(assets, class), "ItemName") {
+        Some(Value::Str(n)) => n.clone(),
+        _ => class.to_string(),
+    };
+    if is("WeaponMod") {
+        if let (Some(a), Some(b)) = (name.find('('), name.rfind(')')) {
+            if b > a {
+                return format!("{} {}", &name[a + 1..b], txt(hud, assets, w, "strMod", "Mod"));
+            }
+        }
+    }
+    name
+}
+
+/// What the player already has of a product (HUDVendingMachineWindow.ListSelectionChanged): ammo as amount / max,
+/// stacking pickups as copies / max, weapons as their ammo, anything else as a count. (label key, text)
+fn vend_owned(class: &str, inv: &PlayerInventory, hud: &mut ClassicHud, assets: &mut RuntimeAssets) -> (&'static str, String) {
+    let d = hud.defaults(assets, class).to_vec();
+    let int = |d: &[Property], k: &str| match find(d, k) {
+        Some(Value::Int(n)) => *n,
+        _ => 0,
+    };
+    let ammo_of = |c: &str| inv.0.ammo.iter().find(|(a, _)| a.eq_ignore_ascii_case(c)).map_or(0, |(_, n)| *n);
+    let is = |c: &str| crate::classtree::is_a(class, c);
+    if is("Ammo") {
+        return ("strQuant", format!("{}/{}", ammo_of(class), int(&d, "MaxAmmo")));
+    }
+    if is("WeaponMod") {
+        // Viable: weapons carried that could still take it (counted by the game's own rules in weapons.rs).
+        return ("strViable", "?".into());
+    }
+    if is("DeusExWeapon") {
+        if let Some(Value::Path(a)) = find(&d, "AmmoName") {
+            let a = a.rsplit('.').next().unwrap_or(a).to_string();
+            if !a.eq_ignore_ascii_case("AmmoNone") {
+                let ad = hud.defaults(assets, &a).to_vec();
+                // Grenades and other weapons that are their own ammo count that ammo.
+                if matches!(find(&ad, "PickupViewMesh"), Some(Value::Path(m)) if m.ends_with("TestBox")) {
+                    return ("strQuant", format!("{}/{}", ammo_of(&a), int(&ad, "MaxAmmo")));
+                }
+            }
+        }
+    }
+    let have: u32 = inv.0.items.iter().filter(|i| i.def.class.eq_ignore_ascii_case(class)).map(|i| i.count.max(1)).sum();
+    let max = int(&d, "MaxCopies");
+    if is("DeusExPickup") && max > 1 {
+        ("strQuant", format!("{have}/{max}"))
+    } else {
+        ("strQuant", have.to_string())
+    }
 }
 
 fn btn_label(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str, b: Btn, kind: Kind) -> String {
@@ -1320,6 +1866,7 @@ fn btn_label(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str, b: B
         Btn::Close => txt(hud, assets, class, "ButtonLabelClose", "|&Close"),
         Btn::SaveEmail => "Save To Datavault".into(),
         Btn::SavedEmail => "Saved To Datavault".into(),
+        Btn::Purchase => txt(hud, assets, class, "ButtonLabelPurchase", "|&Purchase"),
     }
 }
 
@@ -1381,7 +1928,14 @@ fn draw_comp(u: &mut Ui<Wid>, t: &mut Term, wx: &Dv, g: &Geo) {
         None => {
             for (i, name) in g.textures.iter().enumerate() {
                 let (col, row) = (i as i32 % g.cols, i as i32 / g.cols);
-                u.icon(name, cx + col * 256, cy + row * 256, Style::Translucent, m_col(0));
+                if name.contains('.') {
+                    // A full path (The Nameless Mod's own window art).
+                    if let Some(tx) = u.hud.tex(u.assets, name) {
+                        u.c.texture(cx + col * 256, cy + row * 256, tx.w as i32, tx.h as i32, 0, 0, &tx, Style::Translucent, m_col(0));
+                    }
+                } else {
+                    u.icon(name, cx + col * 256, cy + row * 256, Style::Translucent, m_col(0));
+                }
             }
         }
     }
@@ -1424,6 +1978,9 @@ fn draw_comp(u: &mut Ui<Wid>, t: &mut Term, wx: &Dv, g: &Geo) {
         let s = match t.screen {
             Some(Screen::Atm { .. }) | Some(Screen::Withdraw { .. }) | Some(Screen::Disabled) => {
                 txt(u.hud, u.assets, g.class, "StatusText", "")
+            }
+            Some(Screen::Vending(ref v)) => {
+                if t.clock < v.status_until { v.status.clone() } else { String::new() }
             }
             _ => {
                 let func = txt(u.hud, u.assets, g.class, "ComputerNodeFunctionLabel", "");
@@ -1550,6 +2107,7 @@ fn draw_screen(u: &mut Ui<Wid>, t: &mut Term, wx: &Dv, g: &Geo, dx: i32, dy: i32
         Some(Screen::Security(sc)) => {
             draw_security(u, sc, wx, actor, dx, dy, g, kind);
         }
+        Some(Screen::Vending(v)) => draw_vending(u, v, wx, actor, dx, dy, g),
         None => {}
     }
 }
@@ -1885,6 +2443,7 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
                 Btn::SavedEmail => {}
                 Btn::Return => t.close_screen("RETURN", wx),
                 Btn::Withdraw => t.withdraw(wx),
+                Btn::Purchase => t.purchase(wx),
                 Btn::Close => {
                     let a = if matches!(t.screen, Some(Screen::Withdraw { .. })) { "LOGOUT" } else { "EXIT" };
                     t.close_screen(a, wx);
@@ -2194,6 +2753,7 @@ struct CompCx<'a> {
     events: Mut<'a, GameEvents>,
     inv: Mut<'a, PlayerInventory>,
     ph: Mut<'a, PlayerHealth>,
+    flags: &'a imsim_core::flags::FlagBase,
     dt: f32,
     now: f64,
     mission: u8,
@@ -2215,6 +2775,7 @@ macro_rules! wx {
             texts: &mut $cx.st.texts,
             now: $cx.now,
             mission: $cx.mission,
+            flags: $cx.flags,
         }
     };
 }
@@ -2276,7 +2837,13 @@ pub fn computer_system(
         ResMut<GameEvents>,
         Res<Blockers>,
     ),
-    (player, mut inv, mut ph): (Res<Player>, ResMut<PlayerInventory>, ResMut<PlayerHealth>),
+    (player, mut inv, mut ph, mut flags, mut throws): (
+        Res<Player>,
+        ResMut<PlayerInventory>,
+        ResMut<PlayerHealth>,
+        ResMut<crate::ai::GameFlags>,
+        ResMut<crate::destruct::ItemThrows>,
+    ),
     mut layer_nodes: Query<(&mut bevy::ui::Node, &mut Visibility, &MaterialNode<HudLayer>), (Without<ImageNode>, Without<Backdrop>)>,
     mut feed_nodes: Query<(&mut bevy::ui::Node, &mut Visibility, &mut ImageNode), (Without<MaterialNode<HudLayer>>, Without<Backdrop>)>,
     mut backdrop: Query<&mut Visibility, (With<Backdrop>, Without<ImageNode>, Without<MaterialNode<HudLayer>>)>,
@@ -2295,6 +2862,16 @@ pub fn computer_system(
             .map(|a| pfloat(&a.props, "MissionNumber", 0.0) as u8)
             .unwrap_or(0)
     });
+    // Vending machines (last frame): vouchers spent and products dropped out of their slots.
+    let spent = VOUCHERS_SPENT.swap(0, Ordering::Relaxed);
+    if spent > 0 {
+        let left = (vouchers(&flags.0) - spent).max(0);
+        flags.0.set("ABI_VoucherUses", imsim_core::flags::FlagValue::Int(left), 25);
+    }
+    for (class, at, vel) in DISPENSED.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        println!("VENDING dispensed {class}");
+        throws.0.push((class, at, vel, None, Vec::new()));
+    }
     let mut cx = CompCx {
         window: *window,
         cursor_opts: cursor_opts.reborrow(),
@@ -2311,6 +2888,7 @@ pub fn computer_system(
         events: events.reborrow(),
         inv: inv.reborrow(),
         ph: ph.reborrow(),
+        flags: &flags.0,
         dt,
         now,
         mission,
@@ -2413,7 +2991,14 @@ fn open_frobbed(cx: &mut CompCx) {
     // ---- frob
     let frobbed = FROB.lock().ok().and_then(|mut f| f.take());
     if let Some(actor) = frobbed {
-        if cx.st.term.is_none() && !cx.ph.dead && !crate::inventory_screen::screen_open() && actor < lvl.actors.len() {
+        // The Nameless Mod's broken ATMs (tnmATM.bOutOfOrder) only say so.
+        let broken = actor < lvl.actors.len()
+            && unreal_pkg::tnm::active().is_some()
+            && matches!(find(&lvl.actors[actor].props, "bOutOfOrder"), Some(Value::Bool(true)));
+        if broken {
+            let msg = pstr(&lvl.actors[actor].props, "outOfOrderMsg", "Out of order.");
+            crate::classic_hud::client_message(&msg);
+        } else if cx.st.term.is_none() && !cx.ph.dead && !crate::inventory_screen::screen_open() && actor < lvl.actors.len() {
             first_load(cx.st, lvl, actor, &mut cx.assets);
             let d = cx.st.data.get_mut(&actor).unwrap();
             let skill_value = crate::abilities::skill("SkillComputer").max(0.01);
@@ -2430,7 +3015,7 @@ fn open_frobbed(cx: &mut CompCx) {
             if !d.locked_out {
                 let kind = d.kind;
                 let skill = crate::abilities::skill_level("SkillComputer") as i32;
-                let uses_hack = kind != Kind::Public;
+                let uses_hack = kind != Kind::Public && kind != Kind::Vending;
                 let mut detection = 15.0f32;
                 let mut hack = None;
                 if skill > 0 && uses_hack {
@@ -2487,6 +3072,7 @@ fn open_frobbed(cx: &mut CompCx) {
                 };
                 let mut wx = wx!(cx);
                 let first = match kind {
+                    Kind::Vending => Which::Vending,
                     Kind::Atm => Which::Atm,
                     Kind::Public => Which::Bulletins,
                     _ => Which::Login,
@@ -2614,6 +3200,20 @@ fn comp_test(t: &mut Term, wx: &mut Wx) {
             user.text = u.chars().collect();
             pass.text = p.chars().collect();
             activate(t, Wid::Btn(Btn::Login), false, wx);
+        } else if let Some(Screen::Vending(v)) = t.screen.as_mut() {
+            // "vend;<row>;n": pick that product and buy it n times a second apart.
+            let row: usize = parts.get(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+            let want: u32 = parts.get(2).and_then(|n| n.parse().ok()).unwrap_or(1);
+            static BOUGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let done = BOUGHT.load(std::sync::atomic::Ordering::Relaxed);
+            v.sel = row.min(v.rows.len().saturating_sub(1));
+            if done < want && t.clock > 1.0 + done as f32 {
+                BOUGHT.store(done + 1, std::sync::atomic::Ordering::Relaxed);
+                t.purchase(wx);
+                if let Some(Screen::Vending(v)) = t.screen.as_ref() {
+                    println!("COMPTEST vend row {row}: {:?} credits {}", v.status, v.credits);
+                }
+            }
         } else if let Some(Screen::Security(sc)) = t.screen.as_ref() {
             let want: u32 = parts.get(2).and_then(|n| n.parse().ok()).unwrap_or(4);
             static DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -2677,12 +3277,24 @@ fn term_mouse(t: &mut Term, wx: &mut Wx, binds: &Bindings, fr: &CompFrame, hover
                             }
                         } else {
                             let pkg = wx.data.get(&t.actor).unwrap().text_package.clone();
+                            let mut buy = false;
                             match t.screen.as_mut() {
                                 Some(Screen::Email(m)) | Some(Screen::Bulletins(m))
                                     if m.sel != Some(r) => {
                                         select_doc(m, r, &pkg, wx);
                                     }
+                                Some(Screen::Vending(v)) => {
+                                    if v.sel != r {
+                                        v.sel = r;
+                                        v.body_scroll = 0;
+                                    } else if double {
+                                        buy = true;
+                                    }
+                                }
                                 _ => {}
+                            }
+                            if buy {
+                                t.purchase(wx);
                             }
                             t.focus = Some(Wid::Row(L_LIST, r));
                         }
@@ -3308,6 +3920,7 @@ fn scroll_of(t: &mut Term, id: u8) -> Option<&mut i32> {
     }
     match t.screen.as_mut() {
         Some(Screen::Email(m)) | Some(Screen::Bulletins(m)) => Some(if id == L_LIST { &mut m.list_scroll } else { &mut m.body_scroll }),
+        Some(Screen::Vending(v)) => Some(if id == L_LIST { &mut v.list_scroll } else { &mut v.body_scroll }),
         _ => None,
     }
 }
@@ -3390,7 +4003,7 @@ mod tests {
             specials: vec![],
             node: Node::default(),
             text_package: String::new(),
-            bulletin_tag: String::new(),
+            bulletin_tags: Vec::new(),
             lockout_delay: 60.0,
             msg_locked_out: String::new(),
             locked_out: false,
@@ -3400,6 +4013,11 @@ mod tests {
             alarm_timeout: 30.0,
             alarm: None,
             sucked_dry: false,
+            products: Vec::new(),
+            vend_uses: 0,
+            vend_vouchers: false,
+            vend_title: String::new(),
+            shared_accounts: false,
         };
         let mut data = HashMap::new();
         data.insert(1, mk("230023", 200));

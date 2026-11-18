@@ -25,6 +25,7 @@ mod sdl3pad;
 mod tnmmode;
 mod tnmtriggers;
 mod tnmpower;
+mod tnmeggs;
 mod nullmask;
 mod online;
 mod netplay;

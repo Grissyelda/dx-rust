@@ -164,7 +164,8 @@ the launcher at a folder you installed it to (right-click the **Game** row). The
 go to their own `TNMSave` folder. In game, *Settings > Mods* switches between Deus Ex and The Nameless Mod (the game
 restarts). Work in progress: its difficulty rules, its trigger classes and elevators, and the mission scripts of the
 whole story (missions 20 to 25, the endings and the epilogue), its intro and scripted camera sequences, airless zones,
-the arena powerups, the ending quotes, slow motion and its credits are rewritten; a few cinematic set pieces, Trestkon's own
+the arena powerups, the ending quotes, slow motion, its credits, its readable books and papers, its terminals and news
+bulletins, its vending machines and shared bank accounts are rewritten; a few cinematic set pieces, Trestkon's own
 abilities, its menus and achievements aren't yet, so those parts play with the Deus Ex rules they build on.
 
 ## Building from source

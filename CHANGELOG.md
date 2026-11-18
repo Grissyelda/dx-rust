@@ -33,8 +33,17 @@ what's lying in them, airless zones (the space station's decompressed hallway, u
 you holding your breath, and the arena's Quad Damage (x4 damage) and Ring of Shadows (unseen) powerups last 30
 seconds. The endings show their closing quotes, the slow-motion scene slows the game and its sounds, and the
 story ends on the mod's own credits (its banner, its credits text and its credits track, read from your copy).
+Its books, magazines, newspapers, notebooks, datacubes and papers can be read: frobbing one turns to its next page
+(with the page count and hints under the text, and bold titles), adds its note to the DataVault the first time, and
+papers that clear themselves away go once read. Its personal, public and security terminals, laptops and monitors
+open as their Deus Ex counterparts with The Nameless Mod's own network names and logos, and the public terminals
+list Forum City's news bulletins as the story makes them true. Its vending machines and shop counters open their
+product list with prices, descriptions, what you already have and the stock left, take your credits (or the ABI
+vouchers in Mission 23) and drop the product out of the slot. Its ATMs share one set of bank accounts across the
+whole game and the broken ones say they're out of order. Easter eggs are recorded for good and give 50 skill
+points. Books pick one of their four covers.
 Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the fades in the ending scenes, The Nameless
-Mod's own player abilities, menus and achievements, and its bonus maps.
+Mod's own player abilities, menus and achievements, its terminal games, and its bonus maps.
 
 ### Fix: thrown bodies could only be picked up once (#72)
 A body you'd thrown down couldn't be picked up or searched again (in training, the knocked-out trooper put down on

@@ -289,6 +289,7 @@ pub fn loader_system(world: &mut World) {
             Goal::NewGame(_) => {
                 crate::augmentique::new_game();
                 crate::perks::new_game();
+                crate::computers::tnm_accounts_reset();
                 // A deathmatch map: the deathmatch character's outfit and weapon skins go back on.
                 if crate::deathmatch::versus() && crate::deathmatch::is_dm_map(&map) {
                     if let Some(c) = crate::dmchar::current() {
@@ -299,6 +300,7 @@ pub fn loader_system(world: &mut World) {
             Goal::Load(s) => {
                 crate::augmentique::restore(s.global.augmentique.clone());
                 crate::perks::restore(&s.global.perks);
+                crate::computers::tnm_accounts_restore(&s.global.tnm_atm);
             }
             _ => {}
         }
@@ -926,6 +928,10 @@ fn dev_goto(world: &mut World) {
                     if let Some(b) = b {
                         if crate::fixtures::is_fixture(&class) {
                             crate::fixtures::frob(b);
+                        } else if crate::classtree::is_a(&class, "InformationDevices") || crate::classtree::is_a(&class, "TNMInformationDevices") {
+                            // Readables go through the player's frob (pickups.rs) with this one as the target.
+                            *crate::pickups::FORCE_DEVICE.lock().unwrap() = Some(b);
+                            world.resource_mut::<crate::pickups::FrobRequest>().0 = true;
                         } else {
                             // A pawn: talk to it (consys finds its conversation, if it has one).
                             crate::consys::request_frob(b);

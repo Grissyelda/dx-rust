@@ -250,6 +250,9 @@ pub struct Global {
     /// GMDX perks owned (class names).
     #[serde(default)]
     pub perks: Vec<String>,
+    /// The Nameless Mod's game-wide bank accounts (number, PIN, balance).
+    #[serde(default)]
+    pub tnm_atm: Vec<(String, String, i32)>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -831,6 +834,7 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
         g.held = w.held.as_ref().map(|h| h.stats.class.clone()).filter(|c| !c.is_empty());
         g.augmentique = crate::augmentique::save();
         g.perks = crate::perks::save();
+        g.tnm_atm = crate::computers::tnm_accounts_save();
     }
     if let Some(a) = crate::abilities::lock().as_ref() {
         g.skills = a.skills.list.iter().map(|s| (s.def.class.clone(), s.level)).collect();

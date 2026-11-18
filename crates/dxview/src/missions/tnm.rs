@@ -1393,6 +1393,11 @@ pub fn game_event(c: &mut Ctx, f: &str) {
             c.enter(Sel::isa_bind("ScriptedPawn", "Hawk"));
         }
         "WrenchAward" => c.award(25, "strWrenchAward"),
+        // SourceCodeCube.Frob (pickups.rs): NARC_Source for good, then the cube's infolink.
+        "#SourceCodeCubeFrob" => {
+            c.set("NARC_Source", true, 0);
+            c.datalink("PM_Source01");
+        }
         // Silver Dragon runs for the nearest of his escape points.
         "SDFindPatrol" => {
             if let Some(sd) = c.pawns.iter().find(|p| crate::classtree::is_a(&p.class, "SD")).cloned() {
@@ -1772,4 +1777,54 @@ fn m21_event(c: &mut Ctx, f: &str) -> bool {
         _ => return false,
     }
     true
+}
+
+/// tnmMission20and22.DisplayNews: Forum City's news bulletins follow the story. Each bulletin (by its text name)
+/// shows only once what it reports has happened - a death, an alliance, a quest's outcome; the rest always show.
+pub fn display_news(file: &str, fl: &imsim_core::flags::FlagBase) -> bool {
+    let b = |n: &str| fl.get_bool(n);
+    let Some(n) = file.strip_prefix("Bulletin").and_then(|n| n.parse::<u32>().ok()) else { return true };
+    let pdx = b("ALLIED_PDX");
+    let wc = b("ALLIED_WC");
+    let ao_dead = b("AlphaOperator_Dead");
+    let sols_post = b("MS_SolsTrouble_Post");
+    let hq_spared = b("Killed_20_PDXHQ01_and_20_PDXHQ02_0");
+    let hq_news = b("QC_MAIN_GetNewsscript") && b("NS_PDXHQ");
+    match n {
+        // Deaths reported whatever the mission.
+        17 => b("Raving_Dead"),
+        18 => b("Yardbomb_Dead"),
+        19 => b("Chris_Dead"),
+        20 => b("DarkTemplar_Dead"),
+        21 => b("Abomination_Dead"),
+        // Mission 20.
+        3 => !(pdx || wc),
+        4 => pdx,
+        5 => wc,
+        6 => b("QR_MAIN_StealPassword") || b("QR_MAIN_ShadowCode"),
+        7 => b("QC_SUB_N00Bz") && b("N00Bz_Dead"),
+        8 => b("QC_SUB_N00Bz") && !b("N00Bz_Dead"),
+        9 => b("MS_DTCleanup_Done") && !b("QC_SUB_N00Bz"),
+        14 => b("MS_PartyzoneTrouble"),
+        15 => sols_post && !ao_dead,
+        16 => sols_post && ao_dead,
+        29 => b("MS_DTCleanup_Done") && b("MS_BreakAndEnter"),
+        // Mission 22.
+        10 => pdx,
+        11 => wc,
+        12 => !b("Killed_20_FCDowntown_and_20_FCCorporate_and_20_FCSlums_20"),
+        22 => b("Athena_Dead") || b("Athena_Fight_Dead"),
+        23 => b("Beefman_Dead"),
+        24 => pdx && !ao_dead,
+        25 => pdx && ao_dead,
+        26 => wc && !sols_post,
+        27 => wc && sols_post,
+        30 => b("Kashue5_Played"),
+        31 => b("Kashue4Bad_Played") && !b("Kevo_Dead"),
+        32 => b("Kashue4Bad_Played") && b("Kevo_Dead"),
+        33 => b("QC_MAIN_GetNewsscript") && hq_spared && b("NS_PDXHQ"),
+        34 => hq_news && !hq_spared,
+        35 => b("QC_MAIN_GetNewsscript") && !hq_spared && !b("NS_PDXHQ"),
+        _ => true,
+    }
 }
