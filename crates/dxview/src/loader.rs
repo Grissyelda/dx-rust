@@ -290,6 +290,7 @@ pub fn loader_system(world: &mut World) {
                 crate::augmentique::new_game();
                 crate::perks::new_game();
                 crate::computers::tnm_accounts_reset();
+                crate::trestkon::new_game(map.to_ascii_lowercase().starts_with("25_tnmtraining"));
                 // A deathmatch map: the deathmatch character's outfit and weapon skins go back on.
                 if crate::deathmatch::versus() && crate::deathmatch::is_dm_map(&map) {
                     if let Some(c) = crate::dmchar::current() {
@@ -301,6 +302,7 @@ pub fn loader_system(world: &mut World) {
                 crate::augmentique::restore(s.global.augmentique.clone());
                 crate::perks::restore(&s.global.perks);
                 crate::computers::tnm_accounts_restore(&s.global.tnm_atm);
+                crate::trestkon::restore(&s.global.trestkon);
             }
             _ => {}
         }

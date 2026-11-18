@@ -1123,7 +1123,7 @@ fn m20_timer(c: &mut Ctx, map: &str) {
         c.set("MS_BogieGoal", true, 0);
     }
     if streets {
-        if c.credits >= 1500 && !c.b("HAS_SubwayPass") {
+        if crate::trestkon::credits_earned() >= 1500 && !c.b("HAS_SubwayPass") {
             c.pm("PM_Scara_SubwayMoneyAlt");
         }
         if c.b("ALLIED_WC") && c.b("Kylie_Dead") && !c.b("Scara_TOLD_KylieKill") {

@@ -198,6 +198,13 @@ impl ClassDb {
         None
     }
 
+    /// The class's name as its package spells it (ancestry() and lookups are lower case).
+    pub fn declared_name(&self, class: &str) -> Option<String> {
+        let k = self.package_of(class)?;
+        let pkg = self.packages.get(&k)?;
+        pkg.exports.iter().find(|e| e.class_index == 0 && e.name.eq_ignore_ascii_case(class)).map(|e| e.name.clone())
+    }
+
     /// The class and its ancestors, lowercase, nearest first (`["terroristcommander", "humanthug", ...,
     /// "actor", "object"]`) - for IsA / ClassIsChildOf. Empty for an unknown class.
     pub fn ancestry(&mut self, class: &str) -> Vec<String> {

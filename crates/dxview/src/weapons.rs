@@ -404,6 +404,8 @@ fn fp(p: &[Property], n: &str, d: f32) -> f32 {
 pub fn weapon_stats(class: &str, p: &[Property]) -> Option<WeaponStats> {
     let view_mesh = match find(p, "PlayerViewMesh") {
         Some(Value::Path(s)) => s.clone(),
+        // The Nameless Mod's fists set their mesh from the glove worn (WeaponFists.SetFistType).
+        _ if class.eq_ignore_ascii_case("WeaponFists") && crate::trestkon::active() => crate::trestkon::fist_mesh().to_string(),
         _ => return None,
     };
     let ammo = match find(p, "AmmoName") {
@@ -1905,10 +1907,12 @@ pub fn select_system(
     children: Query<&Children>,
     mut clips: ResMut<Clips>,
     mut scripted: ResMut<ScriptedInput>,
-    (carrying, hacking, wheel): (
+    (carrying, hacking, wheel, mouse, time): (
         Res<crate::carry::Carrying>,
         Res<crate::devices::Hacking>,
         Res<bevy::input::mouse::AccumulatedMouseScroll>,
+        Res<ButtonInput<MouseButton>>,
+        Res<Time>,
     ),
 ) {
     let _prof = crate::prof::scope("weapons::select_system");
@@ -2098,6 +2102,30 @@ pub fn select_system(
         && inv.0.items.iter().any(|i| i.def.class == "Binoculars")
     {
         weapons.pending_class = Some("Binoculars".into());
+    }
+    // The Nameless Mod's fists (trestkon.rs): a new glove builds them again; a left click once the hands have been
+    // empty a moment raises them (Trestkon.ParseLeftClick), not in the platformer.
+    if crate::trestkon::active() {
+        let fists_held = weapons.held.as_ref().is_some_and(|h| h.stats.class.eq_ignore_ascii_case("WeaponFists"));
+        if crate::trestkon::take_rebuild() && fists_held {
+            weapons.held = None;
+            weapons.pending_class = Some("WeaponFists".into());
+        }
+        let empty = weapons.held.is_none()
+            && weapons.pending.is_none()
+            && weapons.pending_class.is_none()
+            && weapons.corpse.is_none()
+            && carrying.held.is_none();
+        let ready = crate::trestkon::note_hands(empty, time.delta_secs());
+        if empty
+            && ready
+            && mouse.just_pressed(MouseButton::Left)
+            && !crate::keybinds::UI_MODE.load(std::sync::atomic::Ordering::Relaxed)
+            && !crate::radish::active()
+            && inv.0.items.iter().any(|i| i.def.class.eq_ignore_ascii_case("WeaponFists"))
+        {
+            weapons.pending_class = Some("WeaponFists".into());
+        }
     }
     // Raise the pending weapon once nothing is held.
     if weapons.held.is_none() {
@@ -2398,9 +2426,22 @@ fn light_view_model(h: &mut Held, meshes: &mut Assets<Mesh>, level: &dx_level::L
 /// (breakable movers only get marked), decorations and pawns (GMDX Piercing against bots and security), the hit
 /// sounds by what it met; and the Melee Sweeps An Arc enhancement.
 fn melee_blow(stats: &WeaponStats, cx: &mut ShotCx, eye: DVec3, fw: DVec3, dmg_type: Option<&'static str>) {
+    // The Nameless Mod's fists: the glove worn sets the blow (trestkon.rs), and a punch presses a button.
+    let fist = stats.class.eq_ignore_ascii_case("WeaponFists") && crate::trestkon::active() && dmg_type.is_none();
+    let glove;
+    let (stats, fist_mult, dmg_type) = if fist {
+        let (m, t) = crate::trestkon::fist_hit();
+        let mut g = stats.clone();
+        g.penetrating = crate::trestkon::fist_penetrating();
+        glove = g;
+        crate::trestkon::note_punch();
+        (&glove, m, Some(t))
+    } else {
+        (stats, 1.0, dmg_type)
+    };
     let range = stats.max_range as f64;
     let dmg_type = dmg_type.unwrap_or_else(|| stats.damage_type(stats.ammo_class.as_deref()));
-    let base_dmg = stats.hit_damage * stats.damage_mult();
+    let base_dmg = stats.hit_damage * stats.damage_mult() * fist_mult;
     let world = World { level: cx.level, blockers: cx.blockers, ignore: None, pushable: None, movers: Some(cx.movers) };
     let hit = world.trace(eye, eye + fw * range, DVec3::splat(0.5));
     let bird = crate::critters::trace_birds(eye, eye + fw * range).filter(|b| b.1 < hit.fraction);
@@ -3524,6 +3565,21 @@ fn weapon_keys(
         };
         cx.hud.time_left = 1.5;
     }
+    // The Nameless Mod's fists: Change Ammo puts on the next glove he has (WeaponFists.CycleAmmo).
+    if (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT))
+        && h.stats.class.eq_ignore_ascii_case("WeaponFists")
+        && crate::trestkon::active()
+    {
+        if let Some(ft) = crate::trestkon::cycle_fists() {
+            let d = cx.rt_assets.classes.defaults("WeaponFists");
+            let line = d.iter().find(|p| p.name.eq_ignore_ascii_case("strFistEquipped") && p.index == ft as u32);
+            if let Some(Value::Str(t)) = line.map(|p| &p.value) {
+                cx.hud.text = t.clone();
+                cx.hud.time_left = 2.0;
+            }
+        }
+        return;
+    }
     // CycleAmmo (' in the default keys, also T): load the next ammo type this weapon takes that we have. The
     // rounds left in the clip go back to their box, then the weapon reloads with the new type.
     if (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT))
@@ -4622,6 +4678,17 @@ pub fn activate_pickup(
                     msg = "Draw a weapon first, then use the mod".into();
                 }
             }
+        }
+        // The Nameless Mod: a glove pickup is used up into the fists (FistPickup*.Activated -> GiveFistType), and
+        // chemicals make a Molotov when there's a bottle and the Demolition skill for it (trestkon.rs).
+        c if crate::trestkon::active() && crate::trestkon::glove_pickup(c).is_some() => {
+            if let Some(ft) = crate::trestkon::glove_pickup(c) {
+                crate::trestkon::give_fist(ft);
+            }
+        }
+        c if crate::trestkon::active() && crate::trestkon::is_chemicals(c) => {
+            crate::trestkon::request_molotov();
+            consumed = false;
         }
         _ => consumed = false,
     }

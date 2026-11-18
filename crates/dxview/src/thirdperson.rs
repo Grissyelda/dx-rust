@@ -218,6 +218,10 @@ pub fn facing_camera(aiming: bool, fired: bool, dt: f32) -> bool {
 
 /// Third person right now (the setting on and switched to it, nothing else holding the camera).
 pub fn active() -> bool {
+    // (The Nameless Mod's Radish Adventure is always seen from the side: radish.rs.)
+    if crate::radish::active() && !crate::consys::third_person() && !crate::cinematic::active() {
+        return true;
+    }
     enabled()
         && STATE.lock().map(|s| s.active).unwrap_or(false)
         && !crate::consys::third_person()
@@ -226,7 +230,7 @@ pub fn active() -> bool {
 
 /// The direction a shot from `eye` takes to land where the crosshair (on the drawn camera's centre line) points.
 pub fn aim_dir(level: &dx_level::Level, eye: DVec3, fw: DVec3) -> DVec3 {
-    if !active() {
+    if !active() || crate::radish::active() {
         return fw;
     }
     let Some((cam, cfw)) = STATE.lock().ok().and_then(|s| Some((s.cam?, s.cam_fw.unwrap_or(fw)))) else { return fw };
@@ -317,8 +321,25 @@ pub fn place_system(
     let Ok(mut st) = STATE.lock() else { return };
     st.cam = None;
     st.cam_fw = None;
-    let on = enabled() && st.active && !crate::consys::third_person() && !crate::cinematic::active();
     let dt = time.delta_secs().min(0.1);
+    // Radish Adventure: level, from the side, 560 units back (Trestkon.PlayerCalcView with bplatformer).
+    if crate::radish::active() && !crate::consys::third_person() && !crate::cinematic::active() {
+        let eye_t = **cam;
+        let f = eye_t.rotation * Vec3::NEG_Z;
+        let e = bevy_to_ue(eye_t.translation.to_array());
+        let eye = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
+        let facing = (f.z as f64).atan2(f.x as f64);
+        let (at, dir) = crate::radish::camera(eye, facing);
+        st.eye = Some(eye_t);
+        st.cam = Some(at);
+        st.cam_fw = Some(dir);
+        st.dist = 0.0;
+        cam.translation = Vec3::from(ue_to_bevy(at.as_vec3().to_array()));
+        let d = Vec3::from(ue_to_bevy(dir.as_vec3().to_array()));
+        cam.rotation = Transform::IDENTITY.looking_to(d, Vec3::Y).rotation;
+        return;
+    }
+    let on = enabled() && st.active && !crate::consys::third_person() && !crate::cinematic::active();
     if !on {
         st.dist = 0.0;
         st.lean_dir = 0.0;

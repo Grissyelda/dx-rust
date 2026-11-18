@@ -140,6 +140,11 @@ impl PlayerHealth {
         self.total();
     }
 
+    /// GenerateTotalHealth after the parts were set directly.
+    pub fn set_parts_total(&mut self) {
+        self.total();
+    }
+
     /// GenerateTotalHealth: the average of the limbs and the average of head and torso (0 if either is gone).
     fn total(&mut self) {
         let p = &self.parts;
@@ -164,6 +169,16 @@ impl PlayerHealth {
         // DXVIEW_GOD=1: god mode from the start (test runs).
         static ENV_GOD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if self.dead || GOD_MODE.load(std::sync::atomic::Ordering::Relaxed) || *ENV_GOD.get_or_init(|| env_on!("DXVIEW_GOD")) {
+            return;
+        }
+        // Radish Adventure: a hit costs a health radish (radish.rs), the last one kills.
+        if let Some(kill) = crate::radish::intercept(damage_type) {
+            if kill {
+                for p in self.parts.iter_mut() {
+                    *p = 0.0;
+                }
+                self.total();
+            }
             return;
         }
         crate::netplay::note_hurt(damage_type);
@@ -7846,6 +7861,11 @@ struct HitCx<'a> {
 /// pawn, applied in order. Returns true when the pawn died (or was knocked out) from them.
 /// uc: ScriptedPawn.TakeDamage, ScriptedPawn.TakeDamageBase, ScriptedPawn.FilterDamageType, ScriptedPawn.GotoDisabledState, Robot.TakeDamageBase, Robot.IgnoreDamageType, Animal.ModifyDamage, Animal.GotoDisabledState, Karkian.FilterDamageType, Greasel.FilterDamageType, Gray.FilterDamageType
 #[allow(clippy::too_many_arguments)]
+thread_local! {
+    /// A stun glove's blow: how long the pawn it lands on stays stunned (None = the prod's 15 s).
+    static FIST_STUN: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
 fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco, an: &mut Animated, aff: &mut Afflictions, cx: &mut HitCx) -> bool {
     let HitCx { lvl, pawns, .. } = *cx;
     let (player_center, now) = (cx.player_center, cx.now);
@@ -7862,6 +7882,33 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
         for mut h in list {
             if toughness != 1.0 {
                 h.damage /= toughness;
+            }
+            // The Nameless Mod's gloves (TNMPawn / TNMRobot TakeDamage): stun gloves hit for one point and stun
+            // (animals take the prod's way out); shock gloves are an EMP blow at 2.5x - robots take only that,
+            // people a knock-out blow too; ban gloves remove the pawn (deviation: BanInfo's effect isn't ported, the
+            // body is blown apart instead).
+            FIST_STUN.with(|c| c.set(None));
+            match h.damage_type {
+                "FistStunned" => {
+                    if !npc.animal {
+                        h.damage = 1.0;
+                        FIST_STUN.with(|c| c.set(Some(4.0)));
+                    }
+                    h.damage_type = "Stunned";
+                }
+                "FistEMP" => {
+                    if npc.hp_body.robot {
+                        h.damage *= 2.5;
+                        h.damage_type = "EMP";
+                    } else {
+                        h.damage_type = "KnockedOut";
+                    }
+                }
+                "Banned" => {
+                    h.damage = 100_000.0;
+                    h.damage_type = "Exploded";
+                }
+                _ => {}
             }
             // FilterDamageType overrides: Karkians, Greasels and Grays shrug off gas; Grays also radiation and
             // fire. Animal.ModifyDamage zeroes 'Stunned' (prods don't work on animals).
@@ -8435,7 +8482,7 @@ fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate:
             }
         }
         if stunned && !npc.hp_body.robot && !crate::pawnclass::no_disabled_states(&lvl.actors[npc.actor].class) {
-            npc.state = NpcState::Stunned(15.0);
+            npc.state = NpcState::Stunned(FIST_STUN.with(|c| c.get()).unwrap_or(15.0));
             npc.weapon_drawn = false;
             npc.anim = "";
         } else if pain {

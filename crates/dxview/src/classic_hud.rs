@@ -148,6 +148,8 @@ enum Win {
     /// Multiplayer (ours): the news of the game (joined, left, went down, chat) at the top, and the chat line
     /// being typed under it.
     Net,
+    /// The Nameless Mod's Radish Adventure (RadishHUD): lives, health radishes, the radish count, breath.
+    Radish,
 }
 
 /// The Debug Mode readout's text (None = hidden).
@@ -212,7 +214,7 @@ pub fn quote_text(lines: &[String], secs: f32) {
 }
 
 impl Win {
-    const ALL: [Win; 21] = [
+    const ALL: [Win; 22] = [
         Win::Hit,
         Win::Compass,
         Win::Ammo,
@@ -234,6 +236,7 @@ impl Win {
         Win::Fps,
         Win::Debug,
         Win::Net,
+        Win::Radish,
     ];
     /// Fixed window sizes in UI units (InitWindow SetSize / ParentRequestedPreferredSize); the log is sized
     /// by the layout.
@@ -257,6 +260,8 @@ impl Win {
             | Win::Debug
             | Win::Net => (0, 0),
             Win::ConCursor | Win::InfoLinkFace => (64, 64),
+            // RadishHUD's children: the counters reach x 74 + 128, the breath gauge y 256 + 64.
+            Win::Radish => (210, 330),
             Win::InfoLink => crate::conui::INFOLINK_SIZE,
             // DamageHUDDisplay: arrowiconWidth + iconMargin, (iconHeight + iconMargin) x 7 + arrowiconHeight.
             Win::Damage => (
@@ -768,6 +773,10 @@ pub fn classic_hud_system(
     let tiny = hud.font(assets, "FontTiny");
     for w in Win::ALL {
         let (x, y, ww, wh, visible) = f.layout(w, snap, *window);
+        // Radish Adventure: Trestkon.platform destroys the normal HUD (the radish one stands in).
+        let visible = visible
+            && !(crate::radish::active()
+                && matches!(w, Win::Hit | Win::Compass | Win::Ammo | Win::Belt | Win::Active | Win::Damage | Win::Log | Win::Received));
         // Enhancement: HUD customisation (each part hidden, sized and faded on its own).
         let (show, k, alpha) = hud_part(w);
         // Combat HUD (hudfade.rs): the status windows fade out of combat.
@@ -799,6 +808,7 @@ pub fn classic_hud_system(
             Win::Fps => "hud::Fps",
             Win::Debug => "hud::Debug",
             Win::Net => "hud::Net",
+            Win::Radish => "hud::Radish",
         });
         // Windows that only change with what they show are redrawn only when that changes.
         let key = window_key(w, &f, snap, hud, &inv, ww, wh, y, dt);
@@ -1362,6 +1372,7 @@ impl HudFrame {
             Win::Fps => (sw - fps_w - 4, 2, fps_w.max(1), fps_h.max(1), fps_text.is_some()),
             Win::Debug => (4, 4, debug_w.max(1), debug_h.max(1), !debug_lines.is_empty()),
             Win::Net => (sw / 2 - net_w / 2, 8, net_w.max(1), net_h.max(1), !net_lines.is_empty()),
+            Win::Radish => (0, 0, ww, wh, crate::radish::active() && !menu),
             Win::Msg => (
                 sw / 2 - msg_w / 2,
                 sh - Win::Belt.size().1 - msg_h - 20,
@@ -1474,6 +1485,7 @@ fn window_key(
         Win::Fps => Some(hkey(&(fps_text, ww, wh, s))),
         Win::Debug => Some(hkey(&(debug_lines, ww, wh, s))),
         Win::Net => Some(hkey(&(net_lines, ww, wh, s))),
+        Win::Radish => Some(hkey(&(crate::radish::hud_state(snap.breath), ww, wh, s))),
         Win::ConCursor => Some(hkey(&(ww, wh, s))),
         // The ammo display changes with the gun, its rounds, the pool and the lock line.
         Win::Ammo => {
@@ -1655,6 +1667,7 @@ fn draw_window(
                 }
             }
         }
+        Win::Radish => draw_radish(hud, assets, canvas, snap),
         Win::Net => {
             if let Some(f) = msg_font {
                 for (i, (l, c)) in net_lines.iter().enumerate() {
@@ -2445,6 +2458,45 @@ fn draw_damage(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas)
     }
     if !hud.damage.iter().any(|d| d.active) {
         hud.absorb = 0.0;
+    }
+}
+
+/// RadishHUD.ConfigurationChanged / HUDRadishDisplay: the lives radish at (10, 50), the two health radishes under it,
+/// the radish icon under those and the oxygen icon with the head under water, all 64 x 64 and translucent; the
+/// counters ("x" + lives, or the game-over line; "x" + radishes; breath %) at x 74 in FontMenuExtraLarge.
+fn draw_radish(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas, snap: &Snapshot) {
+    let Some((lives, health, radishes, breath)) = crate::radish::hud_state(snap.breath) else { return };
+    let icon = |hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas, path: &str, x: i32, y: i32| {
+        if let Some(t) = hud.tex(assets, path) {
+            c.texture(x, y, 64, 64, 0, 0, &t, Style::Translucent, [255, 255, 255]);
+        }
+    };
+    let h1 = 64;
+    icon(hud, assets, c, "TNM.UserInterface.RadishLives", 10, 50);
+    if health >= 1 {
+        icon(hud, assets, c, "TNM.UserInterface.RadishHealth", 10, 60 + h1);
+    }
+    if health >= 2 {
+        icon(hud, assets, c, "TNM.UserInterface.RadishHealth", 10 + 64, 60 + h1);
+    }
+    icon(hud, assets, c, "TNM.UserInterface.RadishIcon", 10, 60 + 2 * h1);
+    if breath.is_some() {
+        icon(hud, assets, c, "DeusExUI.Icons.DamageIconOxygen", 16, 66 + 3 * h1);
+    }
+    let Some(f) = hud.font(assets, "FontMenuExtraLarge") else { return };
+    let lives_text = if lives < 0 {
+        hud.str_default(assets, "RadishHUD", "strGameOver").unwrap_or_else(|| "Game Over".into())
+    } else {
+        format!("x{lives}")
+    };
+    let mut line = |c: &mut Canvas, y: i32, h: i32, t: &str| {
+        c.text(&f, 74 + 2, y + 2, 128, h, HAlign::Left, VAlign::Center, [0, 0, 0], t);
+        c.text(&f, 74, y, 128, h, HAlign::Left, VAlign::Center, [255, 255, 255], t);
+    };
+    line(c, 25, 128, &lives_text);
+    line(c, 192, 64, &format!("x{radishes}"));
+    if let Some(b) = breath {
+        line(c, 256, 64, &format!("{b}%"));
     }
 }
 

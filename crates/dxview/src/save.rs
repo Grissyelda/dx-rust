@@ -253,6 +253,9 @@ pub struct Global {
     /// The Nameless Mod's game-wide bank accounts (number, PIN, balance).
     #[serde(default)]
     pub tnm_atm: Vec<(String, String, i32)>,
+    /// The Nameless Mod: Trestkon's fists, credits earned and Radish Adventure lives (trestkon.rs, radish.rs).
+    #[serde(default)]
+    pub trestkon: crate::trestkon::TrestkonSave,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -835,6 +838,7 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
         g.augmentique = crate::augmentique::save();
         g.perks = crate::perks::save();
         g.tnm_atm = crate::computers::tnm_accounts_save();
+    g.trestkon = crate::trestkon::save();
     }
     if let Some(a) = crate::abilities::lock().as_ref() {
         g.skills = a.skills.list.iter().map(|s| (s.def.class.clone(), s.level)).collect();
@@ -1609,7 +1613,7 @@ pub fn write_for_test(char_id: &str, name: &str, description: &str, n: usize) {
 
 /// DeusExPlayer.QuickSave: not on the logo map, while dead, or during an infolink.
 pub fn can_save(dead: bool) -> bool {
-    !crate::menus::intro_map() && !dead && !restoring() && crate::consys::lock().as_ref().is_none_or(|c| c.link.is_none())
+    !crate::menus::intro_map() && !dead && !restoring() && !crate::radish::active() && crate::consys::lock().as_ref().is_none_or(|c| c.link.is_none())
 }
 
 #[cfg(test)]

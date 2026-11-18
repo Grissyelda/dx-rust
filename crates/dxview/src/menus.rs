@@ -3717,7 +3717,7 @@ fn quick_save_load(
             let title = pstr(&assets.classes.defaults("DeusExPlayer"), "QuickSaveGameTitle");
             crate::save::request(crate::save::quick_path(), if title.is_empty() { "Quick Save" } else { &title });
         }
-        if binds.action_just_pressed("Quick Load") && crate::save::quick_path().exists() {
+        if binds.action_just_pressed("Quick Load") && crate::save::quick_path().exists() && !crate::radish::active() {
             let d = assets.classes.defaults("DeusExRootWindow");
             let w = msg_box(hud, assets, &pstr(&d, "QuickLoadTitle"), &pstr(&d, "QuickLoadMessage"), true, MsgPurpose::QuickLoad);
             st.push(w);

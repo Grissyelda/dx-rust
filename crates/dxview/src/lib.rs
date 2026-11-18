@@ -25,6 +25,8 @@ mod sdl3pad;
 mod tnmmode;
 mod tnmtriggers;
 mod tnmpower;
+mod trestkon;
+mod radish;
 mod tnmeggs;
 mod nullmask;
 mod online;
@@ -1176,6 +1178,8 @@ fn add_mission_systems(app: &mut App) {
         .init_resource::<tnmtriggers::TnmMovers>()
         .add_systems(Update, tnmtriggers::tnm_system.after(devices::device_system))
         .add_systems(Update, tnmpower::powerup_system.after(actors::deco_physics).after(interp::rotating_system))
+        .add_systems(Update, radish::radish_system.after(tnmpower::powerup_system))
+        .add_systems(Update, trestkon::kit_system.after(radish::radish_system))
         .add_systems(First, tnmmode::speed_system)
         .add_systems(Update, scriptworld::scriptworld_system.after(mission::mission_system))
         .add_systems(Update, missions::mission_fx_system.after(mission::mission_system))
@@ -2787,7 +2791,7 @@ fn look_step(
     let free_cam = thirdperson::free();
     let mut looked = false;
     // While the Diegetic Healing overlay is up, the mouse / right stick move its medkit cursor instead.
-    if cursor.grab_mode == CursorGrabMode::Locked && !healui::active() && !computers::open() && !diegetic::virtual_cursor() {
+    if cursor.grab_mode == CursorGrabMode::Locked && !healui::active() && !computers::open() && !diegetic::virtual_cursor() && !crate::radish::active() {
         // MouseSensitivity (default 3) scales the look; Invert Mouse flips the pitch.
         let k = 0.0022 * crate::settings::mouse_sensitivity() / 3.0;
         let inv = if crate::settings::invert_mouse() { -1.0 } else { 1.0 };
@@ -2849,6 +2853,8 @@ fn walk_move(
     shake_vert: f64,
 ) {
     let mut w = walk_wish(cx, test, tf, free_cam);
+    // The Nameless Mod's Radish Adventure: side-on controls (radish.rs).
+    let plat_jump = crate::radish::active() && platform_wish(cx, &mut w, tf, cam);
     if free_cam {
         face_free_cam(cx, &w, tf, cam, roll);
     }
@@ -2869,7 +2875,7 @@ fn walk_move(
         }
         _ => 20.0,
     };
-    let jump = cx.keys.just_pressed(KeyCode::Space) && carried_mass <= carry_limit && !player.swimming && !w.drone;
+    let jump = (cx.keys.just_pressed(KeyCode::Space) || plat_jump) && carried_mass <= carry_limit && !player.swimming && !w.drone;
     let world = actors::SwimWorld(cx.world());
     let z_before = player.body.location.z;
     // Crouch (DeusExPlayer.HandleWalking / SetBasedPawnSize): hold C. Ducking shrinks the cylinder to 16 with the
@@ -2882,9 +2888,45 @@ fn walk_move(
     player.body.bumped.clear();
     let dt = test.dt.unwrap_or((cx.time.delta_secs_f64()).min(0.1));
     let (landed, jump, was_walking) = move_body(cx, &world, &w, player, &params, dt, jump, carried_mass, carry_limit);
+    {
+        let body = &mut player.body;
+        crate::radish::lock_plane(&mut body.location, &mut body.velocity);
+    }
     swim_state(player, &world, &params, w.wish, cam.pitch, dt);
     jump_and_land(cx.level, player, ph, &params, jump, was_walking, landed);
     place_view(cx, player, tf, decos, &params, &w, dt, z_before, shake_vert);
+}
+
+/// Radish Adventure (Trestkon.PlayerWalking.ProcessMove with bplatformer): left / right on screen walks that way,
+/// turning him round; forward (held) jumps; no strafing or mouse look. True = jump.
+fn platform_wish(cx: &FlyCx, w: &mut Walk, tf: &mut Mut<Transform>, cam: &mut Mut<FlyCam>) -> bool {
+    let keys = cx.keys;
+    if let Some(y) = crate::radish::take_facing() {
+        cam.yaw = (-y - std::f64::consts::FRAC_PI_2) as f32;
+    }
+    let mut x = (keys.pressed(KeyCode::KeyD) as i32 - keys.pressed(KeyCode::KeyA) as i32) as f32;
+    let mut up = keys.pressed(KeyCode::KeyW);
+    if let Some(a) = gamepad::move_axes() {
+        if a.x.abs() > 0.2 {
+            x = a.x;
+        }
+        up |= a.y > 0.5;
+    }
+    let (turn, speed, jump) = crate::radish::steer(x, up);
+    if turn {
+        cam.yaw += std::f32::consts::PI;
+    }
+    cam.pitch = 0.0;
+    tf.rotation = Quat::from_rotation_y(cam.yaw);
+    let f = tf.forward().as_vec3();
+    let r = tf.right().as_vec3();
+    w.f = f;
+    w.r = r;
+    w.fu = DVec3::new(f.x as f64, f.z as f64, 0.0);
+    w.ru = DVec3::new(r.x as f64, r.z as f64, 0.0);
+    w.wish = w.fu * speed as f64;
+    w.stick_walk = None;
+    jump
 }
 
 /// WASD and the pad's left stick on the ground plane in Unreal space (the free third-person camera's axes when on).
@@ -3344,6 +3386,11 @@ fn move_params(cx: &FlyCx, w: &Walk, player: &Player, carried_mass: f64, leg_spe
     if let Some(v) = crate::abilities::aug("AugSpeed") {
         params.ground_speed *= v as f64;
         params.jump_z *= v as f64;
+    }
+    // Radish Adventure: jumpz 600 and full air control.
+    if crate::radish::active() {
+        params.jump_z = 600.0;
+        params.air_control = 1.0;
     }
     params.ground_speed = (params.ground_speed - carried_mass * 2.0).max(40.0);
     // Carrying a body (POVCorpse, Mass 40) costs Mass * 3 of speed.

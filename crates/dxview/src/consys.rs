@@ -1007,6 +1007,11 @@ pub fn has_image(class: &str) -> bool {
 }
 
 /// DeusExPlayer.AddImage: a DataVaultImage class for the Images screen; false when the player already has it.
+/// The conversation state is built (DataVault notes, images and goals can be added).
+pub fn ready() -> bool {
+    lock().is_some()
+}
+
 pub fn add_image(class: &str) -> bool {
     let mut g = lock();
     let Some(st) = g.as_mut() else { return false };

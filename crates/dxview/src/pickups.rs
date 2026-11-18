@@ -373,7 +373,10 @@ pub fn frob_system(
         .as_ref()
         .and_then(|h| ["lockpick", "multitool", "nanokeyring"].into_iter().find(|t| h.stats.class.eq_ignore_ascii_case(t)));
     let left_tool = tool.is_some() && mouse.just_pressed(MouseButton::Left);
-    let wants = mouse.just_pressed(MouseButton::Right) || req.0 || left_tool;
+    // The Nameless Mod: a punch presses the button or switch it lands on (WeaponFists.ProcessTraceHit).
+    let fist_press = crate::trestkon::take_fist_press();
+    let wants = mouse.just_pressed(MouseButton::Right) || req.0 || left_tool || fist_press;
+    let punch_only = fist_press && !mouse.just_pressed(MouseButton::Right) && !req.0 && !left_tool;
     let only_tool = left_tool && !mouse.just_pressed(MouseButton::Right) && !req.0;
     req.0 = false;
     // Carrying a body (POVCorpse in hand), ParseRightClick still frobs a door or a device it points at; anything
@@ -399,6 +402,13 @@ pub fn frob_system(
     let best = narrow_target(best, level, &blockers, &hacking, ray, tool, only_tool, with_body);
     // A test run's "frob this device" (loader GOTO "secs;<Actor>;frob"): as if the player looked at it.
     let best = FORCE_DEVICE.lock().ok().and_then(|mut f| f.take()).map(|b| (Target::Device(b), 0.0)).or(best);
+    if punch_only {
+        let presses = matches!(best, Some((Target::Device(b), _))
+            if blockers.list.get(b).and_then(|c| level.actors.get(c.actor)).is_some_and(|a| crate::trestkon::punch_presses(&a.class)));
+        if !presses {
+            return;
+        }
+    }
     let mut cx = FrobCx {
         level,
         player: &player,

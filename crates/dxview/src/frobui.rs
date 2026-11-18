@@ -632,7 +632,7 @@ pub fn frob_draw_system(
         .target
         .as_ref()
         // (InformationDevices.Frob hides the frob display while its text is up.)
-        .filter(|_| !crate::consys::third_person() && !crate::info::reading())
+        .filter(|_| !crate::consys::third_person() && !crate::info::reading() && !crate::radish::active())
     else {
         hide(&mut corners, &mut label);
         return;

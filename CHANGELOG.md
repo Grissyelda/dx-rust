@@ -42,8 +42,19 @@ product list with prices, descriptions, what you already have and the stock left
 vouchers in Mission 23) and drop the product out of the slot. Its ATMs share one set of bank accounts across the
 whole game and the broken ones say they're out of order. Easter eggs are recorded for good and give 50 skill
 points. Books pick one of their four covers.
-Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the fades in the ending scenes, The Nameless
-Mod's own player abilities, menus and achievements, its terminal games, and its bonus maps.
+Trestkon's own systems: his skills and augmentations are The Nameless Mod's own sets (each maps onto the Deus Ex
+rule it builds on, and Swimming is better from the start); his bare fists are always with him - a left click with
+empty hands raises them, and the four kinds of glove found in Forum City (spiked, shock, stun and ban) are worn by
+Change Ammo once his Fists skill allows: spiked hits harder and draws blood, shock gloves knock robots out as an EMP
+blow, stun gloves stun for a few seconds, ban gloves remove whoever they hit; a punch presses buttons and switches.
+Chemicals and a wine bottle make a Molotov with enough Demolition. Every credit earned counts for the subway-pass way
+out of Mission 20, and a new game hands him the downtown map, his locker key and his bank PIN. The Radish Adventure
+bonus level plays as the mod's side-scroller: seen from the side, left and right to run, up to jump, held on the
+course's line round its corners, with lives, two health radishes and immunity after a hit, radishes to collect (a
+life every hundred), its moving platforms and its own HUD; dying costs a life and restarts the level, and saving is
+off while it runs.
+Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the fades in the ending scenes, the dominating
+and aim-assist augmentations, its menus and achievements, its terminal games, and its other bonus maps.
 
 ### Fix: thrown bodies could only be picked up once (#72)
 A body you'd thrown down couldn't be picked up or searched again (in training, the knocked-out trooper put down on

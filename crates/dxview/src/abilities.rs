@@ -23,6 +23,19 @@ pub struct Abilities {
 
 static STATE: Mutex<Option<Abilities>> = Mutex::new(None);
 
+/// A mod's own skill / aug class -> the original class it plays as (TNMSkillWeaponPistol -> SkillWeaponPistol),
+/// so a mod weapon's GoverningSkill or a script naming its own class finds the same skill.
+static ALIASES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+fn canon(class: &str) -> std::borrow::Cow<'_, str> {
+    if let Ok(g) = ALIASES.lock() {
+        if let Some((_, b)) = g.iter().find(|(o, _)| o.eq_ignore_ascii_case(class)) {
+            return std::borrow::Cow::Owned(b.clone());
+        }
+    }
+    std::borrow::Cow::Borrowed(class)
+}
+
 /// The skills and augs (None until the first frame built them).
 pub fn lock() -> MutexGuard<'static, Option<Abilities>> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
@@ -30,6 +43,11 @@ pub fn lock() -> MutexGuard<'static, Option<Abilities>> {
 
 /// SkillSystem.GetSkillLevelValue (untrained values until the system is built).
 pub fn skill(class: &str) -> f32 {
+    // tnmSkillManager.GetSkillLevelValue: Trestkon has no swimming skill and always swims at 1.5.
+    if class == "SkillSwimming" && crate::tnmmode::active() {
+        return 1.5;
+    }
+    let class = &*canon(class);
     if let Some(a) = lock().as_ref() {
         return a.skills.value(class);
     }
@@ -43,16 +61,19 @@ pub fn skill(class: &str) -> f32 {
 
 /// SkillSystem.GetSkillLevel.
 pub fn skill_level(class: &str) -> usize {
+    let class = &*canon(class);
     lock().as_ref().map_or(0, |a| a.skills.level(class))
 }
 
 /// AugmentationSystem.GetAugLevelValue: None while the aug is missing or off (-1.0 in the scripts).
 pub fn aug(class: &str) -> Option<f32> {
+    let class = &*canon(class);
     lock().as_ref().and_then(|a| a.augs.level_value(class))
 }
 
 /// AugmentationSystem.GetClassLevel: 0..3 while active.
 pub fn aug_level(class: &str) -> Option<usize> {
+    let class = &*canon(class);
     lock().as_ref().and_then(|a| a.augs.class_level(class))
 }
 
@@ -121,17 +142,48 @@ fn class_name(path: &str) -> String {
     path.rsplit('.').next().unwrap_or(path).to_string()
 }
 
+/// The Deus Ex class a mod's skill or augmentation builds on: the nearest ancestor of `class` in the DeusEx package
+/// whose name starts with `kind` ("Skill" / "Aug"), keeping the original's capitals; the class itself when it is
+/// one of those already or builds on none (a mod's own).
+fn base_name(classes: &mut unreal_pkg::classes::ClassDb, class: &str, kind: &str) -> String {
+    if classes.package_of(class).is_some_and(|p| p.eq_ignore_ascii_case("deusex")) {
+        return class.to_string();
+    }
+    let chain = classes.ancestry(class);
+    for anc in chain.iter().skip(1) {
+        if !anc.to_ascii_lowercase().starts_with(&kind.to_ascii_lowercase()) || anc.eq_ignore_ascii_case(kind) {
+            continue;
+        }
+        if classes.package_of(anc).is_some_and(|p| p.eq_ignore_ascii_case("deusex")) {
+            // ancestry() is lower case: take the declared spelling from the package.
+            let base = classes.declared_name(anc).unwrap_or_else(|| anc.clone());
+            if let Ok(mut g) = ALIASES.lock() {
+                if !g.iter().any(|(o, _)| o.eq_ignore_ascii_case(class)) {
+                    g.push((class.to_string(), base.clone()));
+                }
+            }
+            return base;
+        }
+    }
+    class.to_string()
+}
+
 /// Build the player's skills and augs from SkillManager.skillClasses / AugmentationManager.augClasses, give the
 /// default augs (Light, IFF, Infolink) and the player's starting skill points.
 pub fn build(classes: &mut unreal_pkg::classes::ClassDb) -> Abilities {
-    let sm = classes.defaults("SkillManager");
+    // The Nameless Mod's Trestkon has his own managers: tnmSkillManager (a Fists skill, its own pistol / demolition /
+    // medicine skills, no swimming) and tnmaugmentationmanager (its augmentations, slots and default three).
+    let tnm = crate::tnmmode::active();
+    let sm = classes.defaults(if tnm { "tnmSkillManager" } else { "SkillManager" });
     let mut skill_defs = Vec::new();
     for idx in 0..15 {
         let Some(Value::Path(p)) = at(&sm, "skillClasses", idx) else {
             continue;
         };
-        let c = class_name(p);
-        let d = classes.defaults(&c);
+        let own = class_name(p);
+        let d = classes.defaults(&own);
+        // Every system asks for a skill by the original class it builds on (TNMSkillMedicine is SkillMedicine).
+        let c = base_name(classes, &own, "Skill");
         let needed = path(&d, "itemNeeded");
         skill_defs.push(SkillDef {
             name: s(&d, "SkillName"),
@@ -164,7 +216,7 @@ pub fn build(classes: &mut unreal_pkg::classes::ClassDb) -> Abilities {
     // the points stay unspent.
     let skills = Skills::new(skill_defs, points);
 
-    let am = classes.defaults("AugmentationManager");
+    let am = classes.defaults(if tnm { "tnmaugmentationmanager" } else { "AugmentationManager" });
     let mut locs = [LocInfo::default(); 7];
     for (li, loc) in locs.iter_mut().enumerate() {
         if let Some(Value::Struct(_, raw)) = at(&am, "AugLocs", li as u32) {
@@ -184,8 +236,10 @@ pub fn build(classes: &mut unreal_pkg::classes::ClassDb) -> Abilities {
         let Some(Value::Path(p)) = at(&am, "augClasses", idx) else {
             continue;
         };
-        let c = class_name(p);
-        let d = classes.defaults(&c);
+        let own = class_name(p);
+        let d = classes.defaults(&own);
+        // tnmpcAugSpeed plays as AugSpeed everywhere; AugBot / AugPM / AugAimbot are The Nameless Mod's own.
+        let c = base_name(classes, &own, "Aug");
         aug_defs.push(AugDef {
             name: s(&d, "AugmentationName"),
             description: s(&d, "Description"),
@@ -212,7 +266,7 @@ pub fn build(classes: &mut unreal_pkg::classes::ClassDb) -> Abilities {
     let mut augs = Augs::new(aug_defs, locs);
     for idx in 0..3 {
         if let Some(Value::Path(p)) = at(&am, "defaultAugs", idx) {
-            augs.give(&class_name(p), false);
+            augs.give(&base_name(classes, &class_name(p), "Aug"), false);
         }
     }
     let pick = |k: &str, d: &str| {
@@ -267,6 +321,8 @@ pub fn give_aug(
     class: &str,
     can_upgrade: bool,
 ) -> Option<String> {
+    let c = canon(class).into_owned();
+    let class = c.as_str();
     let mut g = lock();
     let a = g.as_mut()?;
     let out = a.augs.give(class, can_upgrade);

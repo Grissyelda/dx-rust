@@ -711,6 +711,7 @@ pub fn mirror_body_system(
     let show = (outfits || conv || crate::thirdperson::active() || crate::bodyfx::fp_on() || mirrors.active.is_some() && (test || !player.noclip))
         && (!crate::consys::third_person() || conv)
         && !crate::cinematic::active()
+        && !crate::radish::hidden()
         && !ph.dead;
     if let Some(b) = body.0.as_ref() {
         if b.gen != crate::augmentique::generation() {
