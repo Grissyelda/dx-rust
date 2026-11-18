@@ -636,7 +636,7 @@ impl State {
                 v.lpk = k_want;
             }
             let rsend = v.p.reverb.clamp(0.0, 1.0);
-            let step = c.rate as f64 / rate * v.p.pitch.max(0.05) as f64;
+            let step = c.rate as f64 / rate * (v.p.pitch * master_pitch()).max(0.05) as f64;
             let (ls, le) = if v.p.looping {
                 c.loop_range.unwrap_or((0, n))
             } else {
@@ -836,6 +836,18 @@ fn soft_clip(x: f32) -> f32 {
 /// A change the game thread asks of the mixer. Queued and applied by the audio thread at the start of its next
 /// buffer, so the game never waits for a mix in progress (the mixer used to be locked for every call, and a call
 /// made while it mixed - music, reverb, every voice - waited for the whole buffer).
+/// A pitch multiplier on every sound effect (not the music): slow motion lowers it with the game's speed.
+static MASTER_PITCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Set the sound-effect pitch multiplier (1 = normal).
+pub fn set_master_pitch(p: f32) {
+    MASTER_PITCH.store(p.clamp(0.05, 4.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn master_pitch() -> f32 {
+    f32::from_bits(MASTER_PITCH.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 enum Cmd {
     Volumes(f32, f32),
     Play(Box<Voice>),

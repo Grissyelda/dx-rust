@@ -5,10 +5,19 @@
 //! Covered: each ending map's cast (who appears and where, by the choices made), the forced conversations that
 //! carry the cut scenes, the training course's tutorial messages and skill boosts.
 //!
-//! Left out: the ending quotes, the mod's own credits roll (the title map follows instead), slow motion, fades,
-//! the ban effect and the unlocks the mod writes to its own configuration.
+//! Also: the ending quotes, the mod's own credits roll and the slow-motion scene.
+//!
+//! Left out: the fades (pawns appear and leave at once), the ban effect and the unlocks the mod writes to its own
+//! configuration.
 
 use super::*;
+
+/// One ending's quote (the strings and the time come from the mission script's defaults in the player's copy).
+fn quote(n: usize) {
+    let lines: Vec<String> = (0..2).map(|i| text(&format!("endgameQuote[{}]", 2 * n + i))).collect();
+    let secs = text(&format!("endgameDelays[{n}]")).parse::<f32>().unwrap_or(10.0);
+    crate::classic_hud::quote_text(&lines, secs);
+}
 
 /// Trestkon's stand-ins in the cut scenes: (navigation point, tag, BindName or "").
 fn spawn_trestkon(c: &Ctx, at: &str, tag: &str, bind: &str, orders: (&str, &str)) {
@@ -239,8 +248,14 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
         "TrestkonAppear" => spawn_trestkon(c, "TrestkonSpawn", "Trestkon", "", ("Patrolling", "TrestkonWaypoint")),
         // The intro is over: the new game it was started for, else back to the title (Trestkon.PostIntro).
         "EndIntro" => crate::cinematic::post_intro(),
-        "PrintEndgameQuoteABI" | "PrintEndgameQuoteWC1" | "PrintEndgameQuoteWC2" | "PrintEndgameQuotePDX" | "PrintEndgameQuoteNARC" => {}
-        "RollCredits" => c.send_player("TNMMenu"),
+        // PrintEndgameQuote: two lines of the script's endgameQuote list, centred, for endgameDelays[n] seconds.
+        "PrintEndgameQuoteABI" => quote(0),
+        "PrintEndgameQuoteWC1" => quote(1),
+        "PrintEndgameQuoteWC2" => quote(2),
+        "PrintEndgameQuotePDX" => quote(3),
+        "PrintEndgameQuoteNARC" => quote(4),
+        // RollCredits: the mod's credits window (its banner, TNMText.TNMCredits, its Ogg track), then the title.
+        "RollCredits" => crate::credits::show(),
         "PlayPDXEndgame01" => {
             play(c, "PDXEndgame01");
         }
@@ -308,7 +323,10 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
         }
         "FadeInAliens" => c.enter(Sel::isa("Alien")),
         "FadeOutTrestkon" => c.leave_tag("CircleTrestkon"),
-        "SlowDown1" | "SlowDown2" | "NormalSpeed" | "FadeInCircle" => {}
+        "SlowDown1" => crate::tnmmode::set_speed(0.5),
+        "SlowDown2" => crate::tnmmode::set_speed(0.25),
+        "NormalSpeed" => crate::tnmmode::set_speed(1.0),
+        "FadeInCircle" => {}
         "PlayDenouement" => {
             play(c, "01_Sols");
         }

@@ -181,12 +181,38 @@ fn exists(path: &str, kind: &str) -> bool {
     }
     let v = path
         .split_once('.')
-        .and_then(|(pk, rest)| with_db(|db| db.package(pk).is_some_and(|p| p.find_export_of_class(rest, kind).is_some())))
+        .and_then(|(pk, rest)| {
+            with_db(|db| {
+                db.package(pk).is_some_and(|p| {
+                    let Some(e) = p.find_export_of_class(rest, kind) else { return false };
+                    // A texture we can't draw counts as missing, so the search goes on to the next place
+                    // (findTexture's later candidates: the game's own skins). A picture that loads but can't be
+                    // decoded left a hole in JC's outfit (GitHub #71).
+                    kind != "Texture" || drawable(&p, e)
+                })
+            })
+        })
         .unwrap_or(false);
     if let Ok(mut g) = EXISTS.write() {
         g.get_or_insert_with(HashMap::new).insert(key, v);
     }
     v
+}
+
+/// A texture the renderer can decode: P8 (with its palette), DXT1 or RGBA8, with a first mip of sane size.
+fn drawable(p: &unreal_pkg::Package, e: &unreal_pkg::Export) -> bool {
+    use unreal_pkg::objects::tex_format;
+    let Ok(t) = unreal_pkg::objects::read_texture(p, e) else { return false };
+    let Some(m) = t.mips.first() else { return false };
+    if m.width == 0 || m.height == 0 || m.width > 4096 || m.height > 4096 || m.data.is_empty() {
+        // Procedural textures (fire / water) have no stored picture but are drawn from their class.
+        return t.class != "Texture";
+    }
+    match t.format {
+        tex_format::P8 => t.palette_ref != 0,
+        tex_format::DXT1 | tex_format::RGBA8 => true,
+        _ => false,
+    }
 }
 
 /// OutfitManager.findMesh.
@@ -693,6 +719,21 @@ pub fn init(root: &std::path::Path) {
                 let grp = &g.as_ref().unwrap().groups[o.group];
                 println!("AUG outfit {i} {} '{}' group {} {:?} parts {}", o.id, o.name, o.group, grp.meshes.first().map(|m| &m.0), o.parts.len());
             }
+            let defaults = player_defaults();
+            let d = g.as_ref().unwrap();
+            for grp in &d.groups {
+                for p in &grp.parts {
+                    for (s, t) in p.tex.iter().enumerate() {
+                        let Some(t) = t else { continue };
+                        if t.is_empty() || t.eq_ignore_ascii_case("none") {
+                            continue;
+                        }
+                        if find_texture(t, s, &defaults).is_none() {
+                            println!("AUG unresolved part {} slot {s} texture {t}", p.id);
+                        }
+                    }
+                }
+            }
         }
     }
     if let Ok(i) = std::env::var("DXVIEW_OUTFIT") {
@@ -1120,7 +1161,19 @@ fn look(carcass: bool) -> Option<(String, String, String, [String; 8])> {
             continue;
         }
         for (s, t) in p.tex.iter().enumerate() {
-            let Some(t) = t.as_deref().and_then(|t| find_texture(t, s, &defaults)) else { continue };
+            let Some(t) = t.as_deref().and_then(|name| {
+                find_texture(name, s, &defaults).or_else(|| {
+                    // Not found anywhere (or not drawable): JC's own texture when that is what the part names
+                    // (the default outfit lists his vanilla skins by name), else the slot stays empty.
+                    if name.is_empty() || name.eq_ignore_ascii_case("none") {
+                        return None;
+                    }
+                    note_missing(name, s);
+                    defaults[s.min(8)].clone().filter(|d| d.rsplit('.').next().is_some_and(|b| b.eq_ignore_ascii_case(name)))
+                })
+            }) else {
+                continue;
+            };
             if t.eq_ignore_ascii_case(PINK) {
                 continue;
             }
@@ -1132,7 +1185,27 @@ fn look(carcass: bool) -> Option<(String, String, String, [String; 8])> {
         }
     }
     let _ = carcass;
+    if env_on!("DXVIEW_AUGLOG") {
+        let ids: Vec<&str> = parts.iter().filter_map(|&pi| grp.parts.get(pi).map(|p| p.id.as_str())).collect();
+        println!("AUG look {mesh} parts {ids:?} tex {tex} skins {skins:?} defaults {defaults:?}");
+        for &pi in &parts {
+            if let Some(p) = grp.parts.get(pi) {
+                println!("AUG part {} slot {} acc {} tex {:?}", p.id, p.slot, p.accessory, p.tex);
+            }
+        }
+    }
     Some((mesh, cmesh, tex, skins))
+}
+
+/// A part's texture that couldn't be found or drawn: said once in the run log (bug reports carry it).
+fn note_missing(name: &str, slot: usize) {
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    if let Ok(mut v) = SAID.lock() {
+        if !v.iter().any(|n| n == name) {
+            v.push(name.to_string());
+            println!("augmentique: outfit texture {name} (slot {slot}) not found or not drawable");
+        }
+    }
 }
 
 /// What JC wears now, resolved to paths (mesh, Texture, MultiSkins): a deathmatch player sends it so the others

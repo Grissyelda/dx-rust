@@ -217,12 +217,26 @@ fn items(assets: &mut crate::weapons::RuntimeAssets, mode: Mode) -> Vec<Item> {
             .map(|t| Arc::new(UiTex::from_rgba(t.width, t.height, &t.mips[0])))
             .collect()
     };
-    if mode == Mode::Credits {
+    // The Nameless Mod (tnmcredits.ProcessText): its own banner (512 x 256) and TNMText.TNMCredits.
+    let tnm = mode == Mode::Credits && crate::tnmmode::active();
+    if tnm {
+        let banner: Vec<Arc<UiTex>> = ["TNM.Credits.tnmCreditsBanner01", "TNM.Credits.tnmCreditsBanner02"]
+            .iter()
+            .filter_map(|n| assets.lib.load_image_masked(n))
+            .map(|t| Arc::new(UiTex::from_rgba(t.width, t.height, &t.mips[0])))
+            .collect();
+        v.push(Item::Picture(banner, 2, 512, 256));
+        v.push(Item::Blank);
+    } else if mode == Mode::Credits {
         v.push(Item::Picture(pic(assets, &["CreditsBanner_1", "CreditsBanner_2"]), 2, 505, 75));
         v.push(Item::Blank);
     }
-    let name = if mode == Mode::Credits { "DeusExCredits" } else { "DeusExQuotes" };
-    let text = unreal_pkg::Package::open(assets.lib.system_dir().join("DeusExText.u"))
+    let (file, name) = match mode {
+        Mode::Credits if tnm => ("TNMText.u", "TNMCredits"),
+        Mode::Credits => ("DeusExText.u", "DeusExCredits"),
+        Mode::Quotes => ("DeusExText.u", "DeusExQuotes"),
+    };
+    let text = unreal_pkg::Package::open(assets.lib.system_dir().join(file))
         .ok()
         .and_then(|p| p.text_named(name))
         .unwrap_or_default();
@@ -575,7 +589,12 @@ pub fn credits_system(
                 overlay_drawn: false,
             });
             OPEN.store(true, Ordering::Relaxed);
-            crate::sound::set_music(Some(if mode == Mode::Credits { "Credits_Music.Credits_Music" } else { "Quotes_Music.Quotes_Music" }));
+            crate::sound::set_music(Some(match mode {
+                // tnmcredits.ProcessFinished: the mod's credits track (Ogg).
+                Mode::Credits if crate::tnmmode::active() => "ogg:TNMCredits.ogg",
+                Mode::Credits => "Credits_Music.Credits_Music",
+                Mode::Quotes => "Quotes_Music.Quotes_Music",
+            }));
             if fonts.is_none() {
                 *fonts = Some((
                     crate::classic_hud::load_font(assets, "FontLocation").map(Arc::new),

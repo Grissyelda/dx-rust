@@ -10,6 +10,7 @@
 //! (`before_load`), out-of-world bodies and datacubes (scriptworld.rs), MSCallbackTrigger (triggers.rs) and the mission
 //! scripts (missions/tnm.rs). What isn't rewritten yet plays with the Deus Ex classes it builds on.
 
+use bevy::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -50,9 +51,34 @@ pub fn active() -> bool {
     unreal_pkg::tnm::active().is_some()
 }
 
+/// The Nameless Mod's slow motion (Trestkon.slomoandpitch: GameSpeed / TimeDilation and the sound pitch with it).
+static SPEED: Mutex<f32> = Mutex::new(1.0);
+
+/// Set the game's speed (1 = normal); sound effects follow at 0.25 + 0.75 x speed.
+pub fn set_speed(speed: f32) {
+    if let Ok(mut s) = SPEED.lock() {
+        *s = speed.clamp(0.05, 4.0);
+    }
+}
+
+/// Applies the speed to virtual time and the mixer's pitch when it changes.
+pub fn speed_system(mut time: ResMut<Time<Virtual>>, mut last: Local<f32>) {
+    let s = SPEED.lock().map(|s| *s).unwrap_or(1.0);
+    if *last == 0.0 {
+        *last = 1.0;
+    }
+    if (s - *last).abs() > 1e-4 {
+        *last = s;
+        time.set_relative_speed(s);
+        imsim_audio::set_master_pitch(s * 0.75 + 0.25);
+    }
+}
+
 /// Before a map is built: The Nameless Mod's enemy / item appearance level for this playthrough, from the
 /// difficulty picked (its Easy / Medium / Hard set both to 0 / 1 / 2; Realistic counts as Hard). Off outside TNM.
 pub fn before_load() {
+    // A new map plays at normal speed (the slow-motion scenes end on their own map).
+    set_speed(1.0);
     let f = active().then(|| {
         let d = crate::travel::combat_difficulty();
         let n = if d <= 1.0 { 0 } else if d <= 1.5 { 1 } else { 2 };
@@ -99,7 +125,26 @@ pub enum Track {
     Death,
 }
 
-type Decoded = Arc<Mutex<Option<Option<Arc<imsim_audio::Clip>>>>>;
+pub type Decoded = Arc<Mutex<Option<Option<Arc<imsim_audio::Clip>>>>>;
+
+/// One Ogg file from The Nameless Mod's music folder, decoded on a thread (the credits' own track). The slot holds
+/// Some(result) once the decode is done.
+pub fn decode_ogg_file(name: &str) -> Option<Decoded> {
+    let tnm = unreal_pkg::tnm::active()?;
+    let dir = unreal_pkg::tnm::ogg_dir(&tnm)?;
+    let slot: Decoded = Arc::new(Mutex::new(None));
+    let (s2, name) = (slot.clone(), name.replace('\\', "/"));
+    std::thread::spawn(move || {
+        let clip = unreal_pkg::paths::find_ci(&dir, &name).and_then(|p| std::fs::read(p).ok()).and_then(|b| imsim_audio::decode_ogg(&b)).map(Arc::new);
+        if clip.is_none() {
+            eprintln!("music: {name} not found or not Ogg Vorbis in {}", dir.display());
+        }
+        if let Ok(mut s) = s2.lock() {
+            *s = Some(clip);
+        }
+    });
+    Some(slot)
+}
 
 /// A map's TNMOggMusicManager (or DXOggMusicManager): its track files, decoded in the background as needed.
 pub struct OggMusic {

@@ -31,8 +31,15 @@ course, the endings and the epilogue with their forced conversations). Guards no
 seen" flags. A new game opens with the mod's own intro and its scripted camera sequences, the Forum City sewers flush
 what's lying in them, airless zones (the space station's decompressed hallway, until the air pumps come on) leave
 you holding your breath, and the arena's Quad Damage (x4 damage) and Ring of Shadows (unseen) powerups last 30
-seconds. Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the mod's ending quotes and credits,
-slow motion, The Nameless Mod's own player abilities, menus and achievements, and its bonus maps.
+seconds. The endings show their closing quotes, the slow-motion scene slows the game and its sounds, and the
+story ends on the mod's own credits (its banner, its credits text and its credits track, read from your copy).
+Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the fades in the ending scenes, The Nameless
+Mod's own player abilities, menus and achievements, and its bonus maps.
+
+### Fix: Augmentique outfits with missing pieces (#71)
+An outfit texture DX RUST can't draw no longer leaves a hole in JC's outfit: the search goes on to the game's own
+skin of that name, as the mod's own lookup does when a texture isn't there. Any texture still missing is named once
+in the run log.
 
 ### Run logs, portable mode and data folders
 Every run writes a log to a `logs` folder (the newest ten are kept), and a crash leaves its own `crash-<time>.log`

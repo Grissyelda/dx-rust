@@ -607,6 +607,8 @@ pub struct SoundState {
     actor_ambients: Option<Vec<ActorAmbient>>,
     /// Another song playing over the level's (the credits / quotes music): dynamic music waits.
     other_song: Option<imsim_audio::Song>,
+    /// An Ogg track asked for by name (The Nameless Mod's credits): decoding, then playing until set_music(None).
+    other_ogg: Option<(crate::tnmmode::Decoded, bool)>,
     /// Enhancements (audiofx.rs): occlusion cache, when the room was last measured, the HQ setting sent.
     occl: crate::audiofx::Occluder,
     room_t: f32,
@@ -732,6 +734,7 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
         time: 0.0,
         actor_ambients: None,
         other_song: None,
+        other_ogg: None,
         occl: Default::default(),
         room_t: 0.0,
         hq_sent: None,
@@ -1115,6 +1118,9 @@ pub fn sound_system(
 
     if let Some(req) = MUSIC_REQ.lock().ok().and_then(|mut m| m.take()) {
         match req {
+            Some(path) if path.starts_with("ogg:") => {
+                st.other_ogg = crate::tnmmode::decode_ogg_file(&path[4..]).map(|d| (d, false));
+            }
             Some(path) => {
                 st.other_song = st.bank.song(&path);
                 if let Some(m) = st.other_song.as_mut().and_then(|s| s.section(0)) {
@@ -1122,12 +1128,27 @@ pub fn sound_system(
                 }
             }
             None => {
+                if st.other_ogg.take().is_some() {
+                    st.audio.stop_music(Transition::FastFade);
+                    st.ogg_want = Some((crate::tnmmode::Track::Ambient, Transition::FastFade));
+                }
                 if st.other_song.take().is_some() {
                     let sec = if st.saved_section == 255 { st.default_section } else { st.saved_section } as usize;
                     play_section(st, sec, Transition::FastFade);
                 }
             }
         }
+    }
+    if let Some((slot, started)) = st.other_ogg.as_mut() {
+        if !*started {
+            if let Some(done) = slot.lock().ok().and_then(|s| s.clone()) {
+                *started = true;
+                if let Some(clip) = done {
+                    st.audio.play_music_clips(None, clip, Transition::FastFade);
+                }
+            }
+        }
+        return;
     }
     if st.other_song.is_some() {
         return;

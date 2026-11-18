@@ -23,15 +23,16 @@ pub fn load_text(classes: &mut unreal_pkg::classes::ClassDb, script: &str) {
     let class = script.rsplit('.').next().unwrap_or(script);
     let mut m = HashMap::new();
     for p in classes.defaults(class) {
-        match &p.value {
-            Value::Str(s) => {
-                m.entry(p.name.to_ascii_lowercase()).or_insert_with(|| s.clone());
-            }
-            Value::Int(n) => {
-                m.entry(p.name.to_ascii_lowercase()).or_insert_with(|| n.to_string());
-            }
-            _ => {}
-        }
+        let v = match &p.value {
+            Value::Str(s) => s.clone(),
+            Value::Int(n) => n.to_string(),
+            Value::Float(f) => f.to_string(),
+            _ => continue,
+        };
+        let key = p.name.to_ascii_lowercase();
+        // Arrays: "name[i]" for each element, and the bare name for the first one seen.
+        m.insert(format!("{key}[{}]", p.index), v.clone());
+        m.entry(key).or_insert(v);
     }
     if let Ok(mut t) = TEXT.lock() {
         *t = Some(m);
