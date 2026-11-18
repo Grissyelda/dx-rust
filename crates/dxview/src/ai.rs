@@ -1020,6 +1020,8 @@ pub struct Npc {
     pub swap_carcass: Option<String>,
     /// Robot.CrazedTimer: seconds of reversed alliances left (scramble grenade).
     pub crazed: f32,
+    /// TNM AugBot took this robot over (state 'dominated': it does nothing for itself; the player drives it).
+    pub dominated: bool,
     /// Died in water: the floating carcass (CarcassType's Mesh3) takes the body's place once it has fallen.
     pub water_carcass: Option<(String, f32)>,
     /// That floating body's entity (taken away with the body when it's picked up).
@@ -1382,6 +1384,7 @@ impl Npc {
             fire_timer: 0.0,
             swap_carcass: None,
             crazed: 0.0,
+            dominated: false,
             water_carcass: None,
             float_body: None,
             aura: None,
@@ -3756,6 +3759,20 @@ pub fn npc_system(
             };
             act_state(npc, &mut an, &mut act_cx, con_look)
         };
+        // The Nameless Mod: a robot AugBot took over (TNMRobot state dominated, ignores all) moves only as the
+        // player drives it and faces his view.
+        if npc.dominated {
+            npc.target = None;
+            npc.state = NpcState::Idle;
+            npc.weapon_drawn = false;
+            firing = false;
+            running = false;
+            wish = DVec3::ZERO;
+            if let Some((v, yaw)) = crate::tnmaugs::bot_drive(npc.blocker) {
+                wish = DVec3::new(v.x, v.y, 0.0);
+                npc.yaw = yaw;
+            }
+        }
         // A medical/repair bot serving the player stands still with its arm raised.
         if service_pause_step(npc, &mut an, lvl, &me, dt) {
             wish = DVec3::ZERO;
@@ -3779,7 +3796,11 @@ pub fn npc_system(
             running = running || r;
         }
         let solid = SolidCx { lvl, mv: &mv, player_cyl, player_dead: ph.dead, carrying: &carrying };
-        let (before, moved, vel) = tick_body(npc, &mut deco, &mut blockers, &solid, solid_buf, &params, wish, dt);
+        let (before, mut moved, vel) = tick_body(npc, &mut deco, &mut blockers, &solid, solid_buf, &params, wish, dt);
+        // The Nameless Mod's Radish Adventure: TNMPawn / TNMRobot.Tick holds them on the course's line.
+        if crate::radish::active() {
+            crate::radish::pawn_lock(&lvl.actors[npc.actor], &mut moved);
+        }
         let speed = after_move(npc, lvl, &mv, before, moved, vel, wish, dt);
         place_pawn(npc, &mut deco, &mut tf, &mut blockers, moved);
         if walk_test.is_some() {

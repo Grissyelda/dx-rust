@@ -59,6 +59,8 @@ struct State {
     set_facing: Option<f64>,
     /// Seconds since dying in the platformer.
     dead_t: Option<f32>,
+    /// The Y the pawns are held at (Trestkon.platform(true) hands them his yAxis once, on the way in).
+    pawn_y: Option<f64>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -78,6 +80,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     backwards: false,
     set_facing: None,
     dead_t: None,
+    pawn_y: None,
 });
 
 fn lock() -> std::sync::MutexGuard<'static, State> {
@@ -198,6 +201,72 @@ pub fn lock_plane(loc: &mut DVec3, vel: &mut DVec3) {
     }
 }
 
+/// tnmmissionbonus.FirstFrame on the map's own loose weapons (TNMWeapon) and ammo: no velocity, PHYS_Rotating with a
+/// fixed half turn a second, unlit at full glow; the weapons also hover (TNMWeapon.Tick with bRadishHover:
+/// PrePivot.Z = CollisionHeight + amplitude x sin(2 x (time mod 360)) while nobody owns them - radish_system bobs
+/// them when the map gives an amplitude).
+pub fn level_fixup(classes: &mut unreal_pkg::classes::ClassDb, actors: &mut Vec<dx_level::actors::ActorInfo>) {
+    let bonus = env_on!("DXVIEW_RADISH")
+        || actors.iter().any(|a| {
+            a.class == "LevelInfo"
+                && matches!(find(&a.props, "Script"), Some(Value::Path(p) | Value::Str(p) | Value::Name(p))
+                    if p.rsplit('.').next().is_some_and(|n| n.eq_ignore_ascii_case("tnmmissionbonus")))
+        });
+    if !bonus {
+        return;
+    }
+    let set = |props: &mut Vec<unreal_pkg::props::Property>, name: &str, v: Value| {
+        props.retain(|p| !(p.name.eq_ignore_ascii_case(name) && p.index == 0));
+        props.push(unreal_pkg::props::Property { name: name.into(), index: 0, value: v });
+    };
+    for a in actors.iter_mut() {
+        let anc = classes.ancestry(&a.class);
+        let weapon = anc.iter().any(|c| c == "tnmweapon");
+        let ammo = anc.iter().any(|c| c == "ammo");
+        if !(weapon || ammo) || find(&a.props, "Owner").is_some_and(|o| !matches!(o, Value::Object(0))) {
+            continue;
+        }
+        set(&mut a.props, "Velocity", Value::Vector([0.0; 3]));
+        set(&mut a.props, "Physics", Value::Byte(5));
+        set(&mut a.props, "bFixedRotationDir", Value::Bool(true));
+        let rate = match find(&a.props, "RotationRate") {
+            Some(Value::Rotator(r)) => [r[0], 32768, r[2]],
+            _ => [0, 32768, 0],
+        };
+        set(&mut a.props, "RotationRate", Value::Rotator(rate));
+        set(&mut a.props, "bUnlit", Value::Bool(true));
+        set(&mut a.props, "AmbientGlow", Value::Byte(255));
+        if weapon {
+            let ch = match find(&a.props, "CollisionHeight") {
+                Some(Value::Float(v)) => *v,
+                _ => 0.0,
+            };
+            let pre = match find(&a.props, "PrePivot") {
+                Some(Value::Vector(v)) => *v,
+                _ => [0.0; 3],
+            };
+            set(&mut a.props, "PrePivot", Value::Vector([pre[0], pre[1], ch]));
+            set(&mut a.props, "bRadishHover", Value::Bool(true));
+        }
+    }
+}
+
+/// TNMPawn.Tick / TNMRobot.Tick with bPlatformer: Y held at the line platform(true) gave them (never X, even past
+/// a corner). Every TNMPawn / TNMRobot but fish and bRadishCinematic ones.
+pub fn pawn_lock(actor: &dx_level::actors::ActorInfo, loc: &mut DVec3) {
+    let Some(y) = ({
+        let s = lock();
+        if s.on { s.pawn_y } else { None }
+    }) else {
+        return;
+    };
+    let tnm = crate::classtree::is_a(&actor.class, "TNMPawn") || crate::classtree::is_a(&actor.class, "TNMRobot");
+    if !tnm || crate::classtree::is_a(&actor.class, "Fishes") || flag(&actor.props, "bRadishCinematic") {
+        return;
+    }
+    loc.y = y;
+}
+
 /// The side camera for an eye at `eye` facing Unreal yaw `facing` (radians): (where it is, which way it looks).
 pub fn camera(eye: DVec3, facing: f64) -> (DVec3, DVec3) {
     let yc = lock().yaw_change;
@@ -307,6 +376,7 @@ fn enter(inv: &mut imsim_core::inventory::Inventory, ph: &mut crate::ai::PlayerH
         s.x_axis = p[0] as f64;
         s.y_axis_v = p[1] as f64;
     }
+    s.pawn_y = Some(s.y_axis_v);
     s.yaw_change = 49152.0 / 65536.0 * std::f64::consts::TAU;
     s.backwards = false;
     s.y_axis = false;

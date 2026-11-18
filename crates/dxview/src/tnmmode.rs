@@ -85,6 +85,8 @@ pub fn before_load() {
         (n, n)
     });
     dx_level::actors::set_difficulty_filter(f);
+    let radish = active() || env_on!("DXVIEW_RADISH");
+    dx_level::actors::set_level_fixups(radish.then(|| Box::new(crate::radish::level_fixup) as dx_level::actors::LevelFixups));
 }
 
 /// The player's class: Trestkon, or JC.

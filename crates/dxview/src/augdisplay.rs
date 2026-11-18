@@ -757,6 +757,8 @@ pub fn aug_text_system(
     mut layers: ResMut<Assets<HudLayer>>,
     mut node: Query<(&mut Visibility, &MaterialNode<HudLayer>), With<AugText>>,
     mut st: Local<(Option<Option<Arc<UiFont>>>, u64, (i32, i32), Option<Handle<Image>>)>,
+    blockers: Res<crate::actors::Blockers>,
+    mut aimbot_strs: Local<Option<[String; 6]>>,
 ) {
     let Some(win) = windows.iter().next() else { return };
     let busy = ph.dead || crate::menus::open() || crate::inventory_screen::screen_open() || crate::consys::third_person() || crate::credits::open();
@@ -765,7 +767,10 @@ pub fn aug_text_system(
         && (crate::abilities::aug_level("AugVision").is_some_and(|l| l >= 1)
             || (active.has("TechGoggles") && crate::perks::has("PerkThermalImaging")));
     let defense = if busy { None } else { crate::abilities::defense_target() };
-    let any = light_amp || defense.is_some();
+    // The Nameless Mod's AugAimbot (tnmaugmentationdisplaywindow.DrawAimbotAugmentation): its target, live.
+    let aimbot = if busy || !crate::tnmmode::active() { None } else { crate::tnmaugs::aimbot_view() }
+        .and_then(|(b, name, far, dry)| blockers.list.get(b).filter(|c| c.radius > 0.0).map(|c| (c.center, name, far, dry)));
+    let any = light_amp || defense.is_some() || aimbot.is_some();
     if st.0.is_none() {
         st.0 = Some(crate::classic_hud::load_font(&mut assets, "FontMenuSmall_DS").map(Arc::new));
     }
@@ -827,9 +832,48 @@ pub fn aug_text_system(
         let range = (pos - player.body.location).length() / 16.0;
         (cx, cy, in_front && sp.is_some(), range as i32, detonating)
     });
+    let to_screen = |pos: glam::DVec3| {
+        let p = Vec3::from(dx_level::ue_to_bevy(pos.as_vec3().to_array()));
+        let in_front = (p - gt.translation()).dot(*gt.forward()) > 0.0;
+        let sp = camera.world_to_viewport(gt, p).ok().map(|v| v * win.scale_factor() / s as f32);
+        let (cx, cy) = sp.map_or((w as f32 / 2.0, h as f32 / 2.0), |v| (v.x, v.y));
+        (cx, cy, in_front && sp.is_some())
+    };
+    // The aimbot's lines: msgAimbotTracking, UnfamiliarName, msgRange N msgRangeUnits, OutOfRangeString,
+    // OutOfAmmoStringAlt, msgBehind - the window's own strings, read from the player's packages.
+    let aim_lines = aimbot.as_ref().map(|(pos, name, far, dry)| {
+        let strs = aimbot_strs.get_or_insert_with(|| {
+            let d = assets.classes.defaults("tnmaugmentationdisplaywindow");
+            let get = |k: &str, fb: &str| match unreal_pkg::props::find(&d, k) {
+                Some(unreal_pkg::props::Value::Str(t)) if !t.is_empty() => t.clone(),
+                _ => fb.to_string(),
+            };
+            [
+                get("msgAimbotTracking", "Tracking"),
+                get("msgRange", "Range"),
+                get("msgRangeUnits", "ft"),
+                get("OutOfRangeString", "(Out of range)"),
+                get("OutOfAmmoStringAlt", "(Out of ammo)"),
+                get("msgBehind", "BEHIND"),
+            ]
+        });
+        let (cx, cy, seen) = to_screen(*pos);
+        let range = ((*pos - player.body.location).length() / 16.0) as i32;
+        let mut lines = vec![strs[0].clone(), name.clone(), format!("{} {} {}", strs[1], range, strs[2])];
+        if *far {
+            lines.push(strs[3].clone());
+        }
+        if *dry {
+            lines.push(strs[4].clone());
+        }
+        if !seen {
+            lines.push(format!(" {}", strs[5]));
+        }
+        (cx, cy, lines)
+    });
     let line_t = (time.elapsed_secs_f64() % 0.5) as f32;
     let mut hash: u64 = 1469598103934665603;
-    for b in format!("{light_amp}{ir}{ads:?}{w}x{h}{header:?}{}", if ads.is_some_and(|a| a.4) { line_t } else { 0.0 }).bytes() {
+    for b in format!("{light_amp}{ir}{ads:?}{aim_lines:?}{w}x{h}{header:?}{}", if ads.is_some_and(|a| a.4) || aim_lines.is_some() { line_t } else { 0.0 }).bytes() {
         hash ^= b as u64;
         hash = hash.wrapping_mul(1099511628211);
     }
@@ -855,27 +899,41 @@ pub fn aug_text_system(
         c.text(&font, x, y, tw, font.height, HAlign::Center, VAlign::Top, [255, 0, 0], first);
         c.text(&font, x, y + font.height, tw, font.height, HAlign::Center, VAlign::Top, [255, 0, 0], &second);
         if detonating {
-            // Interpolate(gc, width/2, height/2, boxCX, boxCY, 64): halve the step until it's under 16 units.
-            let (fx, fy) = (w as f32 / 2.0, h as f32 / 2.0);
-            let (mut dx, mut dy) = (cx - fx, cy - fy);
-            let (mut points, mut power) = (1, 64);
-            while power >= 0 && (dx.abs() >= 16.0 || dy.abs() >= 16.0) {
-                dx *= 0.5;
-                dy *= 0.5;
-                points *= 2;
-                power -= 1;
-            }
-            let (mut px, mut py) = (fx + line_t * dx * 2.0, fy + line_t * dy * 2.0);
-            for _ in 0..points - 1 {
-                px += dx;
-                py += dy;
-                c.fill(px as i32, py as i32, 2, 2, Style::Normal, [255, 0, 0]);
-            }
+            interpolate(&mut c, w, h, cx, cy, line_t);
         }
+    }
+    if let Some((cx, cy, lines)) = &aim_lines {
+        let tw = lines.iter().map(|l| font.width(l)).max().unwrap_or(0);
+        let th = font.height * lines.len() as i32;
+        let (x, y) = (*cx as i32 - tw / 2, *cy as i32 - th);
+        for (i, l) in lines.iter().enumerate() {
+            c.text(&font, x, y + font.height * i as i32, tw, font.height, HAlign::Center, VAlign::Top, [255, 0, 0], l);
+        }
+        interpolate(&mut c, w, h, *cx, *cy, line_t);
     }
     if let Some(hd) = &st.3 {
         if let Some(mut im) = images.get_mut(hd) {
             im.data = Some(c.to_rgba8());
         }
+    }
+}
+
+/// AugmentationDisplayWindow.Interpolate(gc, width/2, height/2, x, y, 64): a dotted red line from the screen centre,
+/// the step halved until it's under 16 units, crawling toward the point.
+fn interpolate(c: &mut Canvas, w: i32, h: i32, cx: f32, cy: f32, line_t: f32) {
+    let (fx, fy) = (w as f32 / 2.0, h as f32 / 2.0);
+    let (mut dx, mut dy) = (cx - fx, cy - fy);
+    let (mut points, mut power) = (1, 64);
+    while power >= 0 && (dx.abs() >= 16.0 || dy.abs() >= 16.0) {
+        dx *= 0.5;
+        dy *= 0.5;
+        points *= 2;
+        power -= 1;
+    }
+    let (mut px, mut py) = (fx + line_t * dx * 2.0, fy + line_t * dy * 2.0);
+    for _ in 0..points - 1 {
+        px += dx;
+        py += dy;
+        c.fill(px as i32, py as i32, 2, 2, Style::Normal, [255, 0, 0]);
     }
 }

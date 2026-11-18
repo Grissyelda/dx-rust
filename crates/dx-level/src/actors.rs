@@ -315,6 +315,18 @@ fn difficulty_removes(classes: &mut ClassDb, class: &str, props: &[Property]) ->
     (is("ScriptedPawn") && off(pawn)) || ((is("Inventory") || is("Containers")) && off(item))
 }
 
+/// Changes a game's mission script makes to placed actors on its first frame that decide how they are built
+/// (ours: The Nameless Mod's tnmmissionbonus.FirstFrame turns the Radish Adventure's loose weapons and ammo into
+/// unlit, spinning, hovering pickups). Run on every actor list once it's read, before meshes are built.
+pub type LevelFixups = Box<dyn Fn(&mut ClassDb, &mut Vec<ActorInfo>) + Send + Sync>;
+static LEVEL_FIXUPS: std::sync::RwLock<Option<LevelFixups>> = std::sync::RwLock::new(None);
+
+pub fn set_level_fixups(f: Option<LevelFixups>) {
+    if let Ok(mut h) = LEVEL_FIXUPS.write() {
+        *h = f;
+    }
+}
+
 pub fn set_level_extras(f: Option<LevelExtras>) {
     if let Ok(mut h) = LEVEL_EXTRAS.write() {
         *h = f;
@@ -389,6 +401,11 @@ pub fn build(
                 class_begin_play(classes, &class, &mut props);
                 actors.push(ActorInfo { name, class, export: -1, props });
             }
+        }
+    }
+    if let Ok(h) = LEVEL_FIXUPS.read() {
+        if let Some(f) = h.as_ref() {
+            f(classes, &mut actors);
         }
     }
 

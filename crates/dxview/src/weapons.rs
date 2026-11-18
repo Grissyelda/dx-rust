@@ -3582,7 +3582,7 @@ fn weapon_keys(
     }
     // CycleAmmo (' in the default keys, also T): load the next ammo type this weapon takes that we have. The
     // rounds left in the clip go back to their box, then the weapon reloads with the new type.
-    if (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT))
+    if (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT) || crate::tnmaugs::take_cycle())
         && matches!(h.state, WState::Idle)
         && h.stats.ammo_names.len() > 1
     {
@@ -3651,7 +3651,7 @@ fn reload_or_fire(
         h.stats.reload_count > 0 && loaded < h.stats.reload_count && pool.unwrap_or(0) > 0;
     if h.state == WState::Idle
         && can_reload
-        && (keys.just_pressed(KeyCode::KeyR) || (loaded == 0 && locked && pulled && crate::settings::auto_reload()))
+        && (keys.just_pressed(KeyCode::KeyR) || crate::tnmaugs::take_reload() || (loaded == 0 && locked && pulled && crate::settings::auto_reload()))
     {
         h.state = WState::Reloading;
         if let Some(s) = &h.stats.snd.reload_begin {
@@ -4853,5 +4853,17 @@ mod bash_tests {
         }
         let (o, r) = bash_arc(BASH_TIME * BASH_HIT);
         assert!(o[0] > 4.0 && o[1] > 0.3 && r[0] < -0.3, "{o:?} {r:?}");
+    }
+}
+
+/// Put the item in hand away (PutInHand(None)): it lowers and nothing comes up after it.
+pub fn put_away(w: &mut Weapons) {
+    if let Some(h) = w.held.as_mut() {
+        if h.state != WState::Lowering {
+            w.pending = None;
+            h.state = WState::Lowering;
+            h.clip = Clip::named(&h.mesh, "Down", false).unwrap_or(h.clip.clone());
+            h.clip.t = 0.0;
+        }
     }
 }

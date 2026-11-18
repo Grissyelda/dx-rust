@@ -34,6 +34,7 @@ mod staring;
 mod warpzone;
 mod fade;
 mod tnmbonus;
+mod tnmaugs;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1193,6 +1194,7 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, warpzone::warp_system.after(fly))
         .add_systems(Update, fade::fade_system.after(ai::npc_system))
         .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system))
+        .add_systems(Update, tnmaugs::tnm_aug_system.before(weapons::weapon_system).before(ai::npc_system))
         .add_systems(Update, scriptworld::scriptworld_system.after(mission::mission_system))
         .add_systems(Update, missions::mission_fx_system.after(mission::mission_system))
         .add_systems(Update, credits::credits_system)
@@ -3035,6 +3037,24 @@ fn drone_step(cx: &FlyCx, w: &mut Walk, player: &mut ResMut<Player>) {
         player.body.velocity.y = 0.0;
     }
     w.drone = drone;
+    // The Nameless Mod's AugBot (Trestkon.ProcessMove with bdominatingbot): the keys drive the robot along the
+    // view (a hovering one also up / down), the player is frozen.
+    if crate::tnmaugs::dominating() {
+        let (f, r) = (w.f, w.r);
+        let ax = |a: KeyCode, b: KeyCode| (keys.pressed(a) as i32 - keys.pressed(b) as i32) as f64;
+        let v = if crate::tnmaugs::bot_hovers() {
+            let fw = DVec3::new(f.x as f64, f.z as f64, f.y as f64);
+            let rt = DVec3::new(r.x as f64, r.z as f64, r.y as f64);
+            fw * ax(KeyCode::KeyW, KeyCode::KeyS) + rt * ax(KeyCode::KeyD, KeyCode::KeyA)
+                + DVec3::Z * ax(KeyCode::Space, KeyCode::KeyC)
+        } else {
+            w.fu * ax(KeyCode::KeyW, KeyCode::KeyS) + w.ru * ax(KeyCode::KeyD, KeyCode::KeyA)
+        };
+        crate::tnmaugs::bot_input(v.normalize_or_zero());
+        w.wish = DVec3::ZERO;
+        player.body.velocity = DVec3::ZERO;
+        w.drone = true;
+    }
 }
 
 /// PlayerSwimming.PlayerMove: aForward along the full view direction, strafe, and Jump/Duck as aUp, at
@@ -3239,7 +3259,7 @@ fn crouch_step(
         player.was_crouch_on = false;
     }
     // (Downed in multiplayer: on the floor.)
-    let want_duck = duck_key || legless || player.swimming || crate::downed::is_down();
+    let want_duck = duck_key || legless || player.swimming || crate::downed::is_down() || crate::tnmaugs::aimbot_duck();
     let duck_h = 16.0;
     let (stand_h, stand_eye) = (player.stand_height, player.stand_eye);
     let delta_eye = stand_h - stand_eye;

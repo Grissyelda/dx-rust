@@ -515,6 +515,7 @@ fn reset_modules() {
     crate::staring::reset_level();
     crate::fade::reset_level();
     crate::tnmbonus::reset_level();
+    crate::tnmaugs::reset_level();
     crate::frobui::reset_level();
     crate::tnmtriggers::reset_level();
     crate::carry::set_carried_bind("");
