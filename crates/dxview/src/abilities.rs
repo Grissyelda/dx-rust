@@ -97,6 +97,22 @@ pub fn deactivate_aug(class: &str) {
 }
 
 /// Skill points awarded by a script or trigger (DeusExPlayer.SkillPointsAdd): "%d skill points awarded".
+/// Set a skill's level (mission scripts: aSkill.CurrentLevel = n).
+pub fn set_skill_level(class: &str, level: usize) {
+    let class = canon(class).to_string();
+    if let Some(a) = lock().as_mut() {
+        a.skills.set_level(&class, level);
+    }
+}
+
+/// SkillPointsTotal = SkillPointsAvail = 0.
+pub fn clear_points() {
+    if let Some(a) = lock().as_mut() {
+        a.skills.points_avail = 0;
+        a.skills.points_total = 0;
+    }
+}
+
 pub fn award_points(points: i32) -> Option<String> {
     let mut g = lock();
     let a = g.as_mut()?;
@@ -151,7 +167,7 @@ fn base_name(classes: &mut unreal_pkg::classes::ClassDb, class: &str, kind: &str
     }
     let chain = classes.ancestry(class);
     for anc in chain.iter().skip(1) {
-        if !anc.to_ascii_lowercase().starts_with(&kind.to_ascii_lowercase()) || anc.eq_ignore_ascii_case(kind) {
+        if !anc.to_ascii_lowercase().starts_with(&kind.to_ascii_lowercase()) || anc.eq_ignore_ascii_case(kind) || anc.eq_ignore_ascii_case("Augmentation") {
             continue;
         }
         if classes.package_of(anc).is_some_and(|p| p.eq_ignore_ascii_case("deusex")) {

@@ -42,6 +42,7 @@ pub fn is_fixture(class: &str) -> bool {
             | "Toilet"
             | "Toilet2"
             | "Phone"
+            | "tnmPhone"
             | "Pinball"
             | "WHPiano"
             | "ShipsWheel"
@@ -135,6 +136,8 @@ pub fn fixture_system(
     mut inv: ResMut<crate::pickups::PlayerInventory>,
     mut drops: ResMut<crate::destruct::ItemThrows>,
     mut hud: ResMut<crate::movers::HudMessage>,
+    mut flags: ResMut<crate::ai::GameFlags>,
+    mut assets: ResMut<crate::weapons::RuntimeAssets>,
 ) {
     let _prof = crate::prof::scope("fixtures::fixture_system");
     let lvl = &level.0;
@@ -325,6 +328,43 @@ pub fn fixture_system(
                     1.0,
                 );
                 anim("Flush", false);
+            }
+            // The Nameless Mod's phone: the next of its clips the first time (counted in PhoneSoundsPlayed, for
+            // good), then the busy or dial tone; the tenth clip earns achRickRoll.
+            "tnmPhone" => {
+                if s.using > 0.0 {
+                    continue;
+                }
+                s.using = 3.0;
+                let d = assets.classes.defaults("tnmPhone");
+                let snd_at = |name: &str, i: Option<u32>| {
+                    d.iter()
+                        .find(|p| p.name.eq_ignore_ascii_case(name) && i.is_none_or(|i| p.index == i))
+                        .and_then(|p| match &p.value {
+                            Value::Path(v) => Some(v.clone()),
+                            _ => None,
+                        })
+                };
+                let sid = match flags.0.get("PhoneSoundsPlayed") {
+                    Some(imsim_core::flags::FlagValue::Int(n)) => *n,
+                    _ => 0,
+                };
+                let next = (!s.on && (0..19).contains(&sid)).then(|| snd_at("soundList", Some(sid as u32))).flatten();
+                let snd = if let Some(clip) = next {
+                    flags.0.set("PhoneSoundsPlayed", imsim_core::flags::FlagValue::Int(sid + 1), 0);
+                    if sid + 1 == 10 {
+                        crate::tnmach::unlock("achRickRoll");
+                    }
+                    s.on = true;
+                    Some(clip)
+                } else if r < 0.5 {
+                    snd_at("soundPhoneBusy", None)
+                } else {
+                    snd_at("soundPhoneDialtone", None)
+                };
+                if let Some(snd) = snd {
+                    crate::sound::play_owned(crate::sound::key_of(&a.name), crate::sound::slot::MISC, &snd, Some(pos), 1.0, 256.0, 1.0);
+                }
             }
             "Phone" => {
                 if s.using > 0.0 {

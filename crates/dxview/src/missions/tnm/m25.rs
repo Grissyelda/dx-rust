@@ -7,8 +7,7 @@
 //!
 //! Also: the ending quotes, the mod's own credits roll and the slow-motion scene.
 //!
-//! Left out: the fades (pawns appear and leave at once), the ban effect and the unlocks the mod writes to its own
-//! configuration.
+//! Also: the fades (fade.rs), the ban effect (tnmban.rs) and the achievements (tnmach.rs).
 
 use super::*;
 
@@ -258,6 +257,7 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
         "RollCredits" => crate::credits::show(),
         "PlayPDXEndgame01" => {
             play(c, "PDXEndgame01");
+            crate::tnmach::unlock("achEndingPDX");
         }
         "PlayPDXEndgame02" => {
             play(c, "PDXEndgame02");
@@ -273,6 +273,7 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
         "DXOLightsOut" => c.trigger("DXOLight"),
         "PlayWCEndgame01" => {
             play(c, "WCEndgame01");
+            crate::tnmach::unlock("achEndingWC");
         }
         "PlayWCEndgame02" => {
             let con = if c.b("Scara_Banned") { "WCEndgame04" } else { "WCEndgame02" };
@@ -308,6 +309,7 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
         "TrestkonLeaveShuttle" => patrol(c, "TrestkonRyan", "TrestkonRyanPosition"),
         "PlayABIEndgame01" => {
             play(c, "ABIEndgame01");
+            crate::tnmach::unlock("achEndingABI");
         }
         "PlayABIEndgame02" => {
             play(c, "ABIEndgame02");
@@ -320,20 +322,42 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
         "PlayNarcEndgame02" | "PlayNarcEndgame03" | "PlayNarcEndgame04" | "PlayNarcEndgame05" => {
             let n = &f["Play".len()..];
             play(c, n);
+            if n == "NarcEndgame02" {
+                crate::tnmach::unlock("achEndingNarc");
+            }
         }
-        "FadeInAliens" => c.enter(Sel::isa("Alien")),
-        "FadeOutTrestkon" => c.leave_tag("CircleTrestkon"),
+        "FadeInAliens" => {
+            c.enter(Sel::isa("Alien"));
+            crate::fade::request(crate::fade::Who::Class("Alien".into()), 5.0, true);
+        }
+        "FadeOutTrestkon" => crate::fade::request(crate::fade::Who::Tag("CircleTrestkon".into()), 2.0, false),
         "SlowDown1" => crate::tnmmode::set_speed(0.5),
         "SlowDown2" => crate::tnmmode::set_speed(0.25),
         "NormalSpeed" => crate::tnmmode::set_speed(1.0),
-        "FadeInCircle" => {}
+        // NarcFadeInInfo: the CirclePawns enter and fade in one after another, two seconds each.
+        "FadeInCircle" => {
+            let circle: Vec<usize> = c
+                .lvl
+                .actors
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| crate::classtree::is_a(&a.class, "TNMPawn") && tag_of(&a.props).eq_ignore_ascii_case("CirclePawns"))
+                .map(|(i, _)| i)
+                .take(18)
+                .collect();
+            c.enter_tag("CirclePawns");
+            for (k, i) in circle.into_iter().enumerate() {
+                crate::fade::request_after(crate::fade::Who::Actor(i), 2.0, true, k as f32 * 2.0);
+            }
+        }
         "PlayDenouement" => {
             play(c, "01_Sols");
         }
         "SpawnGwog" => {
-            c.leave_tag("Beeblequix");
-            c.leave_tag("Pattie");
+            crate::fade::request(crate::fade::Who::Tag("Beeblequix".into()), 2.0, false);
+            crate::fade::request(crate::fade::Who::Tag("Pattie".into()), 2.0, false);
             c.enter_tag("Gwog");
+            crate::fade::request(crate::fade::Who::Tag("Gwog".into()), 2.0, true);
         }
         "PlayDenouementEnd" => {
             play(c, "17_Final");

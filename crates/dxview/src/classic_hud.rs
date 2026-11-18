@@ -150,6 +150,10 @@ enum Win {
     Net,
     /// The Nameless Mod's Radish Adventure (RadishHUD): lives, health radishes, the radish count, breath.
     Radish,
+    /// The Nameless Mod's challenge timer (TNMTimerDisplay): time, limit and par, bottom right above the belt.
+    ChallengeTimer,
+    /// HUDInvaderEnter: a red line across the top of the screen (a challenge run lost).
+    Invader,
 }
 
 /// The Debug Mode readout's text (None = hidden).
@@ -214,7 +218,7 @@ pub fn quote_text(lines: &[String], secs: f32) {
 }
 
 impl Win {
-    const ALL: [Win; 22] = [
+    const ALL: [Win; 24] = [
         Win::Hit,
         Win::Compass,
         Win::Ammo,
@@ -237,6 +241,8 @@ impl Win {
         Win::Debug,
         Win::Net,
         Win::Radish,
+        Win::ChallengeTimer,
+        Win::Invader,
     ];
     /// Fixed window sizes in UI units (InitWindow SetSize / ParentRequestedPreferredSize); the log is sized
     /// by the layout.
@@ -262,6 +268,8 @@ impl Win {
             Win::ConCursor | Win::InfoLinkFace => (64, 64),
             // RadishHUD's children: the counters reach x 74 + 128, the breath gauge y 256 + 64.
             Win::Radish => (210, 330),
+            Win::Invader => (0, 0),
+            Win::ChallengeTimer => (100, 108),
             Win::InfoLink => crate::conui::INFOLINK_SIZE,
             // DamageHUDDisplay: arrowiconWidth + iconMargin, (iconHeight + iconMargin) x 7 + arrowiconHeight.
             Win::Damage => (
@@ -809,6 +817,8 @@ pub fn classic_hud_system(
             Win::Debug => "hud::Debug",
             Win::Net => "hud::Net",
             Win::Radish => "hud::Radish",
+            Win::ChallengeTimer => "hud::ChallengeTimer",
+            Win::Invader => "hud::Invader",
         });
         // Windows that only change with what they show are redrawn only when that changes.
         let key = window_key(w, &f, snap, hud, &inv, ww, wh, y, dt);
@@ -1373,6 +1383,9 @@ impl HudFrame {
             Win::Debug => (4, 4, debug_w.max(1), debug_h.max(1), !debug_lines.is_empty()),
             Win::Net => (sw / 2 - net_w / 2, 8, net_w.max(1), net_h.max(1), !net_lines.is_empty()),
             Win::Radish => (0, 0, ww, wh, crate::radish::active() && !menu),
+            // TNMHUD: right edge, above the belt.
+            Win::ChallengeTimer => (sw - 100, sh - 108 - Win::Belt.size().1 - 10, 100, 108, crate::tnmbonus::timer().is_some() && !menu),
+            Win::Invader => (0, sh * 15 / 100, sw.max(1), 40, crate::tnmbonus::banner().is_some() && !menu),
             Win::Msg => (
                 sw / 2 - msg_w / 2,
                 sh - Win::Belt.size().1 - msg_h - 20,
@@ -1486,6 +1499,13 @@ fn window_key(
         Win::Debug => Some(hkey(&(debug_lines, ww, wh, s))),
         Win::Net => Some(hkey(&(net_lines, ww, wh, s))),
         Win::Radish => Some(hkey(&(crate::radish::hud_state(snap.breath), ww, wh, s))),
+        Win::ChallengeTimer => Some(hkey(&(
+            crate::tnmbonus::timer().map(|t| (t.0 as i32, t.1 as i32, t.2 as i32, t.3 && (crate::tnmbonus::clock() % 1.0) >= 0.75)),
+            ww,
+            wh,
+            s,
+        ))),
+        Win::Invader => Some(hkey(&(crate::tnmbonus::banner(), ww, wh, s))),
         Win::ConCursor => Some(hkey(&(ww, wh, s))),
         // The ammo display changes with the gun, its rounds, the pool and the lock line.
         Win::Ammo => {
@@ -1668,6 +1688,8 @@ fn draw_window(
             }
         }
         Win::Radish => draw_radish(hud, assets, canvas, snap),
+        Win::ChallengeTimer => draw_challenge_timer(hud, assets, canvas),
+        Win::Invader => draw_invader(hud, assets, canvas),
         Win::Net => {
             if let Some(f) = msg_font {
                 for (i, (l, c)) in net_lines.iter().enumerate() {
@@ -2498,6 +2520,54 @@ fn draw_radish(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas,
     if let Some(b) = breath {
         line(c, 256, 64, &format!("{b}%"));
     }
+}
+
+/// mm:ss as the challenge timer shows it.
+fn mmss(t: f32) -> String {
+    let t = t.max(0.0) as i32;
+    format!("{:02}:{:02}", t / 60, t % 60)
+}
+
+/// TNMTimerDisplay: the run's time (red past 90% of the limit), the limit (red once reached) and par (red once
+/// passed), flashing once the run is over.
+fn draw_challenge_timer(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas) {
+    let Some((time, limit, par, done)) = crate::tnmbonus::timer() else { return };
+    let big = hud.font(assets, "FontComputer8x20_B");
+    let small = hud.font(assets, "Extension.TechSmall").or_else(|| hud.font(assets, "FontMenuSmall"));
+    let normal = [255, 255, 255];
+    let off = done && (crate::tnmbonus::clock() % 1.0) >= 0.75;
+    let col = |red: bool| if off { [0, 0, 0] } else if red { [255, 0, 0] } else { normal };
+    let w = c.w;
+    let title = hud.str_default(assets, "TNMTimer", "strTimer").unwrap_or_default();
+    if let Some(f) = &small {
+        c.text(f, 2, 2, w - 2, f.height, HAlign::Left, VAlign::Top, normal, &title);
+        c.text(f, 2, 38, w - 2, f.height, HAlign::Left, VAlign::Top, normal, "Limit");
+        c.text(f, 2, 74, w - 2, f.height, HAlign::Left, VAlign::Top, normal, "Par");
+    }
+    if let Some(f) = &big {
+        for (y, t, red) in [(8, time, time >= limit * 0.9), (44, limit, time >= limit), (80, par, time >= par)] {
+            let s = mmss(t);
+            let tw = f.width(&s);
+            c.text(f, (w - tw) / 2, y, tw + 2, f.height, HAlign::Left, VAlign::Top, col(red), &s);
+        }
+    }
+}
+
+/// HUDInvaderEnter.ShowWarning: InvaderEnter[n] in red FontMenuExtraLarge, centred.
+fn draw_invader(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas) {
+    let Some(n) = crate::tnmbonus::banner() else { return };
+    let Some(f) = hud.font(assets, "FontMenuExtraLarge") else { return };
+    let t = hud
+        .defaults(assets, "HUDInvaderEnter")
+        .iter()
+        .find(|x| x.index == n as u32 && x.name.eq_ignore_ascii_case("InvaderEnter"))
+        .and_then(|x| match &x.value {
+            Value::Str(s) => Some(s.replacen("%s", "", 1)),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let tw = f.width(&t);
+    c.text(&f, (c.w - tw) / 2, 0, tw + 2, f.height, HAlign::Left, VAlign::Top, [255, 0, 0], &t);
 }
 
 /// HUDHitDisplay: background, border, the six body parts coloured by health, bioenergy bar, breath bar.

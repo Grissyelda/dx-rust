@@ -511,6 +511,10 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::warpzone::reset_level();
+    crate::staring::reset_level();
+    crate::fade::reset_level();
+    crate::tnmbonus::reset_level();
     crate::frobui::reset_level();
     crate::tnmtriggers::reset_level();
     crate::carry::set_carried_bind("");

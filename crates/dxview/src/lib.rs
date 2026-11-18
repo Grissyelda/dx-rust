@@ -28,6 +28,12 @@ mod tnmpower;
 mod trestkon;
 mod radish;
 mod tnmeggs;
+mod tnmban;
+mod tnmach;
+mod staring;
+mod warpzone;
+mod fade;
+mod tnmbonus;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1181,6 +1187,12 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, radish::radish_system.after(tnmpower::powerup_system))
         .add_systems(Update, trestkon::kit_system.after(radish::radish_system))
         .add_systems(First, tnmmode::speed_system)
+        .add_systems(Update, tnmban::ban_system.after(ai::npc_system))
+        .add_systems(Update, tnmach::inventory_system)
+        .add_systems(Update, staring::staring_system.before(movers::tick_movers))
+        .add_systems(Update, warpzone::warp_system.after(fly))
+        .add_systems(Update, fade::fade_system.after(ai::npc_system))
+        .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system))
         .add_systems(Update, scriptworld::scriptworld_system.after(mission::mission_system))
         .add_systems(Update, missions::mission_fx_system.after(mission::mission_system))
         .add_systems(Update, credits::credits_system)
@@ -3657,6 +3669,11 @@ fn place_view(
         eye_h,
         z_moved,
     );
+    // DeusExPlayer.UpdateEyeHeight: a jolt (JoltView) bounces the eye while walking with view bob on.
+    let jolt = crate::shake::take_jolt();
+    if jolt != 0.0 && walking && player.view.bob != 0.0 {
+        player.view.eye_height += jolt * 5.0;
+    }
     if !crate::settings::head_bob() {
         player.view.walk_bob = DVec3::ZERO;
     }

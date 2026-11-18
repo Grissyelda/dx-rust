@@ -82,6 +82,18 @@ pub fn take_carried(pawn: &str) -> Option<(String, String)> {
     Some((k.1, k.2))
 }
 
+/// A pawn's nano key thrown out where it was (The Nameless Mod's ban): a NanoKey pickup with its KeyID.
+pub fn drop_world(id: &str, desc: &str, at: glam::DVec3) {
+    use unreal_pkg::props::{Property, Value};
+    let props = vec![
+        Property { name: "KeyID".into(), index: 0, value: Value::Name(id.to_string()) },
+        Property { name: "Description".into(), index: 0, value: Value::Str(desc.to_string()) },
+    ];
+    if let Ok(mut q) = crate::missions::tnm::ITEMS.lock() {
+        q.push(("NanoKey".to_string(), at, props));
+    }
+}
+
 /// A new map is going in (loader.rs): this module's state of the map being left.
 pub fn reset_level() {
     if let Ok(mut v) = RING.lock() {

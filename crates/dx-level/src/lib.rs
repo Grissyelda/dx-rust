@@ -205,6 +205,46 @@ pub struct ZoneRule {
     pub no_inventory: bool,
     /// The Nameless Mod's tnmzoneinfo bNoOxygen: no air to breathe here (the space station).
     pub no_oxygen: bool,
+    /// A WarpZoneInfo: what walks in comes out of the zone whose ThisTag is this one's OtherSideURL.
+    pub warp: Option<WarpZone>,
+}
+
+/// WarpZoneInfo: its ThisTag, OtherSideURL (a tag in this map) and WarpCoords (origin and axes, saved by the editor).
+#[derive(Debug, Clone, Default)]
+pub struct WarpZone {
+    /// The zone actor's Tag (what triggers it) and its Destinations (Trigger steps OtherSideURL through them).
+    pub tag: String,
+    pub destinations: Vec<String>,
+    pub this_tag: String,
+    pub other: String,
+    pub origin: [f32; 3],
+    pub axes: [[f32; 3]; 3],
+}
+
+impl WarpZone {
+    /// UnWarp: a world point into the zone's warp space.
+    pub fn unwarp_point(&self, p: [f64; 3]) -> [f64; 3] {
+        let d = [p[0] - self.origin[0] as f64, p[1] - self.origin[1] as f64, p[2] - self.origin[2] as f64];
+        self.unwarp_vector(d)
+    }
+    pub fn unwarp_vector(&self, v: [f64; 3]) -> [f64; 3] {
+        let dot = |a: [f32; 3]| v[0] * a[0] as f64 + v[1] * a[1] as f64 + v[2] * a[2] as f64;
+        [dot(self.axes[0]), dot(self.axes[1]), dot(self.axes[2])]
+    }
+    /// Warp: a point in warp space back out into the world on this side.
+    pub fn warp_point(&self, l: [f64; 3]) -> [f64; 3] {
+        let v = self.warp_vector(l);
+        [v[0] + self.origin[0] as f64, v[1] + self.origin[1] as f64, v[2] + self.origin[2] as f64]
+    }
+    pub fn warp_vector(&self, l: [f64; 3]) -> [f64; 3] {
+        let mut out = [0.0; 3];
+        for (k, a) in self.axes.iter().enumerate() {
+            for c in 0..3 {
+                out[c] += a[c] as f64 * l[k];
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1102,6 +1142,37 @@ pub fn build_level(
                 player_event: name("ZonePlayerEvent"),
                 no_inventory: b("bNoInventory"),
                 no_oxygen: b("bNoOxygen"),
+                warp: (pkg.class_name(e.class_index) == "WarpZoneInfo"
+                    || matches!(props::find(&ps, "OtherSideURL"), Some(Value::Str(_))))
+                .then(|| {
+                    let other = match props::find(&ps, "OtherSideURL") {
+                        Some(Value::Str(v)) => v.clone(),
+                        _ => String::new(),
+                    };
+                    let mut f = [0.0f32; 12];
+                    if let Some(Value::Struct(_, bytes)) = props::find(&ps, "WarpCoords") {
+                        for (k, c) in bytes.chunks_exact(4).take(12).enumerate() {
+                            f[k] = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                        }
+                    }
+                    let mut destinations: Vec<(u32, String)> = ps
+                        .iter()
+                        .filter(|p| p.name.eq_ignore_ascii_case("Destinations"))
+                        .filter_map(|p| match &p.value {
+                            Value::Str(s) => Some((p.index, s.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    destinations.sort_by_key(|x| x.0);
+                    WarpZone {
+                        tag: name("Tag"),
+                        destinations: destinations.into_iter().map(|x| x.1).collect(),
+                        this_tag: name("ThisTag"),
+                        other,
+                        origin: [f[0], f[1], f[2]],
+                        axes: [[f[3], f[4], f[5]], [f[6], f[7], f[8]], [f[9], f[10], f[11]]],
+                    }
+                }),
             }
         })
         .collect();

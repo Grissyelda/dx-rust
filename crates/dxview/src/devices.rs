@@ -402,11 +402,15 @@ pub fn device_system(
         for (j, info) in lvl.movers.iter().enumerate() {
             // A CaroneElevator has no Trigger of its own (The Nameless Mod: tnmtriggers.rs answers its door
             // buttons).
-            if on && info.tag.eq_ignore_ascii_case(&name) && lvl.actors[info.actor].class != "CaroneElevator" {
+            if on && info.tag.eq_ignore_ascii_case(&name) && lvl.actors[info.actor].class != "CaroneElevator" && !crate::staring::is_staring(j) {
                 crate::movers::trigger(info, &mut movers.rt[j]);
             }
         }
         crate::tnmtriggers::event(&name, on);
+        crate::staring::event(&name, on);
+        if on {
+            crate::warpzone::event(&name);
+        }
         for mut e in &mut emitters {
             if e.tag.eq_ignore_ascii_case(&name) {
                 e.set_on(on);

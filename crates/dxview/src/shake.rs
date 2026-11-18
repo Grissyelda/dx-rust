@@ -32,6 +32,21 @@ pub fn shake_view(time: f32, roll: f32, vert: f32) {
     }
 }
 
+/// DeusExPlayer.JoltView: the strongest jolt asked for since the eye was last updated.
+static JOLT: Mutex<f64> = Mutex::new(0.0);
+
+pub fn jolt_view(mag: f64) {
+    if let Ok(mut j) = JOLT.lock() {
+        if j.abs() < mag.abs() {
+            *j = mag;
+        }
+    }
+}
+
+pub fn take_jolt() -> f64 {
+    JOLT.lock().map(|mut j| std::mem::take(&mut *j)).unwrap_or(0.0)
+}
+
 pub fn reset_level() {
     if let Ok(mut s) = STATE.lock() {
         *s = None;

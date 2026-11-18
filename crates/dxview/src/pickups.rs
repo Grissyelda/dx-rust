@@ -822,6 +822,10 @@ fn frob_item(cx: &mut FrobCx, e: Entity, items: &FrobItems, net_items: &Query<&c
 }
 
 /// Pick up an item (class with its properties): into the inventory, onto the key ring, or used where it lies.
+fn hud_no_room(msg: &str, def: &imsim_core::inventory::ItemDef) -> bool {
+    msg.starts_with(&imsim_core::inventory::no_room(def))
+}
+
 /// False when it stays where it is (no room).
 fn take_pickup(
     inv: &mut PlayerInventory,
@@ -897,6 +901,9 @@ fn take_pickup(
     } else {
         msg
     };
+    if hud_no_room(&msg, &def) && crate::classtree::is_a(class, "WeaponFireStaff") {
+        crate::tnmach::firestaff_no_room();
+    }
     hud.text = msg;
     hud.time_left = 3.0;
     if after != before {

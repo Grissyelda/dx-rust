@@ -74,7 +74,8 @@ pub enum TnmKind {
     Con { con: String, bind: String, check: String, check_false: bool, timer: bool, breathe: f32 },
     ConForce { con: String, bind: String, check: String, check_false: bool, parts: Vec<String>, used: i32, limit: i32 },
     BlowUp { used: i32, limit: i32 },
-    Achievement,
+    /// AchievementTrigger: earns AchievementName (tnmach.rs).
+    Achievement(String),
     /// OxygenZoneTrigger: the zones tagged Event lose or get air when triggered (touching does nothing).
     Oxygen { toggle: bool, value: bool },
     /// The Event's decorations solid again (Trigger) or not (UnTrigger): bodies of collision only; kept as a
@@ -174,7 +175,10 @@ pub fn kind_for(class: &str, p: &[Property]) -> TnmKind {
             limit: i(p, "DeactivationThreshold", 0),
         },
         "blowupmovertrigger" => TnmKind::BlowUp { used: 0, limit: i(p, "DeactivationThreshold", 0) },
-        "achievementtrigger" => TnmKind::Achievement,
+        "achievementtrigger" => TnmKind::Achievement(match find(p, "AchievementName") {
+            Some(Value::Str(v)) | Some(Value::Name(v)) => v.clone(),
+            _ => String::new(),
+        }),
         _ => TnmKind::Inert,
     }
 }
@@ -447,9 +451,9 @@ pub fn on_touch(k: &mut TnmKind, event: &str, once: bool, by_player: bool, relev
                 spend(used, *limit, once, &mut act);
             }
         }
-        TnmKind::Achievement => {
-            // The mod's own achievement list isn't kept; the trigger still counts as used.
+        TnmKind::Achievement(name) => {
             if relevant {
+                crate::tnmach::unlock(name);
                 act.destroy = once;
             }
         }
@@ -569,7 +573,8 @@ pub fn on_trigger(k: &mut TnmKind, event: &str, once: bool, on: bool, flags: &mu
             work(Work::BlowUp, event);
             spend(used, *limit, once, &mut act);
         }
-        TnmKind::Achievement => {
+        TnmKind::Achievement(name) => {
+            crate::tnmach::unlock(name);
             act.base = true;
             act.destroy = once;
         }

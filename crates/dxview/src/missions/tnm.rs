@@ -57,7 +57,7 @@ fn num(key: &str) -> i32 {
 const COUNT_EXCLUDED: [&str; 2] = ["ZeroPresence", "WCSpy"];
 
 /// Items a script puts in the world: (class, location, property overrides).
-pub(super) static ITEMS: Mutex<Vec<(String, DVec3, Vec<Property>)>> = Mutex::new(Vec::new());
+pub(crate) static ITEMS: Mutex<Vec<(String, DVec3, Vec<Property>)>> = Mutex::new(Vec::new());
 
 /// Pawns a script spawns: (class, where, yaw, property overrides).
 pub(super) static PAWNS: Mutex<Vec<(String, DVec3, i32, Vec<Property>)>> = Mutex::new(Vec::new());
@@ -539,6 +539,23 @@ fn persistent(map: &str, load: bool) -> Option<(&'static str, &'static [&'static
     PERSISTENT.iter().find(|(m, ..)| m.eq_ignore_ascii_case(rest)).map(|(_, f, t)| (*f, *t))
 }
 
+/// tnmMission20and22.SetupPortal: once the voodoo shop's job is done (and, in Mission 22, while Yardbomb lives and
+/// the Kevo job is on, unless he was told to sell), the shut booth portal opens (its warp zone steps to its next
+/// destination) and the booth's sound starts.
+fn setup_portal(c: &mut Ctx, portal: &str, sound: &str) {
+    let m = c.lvl.mission_number();
+    let enable = c.b("QC_SUB_VoodooStuff")
+        && (m == 20 || ((c.b("QR_MAIN_FreeKevo") || c.b("QR_MAIN_KidnapKevo")) && !c.b("Yardbomb_Dead")));
+    if m == 22 && c.b("Yardbomb_AdvisedToSell") {
+        return;
+    }
+    if enable {
+        crate::tnmach::unlock("achTeleporters");
+        crate::warpzone::open_portal(portal);
+        c.trigger(sound);
+    }
+}
+
 fn m20and22_first(c: &mut Ctx, map: &str) {
     let m = map.trim_start_matches("20_").trim_start_matches("22_");
     if let Some((flag, tags)) = persistent(map, true) {
@@ -623,6 +640,7 @@ fn m20and22_first(c: &mut Ctx, map: &str) {
                 }
                 c.seal_door("FanFicStoreDoor");
                 c.show(if c.any(&["Chris_Dead", "Walton_Dead"]) { "FanFicNotice_Death" } else { "FanFicNotice_Knockout" }, true);
+                crate::tnmach::unlock("achFanFicClosed");
             } else {
                 let groups: &[(&str, [&str; 3])] = &[
                     ("ALLIED_CULT_GOAT", ["AttackGroup_Llama01", "AttackGroup_Llama02", "AttackGroup_Llama03"]),
@@ -777,6 +795,7 @@ fn m20_first(c: &mut Ctx, map: &str) {
             }
         }
         "20_FCDOWNTOWN" => {
+            setup_portal(c, "FC_Current_Booth", "FC_Current_Booth_Sound");
             if c.b("MS_CloseSols") {
                 c.seal_door("SolsDoor");
                 c.leave(Sel::isa_bind("TNMPawn", "DowntownFemale04"));
@@ -802,6 +821,7 @@ fn m20_first(c: &mut Ctx, map: &str) {
             }
         }
         "20_FCCORPORATE" => {
+            setup_portal(c, "FC_Current_Booth", "FC_Current_Booth_Sound");
             if c.b("MS_ClosePartyZone") {
                 c.seal_door("PartyZoneDoor");
                 c.leave_tag("Shaina");
@@ -839,6 +859,7 @@ fn m20_first(c: &mut Ctx, map: &str) {
             }
         }
         "20_FCSLUMS" => {
+            setup_portal(c, "FC_Current_Booth", "FC_Current_Booth_Sound");
             if !c.b("QC_VisitFaction") && !c.b("QC_MAIN_SaveSD") {
                 c.pm("PM_Phas_SlumsEarly");
             }
@@ -1129,6 +1150,7 @@ fn m20_timer(c: &mut Ctx, map: &str) {
         if c.b("ALLIED_WC") && c.b("Kylie_Dead") && !c.b("Scara_TOLD_KylieKill") {
             c.pm("PM_Scara_KilledKylie");
             c.set("Kylie_Dead_M20", true, 23);
+            crate::tnmach::unlock("achTeamkill");
         }
     }
     match map {
@@ -1287,6 +1309,9 @@ fn voodoo_timer(c: &mut Ctx) {
     if c.b("QC_SUB_VoodooStuff") && !c.b("MS_VoodooStuff_AwardGiven") {
         c.award(200, "strVoodooAward");
         c.set("MS_VoodooStuff_AwardGiven", true, 21);
+        for t in ["VoodooShop1", "VoodooShop2", "VoodooShop3"] {
+            setup_portal(c, t, "FC_Current_Booth_Sound");
+        }
     }
     if c.b("DT_TOLD_GoatCity") && !c.b("MS_GoatCity_AwardGiven") {
         c.award(250, "strInvestigationAward");
@@ -1371,7 +1396,10 @@ pub fn game_event(c: &mut Ctx, f: &str) {
                 cs.message(&msg);
             }
         }
-        "GhandCatchFire" => crate::ai::world_req(WorldReq::Ignite(Sel::tag("Ghand"))),
+        "GhandCatchFire" => {
+            crate::ai::world_req(WorldReq::Ignite(Sel::tag("Ghand")));
+            crate::tnmach::unlock("achGhand");
+        }
         "PhasLockDoor" => {
             c.seal_door("PhasAptDoor");
             c.leave_tag("Phasmatis");
@@ -1485,6 +1513,7 @@ pub fn game_event(c: &mut Ctx, f: &str) {
                 c.add_goal("DrainTheMelk", "strGoalDrainTheMelk2", false, false);
                 c.award(500, "strSabotageAward");
                 c.set("GoatValvesDestroyed", true, 23);
+                crate::tnmach::unlock("achMelkValves");
             }
             c.set_int("MS_ValvesDestroyed", n + 1, 21);
         }
@@ -1533,33 +1562,69 @@ fn pdx_mark(c: &mut Ctx, n: u8) {
 
 /// The Narcissus loop's end: Trestkon dies one of several ways (the arena's spawn points add the strange ones).
 fn kill_trestkon(c: &mut Ctx) {
+    // tnmMission20and22.KillTrestkon: one of fourteen ends when the map has NarcSpawnPoints, else one of three.
     let points = c.points("SpawnPoint", "NarcSpawnPoints");
-    let n = if points.is_empty() { 3 } else { 8 };
-    let pick = (c.rand() * n as f64) as usize % n;
-    let hunters = ["TNMGreasel", "MelkyGreasel", "RedGreasel", "Abomnation", "Ghand"];
+    let n = if points.is_empty() { 3 } else { 14 };
+    let pick = ((c.rand() * n as f64) as usize).min(n - 1);
+    let me = c.player_pos;
+    let toward = |p: DVec3| (me - p).try_normalize().unwrap_or(DVec3::X);
+    let yaw_to = |p: DVec3| {
+        let d = me - p;
+        (d.y.atan2(d.x) * 32768.0 / std::f64::consts::PI) as i32
+    };
+    let hunter = |class: &str, p: DVec3| {
+        let props = vec![
+            prop("bInvincible", Value::Bool(true)),
+            prop("Alliance", Value::Name("Narcissus".into())),
+            prop("Orders", Value::Name("Attacking".into())),
+            Property { name: "InitialAlliances".into(), index: 6, value: Value::Alliance("Player".into(), -1.0, true) },
+        ];
+        if let Ok(mut q) = PAWNS.lock() {
+            q.push((class.to_string(), p, yaw_to(p), props));
+        }
+    };
     match pick {
         0 => player_req(PlayerReq::Kill("Shot")),
         1 => player_req(PlayerReq::Kill("Flamed")),
         2 => player_req(PlayerReq::Kill("Exploded")),
-        _ => {
-            // Something deathless comes out of every spawn point for him.
-            let class = hunters[(pick - 3) % hunters.len()];
+        3 | 4 | 8 => {
+            let class = match pick {
+                3 => "RocketLAW",
+                4 => "RocketWP",
+                _ => "PlasmaProj",
+            };
             for p in points {
-                let d = c.player_pos - p;
-                let yaw = (d.y.atan2(d.x) * 32768.0 / std::f64::consts::PI) as i32;
-                let props = vec![
-                    prop("bInvincible", Value::Bool(true)),
-                    prop("Alliance", Value::Name("Narcissus".into())),
-                    prop("Orders", Value::Name("Attacking".into())),
-                    Property { name: "InitialAlliances".into(), index: 6, value: Value::Alliance("Player".into(), -1.0, true) },
-                ];
-                if let Ok(mut q) = PAWNS.lock() {
-                    q.push((class.to_string(), p, yaw, props));
-                }
-                c.fx(Fx::SpawnFlash(p));
+                crate::missions::launch(class, p, toward(p));
+            }
+        }
+        5 | 6 | 7 | 9 | 10 | 13 => {
+            let class = match pick {
+                5 => "TNMGreasel",
+                6 => "MelkyGreasel",
+                7 => "RedGreasel",
+                9 => "Abomnation",
+                10 => "Ghand",
+                _ => "Treskton",
+            };
+            for p in points {
+                hunter(class, p);
+            }
+        }
+        11 => {
+            // A piano a hundred units over his head.
+            crate::spawn::decoration("WHPiano", me + DVec3::new(0.0, 0.0, 100.0), 0, Vec::new());
+            crate::sound::play("DeusExSounds.Special.Piano1", me, 1.0, 256.0, 1.0);
+            player_req(PlayerReq::Kill("Crushed"));
+        }
+        _ => {
+            // Turrets drop in at every spawn point (no rotation given), reach 2048.
+            for p in points {
+                let props = vec![prop("maxRange", Value::Float(2048.0)), prop("Physics", Value::Byte(2))];
+                crate::spawn::decoration("AutoTurret", p, 0, props);
             }
         }
     }
+    crate::tnmach::unlock("achNarcWC");
 }
 
 /// What the sewer flush took: counted per class into SewerFlush_<Class> flags for the lost-property clerk.
@@ -1578,6 +1643,7 @@ fn flushed(c: &mut Ctx) {
         c.set_int(&key, v + n, 23);
     }
     c.pm("PM_Hoover_FlushedItems");
+    crate::tnmach::unlock("achFlush");
     if !c.b("MS_FlushedItem") {
         c.add_goal("SewerFlushRetrieval", "strGoalSewerRetrieval", false, false);
     }
@@ -1715,6 +1781,7 @@ fn m21_timer(c: &mut Ctx, map: &str) {
                     c.fl.delete(&format!("{g}_Dead"));
                     c.fl.delete(&format!("{g}_Unconscious"));
                 }
+                crate::tnmach::unlock("achThreads");
             }
         }
         _ => {}
@@ -1756,6 +1823,7 @@ fn m21_event(c: &mut Ctx, f: &str) -> bool {
             c.trigger("ThreadsSelfDestruct");
             c.blow_up("ThreadsFacilityFissure");
             c.pm("PM_MAIN_ThreadsClosed");
+            crate::tnmach::unlock("achProgram");
         }
         "BeebleOneLiner" | "BeebleRant" => {
             if c.b("BEEBLE_GotHUDCodes") {

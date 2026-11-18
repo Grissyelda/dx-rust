@@ -98,6 +98,80 @@ pub(super) fn first(c: &mut Ctx, map: &str) {
     }
 }
 
+/// CerbFire / CerbFireBridge*: a Cerberus shell from every SpawnPoint with this tag, along its rotation (the bridge
+/// volleys also sound the plasma shot once, heard everywhere).
+fn cerb_fire(c: &mut Ctx, tag: &str, shot_sound: bool) {
+    let mut first = true;
+    for a in c.lvl.actors.iter() {
+        if !crate::classtree::is_a(&a.class, "SpawnPoint") || !tag_of(&a.props).eq_ignore_ascii_case(tag) {
+            continue;
+        }
+        let l = a.location();
+        let at = DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
+        let rot = match unreal_pkg::props::find(&a.props, "Rotation") {
+            Some(Value::Rotator(r)) => *r,
+            _ => [0; 3],
+        };
+        if shot_sound && first {
+            crate::sound::play("TNMSounds.OneShot.Plasma_Shot", at, 5.0, 65535.0, 1.0);
+        }
+        first = false;
+        crate::missions::launch("CerberusProjectile", at, crate::staring::dir_of(rot));
+    }
+}
+
+/// Mission Timer state kept between ticks on one map (cerbTimer: the bridge volley's cooldown; cerbCounter: how
+/// long the idle guns have rested).
+static CERB: std::sync::Mutex<(String, i32, i32)> = std::sync::Mutex::new((String::new(), 0, 0));
+
+fn cerb_state(map: &str) -> (i32, i32) {
+    let g = CERB.lock().unwrap_or_else(|e| e.into_inner());
+    if g.0 == map {
+        (g.1, g.2)
+    } else {
+        (0, 0)
+    }
+}
+
+fn set_cerb_state(map: &str, timer: i32, counter: i32) {
+    let mut g = CERB.lock().unwrap_or_else(|e| e.into_inner());
+    *g = (map.to_string(), timer, counter);
+}
+
+/// The idle guns turn to a new random heading once they've rested three ticks (each that rests counts one).
+/// `exterior`: the Cerberus guns (pneumatic sound while turning, a close sound on stopping, the barrel pitches);
+/// else the approach's SAM launchers (yaw 23000..37000, quiet).
+fn idle_turn(c: &mut Ctx, map: &str, tag: &str, exterior: bool) {
+    let (timer, mut counter) = cerb_state(map);
+    for (m, rot, rest) in crate::staring::with_tag(tag) {
+        if rest {
+            if counter == 0 {
+                crate::staring::set_ambient(m, None, None);
+                if exterior {
+                    let at = c.lvl.movers[m].location;
+                    crate::sound::play("MoverSFX.Pneumatic1Close", DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64), 1.0, 1600.0, 1.0);
+                }
+            }
+            counter += 1;
+        }
+        if counter >= 3 {
+            let mut want = rot;
+            if exterior {
+                crate::staring::set_ambient(m, Some("MoverSFX.Pneumatic1Move"), None);
+                want[1] = (c.rand() * 32767.0) as i32 + (c.rand() * 32767.0) as i32;
+                let mut child = want;
+                child[0] = 4096 - (c.rand() * 4096.0) as i32;
+                crate::staring::turn_mover(m, want, Some(child));
+            } else {
+                want[1] = 23000 + (c.rand() * 14000.0) as i32;
+                crate::staring::turn_mover(m, want, Some(want));
+            }
+            counter = 0;
+        }
+    }
+    set_cerb_state(map, timer, counter);
+}
+
 /// NV Shacker's pet robot, knocked out on the second day, comes back reprogrammed on the player's side.
 fn reprogrammed_pet(c: &mut Ctx, approach: bool) {
     let pet_down = c.b("NVShackerPet_Unconscious") && !(approach && c.b("NVShackerPet_Dead"));
@@ -105,16 +179,21 @@ fn reprogrammed_pet(c: &mut Ctx, approach: bool) {
         c.enter_tag("NVShackerPet_WC");
         c.set("NVShackerPet_ABI_WC", true, 24);
         c.set("NVShackerPet_Unconscious", false, 24);
+        crate::tnmach::unlock("achA2Reprogram");
     }
     if c.b("ALLIED_PDX") && c.b("NVShacker_PDX") && pet_down {
         c.enter_tag("NVShackerPet_PDX");
         c.set("NVShackerPet_ABI_PDX", true, 24);
         c.set("NVShackerPet_Unconscious", false, 24);
+        crate::tnmach::unlock("achA2Reprogram");
     }
 }
 
 fn ruins_first(c: &mut Ctx) {
     c.pm("PM_EnterRuins");
+    if !c.b("PM_EnterOffices_Played") {
+        crate::tnmach::unlock("achRuinsFast");
+    }
     if !c.b("MS_ReachRuins_AwardGiven") {
         c.award(500, "strProgressAwardDuo");
         c.set("MS_ReachRuins_AwardGiven", true, 24);
@@ -225,15 +304,40 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
                 c.add_goal("SnowWolves", "strWolfGuyComplete", false, true);
                 c.set("MS_WolfGuy_VoucherAdded", true, 24);
             }
+            // The Cerberus guns fire on a player crossing the bridge (unless their spotter is down), then rest ten
+            // ticks.
+            let (mut timer, counter) = cerb_state(map);
+            let on = ["ABIOnBridge", "ABIOnBridge2", "ABIOnBridge3"];
+            let detectable = !crate::cinematic::active();
+            if timer == 0 && on.iter().any(|f| c.b(f)) && detectable && !c.down("ABIArtyGuy") {
+                let tag = if c.b("ABIOnBridge") {
+                    "CerbProjSpawnBridge"
+                } else if c.b("ABIOnBridge2") {
+                    "CerbProjSpawnBridge2"
+                } else {
+                    "CerbProjSpawnBridge3"
+                };
+                cerb_fire(c, tag, true);
+                timer += 1;
+            } else if timer != 0 {
+                timer += 1;
+                if timer >= 10 {
+                    timer = 0;
+                }
+            }
+            set_cerb_state(map, timer, counter);
+            idle_turn(c, map, "IdleSAM", false);
             if !c.b("Autosaved_ABI") {
                 crate::save::autosave("mission");
                 c.set("Autosaved_ABI", true, 24);
             }
         }
         "23_ABIEXTERIOR" => {
+            idle_turn(c, map, "Cerberus", true);
             if c.b("QC_SUB_FreeHao") && !c.b("MS_FreeHao_AwardGiven") {
                 c.award(250, "strFriendAward");
                 c.set("MS_FreeHao_AwardGiven", true, 24);
+                crate::tnmach::unlock("achHao");
             }
             if c.b("Ricemanu_Dead") && c.b("QR_SUB_HelpRice") {
                 c.pm("PM_RiceDies");
@@ -271,6 +375,21 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
                 c.fl.delete("MS_SpawnABIGameItem");
                 start_game_item(c);
             }
+            if !c.b("MS_achSlicerGhost") && c.b("ALLIED_WC") && !c.b("Slicer_Dead") {
+                crate::tnmach::unlock("achSlicerGhost");
+                c.set("MS_achSlicerGhost", true, 24);
+            } else if !c.b("MS_achZPGhost") && c.b("ALLIED_PDX") && !c.b("Zero_Dead") {
+                crate::tnmach::unlock("achZPGhost");
+                c.set("MS_achZPGhost", true, 24);
+            }
+            if !c.b("MS_AchKillWCID") && c.b("AgentBrown_Dead") && c.b("AgentJones_Dead") && c.b("WCIDAgent_Dead") {
+                crate::tnmach::unlock("achWCID");
+                c.set("MS_AchKillWCID", true, 24);
+            }
+            if !c.b("MS_AchABIStealth") && c.b("ABIShuttle_ReadyToLaunch") && !c.b("KilledABI") {
+                crate::tnmach::unlock("achABIStealth");
+                c.set("MS_AchABIStealth", true, 24);
+            }
         }
         _ => {}
     }
@@ -282,6 +401,7 @@ fn ruins_timer(c: &mut Ctx) {
         let by = crate::ai::last_player_hitter().and_then(|i| c.lvl.actors.get(i)).map(|a| tag_of(&a.props)).unwrap_or_default();
         if CAPTORS.iter().any(|t| t.eq_ignore_ascii_case(&by)) {
             c.set("MS_PlayerCaptured", true, 0);
+            crate::tnmach::unlock(if c.b("ALLIED_PDX") { "achZPCapture" } else { "achSlicerCapture" });
             player_req(PlayerReq::Wounds([0.0; 6], [25.0; 6]));
             player_req(PlayerReq::Revive);
             c.send_player("23_ABIRuins#PlayerCellSpawnPoint");
@@ -298,6 +418,7 @@ fn ruins_timer(c: &mut Ctx) {
     }
     if c.b("MS_MirrorTresksKilled") && c.b("TresktonReal_Dead") && !c.b("MS_MirrorDummyKilled") {
         c.set("MS_MirrorDummyKilled", true, 24);
+        crate::tnmach::unlock("achTreskton");
         c.award(250, "strTresktonAward");
         c.add_goal("KillTresk", "strKillTreskDone", false, true);
         c.trigger("TreskPortal");
@@ -441,8 +562,46 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
                 crate::triggers::set_active("PMFoundPassword", false);
             }
         }
-        "RotateCineCerb" | "AimCineCerb" | "FireCineCerb" | "SAMFire" | "CerbFire" | "CerbFire2" | "WarpZoneRandomize"
-        | "ReverseMusic" | "UnReverseMusic" => {}
+        // The intro's Cerberus gun turns to face the bridge, its barrel aims, the dispatcher fires it.
+        "RotateCineCerb" => {
+            for (m, _, _) in crate::staring::with_tag("CerberusCine") {
+                crate::staring::turn_mover(m, [0, 0, 0], None);
+                crate::staring::set_ambient(m, Some("MoverSFX.Pneumatic1Move"), Some(255.0));
+            }
+            for (m, _, _) in crate::staring::with_tag("CerbBarrel") {
+                crate::staring::turn_mover(m, [0, 0, 0], None);
+            }
+        }
+        "AimCineCerb" => {
+            for (m, _, _) in crate::staring::with_tag("CerbBarrel") {
+                crate::staring::turn_mover(m, [5000, 0, 0], None);
+            }
+            c.trigger("CerbFireDispatch");
+        }
+        // (The script means to quiet the gun here, but clears another actor's sound: it keeps turning noisily.)
+        "FireCineCerb" => crate::staring::fire_tag("CineCerbSpawn"),
+        "SAMFire" => {
+            crate::staring::fire_tag("SAMRocketSpawn");
+            crate::sound::play_player("DeusExSounds.Weapons.RocketIgnite", 5.0, 65535.0);
+        }
+        "CerbFire" => cerb_fire(c, "CerbProjSpawn", false),
+        "CerbFire2" => cerb_fire(c, "CerbProjSpawn2", false),
+        // Each RoomEntry warp zone leads to one of the three rooms or nowhere.
+        "WarpZoneRandomize" => {
+            let entries: Vec<String> = c
+                .lvl
+                .zone_rules
+                .iter()
+                .filter_map(|z| z.warp.as_ref())
+                .filter(|w| w.tag.eq_ignore_ascii_case("RoomEntry"))
+                .map(|w| w.this_tag.clone())
+                .collect();
+            for e in entries {
+                let k = ((c.rand() * 4.0) as usize).min(3);
+                crate::warpzone::relink(&e, ["Room1", "Room2", "Room3", "None"][k]);
+            }
+        }
+        "ReverseMusic" | "UnReverseMusic" => {}
         "SpawnMirrorTresk1" => c.enter_tag("Tresk1"),
         "SpawnMirrorTresk2" => c.enter_tag("Tresk2"),
         "SpawnMirrorTresk3" => c.enter_tag("Tresk3"),

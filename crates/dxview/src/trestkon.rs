@@ -96,8 +96,14 @@ pub fn can_select(ft: u8) -> bool {
 /// WeaponFists.givefisttype (a glove pickup used): that kind is his for good.
 pub fn give_fist(ft: u8) {
     if (1..=4).contains(&ft) {
-        lock().fists.has[ft as usize] = true;
+        let mut g = lock();
+        g.fists.has[ft as usize] = true;
+        let all = g.fists.has[1] && g.fists.has[2] && g.fists.has[3];
+        drop(g);
         println!("TNM gloves: got kind {ft}");
+        if all {
+            crate::tnmach::unlock("achGloves");
+        }
     }
 }
 
@@ -221,8 +227,26 @@ pub fn molotov_cost() -> Option<u32> {
     }
 }
 
+/// The inventory screen's drag craft: dragging `a` onto `b`, one chemicals and the other a wine bottle, with a
+/// Molotov makeable now. Returns the chemicals' class.
+pub fn molotov_pair(inv: &imsim_core::inventory::Inventory, a: &str, b: &str) -> Option<String> {
+    let bottle = |c: &str| c.eq_ignore_ascii_case("WineBottle") || crate::classtree::is_a(c, "WineBottle");
+    let chem = if is_chemicals(a) && bottle(b) {
+        a
+    } else if is_chemicals(b) && bottle(a) {
+        b
+    } else {
+        return None;
+    };
+    can_make_molotov(inv, chem).then(|| chem.to_string())
+}
+
+/// MakeMolotov from the inventory screen.
+pub fn craft_molotov(inv: &mut imsim_core::inventory::Inventory, classes: &mut unreal_pkg::classes::ClassDb, chem: &str) -> String {
+    make_molotov(inv, classes, chem)
+}
+
 /// Whether a Molotov can be made with these chemicals now (CanMakeMolotov), for the inventory screen.
-#[allow(dead_code)]
 pub fn can_make_molotov(inv: &imsim_core::inventory::Inventory, chem_class: &str) -> bool {
     let Some(need) = molotov_cost() else { return false };
     let chems = inv.items.iter().filter(|i| i.def.class == chem_class).map(|i| i.count.max(1)).sum::<u32>();
@@ -265,6 +289,7 @@ fn make_molotov(
     let msg = inv.pick_up(&def, 1).unwrap_or_default();
     crate::pickups::add_weapon_ammo(inv, &d);
     println!("TNM molotov made ({need} chemicals)");
+    crate::tnmach::unlock("achMolotov");
     msg
 }
 
@@ -314,6 +339,7 @@ pub fn kit_system(
     if !active() {
         return;
     }
+    crate::tnmach::load(&mut assets.classes);
     // TrestkonTick: credits_diff = Credits - CreditsPrev, counted when it rose.
     {
         let mut g = lock();

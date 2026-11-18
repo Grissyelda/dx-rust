@@ -553,6 +553,10 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
                 c.add_goal("QuestionWitnesses", key, false, true);
                 c.set("MS_WinqumanGoalClose", true, 23);
             }
+            if c.b("AlphaOperator_Unconscious_M20") && c.b("Jackie_Unconscious_M20") && c.b("Winquman1_Played") && !c.b("MS_Winquman1_Played") {
+                crate::tnmach::unlock("achSolsBombBoth");
+                c.set("MS_Winquman1_Played", true, 23);
+            }
         }
         "22_FCCORPORATE" => {
             if !c.b("Wolfy_GaveReward") && !c.b("Wolfy_KilledGuard") && c.down("Wolfy") && !c.b("MS_ClosedWolfyMission") {
@@ -575,6 +579,7 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
             if c.has_item("PosterTube") && !c.b("MS_SheepPoster_AwardGiven") && !c.b("Wolfy_KilledGuard") && !c.down("Wolfy") {
                 c.award(250, "strPosterAward");
                 c.set("MS_SheepPoster_AwardGiven", true, 23);
+                crate::tnmach::unlock("achDXE");
             }
             if c.living("22_DXEDITING") < c.expected("22_DXEDITING") {
                 c.pm("PM_Wolfy_KilledGuard");
@@ -615,6 +620,14 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
                 };
                 c.add_goal("KillBeefman", key, false, true);
                 c.set("MS_BeefmanGoalClose", true, 23);
+            }
+            if c.b("DTHologram_Played") && !c.b("MS_DTHologram_Played") {
+                crate::tnmach::unlock("achAthenaRoom");
+                c.set("MS_DTHologram_Played", true, 23);
+            }
+            // RespawnAthena with the melk shut off: she stays dead.
+            if c.b("MS_MelkShutOff") && c.b("Athena_Fight_Dead") && c.n("Athena_Fight") == 0 {
+                crate::tnmach::unlock("achAthena");
             }
             // Athena comes back from the melk pool until its source is shut off.
             if !c.b("MS_MelkShutOff") && c.b("Athena_Fight_Dead") && c.n("Athena_Fight") == 0 && !c.b("MS_AthenaRespawned") {
@@ -670,6 +683,10 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
 }
 
 fn downtown_timer(c: &mut Ctx) {
+    if !c.b("MS_achFanFic2") && c.b("Chris_Menu_Priory_Played") && c.b("WaltonSimons_Greeting_Played") {
+        crate::tnmach::unlock("achFanFic2");
+        c.set("MS_achFanFic2", true, 24);
+    }
     if !c.b("QC_SUB_KillBombers") && !c.b("ALLIED_WC") && c.n("SolBomber") == 0 {
         c.set("QC_SUB_KillBombers", true, 0);
         if !c.down("AlphaOperator") {
@@ -683,10 +700,15 @@ fn downtown_timer(c: &mut Ctx) {
             c.add_goal("SolBombing", key, false, false);
             c.award(500, "strAYBABTUAward");
         }
+        crate::tnmach::unlock("achSolsBombers");
     }
     if c.down("PJ") && !c.b("PJ_GaveReward") {
         c.add_goal("Bugging", "strPJDead", false, true);
         c.set("PJ_GaveReward", true, 23);
+    }
+    if c.down("PJ") && !c.b("MSPJ_Dead") && !c.b("PJ_Dead_Early") {
+        crate::tnmach::unlock("achPimpJojo");
+        c.set("MSPJ_Dead", true, 23);
     }
     if c.down("AlphaOperator") && c.b("ALLIED_PDX") && !c.b("MS_AlphaGoalClose") {
         let dead = c.b("AlphaOperator_Dead");
@@ -705,6 +727,7 @@ fn downtown_timer(c: &mut Ctx) {
 
 fn slums_timer(c: &mut Ctx) {
     if c.b("Midas_TakingOff") {
+        crate::tnmach::unlock("achATCNoLZ");
         c.leave_tag("Midashand");
     }
     // The hostages: alive, or knocked out on the floor.
@@ -718,12 +741,22 @@ fn slums_timer(c: &mut Ctx) {
     if c.down("Fender2k1") && c.down("Madmax") {
         c.pm("PM_KillDXO");
     }
+    if c.b("PM_KillDXO_Played") && !c.b("MS_PM_KillDXO_Played") {
+        crate::tnmach::unlock(if c.b("Slums_AllHostagesDead") { "achHostageVeryLethal" } else { "achHostageLethal" });
+        c.set("MS_PM_KillDXO_Played", true, 23);
+    }
+    if c.b("PM_Fender_Leaving_Played") {
+        crate::tnmach::unlock("achHostagePeaceful");
+    }
     if c.b("QC_SUB_SubwayPower") && !c.b("MS_SubwayCleared") {
         if !c.down("Fender2k1") || !c.down("Madmax") {
             c.remove_tag("SubwayExplosives1");
         }
         c.leave_tag("Fender2k1");
         c.leave_tag("Madmax");
+        if !c.b("Negotiations_Played") {
+            crate::tnmach::unlock("achHostageNotMet");
+        }
         c.set("MS_SubwayCleared", true, 23);
         c.pm("PM_SubwayPowerRestored");
     }
@@ -755,6 +788,7 @@ fn slums_timer(c: &mut Ctx) {
         c.enter_tag("DemolitionSquad");
         c.breakable("HelipadGate", true);
         c.set("MS_PreparedDemolition", true, 23);
+        crate::tnmach::unlock("achKevoKill");
     };
     if c.b("QR_MAIN_KidnapKevo") && !c.b("MS_PreparedDemolition") {
         if c.b("Kevo_Dead") && !c.b("AJ_TortureDone") {
@@ -785,12 +819,14 @@ fn slums_timer(c: &mut Ctx) {
         c.pm("PM_TG_KilledDemoMan");
         c.spawn_item("WeaponLAM", "LAMSpawnPoint");
         c.set("MS_DemoMan_Dead", true, 23);
+        crate::tnmach::unlock("achSolo");
     }
     if c.b("Midashand_Dead") && !c.b("MS_DoneMidasDeath") {
         c.pm("PM_TG_KilledMidas");
         crate::consys::bind_tag("ROFLCopter", "ROFLCopter", "ROFLCopter");
         c.unlock("ATCSewers");
         c.set("MS_DoneMidasDeath", true, 23);
+        crate::tnmach::unlock("achPilot");
     }
     if c.b("Vavrek_Dead") && !c.b("Vavrek_TOLD_Kidnapping") && !c.b("MS_VavrekDeadGoalUpdated") {
         c.add_goal("FreeThePilot", "strVavrekDead", false, false);
@@ -883,11 +919,15 @@ fn dxo_timer(c: &mut Ctx) {
     }
     if !c.b("ALLIED_WC") && c.b("Kevo_Dead") || c.b("Kevo_Unconscious") {
         c.pm("PM_Evil_KillKevo");
+        if c.b("Kevo_Dead") {
+            crate::tnmach::unlock("achKevoKill");
+        }
     }
     if !c.b("MS_AutopilotCodes_Done") && crate::consys::has_image("TNMDV_AutopilotCodes") {
         c.set("MS_AutopilotCodes_Done", true, 23);
         c.set("TrestkonFlying", true, 24);
         c.pm("PM_Evil_GotAutoPilotCodes");
+        crate::tnmach::unlock("achPilot");
     }
 }
 
@@ -997,6 +1037,9 @@ fn timers(c: &mut Ctx) {
             };
             for t in points {
                 c.spawn_item(&item, t);
+            }
+            if which == "Quad" {
+                crate::tnmach::unlock("achQuadRocket");
             }
             c.trigger("UCElectricityEmitter");
             c.trigger("UCDamageTrigger");
@@ -1216,6 +1259,7 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
                 crate::carry::discard_body();
             }
             c.hide(ActorSel::tag("KevoCarcass"), false);
+            crate::tnmach::unlock("achKevoCapture");
         }
         "OpenTortureRoom" => c.open_door("TortureRoomDoors"),
         "EvacuateTemplae" => {
@@ -1242,6 +1286,7 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
             if c.b("HAS_ATCIDCard") && !c.b("MS_ATCVoidID") {
                 c.atc_void_id();
             }
+            crate::tnmach::unlock("achHovercar");
         }
         // Dark Templar leaves his rewards on the floor: an accuracy mod, then a silencer and an aug upgrade unless
         // the player had no room for those earlier.

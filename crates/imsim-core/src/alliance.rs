@@ -112,6 +112,12 @@ impl AllianceTable {
 
     /// ChangeAlly (AllianceTrigger, scripted events). The own alliance stays friendly and permanent.
     /// uc: ScriptedPawn.ChangeAlly
+    /// SetAlliance: this pawn now belongs to `own` (friendly to it for good).
+    pub fn set_own(&mut self, own: &str) {
+        self.own = own.to_string();
+        self.change_ally(own, 1.0, true, false);
+    }
+
     pub fn change_ally(&mut self, name: &str, level: f32, permanent: bool, honor_permanence: bool) {
         let (level, permanent) = if name.eq_ignore_ascii_case(&self.own) { (1.0, true) } else { (level.clamp(-1.0, 1.0), permanent) };
         if honor_permanence && self.find(name).is_some_and(|e| e.permanent) {

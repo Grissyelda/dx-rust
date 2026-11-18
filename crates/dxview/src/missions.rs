@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use std::sync::Mutex;
 use unreal_pkg::props::{find, Property, Value};
 
-mod tnm;
+pub(crate) mod tnm;
 pub use tnm::load_text as tnm_load_text;
 
 /// A pawn that exists (alive, maybe out of the world).
@@ -97,6 +97,7 @@ pub fn tnm_kill(by_player: bool, class: &str, tag: &str, knocked_out: bool) {
 pub(crate) static DETECTED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 pub fn player_detected(actor: usize) {
+    crate::tnmbonus::detected();
     if crate::tnmmode::active() {
         if let Ok(mut q) = DETECTED.lock() {
             if q.len() < 64 {
@@ -116,6 +117,9 @@ pub fn display_news(mission: u8, file: &str, fl: &imsim_core::flags::FlagBase) -
 }
 
 pub fn game_event(f: &str) {
+    if crate::tnmbonus::game_event(f) {
+        return;
+    }
     if !f.is_empty() {
         if let Ok(mut q) = GAME_EVENTS.lock() {
             q.push(f.to_string());
@@ -192,7 +196,14 @@ static FX: Mutex<Vec<Fx>> = Mutex::new(Vec::new());
 
 
 /// Rockets the helicopter fires (Mission06 FireMissilesAt): (from, direction, tracking target).
-static ROCKETS: Mutex<Vec<(DVec3, DVec3, Option<DVec3>)>> = Mutex::new(Vec::new());
+static ROCKETS: Mutex<Vec<(DVec3, DVec3, Option<DVec3>, &'static str)>> = Mutex::new(Vec::new());
+
+/// A projectile a mission script launches from `from` along `dir` (ownerless).
+pub(crate) fn launch(class: &'static str, from: DVec3, dir: DVec3) {
+    if let Ok(mut q) = ROCKETS.lock() {
+        q.push((from, dir, None, class));
+    }
+}
 
 /// Pawns a script spawns (Mission15 UC): (class, tag, where, yaw, orders tag).
 static SPAWNS: Mutex<Vec<(String, String, DVec3, i32, String)>> = Mutex::new(Vec::new());
@@ -1301,7 +1312,7 @@ fn fire_missiles_at(c: &mut Ctx, target: &str) {
         // (i * CollisionRadius * vect(0, 0.15, 0)) >> Rotation.
         let from = at + side * (i * r * 0.15);
         if let Ok(mut q) = ROCKETS.lock() {
-            q.push((from, fwd, tgt));
+            q.push((from, fwd, tgt, "RocketLAW"));
         }
         crate::sound::play("DeusExSounds.Weapons.RocketIgnite", from, 2.0, 2048.0, 1.0);
     }
@@ -2188,9 +2199,9 @@ pub fn mission_fx_system(
     if let Some(snd) = ZONE_AMBIENT.lock().ok().and_then(|z| z.clone()) {
         crate::sound::hold(0x5A4F_4E45_0000, &snd, None, 1.0, 0.0, 1.0);
     }
-    for (from, dir, at) in take(&ROCKETS) {
+    for (from, dir, at, class) in take(&ROCKETS) {
         launches.0.push(crate::projectiles::Launch {
-            class: "RocketLAW".into(),
+            class: class.into(),
             pos: from,
             dir,
             from: None,

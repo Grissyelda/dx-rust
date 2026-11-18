@@ -4606,6 +4606,18 @@ pub fn activate_pickup(
             heal(ph, crate::perks::food(2.0));
             ph.drug_timer += 5.0;
         }
+        // The Nameless Mod's zyme: cures poison (achMelk when it did), six seconds of the drug effect.
+        "tnmVialCrack" => {
+            if ph.poison_counter > 0 {
+                crate::tnmach::unlock("achMelk");
+            }
+            // StopPoison.
+            ph.poison_counter = 0;
+            ph.poison_timer = 0.0;
+            ph.poison_damage = 0.0;
+            ph.drug_timer += 6.0;
+            crate::tnmach::set_flag("USED_Zyme", 0);
+        }
         "VialCrack" => {
             // Zyme: a minute of the drug effect and 10 health off.
             ph.drug_timer += 60.0;

@@ -35,6 +35,11 @@ pub struct SpawnReq {
 
 static QUEUE: Mutex<Vec<SpawnReq>> = Mutex::new(Vec::new());
 
+/// A decoration spawned by a script (The Nameless Mod's KillTrestkon: a piano, turrets), with overrides.
+pub fn decoration(class: &str, pos: DVec3, yaw: i32, props: Vec<Property>) {
+    request(SpawnReq { class: class.to_string(), pos, yaw, transient: false, props, generator: None, net_player: None });
+}
+
 /// As `pawn`, with property overrides on top of the class defaults.
 pub fn pawn_with(class: &str, pos: DVec3, yaw: i32, props: Vec<Property>) {
     request(SpawnReq {
@@ -130,10 +135,13 @@ pub fn spawn_system(
     };
     for r in reqs {
         let mut props = assets.classes.defaults(&r.class);
-        if find(&props, "GroundSpeed").is_none() {
-            println!("SPAWN {}: not a pawn class", r.class);
+        let pawn = find(&props, "GroundSpeed").is_some();
+        let deco_class = !pawn && assets.classes.ancestry(&r.class).iter().any(|a| a.eq_ignore_ascii_case("DeusExDecoration"));
+        if !pawn && !deco_class {
+            println!("SPAWN {}: not a pawn or decoration class", r.class);
             continue;
         }
+        let autoturret = deco_class && assets.classes.ancestry(&r.class).iter().any(|a| a.eq_ignore_ascii_case("AutoTurret"));
         for p in r.props {
             // Overrides replace the same array slot (InitialAlliances[1] etc.).
             props.retain(|q| !(q.name.eq_ignore_ascii_case(&p.name) && q.index == p.index));
@@ -257,7 +265,7 @@ pub fn spawn_system(
                 body,
                 blocker: Some(b),
                 mass,
-                pushable: false,
+                pushable: !pawn && matches!(find(&lvl.actors[ai].props, "bPushable"), Some(Value::Bool(true))),
                 pre,
                 rotation: rot,
                 scale_glow: 1.0,
@@ -275,16 +283,17 @@ pub fn spawn_system(
                 push_snd: 0.0,
                 falls: true,
             },
-            {
-                let mut n = crate::ai::Npc::new(ai, b, &lvl.actors[ai].props, r.yaw, r.pos);
-                n.net_player = r.net_player;
-                if r.net_player.is_some() {
-                    n.net = Some(Box::new(crate::netplay::NetPose { pos: r.pos, ..Default::default() }));
-                }
-                n
-            },
-            SpawnedPawn,
         ));
+        if pawn {
+            let mut n = crate::ai::Npc::new(ai, b, &lvl.actors[ai].props, r.yaw, r.pos);
+            n.net_player = r.net_player;
+            if r.net_player.is_some() {
+                n.net = Some(Box::new(crate::netplay::NetPose { pos: r.pos, ..Default::default() }));
+            }
+            commands.entity(root).insert((n, SpawnedPawn));
+        } else if autoturret {
+            crate::security::add_turret(ai);
+        }
         if let Some(g) = r.generator {
             commands.entity(root).insert(FromGenerator(g));
         }

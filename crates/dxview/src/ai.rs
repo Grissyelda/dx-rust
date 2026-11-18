@@ -7904,9 +7904,15 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
                         h.damage_type = "KnockedOut";
                     }
                 }
+                // The ban gloves: robots blow apart as before; anyone else gets the mod's own ban (tnmban.rs).
                 "Banned" => {
                     h.damage = 100_000.0;
-                    h.damage_type = "Exploded";
+                    if npc.hp_body.robot {
+                        h.damage_type = "Exploded";
+                    } else {
+                        crate::tnmban::start(npc.blocker);
+                        h.damage_type = "Shot";
+                    }
                 }
                 _ => {}
             }
@@ -8157,6 +8163,8 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
             damage_type: h.damage_type,
         });
         crate::missions::tnm_kill(h.attacker.is_none(), &lvl.actors[npc.actor].class, actor_tag(&lvl.actors[npc.actor]), false);
+        let firewall = matches!(find(&lvl.actors[npc.actor].props, "bFirewall"), Some(Value::Bool(true)));
+        crate::tnmach::pawn_died(&lvl.actors[npc.actor].class, h.attacker.is_none(), false, h.damage_type, lvl.mission_number(), firewall, true, &flags.0);
         crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
         crate::netplay::credit_pawn_kill(h.attacker);
         if npc.important && !npc.bind_name.is_empty() {
@@ -8239,6 +8247,8 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         damage_type: h.damage_type,
     });
     crate::missions::tnm_kill(h.attacker.is_none(), &lvl.actors[npc.actor].class, actor_tag(&lvl.actors[npc.actor]), knocked_out);
+    let firewall = matches!(find(&lvl.actors[npc.actor].props, "bFirewall"), Some(Value::Bool(true)));
+    crate::tnmach::pawn_died(&lvl.actors[npc.actor].class, h.attacker.is_none(), knocked_out, h.damage_type, lvl.mission_number(), firewall, false, &flags.0);
     crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
     crate::netplay::credit_pawn_kill(h.attacker);
     blockers.list[npc.blocker].radius = 0.0;

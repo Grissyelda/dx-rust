@@ -1426,6 +1426,7 @@ impl Term {
                     wx.inv.0.credits -= cost.max(0) as u32;
                     cost
                 };
+                crate::tnmach::unlock("achVending");
                 let mut m = txt(wx.hud, wx.assets, w, "strBoughtProduct", "%s bought for c%i.")
                     .replacen("%s", &name, 1)
                     .replacen("%i", &paid.to_string(), 1);
@@ -1518,6 +1519,10 @@ impl Term {
             }
         }
         self.focus = Some(Wid::Edit(0));
+        // tnmComputerScreenATMWithdraw: drawing on Trestkon's own account.
+        if crate::tnmmode::active() && !self.hacked && self.user_idx == 0 {
+            crate::tnmach::unlock("achATM");
+        }
     }
 
     /// ActivateSpecialOption.
@@ -1582,6 +1587,13 @@ fn select_doc(m: &mut Mail, row: usize, pkg: &str, wx: &mut Wx) {
     m.body = wx.texts.get(wx.assets, pkg, &m.docs[i].name).map(|p| p.body).unwrap_or_default();
     m.center = false;
     m.body_scroll = 0;
+    // tnmComputerScreenBulletins: the news of a cult or Sol's man killed.
+    if crate::tnmmode::active() {
+        let name = &m.docs[i].name;
+        if (17..=23).any(|n| name.eq_ignore_ascii_case(&format!("Bulletin{n}"))) {
+            crate::tnmach::unlock("achNews");
+        }
+    }
 }
 
 /// The mover indices with a tag.

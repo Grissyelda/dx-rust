@@ -45,6 +45,10 @@ pub struct MoverRt {
     pub waiting_pawn: Option<usize>,
     /// A script timed this move and it stops at its key (no chaining on through the keyframes).
     pub held: bool,
+    /// Turning toward a DesiredRotation at RotationRate (pitch, yaw, roll per second): The Nameless Mod's staring
+    /// movers (StaringMover, its turrets and the cinematic Cerberus guns).
+    pub desired_rot: Option<[i32; 3]>,
+    pub rot_rate: [i32; 3],
 }
 
 #[derive(Resource)]
@@ -119,6 +123,8 @@ pub fn spawn_movers(
             close_timer: None,
             waiting_pawn: None,
             held: false,
+            desired_rot: None,
+            rot_rate: [0; 3],
             opening: false,
             locked: info.locked,
             moved_since_lit: false,
@@ -499,6 +505,26 @@ pub fn tick_movers(
                     if !rt.interpolating {
                         rt.waiting_pawn = None;
                     }
+                }
+            }
+            // Physics rotation toward DesiredRotation (fixed rate per axis, the short way round).
+            if let Some(want) = rt.desired_rot {
+                let mut moved = false;
+                for c in 0..3 {
+                    let cur = rt.rotation[c];
+                    let d = (want[c] - cur).rem_euclid(65536);
+                    let d = if d > 32768 { d - 65536 } else { d };
+                    if d == 0 {
+                        continue;
+                    }
+                    let step = ((rt.rot_rate[c] as f64 * dt).round() as i32).max(1);
+                    rt.rotation[c] = if d.abs() <= step { cur + d } else { cur + step * d.signum() };
+                    moved = true;
+                }
+                if moved {
+                    changed = true;
+                } else {
+                    rt.desired_rot = None;
                 }
             }
             if changed {
@@ -907,6 +933,10 @@ pub fn mover_damage_system(
         }
     }
     for (i, dmg, ty, bypass) in hits {
+        // The Nameless Mod: an EMP-vulnerable staring mover is confused instead (StaringMover.TakeDamage).
+        if ty == "EMP" && crate::staring::emp(i, dmg) {
+            continue;
+        }
         let info = &lvl.movers[i];
         let p = &lvl.actors[info.actor].props;
         let ent = movers.entities[i];

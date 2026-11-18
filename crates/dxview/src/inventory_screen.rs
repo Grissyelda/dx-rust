@@ -562,6 +562,10 @@ fn weapon_info(
     let mut w = base.clone();
     if let Some(w) = w.as_mut() {
         apply_mods(w, &modst);
+        // WeaponLaser.UpdateInfo (The Nameless Mod): a scope on it earns achEMP.
+        if w.has_scope && crate::tnmmode::active() && crate::classtree::is_a(class, "WeaponLaser") {
+            crate::tnmach::unlock("achEMP");
+        }
     }
     let hit = int_p(d, "HitDamage", 0);
     let aoe = int_p(d, "AreaOfEffect", 0);
@@ -2538,6 +2542,17 @@ fn finish_drag(
                         // A drawn weapon picks up its new stats next time it's raised.
                     }
                 }
+                // The Nameless Mod: chemicals dropped on a wine bottle (or the bottle on the chemicals) make a Molotov
+                // (tnmPersonaScreenInventory's drag craft).
+                Hit::Item(t) if t != c && crate::trestkon::molotov_pair(&inv.0, class_of(c), class_of(t)).is_some() => {
+                    let chem = crate::trestkon::molotov_pair(&inv.0, class_of(c), class_of(t)).unwrap_or_default();
+                    let msg = crate::trestkon::craft_molotov(&mut inv.0, &mut assets.classes, &chem);
+                    if !msg.is_empty() {
+                        st.set_status(msg);
+                    }
+                    st.sel = None;
+                    return;
+                }
                 Hit::Item(_) | Hit::Grid(..) => {
                     let view = View {
                         inv: &inv.0,
@@ -3102,7 +3117,8 @@ fn draw_items(
         }
         if let (Some(dc), Hit::Item(h)) = (&drag_class, hit) {
             if *h == key && *dc != key {
-                let good = dc.starts_with("WeaponMod") && weapon_for_mod(dc, &key, view, assets);
+                let good = (dc.starts_with("WeaponMod") && weapon_for_mod(dc, &key, view, assets))
+                    || crate::trestkon::molotov_pair(view.inv, class_of(dc), class).is_some();
                 fill = Some(if good { COL_MOD_TRUE } else { COL_MOD_FALSE });
             }
         }

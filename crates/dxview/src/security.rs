@@ -658,6 +658,25 @@ pub fn lasers_left(tag: &str) -> usize {
     LIVE.lock().map(|l| l.1.iter().filter(|t| t.eq_ignore_ascii_case(tag)).count()).unwrap_or(0)
 }
 
+/// The Nameless Mod's challenge maps: the cameras' tuning for the chosen difficulty (0..2), applied once built.
+static TUNING: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+
+pub fn challenge_tuning(difficulty: usize) {
+    if let Ok(mut t) = TUNING.lock() {
+        *t = Some(difficulty);
+    }
+}
+
+/// Turret bases spawned at run time (level actor indexes), set up on the next frame.
+static ADD_TURRETS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// A script spawned an AutoTurret (spawn.rs made its base): give it its gun and make it a turret.
+pub fn add_turret(actor: usize) {
+    if let Ok(mut q) = ADD_TURRETS.lock() {
+        q.push(actor);
+    }
+}
+
 pub fn security_system(
     mut commands: Commands,
     time: Res<Time>,
@@ -706,6 +725,42 @@ pub fn security_system(
         init(st, &mut commands, &mut level.0, &mut blockers, &mut alarms, &refs, &mut assets, &mut images, &mut meshes, &mut materials);
         // The guns (and laser beams) spawned by init only exist once the commands are applied: a turret checked
         // this frame would find no gun and count as destroyed.
+        return;
+    }
+    // Challenge tuning: Easy cameras take 2 s to react and forget after 5; Normal 1 s / 10; Hard react at once and
+    // sweep twice as fast.
+    if let Some(d) = TUNING.lock().ok().and_then(|mut t| t.take()) {
+        for c in st.cams.iter_mut() {
+            match d {
+                0 => {
+                    c.trigger_delay = 2.0;
+                    c.memory = 5.0;
+                }
+                1 => {
+                    c.trigger_delay = 1.0;
+                    c.memory = 10.0;
+                }
+                _ => {
+                    c.trigger_delay = 0.0;
+                    c.swing_period /= 2.0;
+                }
+            }
+        }
+    }
+    // Turrets a script spawned (The Nameless Mod's KillTrestkon): their guns go on now; they work next frame.
+    let added: Vec<usize> = ADD_TURRETS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    if !added.is_empty() {
+        let by_actor: HashMap<usize, usize> = blockers.list.iter().enumerate().map(|(b, c)| (c.actor, b)).collect();
+        for i in added {
+            let Some(a) = level.0.actors.get(i) else { continue };
+            let gun_class = if a.class.eq_ignore_ascii_case("AutoTurretSmall") { "AutoTurretGunSmall" } else { "AutoTurretGun" };
+            let p = a.props.clone();
+            let lvl = &mut level.0;
+            if let Some(gun) = spawn_gun(i, gun_class, &p, &mut commands, lvl, &mut blockers, &mut assets, &mut images, &mut meshes, &mut materials) {
+                let turret = new_turret(i, &p, gun, &by_actor, &blockers);
+                st.turrets.push(turret);
+            }
+        }
         return;
     }
     let lvl = &level.0;

@@ -63,5 +63,10 @@ pub fn frob(props: &[Property]) -> String {
         crate::classic_hud::client_message(&m);
     }
     println!("TNM easter egg {id} ({} found)", count());
+    // Trestkon.eggAchievement: one egg, and all sixteen (eggs bits 1..16).
+    crate::tnmach::unlock("achOneEgg");
+    if (1..=16).all(has) {
+        crate::tnmach::unlock("achAllEggs");
+    }
     msg.replacen("%i", &id.to_string(), 1).replacen("%d", &id.to_string(), 1)
 }

@@ -52,6 +52,23 @@ pub fn wall_hit(at: DVec3, normal: DVec3, dir: DVec3, damage: f32, source: Sourc
 }
 
 /// A Spark where a turret's bullet hit an actor.
+/// Decals and smoke asked for by game code (The Nameless Mod's ban: a shadow and a scorch mark, a little smoke):
+/// (where, surface normal, texture, DrawScale) and (where, DrawScale, seconds).
+static MARKS: std::sync::Mutex<Vec<(DVec3, DVec3, String, f32)>> = std::sync::Mutex::new(Vec::new());
+static SMOKES: std::sync::Mutex<Vec<(DVec3, f32, f32)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn mark(at: DVec3, normal: DVec3, tex: &str, scale: f32) {
+    if let Ok(mut q) = MARKS.lock() {
+        q.push((at, normal, tex.to_string(), scale));
+    }
+}
+
+pub fn smoke(at: DVec3, scale: f32, life: f32) {
+    if let Ok(mut q) = SMOKES.lock() {
+        q.push((at, scale, life));
+    }
+}
+
 pub fn spark(at: DVec3, normal: DVec3) {
     if let Ok(mut q) = SPARKS.lock() {
         q.push((at, normal));
@@ -211,6 +228,22 @@ pub fn impacts_system(
                 q.clear();
             }
         }
+    }
+    for (at, scale, life) in SMOKES.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        spawn_puff(&mut commands, &mut assets, &mut images, &mut meshes, &mut materials, at, scale, life);
+    }
+    for (at, n, tex, scale) in MARKS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        let Some(img) = modulated_image_for(&mut assets, &mut images, &tex) else { continue };
+        let width = assets.lib.width(&tex).map(|w| w as f32).unwrap_or(64.0);
+        let normal = Vec3::from(ue_to_bevy(n.as_vec3().to_array())).normalize_or_zero();
+        let mat = assets.sprites.decal(&mut materials, img, false);
+        let quad = assets.sprites.quad(&mut meshes);
+        let p = at + n * 0.3;
+        let tf = Transform::from_translation(Vec3::from(ue_to_bevy(p.as_vec3().to_array())))
+            .with_rotation(Quat::from_rotation_arc(Vec3::Z, normal))
+            .with_scale(Vec3::splat(width * scale * dx_level::METERS_PER_UNIT));
+        let e = commands.spawn((Mesh3d(quad), MeshMaterial3d(mat), tf, BulletDecal { age: 0.0, life: 60.0, pos: p })).id();
+        decals.0.push_back(e);
     }
     // Decals put back from the level's saved state (Casings And Blood Stay).
     for d in RESTORE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {

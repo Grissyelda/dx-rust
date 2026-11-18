@@ -200,6 +200,7 @@ pub fn launch_system(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     level: Res<LevelRes>,
+    player: Res<Player>,
 ) {
     let _prof = crate::prof::scope("projectiles::launch_system");
     let gas: Vec<Launch> = clouds
@@ -444,7 +445,41 @@ pub fn launch_system(
                     id,
                 );
                 id
+            })
+            .or_else(|| {
+                // The Nameless Mod's CerberusProjectile.SpawnSmokeEffects: a smoke trail.
+                (short == "CerberusProjectile").then(|| {
+                    let id = root.to_bits() | (1 << 59);
+                    crate::particles::add_tracked(
+                        crate::particles::GenSpec {
+                            pos: l.pos,
+                            dir: DVec3::Z,
+                            tex: "Effects.Smoke.SmokePuff1".into(),
+                            draw_scale: 0.3,
+                            check: 0.02,
+                            frequency: 1.0,
+                            rise: 8.0,
+                            eject: 0.0,
+                            life: 2.0,
+                            random: true,
+                            follow: None,
+                            gravity: false,
+                            lifespan: None,
+                            spawn_sound: None,
+                        },
+                        id,
+                    );
+                    id
+                })
             });
+        // RocketSAM.BeginPlay: the launch jolts the player's view within 2048.
+        if short == "RocketSAM" {
+            let d = (player.body.location - l.pos).length();
+            let mag = (1.0 - d / 2048.0).clamp(0.0, 1.0) * 5.0;
+            if mag > 0.0 {
+                crate::shake::jolt_view(mag);
+            }
+        }
         // Rocket Rigger (Rocket.PostBeginPlay): the player's GEP and WP rockets blast out to 576.
         let rigged = by_player && matches!(short.as_str(), "Rocket" | "RocketWP") && crate::perks::has("PerkHERocket");
         let blast_energy = by_player
