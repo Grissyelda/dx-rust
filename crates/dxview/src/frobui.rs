@@ -439,7 +439,8 @@ pub fn frob_target_system(
             continue;
         }
         let r = n.params.radius * 2.0;
-        let c = d.body.location - DVec3::new(0.0, 0.0, n.params.height - 10.0);
+        // The body's own collision height: a thrown body is a flat carcass (see pickups::nearest_target, #72).
+        let c = d.body.location - DVec3::new(0.0, 0.0, d.body.height - 10.0);
         if let Some(t) = ray_cylinder(eye, end, c, r, 14.0) {
             if t <= wall + 0.01 {
                 let a = &lvl.actors[n.actor];

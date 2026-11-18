@@ -585,7 +585,9 @@ fn nearest_target(
             continue;
         }
         let r = npc.params.radius * 2.0;
-        let c = deco.body.location - DVec3::new(0.0, 0.0, npc.params.height - 10.0);
+        // From the body's own collision: a dropped body flies and lands as a flat carcass (half height 7), so the
+        // standing pawn's height put the frob cylinder under the floor and a body could only be picked up once (#72).
+        let c = deco.body.location - DVec3::new(0.0, 0.0, deco.body.height - 10.0);
         if let Some(t) = ray_cylinder(eye, end, c, r, 14.0) {
             if t <= wall + 0.01 && best.as_ref().is_none_or(|(_, f)| t < *f) {
                 best = Some((Target::Body(e), t));

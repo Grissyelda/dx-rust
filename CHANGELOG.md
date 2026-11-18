@@ -36,6 +36,10 @@ story ends on the mod's own credits (its banner, its credits text and its credit
 Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the fades in the ending scenes, The Nameless
 Mod's own player abilities, menus and achievements, and its bonus maps.
 
+### Fix: thrown bodies could only be picked up once (#72)
+A body you'd thrown down couldn't be picked up or searched again (in training, the knocked-out trooper put down on
+the floor could never be got back onto the med bed). The body now stays in reach wherever it lands.
+
 ### Fix: Augmentique outfits with missing pieces (#71)
 An outfit texture DX RUST can't draw no longer leaves a hole in JC's outfit: the search goes on to the game's own
 skin of that name, as the mod's own lookup does when a texture isn't there. Any texture still missing is named once
