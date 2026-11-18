@@ -53,8 +53,23 @@ bonus level plays as the mod's side-scroller: seen from the side, left and right
 course's line round its corners, with lives, two health radishes and immunity after a hit, radishes to collect (a
 life every hundred), its moving platforms and its own HUD; dying costs a life and restarts the level, and saving is
 off while it runs.
-Not yet: the cinematic Cerberus guns and SAM site, warp-zone mazes, the fades in the ending scenes, the dominating
-and aim-assist augmentations, its menus and achievements, its terminal games, and its other bonus maps.
+In the Radish Adventure the enemies are held on the course's line too, the level's loose weapons and ammo hover
+and spin, unlit, a weapon fired shows its name and rounds left (and is gone once a weapon with a clip runs dry),
+and Trestkon is drawn as a blue outline through anything that hides him from the camera.
+Also now: the ABI base's cinematic Cerberus guns and the SAM site, the warp-zone mazes, the fades in the ending
+scenes, the combat and stealth bonus missions (timer, par and the invader banner), the ban effect (ban gloves and
+the endings' scripted bans fade a pawn out in a scorch mark and smoke; the PDX ending's ScaraKing loops his shocked
+pose), dragging chemicals onto a wine bottle in the inventory to make a Molotov, and visible breath in the cold
+ABI maps (people breathe out small puffs; Trestkon too in conversations there). AugBot takes over the nearest robot
+the mod marks dominatable within its reach and lets you drive it with the movement keys while you stand still;
+AugAimbot looks for a hostile target in sight (every second, down to every 0.2 s at its top level), turns your view onto it, crouches for small
+targets, fires, reloads, switches ammo or (from level 4) weapons and uses medkits and bioelectric cells, with its
+red "tracking" label and dotted line on the HUD. The mod's achievements are earned and kept across games, with its
+own Achievements screen (by category, sortable, descriptions, hidden ones until earned) on the main menu's
+Achievements button. Computers with games get the Applications button and the game list; Lights Out is playable.
+Not yet: the other terminal games (Pong, Tetris, Breakout, the text adventures, IRC, the in-game web pages, the
+packet puzzle, the clicker) - their buttons are listed but greyed - and the rest of the mod's own menus (its
+options, custom difficulty, new-game screen and persona screens use Deus Ex's).
 
 ### Fix: thrown bodies could only be picked up once (#72)
 A body you'd thrown down couldn't be picked up or searched again (in training, the knocked-out trooper put down on
