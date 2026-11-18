@@ -17,6 +17,15 @@ static START: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// BanInfo.UpdateBanFX's ScaleGlow step, per tick; one tick taken as 1/60 s.
 const STEP: f32 = 0.04 * 60.0;
 
+static START_TAGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// A mission script's BanPawn / BanScaraFX (BanInfo.StartBan) on every pawn with this Tag.
+pub fn start_tag(tag: &str) {
+    if let Ok(mut q) = START_TAGS.lock() {
+        q.push(tag.to_string());
+    }
+}
+
 /// A pawn was hit by the ban gloves (it dies as usual; the fade follows).
 pub fn start(blocker: usize) {
     if let Ok(mut q) = START.lock() {
@@ -51,7 +60,15 @@ pub fn ban_system(
     parts: Query<(Option<&MeshMaterial3d<StandardMaterial>>, Option<&MeshMaterial3d<crate::gpuanim::AnimMaterial>>, Option<&Mesh3d>, &Transform), Without<Npc>>,
 ) {
     let lvl = &level.0;
-    let starts: Vec<usize> = START.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    let mut starts: Vec<usize> = START.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for tag in START_TAGS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        for (_, npc, ..) in &pawns {
+            let alive = blockers.list.get(npc.blocker).is_some_and(|c| c.radius > 0.0);
+            if alive && lvl.actors.get(npc.actor).is_some_and(|a| crate::ai::actor_tag(a).eq_ignore_ascii_case(&tag)) && !starts.contains(&npc.blocker) {
+                starts.push(npc.blocker);
+            }
+        }
+    }
     for b in starts {
         let Some((e, npc, deco, _, _)) = pawns.iter().find(|p| p.1.blocker == b) else { continue };
         let at = blockers.list.get(b).map_or(deco.body.location, |c| c.center);

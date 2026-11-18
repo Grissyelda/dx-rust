@@ -35,6 +35,7 @@ mod warpzone;
 mod fade;
 mod tnmbonus;
 mod tnmaugs;
+mod breath;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1194,6 +1195,8 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, warpzone::warp_system.after(fly))
         .add_systems(Update, fade::fade_system.after(ai::npc_system))
         .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system))
+        .add_systems(Update, breath::breath_system.before(particles::particle_system))
+        .add_systems(Update, radish::silhouette_system.after(skeletal::mirror_skel_system))
         .add_systems(Update, tnmaugs::tnm_aug_system.before(weapons::weapon_system).before(ai::npc_system))
         .add_systems(Update, scriptworld::scriptworld_system.after(mission::mission_system))
         .add_systems(Update, missions::mission_fx_system.after(mission::mission_system))

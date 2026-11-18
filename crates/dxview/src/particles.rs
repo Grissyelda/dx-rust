@@ -320,6 +320,29 @@ fn spec_gen(g: GenSpec) -> Gen {
 
 static ADD: Mutex<Vec<GenSpec>> = Mutex::new(Vec::new());
 
+/// Generators held by a key and moved every frame by their owner (visible breath, breath.rs): key -> (where,
+/// which way, spewing, eject speed, draw scale). A key not posted for a frame lets its generator die out.
+#[derive(Clone)]
+pub struct Held {
+    pub pos: DVec3,
+    pub dir: DVec3,
+    pub spewing: bool,
+    pub eject: f64,
+    pub draw_scale: f32,
+    pub tex: &'static str,
+    pub check: f32,
+    pub rise: f64,
+    pub life: f32,
+}
+static HELD: Mutex<Vec<(String, Held)>> = Mutex::new(Vec::new());
+
+/// Posts a held generator's state for this frame.
+pub fn hold(key: String, h: Held) {
+    if let Ok(mut q) = HELD.lock() {
+        q.push((key, h));
+    }
+}
+
 pub fn add_generator(g: GenSpec) {
     if let Ok(mut q) = ADD.lock() {
         q.push(g);
@@ -361,6 +384,46 @@ pub fn particle_system(
         st.gens.push(spec_gen(g));
     }
     st.gens.extend(ADD_GEN.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default());
+    // Held generators: made the first time a key is posted, moved / switched each frame, let go when not posted.
+    let held: Vec<(String, Held)> = HELD.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    for g in st.gens.iter_mut().filter(|g| g.tag.starts_with("held:")) {
+        match held.iter().find(|(k, _)| *k == g.tag) {
+            Some((_, h)) => {
+                g.pos = h.pos;
+                g.dir = h.dir;
+                g.spewing = h.spewing;
+                g.eject = h.eject;
+                g.draw_scale = h.draw_scale;
+            }
+            None => {
+                g.spewing = false;
+                g.lifespan = Some(0.0);
+            }
+        }
+    }
+    for (k, h) in &held {
+        if !st.gens.iter().any(|g| g.tag == *k) {
+            let mut g = spec_gen(GenSpec {
+                pos: h.pos,
+                dir: h.dir,
+                tex: h.tex.into(),
+                draw_scale: h.draw_scale,
+                check: h.check,
+                frequency: 1.0,
+                rise: h.rise,
+                eject: h.eject,
+                life: h.life,
+                random: true,
+                follow: None,
+                gravity: false,
+                lifespan: None,
+                spawn_sound: None,
+            });
+            g.tag = k.clone();
+            g.spewing = h.spewing;
+            st.gens.push(g);
+        }
+    }
     let tracked = TRACK.lock().ok().and_then(|t| t.clone()).unwrap_or_default();
     if st.gens.is_empty() {
         return;

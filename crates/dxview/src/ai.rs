@@ -1022,6 +1022,8 @@ pub struct Npc {
     pub crazed: f32,
     /// TNM AugBot took this robot over (state 'dominated': it does nothing for itself; the player drives it).
     pub dominated: bool,
+    /// A scripted state looping one animation and ignoring everything (WorldReq::LoopAnim).
+    pub script_loop: Option<&'static str>,
     /// Died in water: the floating carcass (CarcassType's Mesh3) takes the body's place once it has fallen.
     pub water_carcass: Option<(String, f32)>,
     /// That floating body's entity (taken away with the body when it's picked up).
@@ -1385,6 +1387,7 @@ impl Npc {
             swap_carcass: None,
             crazed: 0.0,
             dominated: false,
+            script_loop: None,
             water_carcass: None,
             float_body: None,
             aura: None,
@@ -2019,6 +2022,9 @@ pub enum WorldReq {
     /// Each body part at least this much, as the scripts list them (head, torso, left leg, right leg, left arm,
     /// right arm); GenerateTotalHealth after.
     MinParts(Sel, [f32; 6]),
+    /// A scripted state that only loops one animation and ignores everything (The Nameless Mod's
+    /// ScaraKing.ScaraBan: LoopAnim('Shocked')).
+    LoopAnim(Sel, &'static str),
 }
 
 static WORLD: std::sync::Mutex<Vec<WorldReq>> = std::sync::Mutex::new(Vec::new());
@@ -2160,6 +2166,11 @@ pub fn world_system(
                     npc.target = None;
                     npc.anim = "";
                     println!("PAWN {class} {tag} disabled by a trigger");
+                }
+                WorldReq::LoopAnim(sel, a) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead => {
+                    npc.script_loop = Some(a);
+                    npc.target = None;
+                    npc.state = NpcState::Idle;
                 }
                 WorldReq::Rebind(sel, new, check)
                     if sel_matches_tag(sel, class, &npc.bind_name, &tag)
@@ -3761,6 +3772,13 @@ pub fn npc_system(
         };
         // The Nameless Mod: a robot AugBot took over (TNMRobot state dominated, ignores all) moves only as the
         // player drives it and faces his view.
+        if npc.script_loop.is_some() && npc.state != NpcState::Dead {
+            npc.target = None;
+            npc.state = NpcState::Idle;
+            firing = false;
+            running = false;
+            wish = DVec3::ZERO;
+        }
         if npc.dominated {
             npc.target = None;
             npc.state = NpcState::Idle;
@@ -5444,6 +5462,10 @@ fn animate_pawn(
         return;
     }
     if matches!(npc.state, NpcState::TakingHit(_)) {
+        return;
+    }
+    if let Some(a) = npc.script_loop.filter(|_| npc.state != NpcState::Dead) {
+        set_anim(an, level, npc, a, "BreatheLight", 1.0);
         return;
     }
     // Smarter AI: a grenade throw's Attack swing plays out.

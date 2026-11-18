@@ -759,6 +759,8 @@ enum Btn {
     SavedEmail,
     /// The Nameless Mod's vending machines.
     Purchase,
+    /// The Nameless Mod's Applications button (tnmComputerScreenEmail / SpecialOptions, bHasGames).
+    Games,
 }
 
 /// Widgets the mouse can press.
@@ -780,6 +782,9 @@ enum Wid {
     ScrollDown(u8),
     ScrollTrack(u8),
     SpecialOpt(usize),
+    /// tnmComputerScreenGames' buttons, and LightsOutWindow's 36 lights.
+    Game(usize),
+    Light(usize),
     HackWin,
     HackBtn,
     AcctWin,
@@ -851,6 +856,89 @@ enum Screen {
     Withdraw { amount: Edit, info: String, instr: String, modifier: f32, disabled_t: Option<f32> },
     Disabled,
     Vending(Vend),
+    /// tnmComputerScreenGames: (button label, the screen it opens).
+    Games(Vec<(String, &'static str)>),
+    /// LightsOutWindow: the 6 x 6 lights, on or off.
+    LightsOut([bool; 36]),
+}
+
+/// tnmComputerScreenGames: the game kinds (TNM2DGameType 1..14) and the screens they open.
+const TNM_GAME_ACTIONS: [&str; 14] =
+    ["PONG", "TETRIS", "BREAKOUT", "LIGHTSOUT", "TEXTGAME", "REALIRC", "FAKEIRC", "DXIGAME", "DXEGAME", "ABIGAME", "HTML", "RUSHHOUR", "WHOIS", "IDLE"];
+
+/// The games of ours (the rest of the mod's computer games aren't ported yet: their buttons stay greyed).
+fn tnm_game_ported(action: &str) -> bool {
+    action == "LIGHTSOUT"
+}
+
+/// tnmComputers: the games[] it offers (none unless bHasGames).
+fn tnm_games(lvl: &dx_level::Level, actor: usize) -> Vec<u8> {
+    let Some(a) = lvl.actors.get(actor) else { return Vec::new() };
+    if !crate::tnmmode::active() || !matches!(unreal_pkg::props::find(&a.props, "bHasGames"), Some(Value::Bool(true))) {
+        return Vec::new();
+    }
+    let mut g: Vec<(u32, u8)> = a
+        .props
+        .iter()
+        .filter(|p| p.name.eq_ignore_ascii_case("games"))
+        .filter_map(|p| match p.value {
+            Value::Byte(b) if b > 0 => Some((p.index, b)),
+            _ => None,
+        })
+        .collect();
+    g.sort();
+    // The list stops at the first empty slot (games[i] != 0).
+    let mut out = Vec::new();
+    for (k, (i, b)) in g.into_iter().enumerate() {
+        if i as usize != k || out.len() == 5 {
+            break;
+        }
+        out.push(b);
+    }
+    out
+}
+
+/// LightsOutWindow.ToggleSurrounding: the light and its four neighbours flip.
+fn lights_toggle(on: &mut [bool; 36], i: usize) {
+    let (row, col) = ((i / 6) as i32, (i % 6) as i32);
+    for (r, c) in [(row, col), (row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)] {
+        if (0..6).contains(&r) && (0..6).contains(&c) {
+            on[(r * 6 + c) as usize] ^= true;
+        }
+    }
+}
+
+/// LightsOutWindow.Generate: 4-9 presses on cells that aren't next to another chosen one, from all dark - always
+/// solvable.
+fn lights_generate(seed: &mut u64) -> [bool; 36] {
+    let mut rnd = |n: u64| {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (*seed >> 33) % n
+    };
+    let mut choices = [0i8; 36];
+    let mut left = 4 + rnd(6);
+    let mut guard = 0;
+    while left > 0 && guard < 10_000 {
+        guard += 1;
+        let (row, col) = (rnd(6) as i32, rnd(6) as i32);
+        let i = (row * 6 + col) as usize;
+        if choices[i] == 0 {
+            choices[i] = 1;
+            for (r, c) in [(row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)] {
+                if (0..6).contains(&r) && (0..6).contains(&c) {
+                    choices[(r * 6 + c) as usize] = -1;
+                }
+            }
+            left -= 1;
+        }
+    }
+    let mut on = [false; 36];
+    for i in 0..36 {
+        if choices[i] == 1 {
+            lights_toggle(&mut on, i);
+        }
+    }
+    on
 }
 
 /// HUDVendingMachineWindow: the product picked (CurrentSelection), the two scroll areas and the status message
@@ -963,6 +1051,8 @@ enum Which {
     Withdraw,
     Disabled,
     Vending,
+    Games,
+    LightsOut,
 }
 
 /// ComputerScreenHack: the ICE Breaker.
@@ -1012,6 +1102,8 @@ struct Term {
     user_idx: i32,
     /// Window position once dragged by its title bar (bWindowDragged).
     win_pos: Option<(i32, i32)>,
+    /// The Nameless Mod: the games this computer offers (tnmComputers.games, when bHasGames).
+    games: Vec<u8>,
     drag: Option<(i32, i32)>,
     pressed: Option<Wid>,
     pressed_right: Option<Wid>,
@@ -1141,6 +1233,8 @@ impl Term {
             (Kind::Security | Kind::Personal, "SPECIAL") => Some(Which::Special),
             (Kind::Atm, "LOGIN") => Some(Which::Withdraw),
             (Kind::Atm, "ATMDISABLED") => Some(Which::Disabled),
+            (_, "GAMES") => Some(Which::Games),
+            (_, "LIGHTSOUT") => Some(Which::LightsOut),
             _ => None,
         };
         if let Some(w) = next {
@@ -1225,6 +1319,28 @@ impl Term {
                 };
                 refresh_vend(&mut v, self.actor, wx);
                 Screen::Vending(v)
+            }
+            Which::Games => {
+                let d = wx.assets.classes.defaults("tnmComputerScreenGames");
+                let name = |n: usize| {
+                    d.iter()
+                        .find(|p| p.name.eq_ignore_ascii_case("gameNames") && p.index == n as u32)
+                        .and_then(|p| match &p.value {
+                            Value::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default()
+                };
+                let list = self
+                    .games
+                    .iter()
+                    .filter_map(|&g| TNM_GAME_ACTIONS.get(g as usize - 1).map(|a| (name(g as usize - 1), *a)))
+                    .collect();
+                Screen::Games(list)
+            }
+            Which::LightsOut => {
+                let mut seed = (wx.now * 1000.0) as u64 ^ self.actor as u64;
+                Screen::LightsOut(lights_generate(&mut seed))
             }
             Which::Special => {
                 let user = self.user.clone();
@@ -1680,6 +1796,35 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
                 g.buttons.push((Btn::Special, false, true));
                 g.left_edge = true;
             }
+            if email && !t.games.is_empty() {
+                g.buttons.push((Btn::Games, false, true));
+                g.left_edge = true;
+            }
+        }
+        Some(Screen::Games(list)) => {
+            g.class = "tnmComputerScreenGames";
+            g.title = txt(hud, assets, g.class, "Title", "Applications");
+            let n = list.len() as i32;
+            g.cw = 331;
+            g.ch = 12 + 30 * n + 75;
+            g.textures = vec![
+                "ComputerSpecialOptionsBackgroundTop_1",
+                "ComputerSpecialOptionsBackgroundTop_2",
+                "ComputerSpecialOptionsBackgroundMiddle_1",
+                "ComputerSpecialOptionsBackgroundMiddle_2",
+                "ComputerSpecialOptionsBackgroundBottom_1",
+                "ComputerSpecialOptionsBackgroundBottom_2",
+            ];
+            g.scale = Some((12, 30, 75, n));
+            g.status = Some((50 + 12 + 30 * n, 10, 21));
+            g.buttons = vec![(Btn::Logout, true, true), (Btn::Return, true, true)];
+        }
+        Some(Screen::LightsOut(_)) => {
+            g.class = "LightsOutWindow";
+            g.title = txt(hud, assets, g.class, "Title", "Lights Out");
+            g.cw = 6 * 78 - 2;
+            g.ch = 6 * 78 - 2;
+            g.buttons = vec![(Btn::Logout, true, true), (Btn::Return, true, true)];
         }
         Some(Screen::Special(sp)) => {
             g.class = "ComputerScreenSpecialOptions";
@@ -1700,6 +1845,10 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
             g.buttons = vec![(Btn::Logout, true, true)];
             if sp.ret.is_some() {
                 g.buttons.push((Btn::Return, false, true));
+                g.left_edge = true;
+            }
+            if !t.games.is_empty() {
+                g.buttons.push((Btn::Games, false, true));
                 g.left_edge = true;
             }
         }
@@ -1879,6 +2028,7 @@ fn btn_label(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str, b: B
         Btn::SaveEmail => "Save To Datavault".into(),
         Btn::SavedEmail => "Saved To Datavault".into(),
         Btn::Purchase => txt(hud, assets, class, "ButtonLabelPurchase", "|&Purchase"),
+        Btn::Games => txt(hud, assets, "tnmComputerScreenEmail", "ButtonLabelApplications", "|&Applications"),
     }
 }
 
@@ -2072,6 +2222,45 @@ fn draw_screen(u: &mut Ui<Wid>, t: &mut Term, wx: &Dv, g: &Geo, dx: i32, dy: i32
         Some(Screen::Disabled) => {
             let info = txt(u.hud, u.assets, g.class, "LoginInfoText", "");
             u.wrapped(&ft, dx + 10, dy + 12, 377, 122, HAlign::Center, VAlign::Center, m_col(8), &info);
+        }
+        Some(Screen::Games(list)) => {
+            for (k, (label, action)) in list.iter().enumerate() {
+                action_button(u, Wid::Game(k), dx + 25, dy + 17 + 30 * k as i32, 273, label, tnm_game_ported(action));
+            }
+        }
+        Some(Screen::LightsOut(on)) => {
+            // LightsOutButton: texFocused stretched (texNormal while pressed), tinted colOn / colOff from the menu
+            // theme (button text normal brightened until it reads, button text disabled dimmed / lifted).
+            let d = u.assets.classes.defaults("LightsOutButton");
+            let tex_of = |k: &str| match unreal_pkg::props::find(&d, k) {
+                Some(Value::Path(p)) => p.clone(),
+                _ => String::new(),
+            };
+            let (tn, tf) = (tex_of("texNormal"), tex_of("texFocused"));
+            let mut c_on = m_col(8).map(|c| c as i32);
+            while c_on.iter().sum::<i32>() < 128 {
+                c_on = c_on.map(|c| (c * 2 + 8).min(255));
+            }
+            let mut c_off = m_col(12).map(|c| c as i32);
+            if c_off.iter().sum::<i32>() > 96 {
+                c_off = c_off.map(|c| (c as f32 * 0.35) as i32);
+            }
+            if c_off.iter().sum::<i32>() < 64 {
+                c_off = c_off.map(|c| (c + 16).min(255));
+            }
+            let (c_on, c_off) = (c_on.map(|c| c as u8), c_off.map(|c| c as u8));
+            u.c.fill(dx, dy, g.cw, g.ch, Style::Normal, [0, 0, 0]);
+            for i in 0..36 {
+                let (x, y) = (dx + (i % 6) as i32 * 78, dy + (i / 6) as i32 * 78);
+                let pressed = t.pressed == Some(Wid::Light(i));
+                let path = if pressed { &tn } else { &tf };
+                let col = if on[i] { c_on } else { c_off };
+                match (!path.is_empty()).then(|| u.hud.tex(u.assets, path)).flatten() {
+                    Some(tx) => u.c.texture_stretched(x, y, 76, 76, (0, 0, 128, 128), &tx, Style::Normal, col),
+                    None => u.c.fill(x, y, 76, 76, Style::Normal, col),
+                }
+                u.hit(Wid::Light(i), (x, y, 76, 76), true);
+            }
         }
         Some(Screen::Special(sp)) => {
             for (k, (si, enabled)) in sp.opts.iter().enumerate() {
@@ -2456,9 +2645,35 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
                 Btn::Return => t.close_screen("RETURN", wx),
                 Btn::Withdraw => t.withdraw(wx),
                 Btn::Purchase => t.purchase(wx),
+                Btn::Games => t.close_screen("GAMES", wx),
                 Btn::Close => {
                     let a = if matches!(t.screen, Some(Screen::Withdraw { .. })) { "LOGOUT" } else { "EXIT" };
                     t.close_screen(a, wx);
+                }
+            }
+        }
+        Wid::Game(k) => {
+            sound("Menu_Press");
+            if let Some(Screen::Games(list)) = t.screen.as_ref() {
+                if let Some(&(_, a)) = list.get(k).filter(|g| tnm_game_ported(g.1)) {
+                    t.close_screen(a, wx);
+                }
+            }
+        }
+        Wid::Light(i) => {
+            sound("Menu_Press");
+            let won = if let Some(Screen::LightsOut(on)) = t.screen.as_mut() {
+                lights_toggle(on, i);
+                on.iter().all(|l| !l)
+            } else {
+                false
+            };
+            // Victory: GameHighScoreLightsOut + 1, achLightsOut, a new board.
+            if won {
+                crate::tnmach::unlock("achLightsOut");
+                let mut seed = (wx.now * 1000.0) as u64 ^ (t.actor as u64).wrapping_mul(31);
+                if let Some(Screen::LightsOut(on)) = t.screen.as_mut() {
+                    *on = lights_generate(&mut seed);
                 }
             }
         }
@@ -3071,6 +3286,7 @@ fn open_frobbed(cx: &mut CompCx) {
                     user: String::new(),
                     user_idx: 0,
                     win_pos: None,
+                    games: Vec::new(),
                     drag: None,
                     pressed: None,
                     pressed_right: None,
@@ -3083,6 +3299,7 @@ fn open_frobbed(cx: &mut CompCx) {
                     comp_rect: (0, 0, 0, 0),
                 };
                 let mut wx = wx!(cx);
+                t.games = tnm_games(wx.lvl, actor);
                 let first = match kind {
                     Kind::Vending => Which::Vending,
                     Kind::Atm => Which::Atm,

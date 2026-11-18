@@ -825,6 +825,8 @@ enum Body {
     Enhance(Enhance),
     /// Ours: the main menu's Achievements screen (every character's).
     Achieve(AchieveView),
+    /// The Nameless Mod's TNMAchievementsMenu.
+    TnmAch(TnmAchView),
     /// Ours: the welcome window (welcome.rs), its text scroll.
     Welcome(i32),
     /// Ours: the multiplayer screens - hosting a room, joining one by code, the public room list.
@@ -843,6 +845,62 @@ enum Body {
     Loadout(LoadEdit),
     /// Ours: Settings > Mods, the mod manager (modscreen.rs).
     Mods(crate::modscreen::ModsView),
+}
+
+/// TNMAchievementsMenu: the shown category (0 = all), the selected row, the list's scroll and its sort (column,
+/// descending), the description's scroll.
+#[derive(Default)]
+struct TnmAchView {
+    cat: usize,
+    sel: Option<usize>,
+    scroll: i32,
+    sort: (u8, bool),
+    desc_scroll: i32,
+}
+
+/// TNMAchievementsMenu's strings, read from the player's TNMGUI.u: (strAchievementType[0..10], strHidden,
+/// strLocked, strUnlocked, the three header labels).
+fn tnm_ach_strings(assets: &mut RuntimeAssets) -> (Vec<String>, String, String, String, [String; 3]) {
+    let d = assets.classes.defaults("TNMAchievementsMenu");
+    let mut types = vec![String::new(); 10];
+    for (i, v) in indexed(&d, "strAchievementType") {
+        if let (Some(slot), Value::Str(t)) = (types.get_mut(i as usize), v) {
+            *slot = t.clone();
+        }
+    }
+    (
+        types,
+        pstr(&d, "strHidden"),
+        pstr(&d, "strLocked"),
+        pstr(&d, "strUnlocked"),
+        [pstr(&d, "HeaderTypeLabel"), pstr(&d, "HeaderTitleLabel"), pstr(&d, "HeaderValueLabel")],
+    )
+}
+
+/// populateAchievementList: the rows of the shown category (every category for 0), rows without a title left out,
+/// a hidden one's title replaced until it's earned (Trestkon.bRevealAchievements isn't kept: always hidden), then
+/// ListWindow's sort on the chosen column. Each row: (category name, title, status, achievement).
+fn tnm_ach_rows(assets: &mut RuntimeAssets, v: &TnmAchView) -> Vec<(String, String, String, crate::tnmach::Ach, bool)> {
+    let (types, hidden, locked, unlocked, _) = tnm_ach_strings(assets);
+    let mut rows: Vec<_> = crate::tnmach::list()
+        .into_iter()
+        .filter(|(a, _)| (v.cat == 0 || a.cat == v.cat) && !a.title.is_empty())
+        .map(|(a, got)| {
+            let title = if a.secret && !got { hidden.clone() } else { a.title.clone() };
+            (types.get(a.cat).cloned().unwrap_or_default(), title, if got { unlocked.clone() } else { locked.clone() }, a, got)
+        })
+        .collect();
+    let (col, desc) = v.sort;
+    rows.sort_by(|a, b| {
+        let k = |r: &(String, String, String, crate::tnmach::Ach, bool)| match col {
+            1 => r.1.to_lowercase(),
+            2 => r.2.to_lowercase(),
+            _ => r.0.to_lowercase(),
+        };
+        let o = k(a).cmp(&k(b));
+        if desc { o.reverse() } else { o }
+    });
+    rows
 }
 
 struct AchieveView {
@@ -1694,6 +1752,15 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             f.actions = vec![(0, 21, "Don't Show Again".into(), String::new()), (2, 20, ok, String::new())];
             Body::Welcome(0)
         }
+        "MenuScreenAchievements" if crate::tnmmode::active() => {
+            // The Nameless Mod: its own TNMAchievementsMenu (frame, art and strings from the player's TNMGUI.u).
+            f = frame(assets, "TNMAchievementsMenu");
+            f.class = class.to_string();
+            if f.actions.is_empty() {
+                f.actions = vec![(2, 4, "Previous Menu".into(), String::new())];
+            }
+            Body::TnmAch(TnmAchView::default())
+        }
         "MenuScreenAchievements" => {
             f = frame(assets, "MenuScreenCustomizeKeys");
             f.class = class.to_string();
@@ -2366,6 +2433,12 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             (crate::save::can_save(false), crate::save::format_date(0)).hash(h);
         }
         Body::Welcome(scroll) => scroll.hash(h),
+        Body::TnmAch(tv) => {
+            (tv.cat, tv.sel, tv.scroll, tv.sort, tv.desc_scroll).hash(h);
+            for (a, got) in crate::tnmach::list() {
+                (a.id, got).hash(h);
+            }
+        }
         Body::Achieve(AchieveView { scroll, chars, global }) => {
             scroll.hash(h);
             for c in chars {
@@ -2644,6 +2717,7 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
             text_area(u, 0, (cx + 11, cy + 23, 369, 268), crate::welcome::TEXT, false, scroll);
         }
         Body::Achieve(av) => draw_achieve(u, av, fonts, cx, cy),
+        Body::TnmAch(tv) => draw_tnm_ach(u, tv, fonts, cx, cy),
         Body::Keys(k) => draw_keys(u, k, cx, cy, waiting_keys),
         Body::SaveLoad(sl) => draw_save_load(u, sl, fonts, cx, cy),
         Body::Keypad(_) => {}
@@ -2886,6 +2960,77 @@ fn draw_enhance(u: &mut Ui<W>, en: &mut Enhance, cx: i32, cy: i32) {
 }
 
 /// The main menu's Achievements screen: every achievement with who unlocked it.
+/// TNMAchievementsMenu: the Category / Title / Status headers (click to sort), the list in FontMenuHeaders (the
+/// selected row's text green once earned, red while locked), the description box (title, a blank line, the
+/// description; the hidden label for a hidden one), the " ~ <category>" box (green for all) with its arrows
+/// (categories without a name are skipped) and the "Unlocked: n/total" counter.
+fn draw_tnm_ach(u: &mut Ui<W>, tv: &mut TnmAchView, fonts: &Fonts, cx: i32, cy: i32) {
+    let (types, hidden, _, _, heads) = tnm_ach_strings(u.assets);
+    let unlocked_label = pstr(&u.assets.classes.defaults("TNMAchievementsMenu"), "strUnlocked");
+    let rows = tnm_ach_rows(u.assets, tv);
+    let fh = fonts.headers.clone();
+    header_button(u, W::Header(0), cx + 7, cy + 17, 45, &heads[0]);
+    header_button(u, W::Header(1), cx + 56, cy + 17, 297, &heads[1]);
+    header_button(u, W::Header(2), cx + 356, cy + 17, 128, &heads[2]);
+    let (lx, ly, lw, lh) = (cx + 7, cy + 40, 477, 191);
+    let rh = fh.height.max(ROW_H);
+    let inner = scrollbar(u, 0, lx, ly, lw, lh, rows.len() as i32 * rh, &mut tv.scroll);
+    u.c.set_clip(Some((lx, ly, inner, lh)));
+    let green = [0, 255, 0];
+    let red = [255, 0, 0];
+    for (i, r) in rows.iter().enumerate() {
+        let ry = ly + i as i32 * rh - tv.scroll;
+        if ry + rh <= ly || ry >= ly + lh {
+            continue;
+        }
+        let selected = tv.sel == Some(i);
+        if selected {
+            u.c.fill(lx, ry, inner, rh, Style::Normal, m_col(10));
+        }
+        let col = if selected { if r.4 { green } else { red } } else { m_col(8) };
+        let mut x = lx;
+        for (k, w) in [56, 300, 128].iter().enumerate() {
+            let t = match k {
+                0 => &r.0,
+                1 => &r.1,
+                _ => &r.2,
+            };
+            u.c.set_clip(Some((x.max(lx), ly.max(ry), (*w).min(lx + inner - x), lh)));
+            u.c.text(&fh, x + 2, ry, *w, rh, HAlign::Left, VAlign::Center, col, t);
+            u.c.set_clip(Some((lx, ly, inner, lh)));
+            x += w;
+        }
+        let vy = ry.max(ly);
+        let vh = (ry + rh).min(ly + lh) - vy;
+        if vh > 0 {
+            u.hit(W::Row(0, i), (lx, vy, inner, vh), true);
+        }
+    }
+    u.c.set_clip(None);
+    // The description.
+    let desc = tv.sel.and_then(|i| rows.get(i)).map_or(String::new(), |r| {
+        if r.1 == hidden {
+            hidden.clone()
+        } else {
+            format!("{}:\n\n{}", r.1, r.3.desc)
+        }
+    });
+    u.c.fill(cx + 7, cy + 239, 477, 121, Style::Normal, BLACK);
+    let col = m_col(8);
+    u.wrapped(&fh, cx + 12, cy + 244, 467, 111, HAlign::Left, VAlign::Top, col, &desc);
+    // The category box and its arrows.
+    let label = format!(" ~ {}", types.get(tv.cat).cloned().unwrap_or_default());
+    info_button(u, cx + 7, cy + 364, 121, &label, if tv.cat == 0 { green } else { m_col(8) });
+    for (k, (x, name)) in [(147, "MenuLeftArrow"), (162, "MenuRightArrow")].into_iter().enumerate() {
+        let w = W::Header(10 + k as u8);
+        let state = if u.pressed == Some(w) { "Pressed" } else { "Normal" };
+        u.draw(&format!("{name}_{state}"), cx + x, cy + 363, 14, 15, Style::Masked, WHITE);
+        u.hit(w, (cx + x, cy + 363, 14, 15), true);
+    }
+    let got = rows.iter().filter(|r| r.4).count();
+    u.text(&fh, cx + 363, cy + 363, 126, 25, HAlign::Left, VAlign::Top, col, &format!("{unlocked_label}: {got}/{}", rows.len()));
+}
+
 fn draw_achieve(u: &mut Ui<W>, av: &mut AchieveView, fonts: &Fonts, cx: i32, cy: i32) {
     let fh = fonts.headers.clone();
     let total = crate::achievements::LIST.len();
@@ -3961,6 +4106,10 @@ fn left_press(cx: &mut InCx) -> Option<&'static str> {
                                     ng.skills.upgrade(&c);
                                 }
                             }
+                        }
+                        Body::TnmAch(tv) if l == 0 => {
+                            tv.sel = Some(r);
+                            tv.desc_scroll = 0;
                         }
                         Body::Keys(k) => {
                             k.sel = Some(r);
@@ -5154,6 +5303,30 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
         (W::Header(k), Body::Host(h)) => {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
             mp_host_widget(h, k, acts);
+        }
+        (W::Header(k), Body::TnmAch(tv)) => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            match k {
+                // The headers sort by their column, each click flipping its order.
+                0..=2 => {
+                    tv.sort = (k, if tv.sort.0 == k { !tv.sort.1 } else { true });
+                    tv.sel = None;
+                }
+                // The arrows step the category, past those without a name.
+                10 | 11 => {
+                    let (types, ..) = tnm_ach_strings(assets);
+                    let n = types.len().max(1);
+                    for _ in 0..n {
+                        tv.cat = if k == 10 { (tv.cat + n - 1) % n } else { (tv.cat + 1) % n };
+                        if !types[tv.cat].is_empty() {
+                            break;
+                        }
+                    }
+                    tv.sel = None;
+                    tv.scroll = 0;
+                }
+                _ => {}
+            }
         }
         (W::Header(k), Body::Browse(b)) => {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);

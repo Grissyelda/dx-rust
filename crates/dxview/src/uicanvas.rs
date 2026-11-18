@@ -254,6 +254,45 @@ impl Canvas {
         }
     }
 
+    /// GC.DrawStretchedTexture: the texture region (u, v, uw, vh) scaled into the destination box (nearest).
+    #[allow(clippy::too_many_arguments)]
+    pub fn texture_stretched(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        (u, v, uw, vh): (i32, i32, i32, i32),
+        tex: &UiTex,
+        style: Style,
+        col: Rgb,
+    ) {
+        let (tw, th) = (tex.w as i32, tex.h as i32);
+        if tw <= 0 || th <= 0 || w <= 0 || h <= 0 {
+            return;
+        }
+        let (x0, y0, x1, y1) = self.clip;
+        let (dx_lo, dx_hi) = ((x0 - x).max(0), (x1 - x).min(w));
+        let (dy_lo, dy_hi) = ((y0 - y).max(0), (y1 - y).min(h));
+        if dx_lo >= dx_hi || dy_lo >= dy_hi {
+            return;
+        }
+        let k = [col[0] as f32 / 255.0 / 255.0, col[1] as f32 / 255.0 / 255.0, col[2] as f32 / 255.0 / 255.0];
+        let masked = style == Style::Masked;
+        for dy in dy_lo..dy_hi {
+            let ty = (v + dy * vh / h).rem_euclid(th) as usize;
+            for dx in dx_lo..dx_hi {
+                let tx = (u + dx * uw / w).rem_euclid(tw) as usize;
+                let t = tex.px[ty * tw as usize + tx];
+                if masked && t[3] == 0 {
+                    continue;
+                }
+                let rgb = [t[0] as f32 * k[0], t[1] as f32 * k[1], t[2] as f32 * k[2]];
+                self.put_unclipped(x + dx, y + dy, rgb, style);
+            }
+        }
+    }
+
     /// A soft drop shadow of a masked texture's shape drawn at (x, y): its silhouette offset by `off` UI units,
     /// blurred over `blur` UI units (two box passes at full resolution) and laid down as black at `opacity`.
     pub fn drop_shadow(&mut self, x: i32, y: i32, tex: &UiTex, off: (f32, f32), blur: f32, opacity: f32) {

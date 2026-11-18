@@ -59,6 +59,8 @@ struct State {
     set_facing: Option<f64>,
     /// Seconds since dying in the platformer.
     dead_t: Option<f32>,
+    /// HUDRadishWeapon: (weapon name, rounds left or "INF", seconds shown).
+    weapon_msg: Option<(String, String, f32)>,
     /// The Y the pawns are held at (Trestkon.platform(true) hands them his yAxis once, on the way in).
     pawn_y: Option<f64>,
 }
@@ -80,6 +82,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     backwards: false,
     set_facing: None,
     dead_t: None,
+    weapon_msg: None,
     pawn_y: None,
 });
 
@@ -199,6 +202,23 @@ pub fn lock_plane(loc: &mut DVec3, vel: &mut DVec3) {
         loc.y = s.y_axis_v;
         vel.y = 0.0;
     }
+}
+
+/// RadishHUD.ShowRadishWeaponMessage: the weapon fired, with what it has left.
+pub fn weapon_message(name: &str, amount: String) {
+    let mut s = lock();
+    if s.on {
+        s.weapon_msg = Some((name.to_string(), amount, 0.0));
+    }
+}
+
+/// HUDRadishWeapon's text for the HUD while it's up (5 s): (weapon name, rounds left).
+pub fn weapon_shown() -> Option<(String, String)> {
+    let s = lock();
+    if !s.on {
+        return None;
+    }
+    s.weapon_msg.as_ref().filter(|m| m.2 <= 5.0).map(|m| (m.0.clone(), m.1.clone()))
 }
 
 /// tnmmissionbonus.FirstFrame on the map's own loose weapons (TNMWeapon) and ammo: no velocity, PHYS_Rotating with a
@@ -341,6 +361,8 @@ pub struct Course {
     /// What the Radish class says when one is picked up (pickup_messages[]).
     messages: Vec<String>,
     seed: u64,
+    /// Hovering weapons with an amplitude of their own: (actor, amplitude).
+    hovers: Vec<(usize, f64)>,
 }
 
 fn classify(class: &str) -> Option<u32> {
@@ -407,6 +429,7 @@ pub fn radish_system(
         course.picks.clear();
         course.rotators.clear();
         course.platforms.clear();
+        course.hovers.clear();
         if lock().default_lives.is_none() && crate::tnmmode::active() {
             let d = assets.classes.defaults("Trestkon");
             let l = num(&d, "lives", LIVES as f64) as i32;
@@ -428,6 +451,12 @@ pub fn radish_system(
         }
         if crate::tnmmode::active() || want {
             for (i, a) in lvl.actors.iter().enumerate() {
+                if flag(&a.props, "bRadishHover") {
+                    let amp = num(&a.props, "amplitude", 0.0);
+                    if amp != 0.0 {
+                        course.hovers.push((i, amp));
+                    }
+                }
                 if let Some(worth) = classify(&a.class) {
                     course.picks.push(Pick {
                         actor: i,
@@ -489,12 +518,17 @@ pub fn radish_system(
     }
 
     // Radishes hover: PrePivot.Z = baseHeight + Amplitude x sin(2 x (time mod 360)).
-    if !course.picks.is_empty() {
+    if !course.picks.is_empty() || !course.hovers.is_empty() {
         let t = time.elapsed_secs_f64();
         for (d, mut tf) in &mut decos {
             let Some(ma) = lvl.mesh_actors.get(d.mesh_actor) else { continue };
-            let Some(p) = course.picks.iter().find(|p| p.actor == ma.actor) else { continue };
-            let bob = p.base + p.amp * ((t % 360.0) * 2.0).sin();
+            // TNMWeapon with bRadishHover: PrePivot.Z = CollisionHeight (already in d.pre) + amplitude x sin.
+            let bob = if let Some(&(_, amp)) = course.hovers.iter().find(|h| h.0 == ma.actor) {
+                amp * ((t % 360.0) * 2.0).sin()
+            } else {
+                let Some(p) = course.picks.iter().find(|p| p.actor == ma.actor) else { continue };
+                p.base + p.amp * ((t % 360.0) * 2.0).sin()
+            };
             let draw = d.body.location + d.pre + DVec3::new(0.0, 0.0, bob);
             let v = Vec3::from(dx_level::ue_to_bevy([draw.x as f32, draw.y as f32, draw.z as f32]));
             if tf.translation != v {
@@ -506,6 +540,9 @@ pub fn radish_system(
     let on = active();
     if !on {
         return;
+    }
+    if let Some(m) = lock().weapon_msg.as_mut() {
+        m.2 += dt;
     }
     // Dev aid: DXVIEW_RADISH_DIE=<secs> takes the last health radish that long into the run (death / lives tests).
     if let Some(at) = env_val!("DXVIEW_RADISH_DIE").and_then(|v| v.parse::<f32>().ok()) {
@@ -628,5 +665,95 @@ pub fn radish_system(
             "#actor{actor}"
         ))));
         course.picks.retain(|k| k.actor != actor);
+    }
+}
+
+/// A see-through copy of one of Trestkon's drawn parts (RadishHUD.DrawWindow's second draw of him).
+#[derive(Component)]
+pub struct RadishGhost;
+
+/// A part of Trestkon's body that already has its RadishGhost.
+#[derive(Component)]
+pub struct Ghosted;
+
+/// RadishHUD.DrawWindow: while the platformer is on and Trestkon isn't hidden (the immunity flicker) but wasn't
+/// drawn last frame - something stands between him and the camera - he is drawn again over everything (ClearZ),
+/// translucent, every skin swapped for Engine.VisionBlue: a blue outline of him through the wall.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn silhouette_system(
+    mut commands: Commands,
+    level: Res<LevelRes>,
+    player: Res<crate::Player>,
+    body: Res<crate::mirror::MirrorBodyRes>,
+    children: Query<&Children>,
+    parts: Query<
+        (&Mesh3d, Option<&bevy::mesh::skinning::SkinnedMesh>, Option<&bevy::mesh::morph::MeshMorphWeights>, Option<&bevy::camera::visibility::RenderLayers>),
+        (Without<RadishGhost>, Without<Ghosted>),
+    >,
+    mut ghosts: Query<&mut Visibility, With<RadishGhost>>,
+    cams: Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
+    mut assets: ResMut<crate::weapons::RuntimeAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut mats: ResMut<Assets<crate::scope::GlassMaterial>>,
+    mut mat: Local<Option<Handle<crate::scope::GlassMaterial>>>,
+) {
+    let on = active();
+    if on {
+        if let Some(b) = body.0.as_ref() {
+            if mat.is_none() {
+                let tex = crate::weapons::image_for(&mut assets, &mut images, "Engine.VisionBlue");
+                *mat = Some(mats.add(crate::scope::GlassMaterial {
+                    base: StandardMaterial {
+                        base_color_texture: tex,
+                        unlit: true,
+                        alpha_mode: AlphaMode::Add,
+                        cull_mode: None,
+                        double_sided: true,
+                        fog_enabled: false,
+                        ..default()
+                    },
+                    extension: crate::scope::OnTop {},
+                }));
+            }
+            let m = mat.clone().unwrap();
+            for e in children.iter_descendants(b.root) {
+                let Ok((mesh, skin, morph, layers)) = parts.get(e) else { continue };
+                let mut g = commands.spawn((
+                    RadishGhost,
+                    Mesh3d(mesh.0.clone()),
+                    MeshMaterial3d(m.clone()),
+                    Transform::default(),
+                    Visibility::Hidden,
+                    bevy::light::NotShadowCaster,
+                ));
+                if let Some(s) = skin {
+                    g.insert(s.clone());
+                }
+                if let Some(w) = morph {
+                    g.insert(w.clone());
+                }
+                if let Some(l) = layers {
+                    g.insert(l.clone());
+                }
+                let g = g.id();
+                commands.entity(e).insert(Ghosted).add_child(g);
+            }
+        }
+    }
+    // Drawn last frame: the camera sees his middle or his eyes.
+    let mut show = false;
+    if on && !hidden() && !player.body.location.is_nan() {
+        if let Some(c) = cams.iter().next() {
+            let u = dx_level::bevy_to_ue(c.translation.to_array());
+            let from = DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64);
+            let mid = player.body.location;
+            let eye = mid + DVec3::new(0.0, 0.0, player.eye_height);
+            let clear = |to: DVec3| level.0.collision.trace(from, to, DVec3::ZERO).fraction >= 1.0;
+            show = !clear(mid) && !clear(eye);
+        }
+    }
+    let want = if show { Visibility::Inherited } else { Visibility::Hidden };
+    for mut v in &mut ghosts {
+        v.set_if_neq(want);
     }
 }

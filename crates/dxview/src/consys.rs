@@ -439,6 +439,16 @@ pub fn conversing(blocker: usize) -> Option<Option<DVec3>> {
     Some(look)
 }
 
+/// The one speaking a line now (bIsSpeaking): Some(Some(blocker)) for a pawn, Some(None) for the player.
+pub fn speaking() -> Option<Option<usize>> {
+    let g = lock();
+    let p = g.as_ref()?.play.as_ref()?;
+    match p.speaker? {
+        Who::Actor(b) => Some(Some(b)),
+        Who::Player => Some(None),
+    }
+}
+
 /// Where each pawn in the conversation playing turns its head (ours, for the rebuilt bodies; blocker -> eye point,
 /// Unreal): the one speaking looks at whoever it speaks to, everyone else at the one speaking (the player's
 /// lines included).

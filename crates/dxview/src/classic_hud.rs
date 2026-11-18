@@ -154,6 +154,8 @@ enum Win {
     ChallengeTimer,
     /// HUDInvaderEnter: a red line across the top of the screen (a challenge run lost).
     Invader,
+    /// HUDRadishWeapon: the weapon fired in the Radish Adventure and its rounds left (5 s).
+    RadishWeapon,
 }
 
 /// The Debug Mode readout's text (None = hidden).
@@ -218,7 +220,7 @@ pub fn quote_text(lines: &[String], secs: f32) {
 }
 
 impl Win {
-    const ALL: [Win; 24] = [
+    const ALL: [Win; 25] = [
         Win::Hit,
         Win::Compass,
         Win::Ammo,
@@ -243,6 +245,7 @@ impl Win {
         Win::Radish,
         Win::ChallengeTimer,
         Win::Invader,
+        Win::RadishWeapon,
     ];
     /// Fixed window sizes in UI units (InitWindow SetSize / ParentRequestedPreferredSize); the log is sized
     /// by the layout.
@@ -269,6 +272,7 @@ impl Win {
             // RadishHUD's children: the counters reach x 74 + 128, the breath gauge y 256 + 64.
             Win::Radish => (210, 330),
             Win::Invader => (0, 0),
+            Win::RadishWeapon => (0, 0),
             Win::ChallengeTimer => (100, 108),
             Win::InfoLink => crate::conui::INFOLINK_SIZE,
             // DamageHUDDisplay: arrowiconWidth + iconMargin, (iconHeight + iconMargin) x 7 + arrowiconHeight.
@@ -819,6 +823,7 @@ pub fn classic_hud_system(
             Win::Radish => "hud::Radish",
             Win::ChallengeTimer => "hud::ChallengeTimer",
             Win::Invader => "hud::Invader",
+            Win::RadishWeapon => "hud::RadishWeapon",
         });
         // Windows that only change with what they show are redrawn only when that changes.
         let key = window_key(w, &f, snap, hud, &inv, ww, wh, y, dt);
@@ -1386,6 +1391,7 @@ impl HudFrame {
             // TNMHUD: right edge, above the belt.
             Win::ChallengeTimer => (sw - 100, sh - 108 - Win::Belt.size().1 - 10, 100, 108, crate::tnmbonus::timer().is_some() && !menu),
             Win::Invader => (0, sh * 15 / 100, sw.max(1), 40, crate::tnmbonus::banner().is_some() && !menu),
+            Win::RadishWeapon => (0, sh * 15 / 100, sw.max(1), 80, crate::radish::weapon_shown().is_some() && !menu),
             Win::Msg => (
                 sw / 2 - msg_w / 2,
                 sh - Win::Belt.size().1 - msg_h - 20,
@@ -1506,6 +1512,7 @@ fn window_key(
             s,
         ))),
         Win::Invader => Some(hkey(&(crate::tnmbonus::banner(), ww, wh, s))),
+        Win::RadishWeapon => Some(hkey(&(crate::radish::weapon_shown(), ww, wh, s))),
         Win::ConCursor => Some(hkey(&(ww, wh, s))),
         // The ammo display changes with the gun, its rounds, the pool and the lock line.
         Win::Ammo => {
@@ -1690,6 +1697,7 @@ fn draw_window(
         Win::Radish => draw_radish(hud, assets, canvas, snap),
         Win::ChallengeTimer => draw_challenge_timer(hud, assets, canvas),
         Win::Invader => draw_invader(hud, assets, canvas),
+        Win::RadishWeapon => draw_radish_weapon(hud, assets, canvas),
         Win::Net => {
             if let Some(f) = msg_font {
                 for (i, (l, c)) in net_lines.iter().enumerate() {
@@ -2568,6 +2576,25 @@ fn draw_invader(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas
         .unwrap_or_default();
     let tw = f.width(&t);
     c.text(&f, (c.w - tw) / 2, 0, tw + 2, f.height, HAlign::Left, VAlign::Top, [255, 0, 0], &t);
+}
+
+/// HUDRadishWeapon.ShowWarning: in red FontMenuExtraLarge, centred: "<weapon>!" over strWeaponObtained with the
+/// rounds left, or strWeaponExpired alone once they're "0".
+fn draw_radish_weapon(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas) {
+    let Some((name, amount)) = crate::radish::weapon_shown() else { return };
+    let Some(f) = hud.font(assets, "FontMenuExtraLarge") else { return };
+    let mut line = |c: &mut Canvas, y: i32, t: &str| {
+        let tw = f.width(t);
+        c.text(&f, (c.w - tw) / 2, y, tw + 2, f.height, HAlign::Left, VAlign::Top, [255, 0, 0], t);
+    };
+    if amount == "0" {
+        let t = hud.str_default(assets, "HUDRadishWeapon", "strWeaponExpired").unwrap_or_default();
+        line(c, 0, &t);
+    } else {
+        line(c, 0, &format!("{name}!"));
+        let fmt = hud.str_default(assets, "HUDRadishWeapon", "strWeaponObtained").unwrap_or_default();
+        line(c, f.height, &fmt.replacen("%s", &amount, 1).replacen("%d", &amount, 1));
+    }
 }
 
 /// HUDHitDisplay: background, border, the six body parts coloured by health, bioenergy bar, breath bar.

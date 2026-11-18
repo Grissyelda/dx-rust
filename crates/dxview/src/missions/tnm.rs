@@ -1214,6 +1214,11 @@ fn m20_timer(c: &mut Ctx, map: &str) {
 }
 
 fn downtown_timer(c: &mut Ctx) {
+    // achFanFic1: met both fan-fiction writers.
+    if !c.b("MS_achFanFic1") && c.b("Chris_Greetings_Played") && c.b("WaltonSimons_Greeting_Played") {
+        crate::tnmach::unlock("achFanFic1");
+        c.set("MS_achFanFic1", true, 24);
+    }
     if c.b("Abom1_Played") || (c.b("Abomination_Dead") && c.b("Abom_SDSituationResolved")) {
         c.unlock("LlamaTempleDoors");
     }
@@ -1305,6 +1310,11 @@ fn voodoo_timer(c: &mut Ctx) {
     if yard_down && !c.b("QC_SUB_VoodooStuff") && !c.b("MS_VoodooStuffFailed2") {
         crate::cinematic::set_teleporter_enabled("VoodooTele", false);
         c.set("MS_VoodooStuffFailed2", true, 21);
+    }
+    // Yardbomb's greeting decides the achievement: advised to sell, or to stay.
+    if c.b("YardbombGreetings_Played") && !c.b("MS_YardbombAchievement") {
+        crate::tnmach::unlock(if c.b("Yardbomb_AdvisedToSell") { "achYardbombSell" } else { "achYardbombStay" });
+        c.set("MS_YardbombAchievement", true, 21);
     }
     if c.b("QC_SUB_VoodooStuff") && !c.b("MS_VoodooStuff_AwardGiven") {
         c.award(200, "strVoodooAward");

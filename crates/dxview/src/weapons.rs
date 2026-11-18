@@ -3827,6 +3827,20 @@ fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
     } else if h.stats.reload_count == 0 && !h.stats.hand_to_hand && !h.stats.item {
         h.last_throw = true;
     }
+    // The Nameless Mod's Radish Adventure (Trestkon.Fire / TNMWeapon.Fire with bPlatformer): every shot shows the
+    // weapon's name and its rounds left ("INF" without ammo) for 5 s, and a weapon with a clip that has fired its
+    // last round is gone once the shot ends (NormalFire.AnimEnd).
+    if crate::radish::active() && cx.rt_assets.classes.ancestry(&h.stats.class).iter().any(|c| c == "tnmweapon") {
+        let ammo = h.stats.ammo_class.clone().filter(|a| !a.eq_ignore_ascii_case("AmmoNone"));
+        let total = ammo.as_ref().map(|a| {
+            let pool = cx.inv.0.ammo.iter().find(|x| &x.0 == a).map_or(0, |x| x.1);
+            pool + cx.clips.0.get(&h.stats.class).copied().unwrap_or(0)
+        });
+        crate::radish::weapon_message(&h.stats.name, total.map_or_else(|| "INF".to_string(), |t| t.to_string()));
+        if h.stats.reload_count > 0 && total == Some(0) {
+            h.last_throw = true;
+        }
+    }
     let thrown = matches!(
         h.stats.class.as_str(),
         "WeaponLAM" | "WeaponGasGrenade" | "WeaponEMPGrenade" | "WeaponNanoVirusGrenade"

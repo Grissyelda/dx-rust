@@ -207,12 +207,13 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
                 c.fx(Fx::Sphere(p, 4.0));
             }
         }
+        // BanPawn / BanScaraFX: BanInfo.StartBan's fade on each of them (tnmban.rs).
         "BanFighters" => {
-            c.leave_tag("LlamaFighter");
-            c.leave_tag("GoatFighter");
+            crate::tnmban::start_tag("LlamaFighter");
+            crate::tnmban::start_tag("GoatFighter");
         }
-        "BanWCThugs" => c.leave_tag("SlumFighter3"),
-        "BanScara" => c.leave_tag("ScaraKing"),
+        "BanWCThugs" => crate::tnmban::start_tag("SlumFighter3"),
+        "BanScara" => crate::tnmban::start_tag("ScaraKing"),
         "DDAppear" => {
             c.enter_tag("DD");
             patrol(c, "DD", "DDWaypoint01");
@@ -257,6 +258,8 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
         "RollCredits" => crate::credits::show(),
         "PlayPDXEndgame01" => {
             play(c, "PDXEndgame01");
+            // ScaraKing goes to state ScaraBan: LoopAnim('Shocked'), ignoring everything.
+            crate::ai::world_req(crate::ai::WorldReq::LoopAnim(crate::ai::Sel::tag("ScaraKing"), "Shocked"));
             crate::tnmach::unlock("achEndingPDX");
         }
         "PlayPDXEndgame02" => {
