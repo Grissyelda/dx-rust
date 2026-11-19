@@ -4431,8 +4431,10 @@ mod tests {
                 exit: false,
                 comp_rect: (0, 0, 0, 0),
                 game_origin: (0, 0),
+                games: Vec::new(),
             };
             {
+                let flags = imsim_core::flags::FlagBase::default();
                 let mut wx = Wx {
                     data: &mut data,
                     sec: &mut sec,
@@ -4446,6 +4448,7 @@ mod tests {
                     texts: &mut texts,
                     now: 10.0,
                     mission: 1,
+                    flags: &flags,
                 };
                 t.show(which, &mut wx);
                 if let Some(Screen::Login { user, .. }) = t.screen.as_mut() {
