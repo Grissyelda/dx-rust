@@ -36,6 +36,9 @@ mod fade;
 mod tnmbonus;
 mod tnmaugs;
 mod breath;
+mod tnmgames;
+mod tnmpc;
+mod scripted_tv;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1195,6 +1198,7 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, warpzone::warp_system.after(fly))
         .add_systems(Update, fade::fade_system.after(ai::npc_system))
         .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system))
+        .add_systems(Update, scripted_tv::tv_system)
         .add_systems(Update, breath::breath_system.before(particles::particle_system))
         .add_systems(Update, radish::silhouette_system.after(skeletal::mirror_skel_system))
         .add_systems(Update, tnmaugs::tnm_aug_system.before(weapons::weapon_system).before(ai::npc_system))
@@ -2336,11 +2340,13 @@ fn start_kit_and_hud(
 fn register_anim_textures(level: &Level, handles: &[Handle<Image>], runtime_assets: &mut weapons::RuntimeAssets) {
     // AnimNext loops (screens, monitors, TV noise) on the level's surfaces and meshes.
     anim_tex::reset();
+    scripted_tv::reset_level();
     for (i, t) in level.textures.iter().enumerate() {
         glow::register(&handles[i], &t.name);
         nullmask::register(&handles[i], &t.name);
         let masked = t.has_alpha_holes();
         anim_tex::register(&mut runtime_assets.lib, &t.name, &handles[i], masked, true);
+        scripted_tv::note(&t.name, &handles[i], t);
     }
 }
 

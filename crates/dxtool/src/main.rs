@@ -186,6 +186,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // dxtool defaults <System dir> <Class>
             let dir = args.get(1).ok_or("usage: dxtool defaults <System dir> <Class>")?;
             let class = args.get(2).ok_or("usage: dxtool defaults <System dir> <Class>")?;
+            // DXTOOL_EXTRA="TNMGUI,TNM": extra code packages (a mod's) beside the game's.
+            if let Ok(x) = std::env::var("DXTOOL_EXTRA") {
+                let v: Vec<&str> = x.split(',').filter(|s| !s.is_empty()).collect();
+                unreal_pkg::classes::set_extra_packages(&v);
+            }
             let mut db = unreal_pkg::classes::ClassDb::open(Path::new(dir));
             let d = db.defaults(class);
             if d.is_empty() {

@@ -477,6 +477,10 @@ pub fn build(
                         textures.push(img);
                         return Some((textures.len() - 1, t.masked));
                     }
+                    if let Some(img) = lib.load_scripted(tp) {
+                        textures.push(img);
+                        return Some((textures.len() - 1, false));
+                    }
                     let mut f = lib.load_fire(tp)?;
                     for _ in 0..40 {
                         f.step();

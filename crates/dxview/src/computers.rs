@@ -761,6 +761,12 @@ enum Btn {
     Purchase,
     /// The Nameless Mod's Applications button (tnmComputerScreenEmail / SpecialOptions, bHasGames).
     Games,
+    /// Pong / Tetris: Start (T).
+    Start,
+    /// The packet puzzle: Reset Packets (R), Exit (X), Switch.
+    Reset,
+    Exit,
+    Switch,
 }
 
 /// Widgets the mouse can press.
@@ -860,6 +866,8 @@ enum Screen {
     Games(Vec<(String, &'static str)>),
     /// LightsOutWindow: the 6 x 6 lights, on or off.
     LightsOut([bool; 36]),
+    /// Pong, Breakout, Tetris (tnmpc.rs).
+    Game(Box<crate::tnmpc::Game>),
 }
 
 /// tnmComputerScreenGames: the game kinds (TNM2DGameType 1..14) and the screens they open.
@@ -868,7 +876,7 @@ const TNM_GAME_ACTIONS: [&str; 14] =
 
 /// The games of ours (the rest of the mod's computer games aren't ported yet: their buttons stay greyed).
 fn tnm_game_ported(action: &str) -> bool {
-    action == "LIGHTSOUT"
+    matches!(action, "LIGHTSOUT" | "PONG" | "TETRIS" | "BREAKOUT" | "RUSHHOUR" | "TEXTGAME")
 }
 
 /// tnmComputers: the games[] it offers (none unless bHasGames).
@@ -1053,6 +1061,7 @@ enum Which {
     Vending,
     Games,
     LightsOut,
+    Game(&'static str),
 }
 
 /// ComputerScreenHack: the ICE Breaker.
@@ -1115,6 +1124,8 @@ struct Term {
     exit: bool,
     /// Where the computer window was drawn (screen UI units) and its size.
     comp_rect: Rect,
+    /// Where the open game's client area was last drawn (canvas units), for its mouse.
+    game_origin: (i32, i32),
 }
 
 /// The world a terminal acts on.
@@ -1235,6 +1246,11 @@ impl Term {
             (Kind::Atm, "ATMDISABLED") => Some(Which::Disabled),
             (_, "GAMES") => Some(Which::Games),
             (_, "LIGHTSOUT") => Some(Which::LightsOut),
+            (_, "PONG") => Some(Which::Game("PONG")),
+            (_, "TETRIS") => Some(Which::Game("TETRIS")),
+            (_, "BREAKOUT") => Some(Which::Game("BREAKOUT")),
+            (_, "RUSHHOUR") => Some(Which::Game("RUSHHOUR")),
+            (_, "TEXTGAME") => Some(Which::Game("TEXTGAME")),
             _ => None,
         };
         if let Some(w) = next {
@@ -1341,6 +1357,13 @@ impl Term {
             Which::LightsOut => {
                 let mut seed = (wx.now * 1000.0) as u64 ^ self.actor as u64;
                 Screen::LightsOut(lights_generate(&mut seed))
+            }
+            Which::Game(a) => {
+                let seed = (wx.now * 1000.0) as u64 ^ (self.actor as u64).wrapping_mul(0x9E37_79B9);
+                match crate::tnmpc::Game::new(a, wx.assets, seed) {
+                    Some(g) => Screen::Game(Box::new(g)),
+                    None => return,
+                }
             }
             Which::Special => {
                 let user = self.user.clone();
@@ -1826,6 +1849,24 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
             g.ch = 6 * 78 - 2;
             g.buttons = vec![(Btn::Logout, true, true), (Btn::Return, true, true)];
         }
+        Some(Screen::Game(gm)) => {
+            g.class = gm.class();
+            g.title = txt(hud, assets, g.class, "Title", "") + &gm.title_suffix();
+            (g.cw, g.ch) = gm.client_size();
+            g.buttons = if gm.is_packets() {
+                let live = !gm.packets_solved();
+                vec![(Btn::Reset, true, live), (Btn::Exit, true, live), (Btn::Switch, false, true)]
+            } else {
+                vec![(Btn::Logout, true, true), (Btn::Return, true, true)]
+            };
+            if gm.is_packets() {
+                g.left_edge = true;
+            }
+            if gm.has_start() {
+                g.buttons.push((Btn::Start, false, true));
+                g.left_edge = true;
+            }
+        }
         Some(Screen::Special(sp)) => {
             g.class = "ComputerScreenSpecialOptions";
             g.title = txt(hud, assets, g.class, "Title", "Special Options");
@@ -2029,6 +2070,10 @@ fn btn_label(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str, b: B
         Btn::SavedEmail => "Saved To Datavault".into(),
         Btn::Purchase => txt(hud, assets, class, "ButtonLabelPurchase", "|&Purchase"),
         Btn::Games => txt(hud, assets, "tnmComputerScreenEmail", "ButtonLabelApplications", "|&Applications"),
+        Btn::Start => txt(hud, assets, class, "ButtonLabelStart", "S|&tart"),
+        Btn::Reset => txt(hud, assets, class, "strReset", "|&Reset"),
+        Btn::Exit => txt(hud, assets, class, "ButtonLabelExit", "E|&xit"),
+        Btn::Switch => txt(hud, assets, class, "strSwitch", "Switch"),
     }
 }
 
@@ -2227,6 +2272,11 @@ fn draw_screen(u: &mut Ui<Wid>, t: &mut Term, wx: &Dv, g: &Geo, dx: i32, dy: i32
             for (k, (label, action)) in list.iter().enumerate() {
                 action_button(u, Wid::Game(k), dx + 25, dy + 17 + 30 * k as i32, 273, label, tnm_game_ported(action));
             }
+        }
+        Some(Screen::Game(gm)) => {
+            u.c.fill(dx, dy, g.cw, g.ch, Style::Normal, [0, 0, 0]);
+            gm.draw(u, dx, dy);
+            t.game_origin = (dx, dy);
         }
         Some(Screen::LightsOut(on)) => {
             // LightsOutButton: texFocused stretched (texNormal while pressed), tinted colOn / colOff from the menu
@@ -2646,6 +2696,22 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
                 Btn::Withdraw => t.withdraw(wx),
                 Btn::Purchase => t.purchase(wx),
                 Btn::Games => t.close_screen("GAMES", wx),
+                Btn::Start => {
+                    if let Some(Screen::Game(gm)) = t.screen.as_mut() {
+                        gm.start();
+                    }
+                }
+                Btn::Reset => {
+                    if let Some(Screen::Game(gm)) = t.screen.as_mut() {
+                        gm.reset();
+                    }
+                }
+                Btn::Switch => {
+                    if let Some(Screen::Game(gm)) = t.screen.as_mut() {
+                        gm.switch();
+                    }
+                }
+                Btn::Exit => t.close_screen("EXIT", wx),
                 Btn::Close => {
                     let a = if matches!(t.screen, Some(Screen::Withdraw { .. })) { "LOGOUT" } else { "EXIT" };
                     t.close_screen(a, wx);
@@ -2671,6 +2737,7 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
             // Victory: GameHighScoreLightsOut + 1, achLightsOut, a new board.
             if won {
                 crate::tnmach::unlock("achLightsOut");
+                crate::tnmgames::add("LightsOut", 1);
                 let mut seed = (wx.now * 1000.0) as u64 ^ (t.actor as u64).wrapping_mul(31);
                 if let Some(Screen::LightsOut(on)) = t.screen.as_mut() {
                     *on = lights_generate(&mut seed);
@@ -3297,6 +3364,7 @@ fn open_frobbed(cx: &mut CompCx) {
                     clock: 0.0,
                     exit: false,
                     comp_rect: (0, 0, 0, 0),
+                    game_origin: (0, 0),
                 };
                 let mut wx = wx!(cx);
                 t.games = tnm_games(wx.lvl, actor);
@@ -3382,7 +3450,7 @@ fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWh
         // Diegetic: stepping away (diegetic.rs asks; or right click off a choice, or a walk key while not typing).
         let mut leave = crate::diegetic::take_leave();
         if fr.dg.is_some_and(|v| v.mouse.is_some()) {
-            let typing = matches!(t.focus, Some(Wid::Edit(_)));
+            let typing = matches!(t.focus, Some(Wid::Edit(_))) || matches!(t.screen, Some(Screen::Game(_)));
             let walk = !typing
                 && [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::ArrowUp, KeyCode::ArrowDown]
                     .iter()
@@ -3401,6 +3469,23 @@ fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWh
         term_keys(t, &mut wx, binds);
         // ---- ticking
         tick_hack(t, &mut wx, dt, &fr.fill);
+        let origin = (t.comp_rect.0 + t.game_origin.0, t.comp_rect.1 + t.game_origin.1);
+        let finished = if let Some(Screen::Game(gm)) = t.screen.as_mut() {
+            let chars: Vec<char> = binds.typed.iter().filter_map(|(_, s)| s.as_ref()).flat_map(|s| s.chars()).collect();
+            let ptr = crate::tnmpc::Pointer {
+                pos: Some((fr.mouse.0 - origin.0, fr.mouse.1 - origin.1)),
+                down: binds.buttons.pressed(MouseButton::Left),
+                pressed: binds.buttons.just_pressed(MouseButton::Left),
+            };
+            gm.tick(dt, &binds.keys, &chars, ptr) == crate::tnmpc::Outcome::Finished
+        } else {
+            false
+        };
+        // AIPuzzleWindow.PuzzleFinished closes to "STATIC", which the Applications terminal has no screen for: back
+        // to the list.
+        if finished {
+            t.close_screen("GAMES", &mut wx);
+        }
         let mut go_disabled = false;
         if let Some(Screen::Withdraw { disabled_t: Some(dtl), .. }) = t.screen.as_mut() {
             *dtl -= dt;
@@ -4345,6 +4430,7 @@ mod tests {
                 clock: 0.0,
                 exit: false,
                 comp_rect: (0, 0, 0, 0),
+                game_origin: (0, 0),
             };
             {
                 let mut wx = Wx {

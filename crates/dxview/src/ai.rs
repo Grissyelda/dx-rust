@@ -1022,6 +1022,9 @@ pub struct Npc {
     pub crazed: f32,
     /// TNM AugBot took this robot over (state 'dominated': it does nothing for itself; the player drives it).
     pub dominated: bool,
+    /// The Nameless Mod's Nightmare mode on one of its own people (TNMPawn): runs at MaxDesiredSpeed 1.5, fires at
+    /// half the weapon's ShotTime, aims 0.125 better.
+    pub nightmare: bool,
     /// A scripted state looping one animation and ignoring everything (WorldReq::LoopAnim).
     pub script_loop: Option<&'static str>,
     /// Died in water: the floating carcass (CarcassType's Mesh3) takes the body's place once it has fallen.
@@ -1387,6 +1390,7 @@ impl Npc {
             swap_carcass: None,
             crazed: 0.0,
             dominated: false,
+            nightmare: false,
             script_loop: None,
             water_carcass: None,
             float_body: None,
@@ -3787,8 +3791,16 @@ pub fn npc_system(
             running = false;
             wish = DVec3::ZERO;
             if let Some((v, yaw)) = crate::tnmaugs::bot_drive(npc.blocker) {
-                wish = DVec3::new(v.x, v.y, 0.0);
                 npc.yaw = yaw;
+                if crate::tnmaugs::bot_hovers() {
+                    // bIsHoverBot: MoveDominatedBot drives it in all three directions (no gravity while driven).
+                    wish = v;
+                    if let Some(b) = npc.body.as_mut() {
+                        b.physics = imsim_core::movement::Physics::Climbing;
+                    }
+                } else {
+                    wish = DVec3::new(v.x, v.y, 0.0);
+                }
             }
         }
         // A medical/repair bot serving the player stands still with its arm raised.
@@ -5245,6 +5257,8 @@ fn move_params(npc: &Npc, running: bool) -> MoveParams {
     let mut params = npc.params.clone();
     if !running {
         params.ground_speed *= npc.walk_frac;
+    } else if npc.nightmare {
+        params.ground_speed *= 1.5;
     }
     // Optional (setting NpcLimp): people (not animals or robots) limp on a crippled leg.
     if crate::optfixes::npc_limp() && !npc.animal && !npc.hp_body.robot {
@@ -5637,6 +5651,7 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
     if !npc.inited {
         npc.inited = true;
         let a = &lvl.actors[npc.actor];
+        npc.nightmare = crate::tnmmode::difficulty().is_some_and(|d| d.nightmare) && crate::classtree::is_a(&a.class, "TNMPawn");
         // InitializeInventory: Count copies of each entry; ammo adds Count x AmmoAmount; a weapon whose AmmoName
         // isn't carried gets a default box of it.
         for x in a.props.iter().filter(|x| x.name == "InitialInventory") {
@@ -7394,7 +7409,8 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
         Some(Target::Player) => crate::smartai::accuracy_mod(cx.player.body.velocity, cx.player.body.physics == Physics::Falling, &w.class),
         _ => 0.0,
     };
-    let acc = ((w.base_accuracy + npc.base_accuracy) as f64 + player_mod).max(0.0);
+    let nightmare = if npc.nightmare { 0.125 } else { 0.0 };
+    let acc = ((w.base_accuracy + npc.base_accuracy) as f64 + player_mod - nightmare).max(0.0);
     if let Some(class) = w.projectile_for(npc.ammo.as_deref()) {
         for _ in 0..w.shots_per_fire() {
             let dir = crate::projectiles::projectile_dir(fwd, acc, &mut npc.seed);
@@ -7429,7 +7445,7 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
 /// uc: ScriptedPawn.Attacking.FireIfClearShot, ScriptedPawn.HandToHandAttack
 fn begin_shot(npc: &mut Npc, an: &Animated, w: &crate::weapons::WeaponStats, cx: &ActCx, moving: bool) -> bool {
     let lvl = cx.lvl;
-    npc.shot_timer = w.shot_time.max(0.1);
+    npc.shot_timer = if npc.nightmare { (w.shot_time / 2.0).max(0.05) } else { w.shot_time.max(0.1) };
     npc.just_fired = true;
     npc.net_shots = npc.net_shots.wrapping_add(1);
     if env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n)) {
@@ -7922,9 +7938,14 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
         let center = cx.blockers.list[npc.blocker].center;
         // Multiplayer, tougher enemies (room rule): every hit counts for less the more players there are.
         let toughness = crate::netplay::health_scale();
+        // The Nameless Mod's PawnHealth (TNMGameInfo.ReduceDamage): the player's damage times the difficulty's value.
+        let pawn_health = crate::tnmmode::player_damage_mult();
         for mut h in list {
             if toughness != 1.0 {
                 h.damage /= toughness;
+            }
+            if h.attacker.is_none() && !h.world && pawn_health != 1.0 {
+                h.damage *= pawn_health;
             }
             // The Nameless Mod's gloves (TNMPawn / TNMRobot TakeDamage): stun gloves hit for one point and stun
             // (animals take the prod's way out); shock gloves are an EMP blow at 2.5x - robots take only that,

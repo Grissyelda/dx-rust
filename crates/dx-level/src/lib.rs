@@ -418,6 +418,41 @@ impl TexLib {
         Some(TextureImage { name: path.to_string(), width: src.width(), height: src.height(), mips, bc1: false, bc3: false })
     }
 
+    /// A ScriptedTexture (drawn into at run time by its NotifyActor - The Nameless Mod's TV screens): its
+    /// SourceTexture as the picture under the text, else a black USize x VSize sheet.
+    pub fn load_scripted(&mut self, path: &str) -> Option<TextureImage> {
+        let (pkg_name, rest) = path.split_once('.')?;
+        let (src_path, w, h) = {
+            let pkg = self.package(pkg_name)?;
+            let e = pkg.find_export_of_class(rest, "ScriptedTexture")?;
+            if pkg.class_name(e.class_index) != "ScriptedTexture" {
+                return None;
+            }
+            let t = objects::read_texture(pkg, e).ok();
+            let props = t.as_ref().map(|t| t.props.clone()).unwrap_or_default();
+            let num = |k: &str, d: u32| match unreal_pkg::props::find(&props, k) {
+                Some(unreal_pkg::props::Value::Int(v)) if *v > 0 => *v as u32,
+                _ => d,
+            };
+            let src = match unreal_pkg::props::find(&props, "SourceTexture") {
+                Some(unreal_pkg::props::Value::Object(i)) if *i != 0 => Some(pkg.object_path(*i)),
+                _ => None,
+            };
+            (src, num("USize", 256), num("VSize", 256))
+        };
+        if let Some(sp) = src_path {
+            if let Some((t, mut mips)) = self.load_ext(&sp, false) {
+                // One level: the picture is redrawn with its text at run time.
+                mips.truncate(1);
+                return Some(TextureImage { name: path.to_string(), width: t.width(), height: t.height(), mips, bc1: false, bc3: false });
+            }
+        }
+        let (w, h) = (w.clamp(1, 2048), h.clamp(1, 2048));
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        px.chunks_mut(4).for_each(|c| c[3] = 255);
+        Some(TextureImage { name: path.to_string(), width: w, height: h, mips: vec![px], bc1: false, bc3: false })
+    }
+
     /// Like `load_image` but palette index 0 is always transparent (UI icons are drawn masked).
     pub fn load_image_masked(&mut self, path: &str) -> Option<TextureImage> {
         let (t, mips) = self.load_ext(path, true)?;
@@ -1409,6 +1444,11 @@ pub fn build_level(
                     // engine animates them at runtime. A WetTexture (the water surfaces) is its SourceTexture
                     // rippled; the viewer's water shader does the rippling, so take the source picture.
                     if let Some(img) = lib.load_wet(&path) {
+                        let idx = textures.len();
+                        textures.push(img);
+                        return Some((idx, false));
+                    }
+                    if let Some(img) = lib.load_scripted(&path) {
                         let idx = textures.len();
                         textures.push(img);
                         return Some((idx, false));

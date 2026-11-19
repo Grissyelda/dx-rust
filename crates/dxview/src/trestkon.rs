@@ -41,6 +41,9 @@ pub struct TrestkonSave {
     pub lives: i32,
     pub radish_health: i32,
     pub radishes: i32,
+    /// The difficulty chosen in the mod's menus (tnmmode::Difficulty).
+    #[serde(default)]
+    pub difficulty: Option<crate::tnmmode::Difficulty>,
 }
 
 struct State {
@@ -310,13 +313,14 @@ pub fn new_game(training: bool) {
     g.credits_prev = None;
     drop(g);
     crate::radish::new_game();
+    crate::tnmmode::start_difficulty();
     KIT_PENDING.store(active() && !training, Ordering::Relaxed);
 }
 
 pub fn save() -> TrestkonSave {
     let g = lock();
     let (lives, radish_health, radishes) = crate::radish::save();
-    TrestkonSave { fists: g.fists, credits_earned: g.credits_earned, lives, radish_health, radishes }
+    TrestkonSave { fists: g.fists, credits_earned: g.credits_earned, lives, radish_health, radishes, difficulty: crate::tnmmode::difficulty() }
 }
 
 pub fn restore(s: &TrestkonSave) {
@@ -327,6 +331,7 @@ pub fn restore(s: &TrestkonSave) {
     g.credits_prev = None;
     drop(g);
     crate::radish::restore(s.lives, s.radish_health, s.radishes);
+    crate::tnmmode::restore_difficulty(s.difficulty);
     REBUILD.store(true, Ordering::Relaxed);
 }
 

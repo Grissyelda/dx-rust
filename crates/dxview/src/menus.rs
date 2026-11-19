@@ -1652,7 +1652,8 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
     }
     let mut f = frame(assets, class);
     let body = match class {
-        "MenuMain" | "MenuSelectDifficulty" | "MenuSettings" => {
+        "MenuMain" | "MenuSelectDifficulty" | "MenuSettings" | "tnmMenuSelectDifficulty" | "tnmMenuSelectExtras" | "tnmMenuSelectStealthDifficulty"
+        | "tnmMenuSelectCombatDifficulty" => {
             let (mut buttons, x, w) = menu_buttons(assets, class);
             if class == "MenuSettings" {
                 // Ours: Enhancements, in the free slot above Previous Menu (optional features beyond the original).
@@ -1891,6 +1892,9 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 return None;
             }
             let mut choices: Vec<Choice> = paths.iter().map(|p| choice(assets, p)).collect();
+            if class == "tnmMenuScreenCustomDifficulty" {
+                tnm_custom_choices(assets, &mut choices);
+            }
             let original: Vec<String> = choices.iter().map(|c| c.key.clone()).collect();
             // Settings the renderer and mixer decide for themselves (always the best): not offered.
             // So do the old-hardware sound options (voice count, Dolby Surround, A3D/EAX hardware): the mixer is ours.
@@ -3244,6 +3248,9 @@ impl Menus {
 
 /// What a click or key asked for, applied after the input pass.
 enum Act {
+    /// The Nameless Mod's extra game modes: a new game straight on their own map (bunrealistic +
+    /// strstartmapunrealistic, no intro).
+    BonusMap(String, crate::travel::NewGame),
     Push(String),
     Pop,
     PopAll,
@@ -3330,6 +3337,7 @@ fn menu_action(b: &MenuBtn, _hud: &mut ClassicHud, assets: &mut RuntimeAssets, o
             let d = assets.classes.defaults("MenuMain");
             out.push(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, "ExitMessage"), true, MsgPurpose::Exit));
         }
+        7 if crate::tnmmode::active() => tnm_menu_key(assets, &b.key, out),
         7 => {
             // MenuSelectDifficulty.ProcessCustomMenuButton.
             let diff = match b.key.as_str() {
@@ -3342,6 +3350,147 @@ fn menu_action(b: &MenuBtn, _hud: &mut ClassicHud, assets: &mut RuntimeAssets, o
             if let Some(dv) = diff {
                 out.push(Act::Push(format!("MenuScreenNewGame:{dv}")));
             }
+        }
+        _ => {}
+    }
+}
+
+/// tnmMenuScreenCustomDifficulty's rows (DifficultySlider_*): their words are the screen's level lists; the values
+/// are kept between visits (the screen's saved* values) as settings.
+const TNM_CUSTOM: [(&str, &str, &str, f32); 6] = [
+    ("DifficultySlider_PCHealth", "TnmCustomPCHealth", "PCHealthLevels", 1.0),
+    ("DifficultySlider_NPCHealth", "TnmCustomNPCHealth", "NPCHealthLevels", 1.0),
+    ("DifficultySlider_ItemAmt", "TnmCustomItemAmt", "ItemAmtLevels", 1.0),
+    ("DifficultySlider_NPCAmt", "TnmCustomNPCAmt", "NPCAmtLevels", 1.0),
+    ("DifficultySlider_Legendary", "TnmCustomLegendary", "", 0.0),
+    ("DifficultySlider_Nightmare", "TnmCustomNightmare", "", 0.0),
+];
+
+fn tnm_custom_choices(assets: &mut RuntimeAssets, choices: &mut [Choice]) {
+    let d = assets.classes.defaults("tnmMenuScreenCustomDifficulty");
+    for c in choices.iter_mut() {
+        let Some(&(_, key, levels, def)) = TNM_CUSTOM.iter().find(|t| t.0 == c.key) else { continue };
+        c.key = key.to_string();
+        if !levels.is_empty() {
+            let words: Vec<String> = indexed(&d, levels)
+                .into_iter()
+                .filter_map(|(_, v)| match v {
+                    Value::Str(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+            if let ChoiceKind::Slider { labels, .. } = &mut c.kind {
+                *labels = words;
+            }
+        }
+        c.value = if crate::settings::has(key) { crate::settings::get(key) } else { def };
+        c.saved = c.value;
+    }
+}
+
+/// Legendary and Nightmare need every easter egg's worth (16 found): DifficultySlider_Legendary.CycleNextValue.
+fn tnm_choice_gate(assets: &mut RuntimeAssets, c: &mut Choice) -> Option<Act> {
+    let class = match c.key.as_str() {
+        "TnmCustomLegendary" => "DifficultySlider_Legendary",
+        "TnmCustomNightmare" => "DifficultySlider_Nightmare",
+        _ => return None,
+    };
+    if crate::tnmeggs::count() >= 16 {
+        return None;
+    }
+    c.value = 0.0;
+    let d = assets.classes.defaults(class);
+    Some(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, "MessageBoxText"), false, MsgPurpose::Info))
+}
+
+/// The custom screen's choice as the new game's values (tnmMenuScreenCustomDifficulty.SetDifficulty /
+/// SetPawnHealth).
+fn tnm_custom_difficulty() -> crate::tnmmode::Difficulty {
+    let v = |k: &str, def: f32| (if crate::settings::has(k) { crate::settings::get(k) } else { def }).round().clamp(0.0, 3.0) as usize;
+    crate::tnmmode::Difficulty {
+        combat: [1.0, 1.5, 2.0, 4.0][v("TnmCustomPCHealth", 1.0)],
+        pawn_health: [1.33, 1.0, 0.66, 0.5][v("TnmCustomNPCHealth", 1.0)],
+        items: v("TnmCustomItemAmt", 1.0) as i32,
+        enemies: v("TnmCustomNPCAmt", 1.0) as i32,
+        legendary: v("TnmCustomLegendary", 0.0) > 0,
+        nightmare: v("TnmCustomNightmare", 0.0) > 0,
+    }
+}
+
+/// The Nameless Mod's own menus in place of Deus Ex's.
+fn tnm_menu(class: &str) -> &str {
+    if !crate::tnmmode::active() {
+        return class;
+    }
+    match class {
+        "MenuSelectDifficulty" => "tnmMenuSelectDifficulty",
+        _ => class,
+    }
+}
+
+/// tnmMenuSelectDifficulty / tnmMenuSelectExtras / the stealth and combat course menus: ProcessCustomMenuButton.
+/// The four difficulties set combat difficulty, how hard the mod's people hit back (PawnHealth: the player's damage
+/// to them is multiplied by it), which of the map's pawns and items appear, and Legendary / Nightmare; the extras are
+/// unlocked by easter eggs found.
+fn tnm_menu_key(assets: &mut RuntimeAssets, key: &str, out: &mut Vec<Act>) {
+    use crate::tnmmode::Difficulty;
+    let d = assets.classes.defaults("tnmMenuSelectDifficulty");
+    let eggs = crate::tnmeggs::count();
+    let locked = |n: usize, out: &mut Vec<Act>| {
+        let text = pstr(&d, "MessageBoxText2").replacen("%d", &n.to_string(), 1);
+        out.push(Act::Msg(pstr(&d, "MessageBoxTitle2"), text, false, MsgPurpose::Info));
+    };
+    let pick = |combat: f32, pawn_health: f32, enemies: i32, items: i32| Difficulty { combat, pawn_health, enemies, items, legendary: false, nightmare: false };
+    let ng = |combat: f32| crate::travel::NewGame { difficulty: combat, ..Default::default() };
+    let diff = match key {
+        "EASY" => Some(pick(1.0, 1.33, 0, 0)),
+        "MEDIUM" => Some(pick(1.5, 1.0, 1, 1)),
+        "HARD" => Some(pick(2.0, 1.0, 1, 1)),
+        "REALISTIC" => Some(pick(4.0, 1.0, 2, 2)),
+        _ => None,
+    };
+    if let Some(df) = diff {
+        crate::tnmmode::set_pending_difficulty(Some(df));
+        out.push(Act::Push(format!("MenuScreenNewGame:{}", df.combat)));
+        return;
+    }
+    let bonus = |map: &str, need: usize, out: &mut Vec<Act>| {
+        if eggs >= need {
+            crate::tnmmode::set_pending_difficulty(None);
+            out.push(Act::BonusMap(map.to_string(), ng(1.5)));
+        } else {
+            locked(need, out);
+        }
+    };
+    match key {
+        "CUSTOM" => out.push(Act::Push("tnmMenuScreenCustomDifficulty".into())),
+        "EXTRAS" => out.push(Act::Push("tnmMenuSelectExtras".into())),
+        "UNREALISTIC" => {
+            if eggs >= 8 {
+                out.push(Act::BonusMap("Platform_01".into(), ng(1.5)));
+            } else {
+                out.push(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, "MessageBoxText"), false, MsgPurpose::Info));
+            }
+        }
+        "COMPUTERS" => bonus("95_ComputerRoom", 1, out),
+        "SKATING" => bonus("95_Skatepark", 4, out),
+        "RACING" => bonus("95_Lollerskates", 4, out),
+        "STEALTH" if eggs >= 4 => out.push(Act::Push("tnmMenuSelectStealthDifficulty".into())),
+        "STEALTH" => locked(4, out),
+        "COMBAT" if eggs >= 5 => out.push(Act::Push("tnmMenuSelectCombatDifficulty".into())),
+        "COMBAT" => locked(5, out),
+        "STEALTHEASY" | "STEALTHNORMAL" | "STEALTHHARD" => {
+            let n = ["STEALTHEASY", "STEALTHNORMAL", "STEALTHHARD"].iter().position(|k| *k == key).unwrap_or(0);
+            crate::settings::set("TnmChallengeDifficulty", n as f32);
+            crate::tnmmode::set_pending_difficulty(None);
+            out.push(Act::BonusMap("95_Stealth1".into(), ng(1.5)));
+        }
+        "COMBATEASY" | "COMBATNORMAL" | "COMBATHARD" => {
+            let n = ["COMBATEASY", "COMBATNORMAL", "COMBATHARD"].iter().position(|k| *k == key).unwrap_or(0);
+            crate::settings::set("TnmChallengeDifficulty", n as f32);
+            let combat = [1.0, 1.5, 2.0][n];
+            crate::tnmmode::set_pending_difficulty(Some(pick(combat, 1.0, n as i32, n as i32)));
+            out.push(Act::BonusMap("95_Combat1".into(), ng(combat)));
         }
         _ => {}
     }
@@ -4522,6 +4671,9 @@ fn menu_key(cx: &mut InCx, k: &KeyCode) {
             if let (Some(W::ChoiceBtn(i)), Body::Choices { choices }) = (win.focus, &mut win.body) {
                 if let Some(c) = choices.get_mut(i as usize) {
                     c.cycle(if *k == KeyCode::ArrowLeft { -1 } else { 1 });
+                    if let Some(a) = tnm_choice_gate(assets, c) {
+                        acts.push(a);
+                    }
                     crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
                     live_preview(c);
                 }
@@ -4636,6 +4788,7 @@ fn apply_acts(
         match a {
             Act::Push(c) => {
                 let (class, arg) = c.split_once(':').map(|(a, b)| (a.to_string(), Some(b.to_string()))).unwrap_or((c.clone(), None));
+                let class = tnm_menu(&class).to_string();
                 let mut w = open_window(hud, assets, &class);
                 if let (Some(w), Some(arg)) = (w.as_mut(), arg) {
                     if arg == "mp" {
@@ -4663,7 +4816,7 @@ fn apply_acts(
                             c.saved = c.value;
                         }
                     }
-                    if class == "MenuSelectDifficulty" {
+                    if class == "MenuSelectDifficulty" || class == "tnmMenuSelectDifficulty" {
                         w.focus = Some(W::MenuBtn(1));
                     }
                     mp_opened(&mut st.mp, w);
@@ -4715,6 +4868,11 @@ fn apply_acts(
             }
             Act::Intro => {
                 crate::loader::request(crate::tnmmode::intro_map(), crate::loader::Goal::Intro(None));
+                st.stack.clear();
+            }
+            Act::BonusMap(map, ng) => {
+                crate::settings::save();
+                crate::loader::request(&format!("{map}.dx"), crate::loader::Goal::NewGame(ng));
                 st.stack.clear();
             }
             Act::Training => {
@@ -5197,6 +5355,12 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                 }
                 3 => reset_defaults(win),
                 5 if matches!(win.body, Body::SaveLoad(_)) => save_load_action(st, top, &key, hud, assets, acts),
+                5 if win.f.class == "tnmMenuScreenCustomDifficulty" && key == "DONE" => {
+                    save_choices(win);
+                    let df = tnm_custom_difficulty();
+                    crate::tnmmode::set_pending_difficulty(Some(df));
+                    acts.push(Act::Push(format!("MenuScreenNewGame:{}", df.combat)));
+                }
                 5 => {
                     // MenuScreenNewGame START.
                     if let Body::NewGame(ng) = &win.body {
@@ -5289,6 +5453,9 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                 }
                 _ => {
                     c.cycle(if right { -1 } else { 1 });
+                    if let Some(a) = tnm_choice_gate(assets, c) {
+                        acts.push(a);
+                    }
                     live_preview(c);
                     acts.extend(choice_side_effect(c));
                 }

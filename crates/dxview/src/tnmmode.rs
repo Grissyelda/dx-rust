@@ -79,10 +79,15 @@ pub fn speed_system(mut time: ResMut<Time<Virtual>>, mut last: Local<f32>) {
 pub fn before_load() {
     // A new map plays at normal speed (the slow-motion scenes end on their own map).
     set_speed(1.0);
-    let f = active().then(|| {
-        let d = crate::travel::combat_difficulty();
-        let n = if d <= 1.0 { 0 } else if d <= 1.5 { 1 } else { 2 };
-        (n, n)
+    // Trestkon's PawnDifficulty / ItemDifficulty: chosen with the difficulty (games from before the mod's menus
+    // were ours: from the combat difficulty).
+    let f = active().then(|| match difficulty() {
+        Some(d) => (d.enemies.clamp(0, 3) as u8, d.items.clamp(0, 3) as u8),
+        None => {
+            let d = crate::travel::combat_difficulty();
+            let n = if d <= 1.0 { 0 } else if d <= 1.5 { 1 } else { 2 };
+            (n, n)
+        }
     });
     dx_level::actors::set_difficulty_filter(f);
     let radish = active() || env_on!("DXVIEW_RADISH");
@@ -235,4 +240,62 @@ impl OggMusic {
         }
         Some((i, m?))
     }
+}
+
+// ------------------------------------------------------------------------------------------------ difficulty
+
+/// The Nameless Mod's difficulty (tnmMenuSelectDifficulty / tnmMenuScreenCustomDifficulty -> tnmMenuScreenNewGame ->
+/// Trestkon's travel values): combat difficulty, PawnHealth (the player's damage to pawns is multiplied by it), which of
+/// a map's pawns and items appear (PawnDifficulty / ItemDifficulty, 0..3), Legendary and Nightmare.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Difficulty {
+    pub combat: f32,
+    pub pawn_health: f32,
+    pub enemies: i32,
+    pub items: i32,
+    pub legendary: bool,
+    pub nightmare: bool,
+}
+
+impl Default for Difficulty {
+    fn default() -> Self {
+        Difficulty { combat: 1.5, pawn_health: 1.0, enemies: 1, items: 1, legendary: false, nightmare: false }
+    }
+}
+
+/// (chosen in the menus for the next new game, the game being played)
+static DIFFICULTY: Mutex<(Option<Difficulty>, Option<Difficulty>)> = Mutex::new((None, None));
+
+/// The menus' choice for the new game about to start (None: the extras, which use none).
+pub fn set_pending_difficulty(d: Option<Difficulty>) {
+    if let Ok(mut g) = DIFFICULTY.lock() {
+        g.0 = d;
+    }
+}
+
+/// A new game starts with the menus' choice.
+pub fn start_difficulty() {
+    if let Ok(mut g) = DIFFICULTY.lock() {
+        g.1 = g.0.take();
+    }
+}
+
+/// The game's difficulty values (None in games started without them).
+pub fn difficulty() -> Option<Difficulty> {
+    DIFFICULTY.lock().ok().and_then(|g| g.1)
+}
+
+/// A loaded game's values.
+pub fn restore_difficulty(d: Option<Difficulty>) {
+    if let Ok(mut g) = DIFFICULTY.lock() {
+        g.1 = d;
+    }
+}
+
+/// TNMGameInfo.ReduceDamage: the player's damage to a pawn times PawnHealth.
+pub fn player_damage_mult() -> f32 {
+    if !active() {
+        return 1.0;
+    }
+    difficulty().map_or(1.0, |d| d.pawn_health)
 }

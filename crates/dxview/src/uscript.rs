@@ -71,6 +71,9 @@ pub trait Host {
     fn get(&mut self, name: &str) -> V;
     /// An element of a member array, and a field of it (`outfitInfos[3].Name`: field "name").
     fn get_index(&mut self, name: &str, index: i64, field: Option<&str>) -> V;
+    /// An assignment the script makes outside its locals, as a lowercase path: `level_count`, `level_order[3]`,
+    /// `levels[0].blocks[12].col.r` (data loaders read their results from these; others ignore them).
+    fn set(&mut self, _path: &str, _v: &V) {}
 }
 
 #[derive(Clone, Debug)]
@@ -90,12 +93,17 @@ enum Expr {
 enum Stmt {
     Expr(Expr),
     Assign(String, Option<Expr>, Expr),
+    /// `a[i].b[j].c = e;`: root, its index, then (field, index) steps.
+    SetPath(String, Option<Expr>, Vec<(String, Option<Expr>)>, Expr),
     If(Expr, Vec<Stmt>, Vec<Stmt>),
     For(Box<Stmt>, Expr, Box<Stmt>, Vec<Stmt>),
     While(Expr, Vec<Stmt>),
     Return(Option<Expr>),
     /// `local type a, b[9];`: the names (arrays read as None until set, never from the host).
     Local(Vec<String>),
+    /// `switch (e) { case a: ... default: ... }`: the labels (None = default) and where each starts in the body.
+    Switch(Expr, Vec<(Option<Expr>, usize)>, Vec<Stmt>),
+    Break,
 }
 
 #[derive(Clone, Debug)]
@@ -346,7 +354,42 @@ impl Parser<'_> {
             self.skip_to(";");
             return Some(Stmt::Return(Some(e)));
         }
-        if self.is_kw("switch") || self.is_kw("foreach") || self.is_kw("do") {
+        if self.is_kw("switch") {
+            self.i += 1;
+            self.eat("(");
+            let e = self.expr();
+            self.eat(")");
+            let mut labels = Vec::new();
+            let mut body = Vec::new();
+            if self.eat("{") {
+                while self.peek().is_some() && !self.is("}") {
+                    let before = self.i;
+                    if self.is_kw("case") {
+                        self.i += 1;
+                        let c = self.expr();
+                        self.eat(":");
+                        labels.push((Some(c), body.len()));
+                    } else if self.is_kw("default") {
+                        self.i += 1;
+                        self.eat(":");
+                        labels.push((None, body.len()));
+                    } else if let Some(st) = self.stmt() {
+                        body.push(st);
+                    }
+                    if self.i == before {
+                        self.i += 1;
+                    }
+                }
+                self.eat("}");
+            }
+            return Some(Stmt::Switch(e, labels, body));
+        }
+        if self.is_kw("break") {
+            self.i += 1;
+            self.skip_to(";");
+            return Some(Stmt::Break);
+        }
+        if self.is_kw("foreach") || self.is_kw("do") {
             // Not used by the code we run: skip the statement and its block.
             self.skip_to(";");
             if self.eat("{") {
@@ -377,6 +420,25 @@ impl Parser<'_> {
                 self.eat("]");
             }
             let lname = name.to_ascii_lowercase();
+            if self.is(".") {
+                let save2 = self.i;
+                let mut segs = Vec::new();
+                while self.eat(".") {
+                    let Some(Tok::Id(f)) = self.peek().cloned() else { break };
+                    self.i += 1;
+                    let mut ix = None;
+                    if self.eat("[") {
+                        ix = Some(self.expr());
+                        self.eat("]");
+                    }
+                    segs.push((f.to_ascii_lowercase(), ix));
+                }
+                if !segs.is_empty() && self.eat("=") {
+                    let e = self.expr();
+                    return Some(Stmt::SetPath(lname, index, segs, e));
+                }
+                self.i = save2;
+            }
             if self.eat("=") {
                 let e = self.expr();
                 return Some(Stmt::Assign(lname, index, e));
@@ -652,7 +714,7 @@ impl Script {
         let mut steps = 0usize;
         match self.run(host, &f.body, &mut locals, &mut steps) {
             Flow::Return(v) => v,
-            Flow::Next => V::None,
+            Flow::Next | Flow::Break => V::None,
         }
     }
 
@@ -672,22 +734,60 @@ impl Script {
                         Some(ix) => format!("{name}[{}]", self.eval(host, ix, locals).int()),
                         None => name.clone(),
                     };
+                    host.set(&key, &v);
                     locals.insert(key, v);
+                }
+                Stmt::SetPath(root, index, segs, e) => {
+                    let v = self.eval(host, e, locals);
+                    let mut key = root.clone();
+                    if let Some(ix) = index {
+                        key += &format!("[{}]", self.eval(host, ix, locals).int());
+                    }
+                    for (f, ix) in segs {
+                        key.push('.');
+                        key += f;
+                        if let Some(ix) = ix {
+                            key += &format!("[{}]", self.eval(host, ix, locals).int());
+                        }
+                    }
+                    host.set(&key, &v);
                 }
                 Stmt::If(c, a, b) => {
                     let branch = if self.eval(host, c, locals).truthy() { a } else { b };
-                    if let Flow::Return(v) = self.run(host, branch, locals, steps) {
-                        return Flow::Return(v);
+                    match self.run(host, branch, locals, steps) {
+                        Flow::Next => {}
+                        f => return f,
                     }
                 }
+                Stmt::Switch(e, labels, b) => {
+                    let v = self.eval(host, e, locals);
+                    let mut start = None;
+                    for (l, at) in labels {
+                        if let Some(l) = l {
+                            if v_eq(&v, &self.eval(host, l, locals)) {
+                                start = Some(*at);
+                                break;
+                            }
+                        }
+                    }
+                    let start = start.or_else(|| labels.iter().find(|(l, _)| l.is_none()).map(|(_, at)| *at));
+                    if let Some(at) = start {
+                        if let Flow::Return(v) = self.run(host, &b[at.min(b.len())..], locals, steps) {
+                            return Flow::Return(v);
+                        }
+                    }
+                }
+                Stmt::Break => return Flow::Break,
                 Stmt::For(init, c, step, b) => {
                     if let Flow::Return(v) = self.run(host, std::slice::from_ref(init), locals, steps) {
                         return Flow::Return(v);
                     }
                     let mut n = 0;
                     while self.eval(host, c, locals).truthy() && n < 100_000 {
-                        if let Flow::Return(v) = self.run(host, b, locals, steps) {
-                            return Flow::Return(v);
+                        match self.run(host, b, locals, steps) {
+                            Flow::Return(v) => return Flow::Return(v),
+                            Flow::Break => break,
+                            Flow::Next => {}
                         }
                         self.run(host, std::slice::from_ref(step), locals, steps);
                         n += 1;
@@ -696,8 +796,10 @@ impl Script {
                 Stmt::While(c, b) => {
                     let mut n = 0;
                     while self.eval(host, c, locals).truthy() && n < 100_000 {
-                        if let Flow::Return(v) = self.run(host, b, locals, steps) {
-                            return Flow::Return(v);
+                        match self.run(host, b, locals, steps) {
+                            Flow::Return(v) => return Flow::Return(v),
+                            Flow::Break => break,
+                            Flow::Next => {}
                         }
                         n += 1;
                     }
@@ -789,7 +891,16 @@ impl Script {
 
 enum Flow {
     Next,
+    Break,
     Return(V),
+}
+
+/// `case` matching: names / strings without case, numbers by value.
+fn v_eq(a: &V, b: &V) -> bool {
+    match (a, b) {
+        (V::Str(x), V::Str(y)) => x.eq_ignore_ascii_case(y),
+        _ => a.float() == b.float(),
+    }
 }
 
 #[cfg(test)]

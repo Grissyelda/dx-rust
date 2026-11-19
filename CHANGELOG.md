@@ -66,10 +66,24 @@ AugAimbot looks for a hostile target in sight (every second, down to every 0.2 s
 targets, fires, reloads, switches ammo or (from level 4) weapons and uses medkits and bioelectric cells, with its
 red "tracking" label and dotted line on the HUD. The mod's achievements are earned and kept across games, with its
 own Achievements screen (by category, sortable, descriptions, hidden ones until earned) on the main menu's
-Achievements button. Computers with games get the Applications button and the game list; Lights Out is playable.
-Not yet: the other terminal games (Pong, Tetris, Breakout, the text adventures, IRC, the in-game web pages, the
-packet puzzle, the clicker) - their buttons are listed but greyed - and the rest of the mod's own menus (its
-options, custom difficulty, new-game screen and persona screens use Deus Ex's).
+Achievements button. Computers with games get the Applications button and the game list. Playable on them: Lights
+Out, Pong (against the computer, which works out where the ball will meet its side), Breakout (the mod's own levels,
+passcodes, powerups and scoreboard), Tetris (its pieces, ghost piece, next piece and speed levels), the AI packet
+puzzle (slide the packets until the key one reaches the exit; Reset and Switch layout) and The Nameless Text
+Adventure. Records are kept as in the mod, and the bonus computer room's TV shows your best Tetris, Pong, Breakout
+and Lights Out results. Pieces of these games that exist in the mod only as code (Breakout's levels, the Tetris
+pieces, the puzzle layouts) are read from your copy at start, never shipped. A hovering robot under AugBot now flies
+up and down as well (Jump / Crouch).
+The mod's difficulty menu replaces Deus Ex's: Harmless, Challenging, Painful and Punishing each set how hard you're
+hit, how tough its people are, and which of a map's enemies and items appear, as in the mod; Custom opens its custom
+difficulty screen (player health, NPC health, item and NPC amounts, Legendary and Nightmare - those two need 16
+easter eggs found); Extras opens the bonus modes (computer room, stealth and combat missions with their own
+difficulty menus, the Radish Adventure), each unlocked by the easter eggs you've found. Nightmare makes the mod's
+people run faster, fire twice as fast and aim better.
+Not yet: the fake and real IRC, the in-game web pages, the WHOIS lookup, the DXI / DXE / ABI file-system games and
+the clicker game (their buttons stay greyed), the packet puzzle as the AI core's story device, Legendary's weapon
+attributes and Nightmare's respawning enemies, and the mod's options, new-game and persona screens (Deus Ex's are
+used).
 
 ### Fix: thrown bodies could only be picked up once (#72)
 A body you'd thrown down couldn't be picked up or searched again (in training, the knocked-out trooper put down on
