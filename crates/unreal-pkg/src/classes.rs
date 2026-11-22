@@ -62,6 +62,9 @@ pub struct ClassDb {
     pub packages: HashMap<String, Package>,
     property_names: HashSet<String>,
     cache: HashMap<String, Vec<Property>>, // key: "package.class" lowercase
+    /// `defaults()` results with the override layers applied, shared: (override generation, packages loaded, list),
+    /// keyed by the class name as asked for. A hit is one hash lookup - no package scan, no copy.
+    full_cache: HashMap<String, (u64, usize, std::sync::Arc<[Property]>)>,
     /// Declared properties (name -> tag type) of each class including its ancestors.
     decl_cache: HashMap<String, HashMap<String, u8>>,
     /// Localized strings from each package's `.int` file: package -> section (class, lowercase) -> (key, index, value).
@@ -71,7 +74,7 @@ pub struct ClassDb {
 impl ClassDb {
     /// `system_dir` is the game's `System` folder.
     pub fn open(system_dir: &Path) -> ClassDb {
-        let mut db = ClassDb { dir: system_dir.to_path_buf(), packages: HashMap::new(), property_names: HashSet::new(), cache: HashMap::new(), decl_cache: HashMap::new(), int_cache: HashMap::new() };
+        let mut db = ClassDb { dir: system_dir.to_path_buf(), packages: HashMap::new(), property_names: HashSet::new(), cache: HashMap::new(), full_cache: HashMap::new(), decl_cache: HashMap::new(), int_cache: HashMap::new() };
         for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES) {
             db.load(p);
         }
@@ -83,7 +86,7 @@ impl ClassDb {
 
     /// Like `open`, but some code packages come from other files (a mod's own DeusEx.u, to read what it changes).
     pub fn open_replacing(system_dir: &Path, replace: &[(&str, PathBuf)]) -> ClassDb {
-        let mut db = ClassDb { dir: system_dir.to_path_buf(), packages: HashMap::new(), property_names: HashSet::new(), cache: HashMap::new(), decl_cache: HashMap::new(), int_cache: HashMap::new() };
+        let mut db = ClassDb { dir: system_dir.to_path_buf(), packages: HashMap::new(), property_names: HashSet::new(), cache: HashMap::new(), full_cache: HashMap::new(), decl_cache: HashMap::new(), int_cache: HashMap::new() };
         for (name, path) in replace {
             if let Ok(pkg) = Package::open(path) {
                 for e in &pkg.exports {
@@ -230,10 +233,26 @@ impl ClassDb {
     }
 
     /// Effective defaults of `class` (searching the code packages), parents first then overrides.
-    pub fn defaults(&mut self, class: &str) -> Vec<Property> {
-        let Some(pkg_name) = self.package_of(class) else { return Vec::new() };
-        let mut d = self.defaults_in(&pkg_name, class);
-        apply_class_overrides(class, &mut d);
+    /// A class's default properties with the override layers applied. Cached and shared (`Arc`): callers that
+    /// change the list take a copy (`.to_vec()`). The cache follows the override generation (layers set, mods
+    /// suspended / resumed) and the packages loaded.
+    pub fn defaults(&mut self, class: &str) -> std::sync::Arc<[Property]> {
+        let gen = override_generation();
+        let loaded = self.packages.len();
+        if let Some((g, n, v)) = self.full_cache.get(class) {
+            if *g == gen && *n == loaded {
+                return v.clone();
+            }
+        }
+        let d: std::sync::Arc<[Property]> = match self.package_of(class) {
+            Some(pkg_name) => {
+                let mut d = self.defaults_in(&pkg_name, class);
+                apply_class_overrides(class, &mut d);
+                d.into()
+            }
+            None => std::sync::Arc::from(Vec::new()),
+        };
+        self.full_cache.insert(class.to_string(), (gen, loaded, d.clone()));
         d
     }
 
