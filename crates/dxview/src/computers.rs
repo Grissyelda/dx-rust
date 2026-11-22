@@ -4370,7 +4370,7 @@ mod tests {
             fixed: get(&mut hud, &mut assets, "FontFixedWidthSmall"),
         };
         let mut sec = Security::default();
-        let mut movers = Movers { rt: vec![], entities: vec![], parts: vec![] };
+        let mut movers = Movers { prev: vec![], rt: vec![], entities: vec![], parts: vec![] };
         let mut inv = PlayerInventory::default();
         let mut ph = PlayerHealth::default();
         let mut events = GameEvents::default();

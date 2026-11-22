@@ -53,6 +53,9 @@ pub struct MoverRt {
 
 #[derive(Resource)]
 pub struct Movers {
+    /// Each mover's pose (location, rotation) at the start of this frame's tick_movers: what moved this frame
+    /// carries whoever stands on it (carry_player).
+    pub prev: Vec<(DVec3, [i32; 3])>,
     pub rt: Vec<MoverRt>,
     pub entities: Vec<Entity>,
     pub parts: Vec<Vec<(Handle<Mesh>, usize)>>,
@@ -105,6 +108,7 @@ pub fn spawn_movers(
     let mut cache = HashMap::new();
     let mut glass_mats: HashMap<usize, Handle<StandardMaterial>> = HashMap::new();
     let mut out = Movers {
+        prev: Vec::new(),
         rt: Vec::new(),
         entities: Vec::new(),
         parts: Vec::new(),
@@ -200,10 +204,78 @@ pub fn trace_mover(
     end: DVec3,
     extent: DVec3,
 ) -> Option<Hit> {
-    let ax = rotator_axes(rt.rotation);
+    trace_mover_at(info, rt.location, rt.rotation, start, end, extent)
+}
+
+/// A mover's point in its own (brush) space at a pose.
+fn mover_local(info: &MoverInfo, loc: DVec3, rot: [i32; 3], p: DVec3) -> DVec3 {
+    let ax = rotator_axes(rot);
+    let d = p - loc;
+    DVec3::new(
+        d.x * ax[0][0] as f64 + d.y * ax[0][1] as f64 + d.z * ax[0][2] as f64,
+        d.x * ax[1][0] as f64 + d.y * ax[1][1] as f64 + d.z * ax[1][2] as f64,
+        d.x * ax[2][0] as f64 + d.y * ax[2][1] as f64 + d.z * ax[2][2] as f64,
+    ) + to_dvec(info.pre_pivot)
+}
+
+/// The world point a mover-space point is at for a pose (mover_local's inverse).
+fn mover_world(info: &MoverInfo, loc: DVec3, rot: [i32; 3], l: DVec3) -> DVec3 {
+    let ax = rotator_axes(rot);
+    let d = l - to_dvec(info.pre_pivot);
+    loc + DVec3::new(
+        ax[0][0] as f64 * d.x + ax[1][0] as f64 * d.y + ax[2][0] as f64 * d.z,
+        ax[0][1] as f64 * d.x + ax[1][1] as f64 * d.y + ax[2][1] as f64 * d.z,
+        ax[0][2] as f64 * d.x + ax[1][2] as f64 * d.y + ax[2][2] as f64 * d.z,
+    )
+}
+
+/// The player standing on a mover rides it (Actor.Base: a pawn that lands on a mover is based on it, and the mover's
+/// move carries its based actors along - Mover.MoveSmooth / UpdateBase). Without this a rising mover pushed its
+/// collision up into JC and he sank through it (the Liberty Island forklift, GitHub #73): his floor is tested
+/// against where each mover was at the start of this frame, and if he stood on one that moved, he is moved with it
+/// (turned with it too: the new yaw comes back as a change in yaw, radians). Returns the yaw change.
+pub fn carry_player(level: &dx_level::Level, movers: &Movers, loc: &mut DVec3, radius: f64, height: f64) -> f64 {
+    let ext = DVec3::new(radius, radius, height);
+    let down = DVec3::new(0.0, 0.0, 6.0);
+    let mut best: Option<(f64, usize)> = None;
+    for (i, info) in level.movers.iter().enumerate() {
+        let (Some(rt), Some(&(ploc, prot))) = (movers.rt.get(i), movers.prev.get(i)) else { continue };
+        if rt.destroyed || (rt.location == ploc && rt.rotation == prot) {
+            continue;
+        }
+        // Cheap reach test first (the brush's farthest point from its origin).
+        let reach = info.reach as f64 + radius + height + 16.0;
+        if (ploc - *loc).length_squared() > reach * reach {
+            continue;
+        }
+        if let Some(h) = trace_mover_at(info, ploc, prot, *loc, *loc - down, ext) {
+            if h.normal.z > 0.7 && best.is_none_or(|b| h.fraction < b.0) {
+                best = Some((h.fraction, i));
+            }
+        }
+    }
+    let Some((_, i)) = best else { return 0.0 };
+    let info = &level.movers[i];
+    let (ploc, prot) = movers.prev[i];
+    let rt = &movers.rt[i];
+    let l = mover_local(info, ploc, prot, *loc);
+    *loc = mover_world(info, rt.location, rt.rotation, l);
+    let yaw = (rt.rotation[1] - prot[1]) as f64 * std::f64::consts::TAU / 65536.0;
+    yaw
+}
+
+pub fn trace_mover_at(
+    info: &MoverInfo,
+    loc: DVec3,
+    rot: [i32; 3],
+    start: DVec3,
+    end: DVec3,
+    extent: DVec3,
+) -> Option<Hit> {
+    let ax = rotator_axes(rot);
     let pre = to_dvec(info.pre_pivot);
     let to_local = |p: DVec3| {
-        let d = p - rt.location;
+        let d = p - loc;
         // Inverse rotation: project on the rotated axes.
         DVec3::new(
             d.x * ax[0][0] as f64 + d.y * ax[0][1] as f64 + d.z * ax[0][2] as f64,
@@ -429,6 +501,12 @@ pub fn tick_movers(
                 }
             }
         }
+    }
+    // This frame's starting poses (carry_player compares against them).
+    {
+        let Movers { prev, rt, .. } = &mut *movers;
+        prev.clear();
+        prev.extend(rt.iter().map(|r| (r.location, r.rotation)));
     }
     let at = attach.get_or_insert_with(|| Attachments::build(level));
     // MoverColliders ride their movers (MoverCollider.BeginPlay: SetBase(mover)); class-proximity triggers look for

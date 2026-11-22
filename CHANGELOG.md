@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Riding movers (November 22)
+- Standing on a moving platform carries you with it (GitHub #73): the Liberty Island forklift used to push its
+  collision up into JC, so he sank through the forks unless he kept jumping. A player whose floor was a mover that
+  moved this frame is moved (and turned) with it, as Unreal's based actors are.
+
 ### Steadier frame times (November 22)
 - Guards switching weapons no longer rebuild their gun model: the one put away is kept hidden and shown again
   (it was a 5-7 ms hitch every few seconds in fights), and at most 3 new gun models are built a frame.

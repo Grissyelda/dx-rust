@@ -2908,6 +2908,17 @@ fn walk_move(
     let (stand_h, delta_eye) = crouch_step(cx, test, &world, w.drone, legless, player);
     lean_step(cx, test, &world, &w, stand_h, delta_eye, player);
     let params = move_params(cx, &w, player, carried_mass, leg_speed);
+    // Standing on a mover that moved this frame: ride it (movers::carry_player; the Island forklift, #73).
+    if !player.noclip && player.body.physics == Physics::Walking {
+        let was = player.body.location;
+        let turn = movers::carry_player(cx.level, cx.movers, &mut player.body.location, params.radius, params.height);
+        if env_on!("DXVIEW_CARRYLOG") && was != player.body.location {
+            println!("CARRY {:.1},{:.1},{:.1} -> {:.1} (turn {turn:.3})", was.x, was.y, was.z, player.body.location.z);
+        }
+        if turn != 0.0 && !free_cam {
+            cam.yaw -= turn as f32;
+        }
+    }
     player.body.bumped.clear();
     let dt = test.dt.unwrap_or((cx.time.delta_secs_f64()).min(0.1));
     let (landed, jump, was_walking) = move_body(cx, &world, &w, player, &params, dt, jump, carried_mass, carry_limit);
