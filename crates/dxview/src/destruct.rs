@@ -660,7 +660,7 @@ pub fn deco_damage_system(
             let d = assets.classes.defaults(&short);
             let count = fv(p, "numThings", 1.0).max(0.0) as usize;
             if let Some(mesh) = path(&d, "Mesh") {
-                let props = Arc::new(d.clone());
+                let props = Arc::new(d.to_vec());
                 for _ in 0..count {
                     let mut off = rng.vrand() * radius;
                     off.z = 0.0;
