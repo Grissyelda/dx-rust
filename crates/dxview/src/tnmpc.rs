@@ -2483,8 +2483,8 @@ impl TextGame {
     fn new(assets: &mut RuntimeAssets, seed: u64) -> TextGame {
         let d = assets.classes.defaults("TextBasedGameInterface");
         let wd = assets.classes.defaults("tnmTextGameWindow");
-        let cd = assets.classes.defaults("TextConsole");
-        let w = Words { d };
+        let cd = assets.classes.defaults("TextConsole").to_vec();
+        let w = Words { d: d.to_vec() };
         let font = font(assets, &path(&cd, "consoleFont")).or_else(|| font(assets, "FontMenuSmall"));
         let bg: Vec<String> = (0..16)
             .map_while(|i| match wd.iter().find(|p| p.name.eq_ignore_ascii_case("clientTextures") && p.index == i).map(|p| &p.value) {

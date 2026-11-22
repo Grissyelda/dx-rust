@@ -1134,7 +1134,7 @@ pub fn net_give_system(
         if env_on!("DXVIEW_NETLOG") {
             println!("NETITEM granted {}", it.class);
         }
-        let mut props = assets.classes.defaults(&it.class);
+        let mut props = assets.classes.defaults(&it.class).to_vec();
         for x in crate::netplay::game_props(&it.extra) {
             props.retain(|p| !(p.name.eq_ignore_ascii_case(&x.name) && p.index == x.index));
             props.push(x);

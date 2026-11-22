@@ -8,7 +8,7 @@ fn main() {
     let mut db = unreal_pkg::classes::ClassDb::open(&game.join("System"));
     for c in &a[3..] {
         println!("== {c} ({:?}) {:?}", db.package_of(c), db.ancestry(c));
-        for p in db.defaults(c) {
+        for p in db.defaults(c).iter() {
             println!("  {}[{}] = {:?}", p.name, p.index, p.value);
         }
     }

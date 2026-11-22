@@ -8862,7 +8862,7 @@ pub fn npc_weapon_models(
         let Some(mesh) = w.third_mesh.clone() else {
             continue;
         };
-        let mut d = assets.classes.defaults(&w.class);
+        let mut d = assets.classes.defaults(&w.class).to_vec();
         // Augmentique: a skin for this owner's weapon (WeaponSkinManager.SetDefaultSkin).
         let npc_class = level.0.actors.get(npc.actor).map(|a| a.class.clone()).unwrap_or_default();
         // A player's body: the skin he chose for that weapon (deathmatch characters).

@@ -2791,7 +2791,7 @@ fn spawn_gun(
     let base_loc = loc_of(p);
     let base_rot = rot_of(p);
     let base_h = fv(p, "CollisionHeight", 20.2);
-    let gd = assets.classes.defaults(gun_class);
+    let gd = assets.classes.defaults(gun_class).to_vec();
     let gun_h = fv(&gd, "CollisionHeight", 9.1);
     let ax = rotator_axes(base_rot);
     let up = DVec3::new(ax[2][0] as f64, ax[2][1] as f64, ax[2][2] as f64);

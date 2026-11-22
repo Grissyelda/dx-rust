@@ -80,6 +80,9 @@ difficulty screen (player health, NPC health, item and NPC amounts, Legendary an
 easter eggs found); Extras opens the bonus modes (computer room, stealth and combat missions with their own
 difficulty menus, the Radish Adventure), each unlocked by the easter eggs you've found. Nightmare makes the mod's
 people run faster, fire twice as fast and aim better.
+Performance: a class's settings (its default properties with the mods' changes) are worked out once and then
+shared, instead of being copied and searched for again each time - about 40 places that run every frame asked for
+them.
 Not yet: the fake and real IRC, the in-game web pages, the WHOIS lookup, the DXI / DXE / ABI file-system games and
 the clicker game (their buttons stay greyed), the packet puzzle as the AI core's story device, Legendary's weapon
 attributes and Nightmare's respawning enemies, and the mod's options, new-game and persona screens (Deus Ex's are

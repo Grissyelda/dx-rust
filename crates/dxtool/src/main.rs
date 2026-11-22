@@ -196,7 +196,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if d.is_empty() {
                 return Err(format!("class {class} not found or has no defaults").into());
             }
-            for p in d {
+            for p in d.iter() {
                 if p.index > 0 {
                     println!("{}[{}] = {:?}", p.name, p.index, p.value);
                 } else {

@@ -350,7 +350,7 @@ pub fn jc_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unreal_pkg
 /// jc_defaults without an Augmentique outfit (its "default" textures are these).
 pub fn jc_base_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unreal_pkg::props::Property> {
     use unreal_pkg::props::{Property, Value};
-    let mut d = classes.defaults(crate::tnmmode::player_class());
+    let mut d = classes.defaults(crate::tnmmode::player_class()).to_vec();
     if crate::tnmmode::active() {
         return d;
     }

@@ -22,7 +22,7 @@ static TEXT: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 pub fn load_text(classes: &mut unreal_pkg::classes::ClassDb, script: &str) {
     let class = script.rsplit('.').next().unwrap_or(script);
     let mut m = HashMap::new();
-    for p in classes.defaults(class) {
+    for p in classes.defaults(class).to_vec() {
         let v = match &p.value {
             Value::Str(s) => s.clone(),
             Value::Int(n) => n.to_string(),

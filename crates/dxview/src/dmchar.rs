@@ -568,7 +568,7 @@ fn class_defaults(class: &str) -> Vec<unreal_pkg::props::Property> {
         *g = Some((unreal_pkg::classes::ClassDb::open(&root.join("System")), Default::default()));
     }
     let (db, cache) = g.as_mut().unwrap();
-    cache.entry(class.to_string()).or_insert_with(|| db.defaults(class)).clone()
+    cache.entry(class.to_string()).or_insert_with(|| db.defaults(class).to_vec()).clone()
 }
 
 /// A class's name for the screens: ItemName (weapons, items), SkillName, AugmentationName, else the class.

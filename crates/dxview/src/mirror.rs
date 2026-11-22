@@ -1015,7 +1015,7 @@ pub fn mirror_body_system(
             commands.entity(e).despawn();
         }
         if let Some((key, mesh, scale, class, fitted)) = want_w {
-            let mut d = assets.classes.defaults(&class);
+            let mut d = assets.classes.defaults(&class).to_vec();
             let st = crate::hdtp::WeaponState { scope: fitted.scope, silencer: fitted.silencer, laser: fitted.laser, lasing: fitted.lasing, ammo: Vec::new(), loaded: true };
             if let Some(skins) = crate::hdtp::world_skins(&class, &st) {
                 crate::visattach::apply_skins(&mut d, &skins);
