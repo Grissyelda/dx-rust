@@ -3484,9 +3484,9 @@ pub fn con_view_system(
                 me.yaw = to.y.atan2(to.x);
                 me.eye = player.stand_eye;
             }
-            let actors = s.actors.clone();
-            let p = s.play.as_mut().unwrap();
-            let shot = p.cam.calculate(lvl, &actors, 0);
+            // (Fields borrowed apart: the camera reads the actors while it moves itself - no copy of them.)
+            let ConState { actors, play, .. } = s;
+            let shot = play.as_mut().unwrap().cam.calculate(lvl, actors, 0);
             let me = actors.get(&Who::Player).cloned().unwrap_or_default();
             Some((shot, me))
         }

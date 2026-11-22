@@ -3843,6 +3843,9 @@ pub fn npc_system(
         // changed (propagated and sent to the render world again), and most pawns stand still.
         let mut placed = *tf;
         place_pawn(npc, &mut deco, &mut placed, &mut blockers, moved);
+        if env_on!("DXVIEW_PLACELOG") {
+            place_log(&tf, &placed, wish);
+        }
         tf.set_if_neq(placed);
         if walk_test.is_some() {
             nav_log(npc, lvl, *test_clock, dt, moved);
@@ -5445,6 +5448,36 @@ fn after_move(
         npc.yaw = turn_toward(npc.yaw, vel.y.atan2(vel.x), npc.yaw_rate * dt as f64);
     }
     speed
+}
+
+/// DXVIEW_PLACELOG: every 300 calls, how many pawn placements changed the transform - moved, only turned, or
+/// with no wish at all (a pawn that should be standing still).
+fn place_log(old: &Transform, new: &Transform, wish: DVec3) {
+    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    static N: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
+    let moved = old.translation != new.translation;
+    let turned = old.rotation != new.rotation;
+    N[0].fetch_add(1, Relaxed);
+    if moved {
+        N[1].fetch_add(1, Relaxed);
+    } else if turned {
+        N[2].fetch_add(1, Relaxed);
+    }
+    if (moved || turned) && wish.length_squared() < 1e-10 {
+        N[3].fetch_add(1, Relaxed);
+        if moved && N[4].fetch_add(1, Relaxed) < 5 {
+            println!("PLACELOG still pawn moved by {:?}", new.translation - old.translation);
+        }
+    }
+    if N[0].load(Relaxed) >= 3000 {
+        println!(
+            "PLACELOG {} placements: {} moved, {} only turned, {} of them with no wish",
+            N[0].swap(0, Relaxed),
+            N[1].swap(0, Relaxed),
+            N[2].swap(0, Relaxed),
+            N[3].swap(0, Relaxed)
+        );
+    }
 }
 
 /// The pawn's decoration body, blocker and drawn transform follow the walking body.

@@ -27,3 +27,4 @@ panic = "unwind"
 # winit with a controller hook on Android (vendor/winit/README.DXRUST.md); other platforms build as upstream.
 [patch.crates-io]
 winit = { path = "vendor/winit" }
+bevy_pbr = { path = "vendor/bevy_pbr" }

@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Performance pass (November 22)
+- **The whole level now shares one lightmap slot on the GPU.** Bevy gave every lit piece of the level its own
+  lightmap slot even though they all read the same lightmap, four to a group, and rebuilt a binding for every group in
+  every render pass every frame - thousands of allocations a frame on the render thread, and level pieces in
+  different groups could never be drawn together. A small patch to Bevy (`vendor/bevy_pbr`, marked as modified) shares
+  the slot: Liberty Island's opaque world went from 31 draw batches to 5, about 78 draw calls a frame to about 35.
+- Measured on a Ryzen 5 3600 + RTX 3050 (Classic, 1080p, every mod, Lean Rendering on, before the lightmap change):
+  6.3 ms a frame (158 fps), 99% of frames under 7.9 ms. Bevy's sync points cost nothing measurable there.
+- Conversations no longer copy every speaker's state each frame to aim the camera.
 - **Pawns standing still cost less.** Every pawn rewrote its position every frame, even standing still, so Bevy treated
   it, its gun and every part of its model as changed (moved again and sent to the renderer again). Pawns now write
   only when they move (on Liberty Island most of them patrol, so there it saves little; quiet places gain more).

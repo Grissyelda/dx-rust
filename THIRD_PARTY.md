@@ -105,6 +105,11 @@ the system's copy is used if there is one. DX RUST loads it at run time for cont
 `tools/recomp-achievements/dx-rust.json` and `crates/dxview/src/rlach.rs` follow the Recomp Achievements channel
 specification (RecompLauncher). No code of theirs is included.
 
+## bevy_pbr (modified copy in `vendor/bevy_pbr`)
+bevy_pbr 0.19.1, part of Bevy, MIT or Apache-2.0 (its `LICENSE-MIT` and `LICENSE-APACHE` files are kept in
+`vendor/bevy_pbr`). This is an altered copy: entities that use the same lightmap image share one lightmap slot
+(see `vendor/bevy_pbr/README.DXRUST.md`). Everything else is as upstream.
+
 ## winit (modified copy in `vendor/winit`)
 winit 0.30.13, Apache-2.0 or MIT (its `LICENSE` file is kept in `vendor/winit`). This is an altered copy: on
 Android it hands controller events to a hook and accepts cursor grab / position requests as no-ops (see
