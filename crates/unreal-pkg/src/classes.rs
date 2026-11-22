@@ -374,7 +374,7 @@ impl ClassDb {
         let mut own = props::read_properties(map, &mut r).ok()?;
         resolve_objects(map, &mut own);
         let class = map.class_name(e.class_index).to_string();
-        let mut merged = self.defaults(&class);
+        let mut merged = self.defaults(&class).to_vec();
         overlay(&mut merged, own);
         apply_class_overrides(&class, &mut merged);
         if let (false, Ok(h)) = (crate::mods::suspended(), INSTANCE_HOOK.read()) {
@@ -388,7 +388,7 @@ impl ClassDb {
     /// An actor the game adds to a map itself (not from the map file): the class's defaults with `own` on top and
     /// the class override layers, as a placed one would read.
     pub fn added_actor(&mut self, class: &str, own: Vec<Property>) -> Vec<Property> {
-        let mut merged = self.defaults(class);
+        let mut merged = self.defaults(class).to_vec();
         overlay(&mut merged, own);
         apply_class_overrides(class, &mut merged);
         merged
