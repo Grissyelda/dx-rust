@@ -256,7 +256,7 @@ pub fn launch_system(
     let n_own = launches.0.len() + gas.len();
     for (k, l) in launches.0.drain(..).chain(gas).chain(ghosts).enumerate() {
         let ghost = k >= n_own;
-        let mut d = assets.classes.defaults(&l.class);
+        let mut d = assets.classes.defaults(&l.class).to_vec();
         if !ghost && !l.still && !l.class.ends_with("Tracer") && (crate::netplay::is_host() || l.from.is_none()) {
             crate::netplay::ghost_out(&l.class, l.pos, l.dir, l.speed);
         }

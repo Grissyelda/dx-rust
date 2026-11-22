@@ -134,7 +134,7 @@ pub fn spawn_system(
         _ => return,
     };
     for r in reqs {
-        let mut props = assets.classes.defaults(&r.class);
+        let mut props = assets.classes.defaults(&r.class).to_vec();
         let pawn = find(&props, "GroundSpeed").is_some();
         let deco_class = !pawn && assets.classes.ancestry(&r.class).iter().any(|a| a.eq_ignore_ascii_case("DeusExDecoration"));
         if !pawn && !deco_class {

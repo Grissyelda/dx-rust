@@ -308,7 +308,7 @@ pub fn grenade_system(
         }))
         .collect::<Vec<_>>();
     for (class, pos, dir, from, wall, given, net) in all {
-        let mut d = assets.classes.defaults(&class);
+        let mut d = assets.classes.defaults(&class).to_vec();
         // Augmentique: the player's grenade skin (ApplyProjectileSkinFrom).
         if from.is_none() {
             crate::augmentique::apply_projectile_skin(&mut d, &format!("Weapon{class}"));

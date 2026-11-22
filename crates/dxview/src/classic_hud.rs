@@ -508,7 +508,7 @@ impl ClassicHud {
         class: &str,
     ) -> &[unreal_pkg::props::Property] {
         if !self.defaults.contains_key(class) {
-            self.defaults.insert(class.to_string(), assets.classes.defaults(class));
+            self.defaults.insert(class.to_string(), assets.classes.defaults(class).to_vec());
         }
         &self.defaults[class]
     }

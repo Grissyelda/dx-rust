@@ -1380,7 +1380,7 @@ fn class_defaults(class: &str) -> Vec<unreal_pkg::props::Property> {
         let Some(root) = unreal_pkg::paths::root() else { return Vec::new() };
         *g = Some(unreal_pkg::classes::ClassDb::open(&root.join("System")));
     }
-    g.as_mut().map(|db| db.defaults(class)).unwrap_or_default()
+    g.as_mut().map(|db| db.defaults(class).to_vec()).unwrap_or_default()
 }
 
 /// The host: player `victim` died, by `killer`'s hand (None: the world) with `weapon` (DeusExMPGame.Killed and

@@ -196,7 +196,7 @@ pub fn blood_system(
     }
     // Drips from the wounded: a BloodDrop thrown at VRand * 100 from mid-body.
     // (Class defaults are a fresh list: only looked up when there are drips.)
-    let dd = if drips.0.is_empty() { Vec::new() } else { assets.classes.defaults("BloodDrop") };
+    let dd = if drips.0.is_empty() { Vec::new() } else { assets.classes.defaults("BloodDrop").to_vec() };
     for at in drips.0.drain(..) {
         let v =
             DVec3::new(rnd() * 2.0 - 1.0, rnd() * 2.0 - 1.0, rnd() * 2.0 - 1.0).normalize_or_zero();

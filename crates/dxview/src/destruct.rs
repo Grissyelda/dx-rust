@@ -1031,7 +1031,7 @@ pub fn weapon_drop_system(
             Some(id) if id > 0 => Some(id),
             _ => crate::netplay::item_spawned(&class, pos, vel, ammo, &extra),
         };
-        let mut d = assets.classes.defaults(&class);
+        let mut d = assets.classes.defaults(&class).to_vec();
         for x in extra {
             d.retain(|p| !(p.name.eq_ignore_ascii_case(&x.name) && p.index == x.index));
             d.push(x);

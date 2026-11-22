@@ -2483,7 +2483,7 @@ impl TextGame {
     fn new(assets: &mut RuntimeAssets, seed: u64) -> TextGame {
         let d = assets.classes.defaults("TextBasedGameInterface");
         let wd = assets.classes.defaults("tnmTextGameWindow");
-        let cd = assets.classes.defaults("TextConsole");
+        let cd = assets.classes.defaults("TextConsole").to_vec();
         let w = Words { d };
         let font = font(assets, &path(&cd, "consoleFont")).or_else(|| font(assets, "FontMenuSmall"));
         let bg: Vec<String> = (0..16)

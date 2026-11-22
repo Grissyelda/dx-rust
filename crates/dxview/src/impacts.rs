@@ -310,7 +310,7 @@ pub fn impacts_system(
     let hits: Vec<WallHit> = WALL_HITS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     let persistent = setting!("PersistentDebris") > 0.5;
     // (Only looked up on a frame with hits: class defaults are a fresh list.)
-    let rock = if hits.is_empty() { Vec::new() } else { assets.classes.defaults("Rockchip") };
+    let rock = if hits.is_empty() { Vec::new() } else { assets.classes.defaults("Rockchip").to_vec() };
     let rock_meshes: Vec<String> = rock
         .iter()
         .filter(|p| p.name.eq_ignore_ascii_case("Fragments"))

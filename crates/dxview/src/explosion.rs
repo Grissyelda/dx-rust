@@ -91,7 +91,7 @@ fn spawn_mesh_fx_ex(
     size: f32,
     timed: Option<(f32, (f32, f32))>,
 ) -> Option<Entity> {
-    let mut d = assets.classes.defaults(class);
+    let mut d = assets.classes.defaults(class).to_vec();
     let Some(Value::Path(mesh)) = find(&d, "Mesh").cloned() else {
         return None;
     };

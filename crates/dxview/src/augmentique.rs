@@ -755,7 +755,7 @@ fn init_spawners(sys: &std::path::Path, maps: std::path::PathBuf) {
     let Some(code) = unreal_pkg::mods::active("gmdx").and_then(|d| unreal_pkg::mods::find_rel(&d, "System/DeusEx.u")) else { return };
     let mut gm = unreal_pkg::classes::ClassDb::open_replacing(sys, &[("DeusEx", code)]);
     let mut base = unreal_pkg::classes::ClassDb::open(sys);
-    let deco = base.defaults("DeusExDecoration");
+    let deco = base.defaults("DeusExDecoration").to_vec();
     let mut classes = HashMap::new();
     for c in ["OutfitSpawner", "OutfitSpawner2", "OutfitSpawner3"] {
         let d = gm.base_defaults(c);
@@ -877,7 +877,7 @@ struct OwnBoxes {
 static OWN: RwLock<Option<OwnBoxes>> = RwLock::new(None);
 
 fn init_own_boxes(db: &mut unreal_pkg::classes::ClassDb, root: &std::path::Path) {
-    let mut props = db.defaults("DeusExDecoration");
+    let mut props = db.defaults("DeusExDecoration").to_vec();
     let mut set = |n: &str, v: Value| {
         props.retain(|p| !p.name.eq_ignore_ascii_case(n));
         props.push(Property { name: n.into(), index: 0, value: v });
@@ -895,7 +895,7 @@ fn init_own_boxes(db: &mut unreal_pkg::classes::ClassDb, root: &std::path::Path)
     }
     let mut anchors = HashMap::new();
     for a in OWN_ANCHORS {
-        let d = db.defaults(a);
+        let d = db.defaults(a).to_vec();
         let f = |n: &str, dflt: f64| match find(&d, n) {
             Some(Value::Float(v)) => *v as f64,
             _ => dflt,

@@ -272,7 +272,7 @@ fn node_of(class: &str, p: &[Property], assets: &mut RuntimeAssets) -> Node {
     let tnm = unreal_pkg::tnm::active().is_some() && crate::classtree::is_a(class, "tnmComputers");
     let node_i = if tnm { pfloat(p, "ComputerNodeNEW", 0.0) } else { pfloat(p, "ComputerNode", 0.0) } as u32;
     let mut node = Node::default();
-    let d = if tnm { p.to_vec() } else { assets.classes.defaults("Computers") };
+    let d = if tnm { p.to_vec() } else { assets.classes.defaults("Computers").to_vec() };
     if let Some((_, b)) = structs(&d, "NodeInfo").into_iter().find(|x| x.0 == node_i) {
         let mut r = Reader::new(b, 0);
         node.name = fstr(&mut r);
