@@ -81,6 +81,9 @@ impl Plugin for RagdollPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(PhysicsPlugins::default())
             .insert_resource(Gravity(Vec3::NEG_Y * GRAVITY))
+            // More solver substeps: an eleven-body chain with limits and muscles settles without the jitter six gave.
+            .insert_resource(SubstepCount(10))
+            .add_systems(FixedUpdate, muscle_system)
             .init_resource::<RagWorld>()
             .add_systems(Update, (player_body_system.before(start_system), start_system.after(crate::skeletal::pose_system)))
             .add_systems(PostUpdate, drive_system.before(bevy::transform::TransformSystems::Propagate))
@@ -131,24 +134,60 @@ struct PartDef {
     swing: f32,
     twist: f32,
     hinge: Option<(f32, f32)>,
+    /// Ball joints: the joint's neutral direction in the parent's frame (along the parent's bone, forward, out to
+    /// the part's own side) - the middle of the range the limb really has, so the cone is anatomical, not centred
+    /// on whatever pose the body died in (hips flex far forward and barely back, arms hang down and forward).
+    neutral: [f32; 3],
+    /// Mass (kg) for a 75 kg body (Winter's segment fractions): the trunk carries the fall, limbs follow it.
+    mass: f32,
+    /// Muscle tone: how long (s) this part keeps fighting to hold the pose it died in (legs give first, the neck
+    /// last) and how hard (1/s^2 per radian of error).
+    tone: f32,
+    gain: f32,
 }
 
 /// Hinged parts (knees, elbows): `hinge` = Some(range of the bend in radians, about the body's left-to-right axis -
 /// negative swings the part backward, as a knee bends; positive forward, as an elbow). Spherical parts use swing /
 /// twist; hinges ignore them.
 const PARTS: &[PartDef] = &[
-    PartDef { bone: "DEF-spine", tail: "DEF-spine.002", extend: 0.0, radius: 0.13, parent: None, swing: 0.0, twist: 0.0, hinge: None },
-    PartDef { bone: "DEF-spine.003", tail: "DEF-spine.005", extend: 0.0, radius: 0.15, parent: Some(0), swing: 0.45, twist: 0.3, hinge: None },
-    PartDef { bone: "DEF-spine.005", tail: "DEF-spine.006", extend: 1.6, radius: 0.1, parent: Some(1), swing: 0.6, twist: 0.5, hinge: None },
-    PartDef { bone: "DEF-upper_arm.L", tail: "DEF-forearm.L", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.4, twist: 0.5, hinge: None },
-    PartDef { bone: "DEF-forearm.L", tail: "DEF-hand.L", extend: 0.45, radius: 0.045, parent: Some(3), swing: 0.0, twist: 0.0, hinge: Some((-0.05, 2.4)) },
-    PartDef { bone: "DEF-upper_arm.R", tail: "DEF-forearm.R", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.4, twist: 0.5, hinge: None },
-    PartDef { bone: "DEF-forearm.R", tail: "DEF-hand.R", extend: 0.45, radius: 0.045, parent: Some(5), swing: 0.0, twist: 0.0, hinge: Some((-0.05, 2.4)) },
-    PartDef { bone: "DEF-thigh.L", tail: "DEF-shin.L", extend: 0.0, radius: 0.075, parent: Some(0), swing: 0.85, twist: 0.12, hinge: None },
-    PartDef { bone: "DEF-shin.L", tail: "DEF-foot.L", extend: 0.15, radius: 0.055, parent: Some(7), swing: 0.0, twist: 0.0, hinge: Some((-2.3, 0.05)) },
-    PartDef { bone: "DEF-thigh.R", tail: "DEF-shin.R", extend: 0.0, radius: 0.075, parent: Some(0), swing: 0.85, twist: 0.12, hinge: None },
-    PartDef { bone: "DEF-shin.R", tail: "DEF-foot.R", extend: 0.15, radius: 0.055, parent: Some(9), swing: 0.0, twist: 0.0, hinge: Some((-2.3, 0.05)) },
+    PartDef { bone: "DEF-spine", tail: "DEF-spine.002", extend: 0.0, radius: 0.13, parent: None, swing: 0.0, twist: 0.0, hinge: None, neutral: [1.0, 0.0, 0.0], mass: 11.0, tone: 0.6, gain: 0.0 },
+    // The spine bends forward more than back, and hardly twists.
+    PartDef { bone: "DEF-spine.003", tail: "DEF-spine.005", extend: 0.0, radius: 0.15, parent: Some(0), swing: 0.42, twist: 0.22, hinge: None, neutral: [1.0, 0.18, 0.0], mass: 21.0, tone: 0.7, gain: 120.0 },
+    PartDef { bone: "DEF-spine.005", tail: "DEF-spine.006", extend: 1.6, radius: 0.1, parent: Some(1), swing: 0.6, twist: 0.7, hinge: None, neutral: [1.0, 0.12, 0.0], mass: 5.5, tone: 0.85, gain: 90.0 },
+    // Shoulders: centred on an arm hanging a little forward and out; it can't swing far behind the back.
+    PartDef { bone: "DEF-upper_arm.L", tail: "DEF-forearm.L", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.45, twist: 0.7, hinge: None, neutral: [-1.0, 0.35, 0.35], mass: 2.1, tone: 0.35, gain: 60.0 },
+    PartDef { bone: "DEF-forearm.L", tail: "DEF-hand.L", extend: 0.45, radius: 0.045, parent: Some(3), swing: 0.0, twist: 0.0, hinge: Some((-0.05, 2.4)), neutral: [1.0, 0.0, 0.0], mass: 1.6, tone: 0.3, gain: 50.0 },
+    PartDef { bone: "DEF-upper_arm.R", tail: "DEF-forearm.R", extend: 0.0, radius: 0.05, parent: Some(1), swing: 1.45, twist: 0.7, hinge: None, neutral: [-1.0, 0.35, 0.35], mass: 2.1, tone: 0.35, gain: 60.0 },
+    PartDef { bone: "DEF-forearm.R", tail: "DEF-hand.R", extend: 0.45, radius: 0.045, parent: Some(5), swing: 0.0, twist: 0.0, hinge: Some((-0.05, 2.4)), neutral: [1.0, 0.0, 0.0], mass: 1.6, tone: 0.3, gain: 50.0 },
+    // Hips: flex ~80 deg forward, ~15 back, ~50 out; little twist.
+    PartDef { bone: "DEF-thigh.L", tail: "DEF-shin.L", extend: 0.0, radius: 0.075, parent: Some(0), swing: 0.88, twist: 0.3, hinge: None, neutral: [-1.0, 0.62, 0.08], mass: 8.0, tone: 0.22, gain: 70.0 },
+    PartDef { bone: "DEF-shin.L", tail: "DEF-foot.L", extend: 0.15, radius: 0.055, parent: Some(7), swing: 0.0, twist: 0.0, hinge: Some((-2.3, 0.05)), neutral: [1.0, 0.0, 0.0], mass: 4.3, tone: 0.18, gain: 60.0 },
+    PartDef { bone: "DEF-thigh.R", tail: "DEF-shin.R", extend: 0.0, radius: 0.075, parent: Some(0), swing: 0.88, twist: 0.3, hinge: None, neutral: [-1.0, 0.62, 0.08], mass: 8.0, tone: 0.22, gain: 70.0 },
+    PartDef { bone: "DEF-shin.R", tail: "DEF-foot.R", extend: 0.15, radius: 0.055, parent: Some(9), swing: 0.0, twist: 0.0, hinge: Some((-2.3, 0.05)), neutral: [1.0, 0.0, 0.0], mass: 4.3, tone: 0.18, gain: 60.0 },
 ];
+
+/// One joint's muscles (see `muscle_system`): parent and child body (indices into Ragdoll.bodies), the child's
+/// rotation relative to the parent at the start (the pose to hold), the part's tone time and gain, and each body's
+/// inertia across its bone (kg m^2) to share the correction between them.
+#[derive(Clone, Copy)]
+struct Muscle {
+    parent: usize,
+    child: usize,
+    rest: Quat,
+    tone: f32,
+    gain: f32,
+    ip: f32,
+    ic: f32,
+}
+
+/// Cylinder inertia of a part: (across the bone, along it). Thin limbs barely resist spinning about their own
+/// length, which is what made them whirl and corkscrew; that axis is raised to a share of the other (the usual
+/// ragdoll inertia fix).
+fn part_inertia(m: f32, r: f32, len: f32) -> (f32, f32) {
+    let across = m * (3.0 * r * r + len * len) / 12.0;
+    let along = (0.5 * m * r * r).max(across * 0.3);
+    (across, along)
+}
 
 /// Bones hung straight off the rig root (the export flattens Rigify's parenting) and the bone each rides with:
 /// (bone prefix, side suffix or "", bone ridden).
@@ -185,6 +224,7 @@ pub struct Ragdoll {
     anchors: Vec<(usize, usize, Vec3, Vec3)>,
     life: f32,
     still: f32,
+    muscles: Vec<Muscle>,
     /// Woken to be posed (Posable Bodies): no new blood pool when it settles again.
     woken: bool,
 }
@@ -445,19 +485,26 @@ pub fn start_system(
             } else if !upper_hit && !is_leg && i != 0 {
                 v -= push_dir * kick * 0.1;
             }
+            let (across, along) = part_inertia(p.mass, p.radius * 1.2, len);
             let body = commands
                 .spawn((
                     RigidBody::Dynamic,
                     // A little fatter than the bones (the clothes and flesh round them): the drawn body stays out of
                     // walls and floors, not just its skeleton.
                     Collider::capsule(p.radius * 1.2, (len - 2.4 * p.radius).max(0.01)),
+                    // Real segment masses (the volume of a capsule made a head as heavy as a chest and the hands
+                    // feather-light, so limbs whipped about the trunk), the bone along local Y.
+                    Mass(p.mass),
+                    AngularInertia::new(Vec3::new(across, along, across)),
                     CollisionLayers::new(LAYER_RAG, LAYER_WORLD),
                     // Swept collision: a fast limb can't tunnel through a thin floor or wall between two steps.
                     SweptCcd::default(),
                     Friction::new(0.8),
                     Restitution::new(0.0),
-                    LinearDamping(0.15),
-                    AngularDamping(2.2),
+                    LinearDamping(0.12),
+                    // (The joints' own damping and the muscles do most of the calming now: a high damping of every
+                    // body's spin made the whole body fall as if through syrup.)
+                    AngularDamping(1.0),
                     LinearVelocity(v),
                     TransformInterpolation,
                     Transform::from_translation(mid).with_rotation(rot),
@@ -474,7 +521,6 @@ pub fn start_system(
             let (a, b) = segs[i];
             anchors.push((pi, i, body_w[pi].inverse().transform_point3(a), body_w[i].inverse().transform_point3(a)));
             let child = (b - a).normalize_or(Vec3::NEG_Y);
-            let rot = Quat::from_rotation_arc(Vec3::Y, child);
             let j = match p.hinge {
                 Some((lo, hi)) => {
                     // A hinge about the body's left-to-right axis (the basis's Z), its limits measured from the bend
@@ -510,16 +556,38 @@ pub fn start_system(
                         ))
                         .id()
                 }
-                None => commands
-                    .spawn((
-                        SphericalJoint::new(bodies[pi], bodies[i])
-                            .with_anchor(a)
-                            .with_basis(rot)
-                            .with_swing_limits(-p.swing, p.swing)
-                            .with_twist_limits(-p.twist, p.twist),
-                        JointCollisionDisabled,
-                    ))
-                    .id(),
+                None => {
+                    // The cone's middle: the limb's neutral direction in the parent's frame (along the parent's
+                    // bone, the body's forward, out to this part's side). The parent's Y frame (frame1) points
+                    // there; the child's (frame2) is the same frame swung onto its bone as it lies, so the joint
+                    // starts with no twist and within the cone (widened if the pose is already outside it).
+                    let (pa, pb) = segs[pi];
+                    let up = (pb - pa).normalize_or(Vec3::Y);
+                    let side = (right - up * right.dot(up)).normalize_or(right);
+                    let fwd = up.cross(side).normalize_or(Vec3::NEG_Z);
+                    let out = if p.bone.ends_with(".L") { -side } else { side };
+                    let n = (up * p.neutral[0] + fwd * p.neutral[1] + out * p.neutral[2]).normalize_or(child);
+                    let frame_n = {
+                        let x = (side - n * side.dot(n)).normalize_or(Vec3::X);
+                        Quat::from_mat3(&Mat3::from_cols(x, n, x.cross(n)))
+                    };
+                    let frame_c = Quat::from_rotation_arc(n, child) * frame_n;
+                    let off = n.angle_between(child);
+                    let cone = p.swing.max(off + 0.05);
+                    let rp = Quat::from_mat4(&body_w[pi]);
+                    let rc = Quat::from_mat4(&body_w[i]);
+                    commands
+                        .spawn((
+                            SphericalJoint::new(bodies[pi], bodies[i])
+                                .with_anchor(a)
+                                .with_local_basis1(rp.inverse() * frame_n)
+                                .with_local_basis2(rc.inverse() * frame_c)
+                                .with_swing_limits(0.0, cone)
+                                .with_twist_limits(-p.twist, p.twist),
+                            JointCollisionDisabled,
+                        ))
+                        .id()
+                }
             };
             joints.push(j);
         }
@@ -556,7 +624,72 @@ pub fn start_system(
         if env_on!("DXVIEW_RAGLOG") {
             println!("RAGDOLL start blocker {} hit part {near} kick {kick:.1} run {run:?} hips {:?}", d.blocker, segs[0].0);
         }
-        commands.entity(e).insert(Ragdoll { bodies, joints, driven, blocker: d.blocker, order, anchors, life: 0.0, still: 0.0, woken });
+        // Muscles: every joint holds the pose it died in for a moment, fading (see muscle_system). Woken bodies
+        // are being posed by hand: limp (only the joints' damping).
+        let muscles: Vec<Muscle> = {
+            PARTS
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| {
+                    let pi = p.parent?;
+                    let rp = Quat::from_mat4(&body_w[pi]);
+                    let rc = Quat::from_mat4(&body_w[i]);
+                    let len = |k: usize| segs[k].0.distance(segs[k].1).max(0.02);
+                    Some(Muscle {
+                        parent: pi,
+                        child: i,
+                        rest: rp.inverse() * rc,
+                        tone: p.tone,
+                        gain: if woken { 0.0 } else { p.gain },
+                        ip: part_inertia(PARTS[pi].mass, PARTS[pi].radius * 1.2, len(pi)).0,
+                        ic: part_inertia(p.mass, p.radius * 1.2, len(i)).0,
+                    })
+                })
+                .collect()
+        };
+        commands.entity(e).insert(Ragdoll { bodies, joints, driven, blocker: d.blocker, order, anchors, life: 0.0, still: 0.0, muscles, woken });
+    }
+}
+
+/// The muscles of a falling body (after Euphoria's effectors as described for its reimplementations: a spring-damper
+/// per joint driving it toward a target angle, its strength set by the behaviour). Ours has one behaviour, dying:
+/// each joint pulls toward the pose the body had when hit, its strength fading away over the part's tone time (the
+/// knees buckle first, the trunk and neck hold a little longer), so the body crumples instead of flopping as a
+/// string of loose capsules. A damping of the joint's relative spin stays on, growing as the body comes to rest, so
+/// limbs never whirl, shake or buzz against the floor. The correction is shared between the two bodies by their
+/// inertia (what one gains the other loses): it never moves the body as a whole.
+fn muscle_system(time: Res<Time>, q: Query<&Ragdoll>, mut bodies: Query<(&Rotation, &mut AngularVelocity)>) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    for r in &q {
+        // Damping of each joint's relative spin (1/s): calm while falling, firm as it settles, stiff at rest.
+        let settle = ((r.life - 0.8) / 1.7).clamp(0.0, 1.0);
+        let rest = if r.still > 0.15 { 4.0 } else { 0.0 };
+        let base_d = 1.2 + 5.0 * settle * settle * (3.0 - 2.0 * settle) + rest;
+        for m in &r.muscles {
+            let (Some(&bp), Some(&bc)) = (r.bodies.get(m.parent), r.bodies.get(m.child)) else { continue };
+            let Ok([(rp, wp), (rc, wc)]) = bodies.get_many([bp, bc]).map(|[a, b]| [(a.0.0, a.1.0), (b.0.0, b.1.0)]) else { continue };
+            let tone = (-r.life / m.tone).exp();
+            let kp = m.gain * tone;
+            let kd = (2.0 * kp.sqrt() + base_d).min(0.5 / dt);
+            // The rotation that takes the child from where it is to the held pose, as an axis * angle (world).
+            let want = rp * m.rest;
+            let mut delta = want * rc.inverse();
+            if delta.w < 0.0 {
+                delta = -delta;
+            }
+            let (axis, angle) = delta.to_axis_angle();
+            let err = if angle.is_finite() && axis.is_finite() { axis * angle } else { Vec3::ZERO };
+            let acc = (err * kp - (wc - wp) * kd).clamp_length_max(250.0);
+            let dv = acc * dt;
+            let sum = (m.ip + m.ic).max(1e-6);
+            if let Ok([(_, mut a), (_, mut b)]) = bodies.get_many_mut([bp, bc]) {
+                a.0 -= dv * (m.ic / sum);
+                b.0 += dv * (m.ip / sum);
+            }
+        }
     }
 }
 

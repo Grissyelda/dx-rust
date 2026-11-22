@@ -179,7 +179,12 @@ pub fn resolve(path: &Path) -> PathBuf {
     let Ok(rel) = path.strip_prefix(root) else { return path.to_path_buf() };
     let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { return path.to_path_buf() };
     let name = name.to_string_lossy();
-    for o in ovs {
+    // The title map (the main menu's background) is always the game's own: Lay D Denton lays a DX.dx of its own
+    // over it, and the menu should look like Deus Ex's whatever mods are on. (The Nameless Mod's overlays keep theirs.)
+    let title = crate::tnm::active().is_none()
+        && name.eq_ignore_ascii_case("DX.dx")
+        && parent.as_os_str().to_string_lossy().eq_ignore_ascii_case("Maps");
+    for o in ovs.iter().filter(|_| !title) {
         if let Some(p) = ci_in(&o.join(parent), &name) {
             return p;
         }

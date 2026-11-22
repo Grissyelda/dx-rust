@@ -208,6 +208,13 @@ pub fn scan(dir: &Path) -> Vec<(&'static ModDef, PathBuf)> {
         // a Textures folder of packages, not of DDS files, but HDTP or others might ship DDS files).
         // New Vision's marker is a game texture package, so only a folder named like it counts.
         let rest = if matches!(m.kind, ModKind::DdsTextures | ModKind::ReliefMaps | ModKind::HdTextures) { Vec::new() } else { rest };
+        // Lay D Denton lays its files over the whole game (maps, conversations, the title map): only a folder of
+        // its own counts, never another mod's folder that happens to carry a copy of its package.
+        let rest: Vec<&PathBuf> = if m.kind == ModKind::Overlay {
+            rest.into_iter().filter(|p| !other_mod_in(m, p)).collect()
+        } else {
+            rest
+        };
         // A loose package in the folder itself (Precipitation.u dropped beside the mod folders) is taken before
         // other mods' copies (GMDX: Augmented Edition ships one in its System folder).
         let first_hint = hints(m.id).first().copied().unwrap_or("");
@@ -218,6 +225,13 @@ pub fn scan(dir: &Path) -> Vec<(&'static ModDef, PathBuf)> {
         }
     }
     out
+}
+
+/// `dir` (or a folder just inside it) holds another supported mod's marker: it's that mod's folder.
+fn other_mod_in(me: &ModDef, dir: &Path) -> bool {
+    MODS.iter()
+        .filter(|m| m.id != me.id && !m.marker.is_empty() && matches!(m.kind, ModKind::Overlay | ModKind::Addon))
+        .any(|m| locate(m, dir).is_some())
 }
 
 /// The single package an addon may be installed as on its own ("System/Precipitation.u" -> "Precipitation.u"):
@@ -246,7 +260,15 @@ pub fn from_lines(lines: &[(String, String)]) -> Vec<ModSetting> {
     for m in MODS {
         let mut path = lines.iter().find(|(k, _)| k.eq_ignore_ascii_case(&format!("Mod.{}", m.id))).map(|(_, v)| v.clone());
         if path.is_none() && m.id == "lddp" {
-            path = lines.iter().find(|(k, _)| k == "LDDPPath" || k == "ModPath").map(|(_, v)| v.clone());
+            path = lines.iter().find(|(k, _)| k == "LDDPPath").map(|(_, v)| v.clone());
+            // The old launcher's generic ModPath= row: Lay D Denton only when it is her folder, not another mod's.
+            if path.is_none() {
+                path = lines
+                    .iter()
+                    .find(|(k, _)| k == "ModPath")
+                    .map(|(_, v)| v.clone())
+                    .filter(|v| !other_mod_in(m, Path::new(v.trim())));
+            }
         }
         let Some(path) = path.filter(|p| !p.trim().is_empty()) else { continue };
         let on = lines
@@ -325,7 +347,15 @@ static ACTIVE: std::sync::RwLock<Vec<(&'static str, PathBuf)>> = std::sync::RwLo
 
 /// The game's mod list for this run (set once at start-up, after `paths::set`): overlays, addons and HD texture
 /// packs go to `paths`; `active` answers "is this mod on, and where".
+static CONFIGURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `activate` has run: the game's mod list is known.
+pub fn configured() -> bool {
+    CONFIGURED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn activate(list: &[(&'static ModDef, PathBuf)]) {
+    CONFIGURED.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut a) = ACTIVE.write() {
         *a = list.iter().map(|(m, p)| (m.id, p.clone())).collect();
     }

@@ -419,6 +419,8 @@ pub struct ClassicHud {
     keys: HashMap<Win, u64>,
     /// Frames a heavy window's redraw has waited (redraw budget: one heavy window a frame).
     waited: HashMap<Win, u8>,
+    /// The windows shown last frame (bit per Win::ALL index): a window coming back on screen redraws at once.
+    shown_prev: u64,
     /// The InfoLink's frame (conui::draw_infolink_frame) at a size, scale and settings generation, drawn once: with
     /// its portrait on a window of its own the InfoLink is redrawn from a copy of it as its text types.
     infolink_frame: Option<(u64, Canvas)>,
@@ -787,7 +789,9 @@ pub fn classic_hud_system(
     let tiny = hud.font(assets, "FontTiny");
     // One heavy window redraw a frame (see `heavy`).
     let mut heavy_drawn = false;
-    for w in Win::ALL {
+    // DXVIEW_HUDLOG: the windows shown, each time that set changes.
+    let mut shown_mask = 0u64;
+    for (wi, w) in Win::ALL.into_iter().enumerate() {
         let (x, y, ww, wh, visible) = f.layout(w, snap, *window);
         // Radish Adventure: Trestkon.platform destroys the normal HUD (the radish one stands in).
         let visible = visible
@@ -802,6 +806,7 @@ pub fn classic_hud_system(
             hide_window(&mut nodes, w);
             continue;
         }
+        shown_mask |= 1 << wi;
         let _wprof = crate::prof::scope(match w {
             Win::Hit => "hud::Hit",
             Win::Compass => "hud::Compass",
@@ -838,7 +843,12 @@ pub fn classic_hud_system(
         // redraw on the CPU, and several changing in one frame made a 10 ms spike. One of them redraws a frame; the
         // others keep last frame's image (at most HEAVY_WAIT frames late - text typing out a frame late is
         // invisible). Unkeyed heavy windows (redrawn every frame) count too.
-        let deferred = !unchanged && heavy(w) && hud.last.contains_key(&w) && {
+        // Never for a window that was off screen last frame: its last picture can be from long ago (another
+        // conversation's line, an earlier InfoLink's portrait) and flashed up for a frame or two. Nor the InfoLink
+        // while its portrait window comes or goes (the two pictures must match).
+        let returning = hud.shown_prev >> wi & 1 == 0;
+        let face_flip = w == Win::InfoLink && (hud.shown_prev >> face_bit() & 1 == 1) != f.face_split;
+        let deferred = !unchanged && !returning && !face_flip && heavy(w) && hud.last.contains_key(&w) && {
             let waited = hud.waited.get(&w).copied().unwrap_or(0);
             if heavy_drawn || (key.is_none() && waited == 0) {
                 hud.waited.insert(w, waited.saturating_add(1));
@@ -862,6 +872,15 @@ pub fn classic_hud_system(
             upload_window(hud, &mut images, &mut nodes, &mut layers, w, canvas, ww, wh, s);
         }
         place_window(&mut nodes, &mut layers, w, visible, (x, y, ww, wh), k, alpha, &f, *window);
+    }
+    hud.shown_prev = shown_mask;
+    if env_on!("DXVIEW_HUDLOG") {
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        if LAST.swap(shown_mask, std::sync::atomic::Ordering::Relaxed) != shown_mask {
+            let names: Vec<String> = Win::ALL.iter().enumerate().filter(|(i, _)| shown_mask >> i & 1 == 1).map(|(_, w)| format!("{w:?}")).collect();
+            static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            println!("HUDWIN t {:.2} {}", T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f32(), names.join(" "));
+        }
     }
 }
 
@@ -1459,6 +1478,11 @@ impl HudFrame {
 }
 
 /// Windows whose CPU redraw is big (large canvases, lots of text): at most one of them is redrawn a frame.
+/// Win::InfoLinkFace's bit in a shown mask.
+fn face_bit() -> usize {
+    Win::ALL.iter().position(|w| *w == Win::InfoLinkFace).unwrap_or(0)
+}
+
 fn heavy(w: Win) -> bool {
     matches!(
         w,

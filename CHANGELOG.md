@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Ragdolls, mods, menu (November 22)
+- Ragdolls fall like people instead of loose capsules (ideas from Euphoria-style active ragdolls): every joint has
+  muscles that hold the pose the body was hit in and let go over a fraction of a second (knees first, then the arms,
+  the trunk and neck last), so a body crumples instead of flailing. Each joint's relative spin is damped, more as the
+  body settles, so limbs no longer whirl or buzz on the floor.
+- Anatomical joint ranges: the shoulder, hip, spine and neck cones are centred on the limb's real range (hips flex far
+  forward and barely back, arms can't swing far behind the back, the neck nods more than it tips back) instead of on
+  whatever pose the body died in, with tighter twist limits - no more corkscrewed thighs and arms.
+- Real segment masses (trunk heavy, hands and feet light) and a raised spin inertia along thin limbs (they spun about
+  their own length), and 10 solver substeps instead of 6.
+- Lay D Denton is no longer turned on by other mods (GitHub #71): a copy of her package in another mod's folder (or
+  the old launcher's generic Mod Folder line pointing at another mod) made the game treat her as installed, which
+  broke Augmentique's JC. Mods' code packages now load only when that mod is on, the Mod Assets scan only takes Lay D
+  Denton from a folder of her own, and Augmentique only looks in her package when she is on.
+- The main menu's background is always the game's own title map, also with Lay D Denton on.
+- HUD: a conversation / InfoLink window coming back on screen always redraws at once (it could show its last
+  picture from earlier for a frame or two - a possible cause of a face flashing up between conversation lines).
+
 ### Riding movers (November 22)
 - Standing on a moving platform carries you with it (GitHub #73): the Liberty Island forklift used to push its
   collision up into JC, so he sank through the forks unless he kept jumping. A player whose floor was a mover that

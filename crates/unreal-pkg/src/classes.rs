@@ -22,6 +22,27 @@ pub const CODE_PACKAGES: &[&str] = &[
 /// Project's FemJC (its NPCs and JC's female carcass).
 pub const MOD_PACKAGES: &[&str] = &["FemJC", "Augmentique", "Precipitation"];
 
+/// A mod's code package is loaded only when that mod is installed for this run: another mod's folder may carry a copy
+/// of one (Lay D Denton's FemJC in a mod that supports her), and loading it then turned Lay D Denton's classes on.
+/// (Before the mod list is set - tools, tests - every one found is loaded, as before.)
+fn mod_package_on(p: &str) -> bool {
+    let id = match p {
+        "FemJC" => "lddp",
+        "Augmentique" => "augmentique",
+        "Precipitation" => "precipitation",
+        _ => return true,
+    };
+    if !crate::mods::configured() {
+        return true;
+    }
+    let ids = crate::mods::installed_ids();
+    ids.contains(&id)
+        // GMDX carries Precipitation in its System folder.
+        || (id == "precipitation" && ids.contains(&"gmdx"))
+        // Test overlays (DXVIEW_MOD) holding the package.
+        || (id == "lddp" && crate::paths::overlays().iter().any(|d| crate::paths::find_ci(&d.join("System"), "FemJC.u").is_some()))
+}
+
 /// More code packages for this run, loaded after the game's and the mods' (The Nameless Mod's: TNM, TNMCharacters
 /// and the rest, found through its folders - paths.rs overlays).
 static EXTRA: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
@@ -75,7 +96,7 @@ impl ClassDb {
     /// `system_dir` is the game's `System` folder.
     pub fn open(system_dir: &Path) -> ClassDb {
         let mut db = ClassDb { dir: system_dir.to_path_buf(), packages: HashMap::new(), property_names: HashSet::new(), cache: HashMap::new(), full_cache: HashMap::new(), decl_cache: HashMap::new(), int_cache: HashMap::new() };
-        for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES) {
+        for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES.iter().filter(|p| mod_package_on(p))) {
             db.load(p);
         }
         for p in extra_packages() {
@@ -97,7 +118,7 @@ impl ClassDb {
                 db.packages.insert(name.to_ascii_lowercase(), pkg);
             }
         }
-        for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES) {
+        for p in CODE_PACKAGES.iter().chain(MOD_PACKAGES.iter().filter(|p| mod_package_on(p))) {
             db.load(p);
         }
         for p in extra_packages() {

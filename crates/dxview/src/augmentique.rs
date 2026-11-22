@@ -220,8 +220,10 @@ fn find_mesh(m: &str) -> Option<String> {
     if m.is_empty() {
         return None;
     }
+    // (FemJC's meshes only with Lay D Denton on: without her, a copy of her package in another folder isn't ours.)
     [format!("Augmentique.{m}"), m.to_string(), format!("DeusExCharacters.{m}"), format!("FemJC.{m}")]
         .into_iter()
+        .filter(|p| crate::travel::lddp() || !p.starts_with("FemJC."))
         .find(|p| p.contains('.') && exists(p, "Mesh"))
 }
 
