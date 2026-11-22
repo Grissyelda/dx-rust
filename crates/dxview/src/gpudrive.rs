@@ -19,7 +19,8 @@ use bevy::camera::visibility::NoCpuCulling;
 use bevy::prelude::*;
 use std::collections::HashSet;
 
-fn enabled() -> bool {
+/// The level's surfaces are culled on the GPU (not with DXVIEW_CPU_CULL, the Switch's path).
+pub(crate) fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     // Only where Bevy really culls on the GPU: without GPU preprocessing (old Mali / Adreno drivers on Android,
     // GL) a NoCpuCulling mesh is never drawn - the level vanished there - and with preprocessing but no culling
