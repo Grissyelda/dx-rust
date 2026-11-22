@@ -1176,7 +1176,7 @@ fn add_input_systems(app: &mut App) {
         .add_systems(Update, keybinds::bind_menu_system.before(cursor_grab))
         .add_plugins(PlatformPlugin)
         .add_systems(Last, drop_texture_pixels.run_if(texture_pixels_due))
-        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system, prof::transform_census_system, prof::cpu_asset_report_system));
+        .add_systems(Last, (prof::prof_report_system, prof::scene_frames_system, prof::scene_stats_system, prof::prof_ab_system, prof::prof_features_system, prof::mesh_owner_system, prof::camera_report_system, prof::bounds_report_system, prof::census_system, prof::transform_census_system, prof::cpu_asset_report_system, prof::schedule_report_system, prof::change_census_system));
 }
 
 /// Conversation / trigger / logic resources and the mission-script side systems.
@@ -1187,19 +1187,19 @@ fn add_mission_systems(app: &mut App) {
         .init_resource::<logic::LogicActors>()
         .add_systems(Update, logic::logic_system.after(devices::device_system))
         .init_resource::<tnmtriggers::TnmMovers>()
-        .add_systems(Update, tnmtriggers::tnm_system.after(devices::device_system))
-        .add_systems(Update, tnmpower::powerup_system.after(actors::deco_physics).after(interp::rotating_system))
+        .add_systems(Update, tnmtriggers::tnm_system.after(devices::device_system).run_if(tnmmode::active))
+        .add_systems(Update, tnmpower::powerup_system.after(actors::deco_physics).after(interp::rotating_system).run_if(tnmmode::active))
         .add_systems(Update, radish::radish_system.after(tnmpower::powerup_system))
-        .add_systems(Update, trestkon::kit_system.after(radish::radish_system))
+        .add_systems(Update, trestkon::kit_system.after(radish::radish_system).run_if(tnmmode::active))
         .add_systems(First, tnmmode::speed_system)
-        .add_systems(Update, tnmban::ban_system.after(ai::npc_system))
-        .add_systems(Update, tnmach::inventory_system)
-        .add_systems(Update, staring::staring_system.before(movers::tick_movers))
+        .add_systems(Update, tnmban::ban_system.after(ai::npc_system).run_if(tnmmode::active))
+        .add_systems(Update, tnmach::inventory_system.run_if(tnmmode::active))
+        .add_systems(Update, staring::staring_system.before(movers::tick_movers).run_if(tnmmode::active))
         .add_systems(Update, warpzone::warp_system.after(fly))
-        .add_systems(Update, fade::fade_system.after(ai::npc_system))
-        .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system))
-        .add_systems(Update, scripted_tv::tv_system)
-        .add_systems(Update, breath::breath_system.before(particles::particle_system))
+        .add_systems(Update, fade::fade_system.after(ai::npc_system).run_if(tnmmode::active))
+        .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system).run_if(tnmmode::active))
+        .add_systems(Update, scripted_tv::tv_system.run_if(tnmmode::active))
+        .add_systems(Update, breath::breath_system.before(particles::particle_system).run_if(tnmmode::active))
         .add_systems(Update, radish::silhouette_system.after(skeletal::mirror_skel_system))
         .add_systems(Update, tnmaugs::tnm_aug_system.before(weapons::weapon_system).before(ai::npc_system))
         .add_systems(Update, scriptworld::scriptworld_system.after(mission::mission_system))

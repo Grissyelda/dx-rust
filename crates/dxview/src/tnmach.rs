@@ -130,21 +130,10 @@ pub fn unlock(id: &str) {
     }
 }
 
-pub fn has(id: &str) -> bool {
-    STORE.lock().map(|s| s.earned.keys().any(|k| k.eq_ignore_ascii_case(id))).unwrap_or(false)
-}
-
 /// The list (for the menu) and whether each is earned.
 pub fn list() -> Vec<(Ach, bool)> {
     let s = STORE.lock().unwrap_or_else(|e| e.into_inner());
     s.list.iter().map(|a| (a.clone(), s.earned.keys().any(|k| k.eq_ignore_ascii_case(&a.id)))).collect()
-}
-
-/// The menu's Restore Defaults: nothing earned.
-pub fn reset_all() {
-    let mut s = STORE.lock().unwrap_or_else(|e| e.into_inner());
-    s.earned.clear();
-    save(&s);
 }
 
 /// The player's weapon in hand is (a subclass of) one of these.
@@ -231,15 +220,6 @@ pub fn pawn_died(class: &str, by_player: bool, stunned: bool, damage_type: &str,
     }
 }
 
-/// A projectile of the player's killed a pawn (TNMProjectile: a Foon dart on a llama, a spork on a goat).
-pub fn projectile_kill(proj_class: &str, pawn_class: &str) {
-    let foon = proj_class.eq_ignore_ascii_case("FoonProj") && crate::classtree::is_a(pawn_class, "GenericLlama");
-    let spork = proj_class.eq_ignore_ascii_case("SporkProj") && crate::classtree::is_a(pawn_class, "GenericGoat");
-    if foon || spork {
-        unlock("achCultWeapon");
-    }
-}
-
 static FIRESTAFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The fire staff was frobbed with no room for it.
@@ -253,6 +233,9 @@ pub fn firestaff_no_room() {
 static FLAG_SETS: Mutex<Vec<(&'static str, i32)>> = Mutex::new(Vec::new());
 
 pub fn set_flag(name: &'static str, expiration: i32) {
+    if !crate::tnmmode::active() {
+        return;
+    }
     if let Ok(mut q) = FLAG_SETS.lock() {
         q.push((name, expiration));
     }

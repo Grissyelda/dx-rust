@@ -13,11 +13,6 @@ const KEEP: usize = 10;
 
 static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// This run's log file (once `start` ran).
-pub fn path() -> Option<&'static PathBuf> {
-    PATH.get()
-}
-
 /// The logs folder in the data folder.
 pub fn dir() -> PathBuf {
     unreal_pkg::paths::data_dir().join("logs")

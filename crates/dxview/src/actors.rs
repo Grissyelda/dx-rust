@@ -269,7 +269,10 @@ pub fn smooth_turn_system(
             None => (now, now),
         };
         // (A half turn or more at once is a teleport / respawn: no swing.)
-        let next = if shown.angle_between(target) > 2.6 { target } else { shown.slerp(target, k) };
+        // (Within a hair it lands on the target: a slerp toward it never gets there exactly, and every write marks
+        // the pawn and its parts changed.)
+        let gap = shown.angle_between(target);
+        let next = if gap > 2.6 || gap < 1.0e-3 { target } else { shown.slerp(target, k) };
         if next != now {
             tf.rotation = next;
         }

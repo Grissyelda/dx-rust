@@ -128,11 +128,6 @@ pub fn begin_interrogation(id: u8, at: DVec3) {
     });
 }
 
-/// The interrogation under way: (rival, 0..1 done).
-pub fn interrogating() -> Option<(u8, f32)> {
-    with(|s| s.interrogate.map(|i| (i.0, i.1 / INTERROGATE_SECS)))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn downed_system(
     time: Res<Time>,

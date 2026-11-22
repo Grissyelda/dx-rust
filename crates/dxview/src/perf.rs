@@ -1,5 +1,4 @@
-//! Performance switches (Settings > Enhancements > Performance). Their defaults keep the PC's picture and
-//! behaviour. Systems read them every frame, so they are cached here and read again only when the settings change
+//! Performance switches (Settings > Enhancements > Performance). Their defaults keep the PC's picture. Systems read them every frame, so they are cached here and read again only when the settings change
 //! (`settings::generation`). The FPS Counter lives here too.
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed};
@@ -9,6 +8,7 @@ const HDR: u8 = 2;
 const LEAN_RENDERING: u8 = 4;
 const LEAN_UPDATES: u8 = 8;
 const FPS_COUNTER: u8 = 16;
+const STATIC_BATCHING: u8 = 32;
 
 /// The settings generation `FLAGS` was read at.
 static READ_AT: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -19,7 +19,8 @@ fn flags() -> u8 {
     if READ_AT.load(Relaxed) != generation {
         let on = |key: &str, bit: u8| if crate::settings::get(key) > 0.5 { bit } else { 0 };
         let flags = on("AntiAliasing", MSAA) | on("HDRRendering", HDR) | on("LeanRendering", LEAN_RENDERING)
-            | on("LeanUpdates", LEAN_UPDATES) | on("FPSCounter", FPS_COUNTER);
+            | on("LeanUpdates", LEAN_UPDATES) | on("FPSCounter", FPS_COUNTER)
+            | on("StaticBatching", STATIC_BATCHING);
         FLAGS.store(flags, Relaxed);
         READ_AT.store(generation, Relaxed);
     }
@@ -40,6 +41,11 @@ pub fn hdr() -> bool {
 /// Skip GPU work that adds no pixels (setting LeanRendering).
 pub fn lean_rendering() -> bool {
     flags() & LEAN_RENDERING != 0
+}
+
+/// Still mesh-actor parts drawn as one mesh per material and cell (setting StaticBatching; batches.rs).
+pub fn static_batching() -> bool {
+    flags() & STATIC_BATCHING != 0
 }
 
 /// Skip CPU work that changes nothing (setting LeanUpdates).

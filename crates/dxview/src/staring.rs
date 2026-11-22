@@ -299,13 +299,6 @@ pub fn fire_tag(tag: &str) {
     }
 }
 
-/// Mission scripts: set the DesiredRotation of the staring movers with this tag.
-pub fn turn_tag(tag: &str, rot: [i32; 3]) {
-    if let Ok(mut q) = TURN.lock() {
-        q.push((tag.to_string(), rot));
-    }
-}
-
 fn build(lvl: &dx_level::Level) -> State {
     let mut st = State { built: true, rand: 0x5eed_1234, ..Default::default() };
     for (mi, m) in lvl.movers.iter().enumerate() {

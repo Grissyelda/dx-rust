@@ -595,15 +595,25 @@ pub fn dynlight_system(
                 let c = hsv_white(spec.hue, spec.saturation);
                 let b = (l.color[0].max(l.color[1]).max(l.color[2])).max(1e-4);
                 let k = (1.5 * b).min(1.0).powf(2.2);
-                pl.color = Color::srgb(c[0], c[1], c[2]);
-                pl.intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * st.gain;
-                pl.range = r_m;
-                pl.shadow_depth_bias = -b;
-                tf.translation = Vec3::from(ue_to_bevy(l.pos));
+                // Written only when something differs: a changed light is extracted and its clusters redone.
+                let color = Color::srgb(c[0], c[1], c[2]);
+                let intensity = std::f32::consts::PI.powi(2) * r_m * r_m * k * st.gain;
+                if pl.color != color || pl.intensity != intensity || pl.range != r_m || pl.shadow_depth_bias != -b {
+                    pl.color = color;
+                    pl.intensity = intensity;
+                    pl.range = r_m;
+                    pl.shadow_depth_bias = -b;
+                }
+                let at = Vec3::from(ue_to_bevy(l.pos));
+                if tf.translation != at {
+                    tf.translation = at;
+                }
                 vis.set_if_neq(Visibility::Inherited);
             }
             None => {
-                pl.intensity = 0.0;
+                if pl.intensity != 0.0 {
+                    pl.intensity = 0.0;
+                }
                 vis.set_if_neq(Visibility::Hidden);
             }
         }

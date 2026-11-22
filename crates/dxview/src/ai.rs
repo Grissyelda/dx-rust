@@ -957,6 +957,10 @@ pub struct Npc {
     pub can_open_doors: bool,
     /// State OpeningDoor: the door (mover index) being opened, where to back up to, and the time spent.
     pub door: Option<DoorWait>,
+    /// Standing still on the ground: seconds since the last full walking step, and where that step left it
+    /// (tick_body skips the floor probe until something could have changed under it).
+    pub rest_t: f32,
+    pub rest_at: DVec3,
     pub stalls: u32,
     pub startle_timer: f32,
     /// Rat: every second, a 5% chance to squeak.
@@ -1206,6 +1210,8 @@ impl Npc {
         };
         let yaw = yaw_units as f64 / 65536.0 * std::f64::consts::TAU;
         Npc {
+            rest_t: 0.0,
+            rest_at: DVec3::splat(f64::NAN),
             net: None,
             net_player: None,
             net_shots: 0,
@@ -3643,6 +3649,7 @@ pub fn npc_system(
     // The player's own burn timer, once a frame (it used to tick once per live pawn: burning ended sooner and hurt
     // faster the more pawns there were).
     player_burn_tick(&mut ph, dt);
+    let movers_moving = mv.rt.iter().any(|r| r.interpolating);
     for (mut npc, mut deco, mut an, mut tf, mut aff) in &mut q {
         let npc = &mut *npc;
         let aff = &mut *aff;
@@ -3825,14 +3832,18 @@ pub fn npc_system(
             wish = w;
             running = running || r;
         }
-        let solid = SolidCx { lvl, mv: &mv, player_cyl, player_dead: ph.dead, carrying: &carrying };
+        let solid = SolidCx { lvl, mv: &mv, player_cyl, player_dead: ph.dead, carrying: &carrying, movers_moving };
         let (before, mut moved, vel) = tick_body(npc, &mut deco, &mut blockers, &solid, solid_buf, &params, wish, dt);
         // The Nameless Mod's Radish Adventure: TNMPawn / TNMRobot.Tick holds them on the course's line.
         if crate::radish::active() {
             crate::radish::pawn_lock(&lvl.actors[npc.actor], &mut moved);
         }
         let speed = after_move(npc, lvl, &mv, before, moved, vel, wish, dt);
-        place_pawn(npc, &mut deco, &mut tf, &mut blockers, moved);
+        // Placed into a copy and written only when it differs: a write marks the pawn and every part under it
+        // changed (propagated and sent to the render world again), and most pawns stand still.
+        let mut placed = *tf;
+        place_pawn(npc, &mut deco, &mut placed, &mut blockers, moved);
+        tf.set_if_neq(placed);
         if walk_test.is_some() {
             nav_log(npc, lvl, *test_clock, dt, moved);
         }
@@ -5269,12 +5280,17 @@ fn move_params(npc: &Npc, running: bool) -> MoveParams {
 }
 
 /// What a walking pawn can't pass besides the world and the other pawns.
+/// How long a pawn standing still goes between floor probes (tick_body).
+const REST_RECHECK: f32 = 0.25;
+
 struct SolidCx<'a> {
     lvl: &'a dx_level::Level,
     mv: &'a Movers,
     player_cyl: Cylinder,
     player_dead: bool,
     carrying: &'a crate::carry::Carrying,
+    /// Some mover is on its way this frame (a floor under a resting pawn may have gone).
+    movers_moving: bool,
 }
 
 /// The walking body's move this frame (or riding the seat while sitting). Returns (before, moved, velocity).
@@ -5292,6 +5308,20 @@ fn tick_body(
     let lvl = cx.lvl;
     let body = npc.body.as_mut().unwrap();
     let before = body.location;
+    // At rest (no wish, no speed, walking, where the last full step left it, no mover on its way): the walking
+    // step would only probe the floor again and stay put, so it runs every REST_RECHECK seconds instead.
+    let resting = !npc.sitting
+        && wish.length_squared() < 1e-10
+        && body.velocity.length_squared() < 1e-8
+        && body.physics == imsim_core::movement::Physics::Walking
+        && body.location == npc.rest_at
+        && !cx.movers_moving;
+    if resting && npc.rest_t + dt < REST_RECHECK {
+        npc.rest_t += dt;
+        body.landed_speed = None;
+        return (before, body.location, body.velocity);
+    }
+    npc.rest_t = 0.0;
     if !npc.sitting {
         let steps = ((dt as f64) / (1.0 / 60.0)).ceil().max(1.0) as usize;
         // Pawns can't walk through the player either, nor through what the player carries, and BlockMonsters
@@ -5326,6 +5356,7 @@ fn tick_body(
         for _ in 0..steps {
             body.tick(&world, params, wish, false, dt as f64 / steps as f64);
         }
+        npc.rest_at = body.location;
     } else {
         if let Some((seat_actor, bl, off)) = npc.seat.as_mut() {
             if bl.is_none() {

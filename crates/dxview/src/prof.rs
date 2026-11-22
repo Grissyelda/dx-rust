@@ -1529,6 +1529,7 @@ pub fn transform_census_system(
     moved: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::GlobalTransform>>,
     vis: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::ViewVisibility>>,
     mats: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::MeshMaterial3d<bevy::prelude::StandardMaterial>>>,
+    shown: bevy::prelude::Query<bevy::prelude::Entity, bevy::prelude::Changed<bevy::prelude::Visibility>>,
     entities: &bevy::ecs::entity::Entities,
     archetypes: &bevy::ecs::archetype::Archetypes,
     components: &bevy::ecs::component::Components,
@@ -1538,7 +1539,12 @@ pub fn transform_census_system(
     if !ON.load(Ordering::Relaxed) {
         return;
     }
-    for (kind, it) in [(0u8, moved.iter().collect::<Vec<_>>()), (1, vis.iter().collect()), (2, mats.iter().collect())] {
+    for (kind, it) in [
+        (0u8, moved.iter().collect::<Vec<_>>()),
+        (1, vis.iter().collect()),
+        (2, mats.iter().collect()),
+        (3, shown.iter().collect()),
+    ] {
         for e in it {
             if let Ok(Some(loc)) = entities.get(e) {
                 *acc.entry((kind, loc.archetype_id)).or_insert(0) += 1;
@@ -1553,7 +1559,7 @@ pub fn transform_census_system(
     let n = if *frames == 60 { 60.0 } else if *frames == 300 { 240.0 } else { 300.0 };
     let mut v: Vec<_> = acc.drain().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1));
-    let mut tot = [0u64; 3];
+    let mut tot = [0u64; 4];
     for ((k, _), c) in &v {
         tot[*k as usize] += c;
     }
@@ -1591,7 +1597,107 @@ pub fn transform_census_system(
             .collect();
         names.sort();
         names.dedup();
-        let kind = ["xform", "vis", "mat"][*k as usize];
+        let kind = ["xform", "vis", "mat", "shown"][*k as usize];
         println!("PROF changed {kind} {:7.1}/frame  [{}] ({} comps)", *c as f64 / n, names.join(","), arch.component_count());
     }
+}
+
+/// With DXVIEW_PROF or DXVIEW_SCHEDLOG set: once, a few seconds in, how each main schedule is built - its systems,
+/// the `apply_deferred` sync points Bevy put between systems with Commands and those ordered after them (every one
+/// is a barrier: all workers wait, then the commands are applied one by one), and the exclusive systems.
+/// With Bevy's debug names (the spans build) it also lists the systems that hold commands before each sync point.
+pub fn schedule_report_system(world: &mut bevy::prelude::World, mut done: bevy::prelude::Local<u32>) {
+    use bevy::prelude::*;
+    if *done > 300 || !(self::on() || env_on!("DXVIEW_SCHEDLOG")) {
+        return;
+    }
+    *done += 1;
+    if *done != 300 {
+        return;
+    }
+    let deferred_ty = std::any::TypeId::of::<bevy::ecs::schedule::ApplyDeferred>();
+    let schedules = world.resource::<Schedules>();
+    let labels: [(&str, bevy::ecs::intern::Interned<dyn bevy::ecs::schedule::ScheduleLabel>); 4] = [
+        ("First", First.intern()),
+        ("PreUpdate", PreUpdate.intern()),
+        ("Update", Update.intern()),
+        ("PostUpdate", PostUpdate.intern()),
+    ];
+    let names = env_on!("DXVIEW_SCHEDLOG");
+    for (name, label) in labels {
+        let Some(s) = schedules.get(label) else { continue };
+        let Ok(systems) = s.systems() else { continue };
+        let (mut n, mut syncs, mut exclusive, mut deferred) = (0, 0, 0, 0);
+        let mut pending: Vec<String> = Vec::new();
+        for (_, sys) in systems {
+            n += 1;
+            if sys.system_type() == deferred_ty {
+                syncs += 1;
+                if names {
+                    println!("PROF sched {name} sync {syncs} after: {}", pending.join(", "));
+                }
+                pending.clear();
+                continue;
+            }
+            if sys.is_exclusive() {
+                exclusive += 1;
+            }
+            if sys.has_deferred() {
+                deferred += 1;
+                if names {
+                    pending.push(sys.name().to_string());
+                }
+            }
+        }
+        println!("PROF sched {name}: {n} systems, {syncs} sync points, {exclusive} exclusive, {deferred} with commands");
+    }
+}
+
+/// With DXVIEW_PROF: how many of these components change a frame (written, or added). Each one costs work later in
+/// the frame: a changed UI Node runs Bevy's UI layout again, a changed light or Visibility is extracted again.
+#[allow(clippy::type_complexity)]
+pub fn change_census_system(
+    nodes: bevy::prelude::Query<(), bevy::prelude::Changed<bevy::prelude::Node>>,
+    vis: bevy::prelude::Query<(), bevy::prelude::Changed<bevy::prelude::Visibility>>,
+    points: bevy::prelude::Query<(), bevy::prelude::Changed<bevy::prelude::PointLight>>,
+    spots: bevy::prelude::Query<(), bevy::prelude::Changed<bevy::prelude::SpotLight>>,
+    images: bevy::prelude::Query<(), bevy::prelude::Changed<bevy::prelude::ImageNode>>,
+    texts: bevy::prelude::Query<(), bevy::prelude::Changed<bevy::prelude::Text>>,
+    xforms: bevy::prelude::Query<(), bevy::prelude::Changed<bevy::prelude::Transform>>,
+    mut acc: bevy::prelude::Local<([u64; 7], u32)>,
+) {
+    if !ON.load(Ordering::Relaxed) {
+        return;
+    }
+    let (sum, frames) = &mut *acc;
+    for (i, n) in [
+        nodes.iter().count(),
+        vis.iter().count(),
+        points.iter().count(),
+        spots.iter().count(),
+        images.iter().count(),
+        texts.iter().count(),
+        xforms.iter().count(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sum[i] += n as u64;
+    }
+    *frames += 1;
+    if *frames < 300 {
+        return;
+    }
+    let f = *frames as f64;
+    println!(
+        "PROF changed components per frame: {:.1} Node, {:.1} Visibility, {:.1} PointLight, {:.1} SpotLight, {:.1} ImageNode, {:.1} Text, {:.1} Transform",
+        sum[0] as f64 / f,
+        sum[1] as f64 / f,
+        sum[2] as f64 / f,
+        sum[3] as f64 / f,
+        sum[4] as f64 / f,
+        sum[5] as f64 / f,
+        sum[6] as f64 / f
+    );
+    *acc = ([0; 7], 0);
 }

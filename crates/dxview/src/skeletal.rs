@@ -1429,11 +1429,6 @@ pub fn mirror_weapon() -> Option<[[f32; 3]; 4]> {
 /// JC's face state for the mirror / third-person / conversation body.
 static JC_FACE: std::sync::LazyLock<std::sync::Mutex<crate::actors::Face>> = std::sync::LazyLock::new(Default::default);
 
-/// JC's rebuilt body is up (his mirror / third-person / conversation body is the skeletal one).
-pub fn mirror_on() -> bool {
-    MIRROR_ON.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 pub fn mirror_skel_system(
     mut commands: Commands,
     time: Res<Time>,

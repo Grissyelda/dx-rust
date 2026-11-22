@@ -183,6 +183,14 @@ pub fn fill_new_modern_keys() {
         crate::settings::set("NPCFiniteAmmo", 1.0);
         crate::settings::save();
     }
+    // Lean Updates (work that changes nothing on screen) and Static Batching are on by default since 2026-11-22;
+    // switched on once for settings files written before (they carry LeanUpdates=0); a player can turn them off.
+    if !crate::settings::has("PerfDefaults1") {
+        crate::settings::set("PerfDefaults1", 1.0);
+        crate::settings::set("LeanUpdates", 1.0);
+        crate::settings::set("StaticBatching", 1.0);
+        crate::settings::save();
+    }
     if !crate::settings::has("ModernMode") || !is_modern() {
         return;
     }

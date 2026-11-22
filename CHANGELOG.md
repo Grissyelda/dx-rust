@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Performance pass (November 22)
+- **Pawns standing still cost less.** Every pawn rewrote its position every frame, even standing still, so Bevy treated
+  it, its gun and every part of its model as changed (moved again and sent to the renderer again). Pawns now write
+  only when they move (on Liberty Island most of them patrol, so there it saves little; quiet places gain more).
+  Resting pawns also skip the walking physics (a collision sweep and a floor check against the level, every blocker
+  and every mover) and check the floor every quarter second instead, or at once when a mover starts moving.
+- **Static Batching**, a new setting on by default (*Settings > Display > Advanced* and *Enhancements >
+  Performance*): decorations that stay put and share a texture are drawn as one mesh per part of the map (it was part
+  of Lean Rendering, which also changes how dynamic lights look). Anything that moves, breaks, is relit or casts a
+  real-time shadow is taken out of its batch at once (a part given shadow layers used to be drawn twice).
+- **Lean Updates is on by default**: it only leaves out work that changes nothing on screen (redrawing windows that
+  haven't changed, posing birds and rats nobody sees). Settings files written before get it switched on once.
+- The dynamic light pool, the crosshair's accuracy brackets and the inventory cursor no longer rewrite their lights /
+  UI nodes every frame (a changed UI node runs Bevy's whole UI layout again); smoothly turning pawns settle exactly.
+- The Nameless Mod's own systems are skipped by Bevy outright while playing Deus Ex.
+- A class's settings (its default properties with the mods' changes) are worked out once and then shared, instead of
+  being copied and searched for again each time - about 40 places that run every frame asked for them.
+- Profiling: the profiler (DXVIEW_PROF) now reports how each schedule is built (systems and the sync points where every
+  worker thread waits) and how many UI nodes, lights, visibilities and transforms change a frame;
+  `PROFILE_OPT.bat` measures Liberty Island with and without Bevy's automatic sync points.
+- Removed 14 functions nothing called any more.
+
 ### Mod manager with installer support
 *Settings > Mods* lists every mod DX RUST supports, with its authors and a *Get It* button that opens the mod's own
 page. Save the download in your Downloads folder and press *Install*: DX RUST unpacks zip and 7z archives and the
@@ -80,9 +102,6 @@ difficulty screen (player health, NPC health, item and NPC amounts, Legendary an
 easter eggs found); Extras opens the bonus modes (computer room, stealth and combat missions with their own
 difficulty menus, the Radish Adventure), each unlocked by the easter eggs you've found. Nightmare makes the mod's
 people run faster, fire twice as fast and aim better.
-Performance: a class's settings (its default properties with the mods' changes) are worked out once and then
-shared, instead of being copied and searched for again each time - about 40 places that run every frame asked for
-them.
 Not yet: the fake and real IRC, the in-game web pages, the WHOIS lookup, the DXI / DXE / ABI file-system games and
 the clicker game (their buttons stay greyed), the packet puzzle as the AI core's story device, Legendary's weapon
 attributes and Nightmare's respawning enemies, and the mod's options, new-game and persona screens (Deus Ex's are

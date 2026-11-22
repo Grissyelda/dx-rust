@@ -265,11 +265,6 @@ fn load_tnm_seqs(level: &dx_level::Level) -> Vec<(String, Vec<Point>)> {
     groups
 }
 
-/// A Nameless Mod camera sequence is on screen.
-pub fn tnm_scene() -> bool {
-    letterbox() && STATE.lock().ok().is_some_and(|s| s.as_ref().is_some_and(|c| c.tnm.is_some()))
-}
-
 fn f(p: &[unreal_pkg::props::Property], n: &str) -> f64 {
     match find(p, n) {
         Some(Value::Float(v)) => *v as f64,

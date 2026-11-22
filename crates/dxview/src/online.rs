@@ -180,11 +180,6 @@ pub fn hosted() -> Option<Hosted> {
     with(|s| s.hosted.clone())
 }
 
-/// Hosting asked for and not answered yet.
-pub fn hosting() -> bool {
-    with(|s| s.hosting)
-}
-
 fn ask(r: Req) {
     with(|s| {
         if let Some(tx) = &s.tx {

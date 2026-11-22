@@ -578,10 +578,6 @@ pub fn rules() -> Option<Rules> {
     with(|n| n.rules.clone())
 }
 
-pub fn status_text() -> String {
-    with(|n| n.status.clone()).unwrap_or_else(|| LAST_END.lock().map(|s| s.clone()).unwrap_or_default())
-}
-
 /// Why the last session ended ("" = still on, or never started).
 pub fn last_end() -> String {
     LAST_END.lock().map(|s| s.clone()).unwrap_or_default()
@@ -595,11 +591,6 @@ pub fn has_player(id: u8) -> bool {
 
 pub fn players() -> Vec<(u8, String, f32)> {
     with(|n| n.remotes.iter().map(|r| (r.id, r.look.name.clone(), r.ping)).collect()).unwrap_or_default()
-}
-
-/// How many players are in the session (this one included).
-pub fn player_count() -> usize {
-    with(|n| n.remotes.len() + 1).unwrap_or(1)
 }
 
 fn map_hash(name: &str) -> u32 {

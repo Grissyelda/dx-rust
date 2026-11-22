@@ -134,5 +134,15 @@ impl bevy::app::Plugin for ExecutorPlugin {
             };
             println!("dxview: schedule {name} runs single-threaded");
         }
+        // Measurement switch: Update without Bevy's automatic apply_deferred sync points (commands then apply once,
+        // at the end of the schedule).
+        if env_on!("DXVIEW_NO_AUTO_SYNC") {
+            app.edit_schedule(Update, |s| {
+                let mut b = s.get_build_settings();
+                b.auto_insert_apply_deferred = false;
+                s.set_build_settings(b);
+            });
+            println!("dxview: Update without automatic sync points");
+        }
     }
 }

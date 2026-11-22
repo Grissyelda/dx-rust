@@ -1,4 +1,4 @@
-//! Lean Rendering: still mesh-actor parts drawn together.
+//! Static Batching (on by default; Lean Rendering turns it on too): still mesh-actor parts drawn together.
 //!
 //! Every part of a level mesh actor is a mesh of its own, because its lighting is baked into its vertex colours
 //! where it stands (actors.rs), so Bevy can't instance them: Liberty Island's busy views drew about 550 of them, each
@@ -42,7 +42,7 @@ const SCAN_SECS: f32 = 2.0;
 const CELL: f32 = 256.0;
 
 fn enabled() -> bool {
-    crate::perf::lean_rendering()
+    crate::perf::static_batching() || crate::perf::lean_rendering()
 }
 
 /// One mesh drawing many parts, in world space.
@@ -182,7 +182,7 @@ fn holds_still(a: &Animated) -> bool {
 }
 
 /// Builds the batches once a map has settled and adds to them every two seconds, takes out parts that change, and
-/// undoes it all when Lean Rendering is switched off.
+/// undoes it all when Static Batching (or Lean Rendering) is switched off.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn batch_system(
     mut commands: Commands,
@@ -200,6 +200,7 @@ pub fn batch_system(
         )>,
     >,
     members: Query<&Batched>,
+    relayered: Query<(Entity, &RenderLayers), (With<Batched>, Changed<RenderLayers>)>,
     mut batches: Query<(Entity, &mut StaticBatch, &Mesh3d, &mut Aabb)>,
     mut mesh_events: MessageReader<AssetEvent<Mesh>>,
     mut gone: RemovedComponents<Batched>,
@@ -217,7 +218,7 @@ pub fn batch_system(
     }
     if !enabled() {
         if st.scan_in.is_some() {
-            // Lean Rendering switched off: every part draws itself again.
+            // Switched off: every part draws itself again.
             for (b, batch, _, _) in &batches {
                 for m in &batch.members {
                     if let Ok(mut ec) = commands.get_entity(*m) {
@@ -274,6 +275,16 @@ pub fn batch_system(
             leaving.insert(e);
         }
     }
+    // Given layers of its own by another system (a shadow caster, vision): it leaves and keeps them (left on
+    // AWAY it would draw twice, once in the batch and once by itself).
+    let away = RenderLayers::layer(AWAY);
+    let mut relayer: HashSet<Entity> = HashSet::new();
+    for (e, layers) in &relayered {
+        if *layers != away && st.batch_of.contains_key(&e) {
+            leaving.insert(e);
+            relayer.insert(e);
+        }
+    }
     for (actor, list) in &st.animated {
         // (Batched, all its parts out of every view, the actor isn't posed: its clocks run, so a sequence that
         // starts shows up as a clip.)
@@ -300,7 +311,11 @@ pub fn batch_system(
         let times = st.out.get(&e).map_or(0, |x| x.1) + 1;
         st.out.insert(e, (st.clock + 10.0 * 2f32.powi(times.min(4) as i32 - 1), times));
         st.left += 1;
-        commands.entity(e).remove::<(Batched, RenderLayers)>();
+        if relayer.contains(&e) {
+            commands.entity(e).remove::<Batched>();
+        } else {
+            commands.entity(e).remove::<(Batched, RenderLayers)>();
+        }
     }
     for b in dirty {
         let Ok((_, mut batch, mesh, mut aabb)) = batches.get_mut(b) else { continue };

@@ -114,11 +114,6 @@ pub fn active() -> bool {
     RUN.lock().is_ok_and(|r| r.is_some())
 }
 
-/// Frozen at the end of a run (StealthCinematic: no moving, no firing).
-pub fn frozen() -> bool {
-    RUN.lock().is_ok_and(|r| r.as_ref().is_some_and(|r| r.win_at.is_some() || r.fail_at.is_some()))
-}
-
 /// PlayerDetected (missions.rs): on the stealth course above Easy, a lost run.
 pub fn detected() {
     DETECTED.store(true, std::sync::atomic::Ordering::Relaxed);

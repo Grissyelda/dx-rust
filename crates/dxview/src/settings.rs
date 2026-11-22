@@ -210,12 +210,15 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("SoundOcclusion", 0.0),
     ("RoomReverb", 0.0),
     ("Soundscape", 0.0),
-    // Performance (ours, perf.rs): these defaults keep the PC's picture and behaviour. 4x MSAA, HDR render targets,
-    // skipping GPU work that adds no pixels, skipping CPU work that changes nothing.
+    // Performance (ours, perf.rs): these defaults keep the PC's picture. 4x MSAA, HDR render targets, the original
+    // dynamic-light look (Lean Rendering off), static batching and skipping CPU work that changes nothing on.
     ("AntiAliasing", 1.0),
     ("HDRRendering", 1.0),
     ("LeanRendering", 0.0),
-    ("LeanUpdates", 0.0),
+    // Still mesh-actor parts that share a material and a cell drawn as one mesh (batches.rs).
+    ("StaticBatching", 1.0),
+    // Lean Updates only leaves out work that changes nothing on screen, so it is on everywhere.
+    ("LeanUpdates", 1.0),
     // The FPS Counter (fps.rs).
     ("FPSCounter", 0.0),
     // Mods (used only while the mod is on in the launcher): New Vision textures, HDTP item / decoration models,

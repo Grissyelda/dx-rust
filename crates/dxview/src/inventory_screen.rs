@@ -1728,17 +1728,10 @@ fn show_cursor(
         }
     }
     if let Ok((mut n, mut v, _)) = nodes.get_mut(cursor_e) {
-        *v = if window.cursor_position().is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        v.set_if_neq(if window.cursor_position().is_some() { Visibility::Inherited } else { Visibility::Hidden });
         let mx = ox as f32 + (mouse.0 - hot.0) as f32 * d;
         let my = oy as f32 + (mouse.1 - hot.1) as f32 * d;
-        n.left = Val::Px(mx / sf);
-        n.top = Val::Px(my / sf);
-        n.width = Val::Px(cc.w as f32 * d / sf);
-        n.height = Val::Px(cc.h as f32 * d / sf);
+        crate::uinode::set_rect(&mut n, mx / sf, my / sf, cc.w as f32 * d / sf, cc.h as f32 * d / sf);
     }
 }
 

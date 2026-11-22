@@ -289,16 +289,6 @@ pub fn class_perk() -> String {
     g.1.clone()
 }
 
-/// Spend credits to unlock an entry for the current character (and keep it). Err with why not.
-pub fn buy_unlock(id: &str) -> Result<(), String> {
-    let cost = unlock_cost(id).ok_or("That's open already.")?;
-    let mut g = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
-    let c = g.as_mut().ok_or("Make a deathmatch character first.")?;
-    buy(c, id, cost).map_err(|e| e.to_string())?;
-    save(c);
-    Ok(())
-}
-
 /// Replace the current character (after editing loadouts on the screen) and keep him.
 pub fn store(mut c: DmChar) {
     save(&mut c);

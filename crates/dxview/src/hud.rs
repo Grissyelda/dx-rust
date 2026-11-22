@@ -365,23 +365,20 @@ pub fn crosshair_system(
         (x - mult, y - half, 1.0, c),
         (x + mult, y - half, 1.0, c),
     ];
+    // (Written only when they differ: a changed Node runs Bevy's UI layout again.)
     for (br, mut node, mut bg, mut vis) in &mut brackets {
-        *vis = if show {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        vis.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
         if !show {
             continue;
         }
         let (l, t, bw, bh) = boxes[br.index];
         let o = if br.shadow { 1.0 } else { 0.0 };
-        node.left = Val::Px((l + o) * px);
-        node.top = Val::Px((t + o) * px);
-        node.width = Val::Px(bw * px);
-        node.height = Val::Px(bh * px);
+        crate::uinode::set_rect(&mut node, (l + o) * px, (t + o) * px, bw * px, bh * px);
         let fade = crate::hudfade::alpha();
-        bg.0 = if br.shadow { Color::BLACK.with_alpha(fade) } else { color.with_alpha(color.alpha() * fade) };
+        let want = if br.shadow { Color::BLACK.with_alpha(fade) } else { color.with_alpha(color.alpha() * fade) };
+        if bg.0 != want {
+            bg.0 = want;
+        }
     }
 }
 
