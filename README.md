@@ -32,10 +32,10 @@ underneath.
   - **Modern Deathmatch and Team Deathmatch** with characters and unlockable weapon skins;
   - room codes, a public lobby browser, and direct codes that work without any server.
 - **Classic / Modern in one key.** Press **Tab** and the screen wipes between the game as it shipped and a modern
-  look with every enhancement on (your own mix is remembered).
+  look with every enhancement on, each individually toggleable (your own mix is remembered).
 - **A modern look**: remastered per-pixel lighting with relief maps, real-time shadows, ambient occlusion, bloom;
   rain and lightning storms, volumetric clouds, fog and light shafts; waves with reflections, an open sea, frosted
-  glass, mirrors; grass and grown trees; a photo skyline.
+  glass, mirrors; grass and grown trees; a dynamic 3D skyline.
 - **Modern bodies**: skeletal characters (the Machine God team's rebuilt people) with lip sync and blinks,
   ragdolls, fluid blood, wounds and hurt poses, and JC's own body in mirrors, third person and first person.
 - **Modern play**: swaying aim with aim-down-sights, a live-lens rifle scope, third person with cover, mantling,
@@ -45,8 +45,7 @@ underneath.
   triggers and HD haptics.
 - **Mods**: Lay D Denton Project (play as the female JC), HDTP, New Vision, Visible Attachments, Augmentique, GMDX
   perks, Helios, Precipitation and Parallax Occlusion Mapping, as many at once as you like.
-- **Extras**: 50 achievements, saves per character, FSR 1 upscaling, a Field of View slider, a frame-rate cap,
-  Discord Rich Presence, and a debug menu with the original cheats.
+- **Extras**: 50 achievements, saves per character, FSR 1 upscaling, Discord Rich Presence, and an extensive debug cheat menu.
 
 ## Getting started
 Download your platform's file from [Releases](../../releases).
@@ -162,14 +161,7 @@ Ex. Download it from its page and install it with the mod manager (its installer
 the launcher at a folder you installed it to (right-click the **Game** row). Then set the launcher's **Game** row to
 *Nameless Mod* and press Play. DX RUST reads its maps, characters, conversations and Ogg music from your copy; saves
 go to their own `TNMSave` folder. In game, *Settings > Mods* switches between Deus Ex and The Nameless Mod (the game
-restarts). Work in progress: its difficulty rules, its trigger classes and elevators, and the mission scripts of the
-whole story (missions 20 to 25, the endings and the epilogue), its intro and scripted camera sequences, airless zones,
-the arena powerups, the ending quotes, slow motion, its credits, its readable books and papers, its terminals and news
-bulletins, its vending machines and shared bank accounts, Trestkon's skills, fists, gloves and augmentations, Molotov
-making, the Radish Adventure side-scroller, its achievements, its difficulty menus (with the custom difficulty screen
-and the extra game modes) and the terminal games Lights Out, Pong, Breakout, Tetris, the packet puzzle and the text
-adventure are rewritten. Not yet: the IRC, web-page, WHOIS, file-system and clicker programs on its computers, its
-options, new-game and persona screens, and Legendary mode's weapon attributes; those parts use the Deus Ex versions.
+restarts). 
 
 ## Building from source
 You need Rust (stable, 1.95 or later) and a C compiler: the Visual Studio C++ build tools on Windows, the Xcode
