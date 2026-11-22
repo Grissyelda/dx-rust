@@ -5,8 +5,8 @@
 //! milliseconds of parallel work: a handful of threads finish it as fast as fifty.
 //!
 //! Auto (setting WorkerThreads 0, the default): the compute pool gets half the hardware threads (about one per
-//! physical core), at least 2 and at most 8; IO and async compute get 1 each (the game loads levels and decodes
-//! sounds on its own threads). Measured on a Ryzen 5 3600 (12 threads), Modern: 8 workers 17.5 ms a frame, 6 workers
+//! physical core), at least 2 and at most 8; IO gets 1 (the game loads levels and decodes
+//! sounds on its own threads) and async compute 2-4 (Bevy compiles pipelines there). Measured on a Ryzen 5 3600 (12 threads), Modern: 8 workers 17.5 ms a frame, 6 workers
 //! 15.2 ms - a worker on the main or render thread's SMT sibling slows the frame's critical path more than it helps. Settings > Enhancements > Display: CPU Worker Threads
 //! (WorkerThreads, an index into STEPS) or env DXVIEW_THREADS=n sets the compute pool to n.
 
@@ -33,6 +33,11 @@ pub fn compute_threads(hw: usize, requested: usize) -> usize {
     (hw / 2).clamp(2, 8)
 }
 
+/// Async compute threads (pipeline compiles, fire texture batches): a quarter of the hardware threads, 2 to 4.
+pub fn async_threads(hw: usize) -> usize {
+    (hw / 4).clamp(2, 4)
+}
+
 fn policy(n: usize) -> TaskPoolThreadAssignmentPolicy {
     TaskPoolThreadAssignmentPolicy {
         min_threads: n,
@@ -50,13 +55,17 @@ pub fn task_pools() -> TaskPoolPlugin {
         .and_then(|v| v.trim().parse::<usize>().ok())
         .unwrap_or_else(|| STEPS[step_index(setting!("WorkerThreads")) as usize]);
     let compute = compute_threads(hw, requested);
-    println!("dxview: {hw} hardware threads, {compute} worker threads");
+    // Async compute: Bevy compiles every render pipeline there (PipelineCache -> AsyncComputeTaskPool). With one
+    // thread a switch to Modern (~80 new pipelines: prepasses, water, glass, shadows) compiled them one after
+    // another for seconds while the frozen frame / loading screen waited. These threads sleep the rest of the time.
+    let async_n = async_threads(hw);
+    println!("dxview: {hw} hardware threads, {compute} worker threads, {async_n} pipeline compile threads");
     TaskPoolPlugin {
         task_pool_options: TaskPoolOptions {
-            min_total_threads: compute + 2,
-            max_total_threads: compute + 2,
+            min_total_threads: compute + 1 + async_n,
+            max_total_threads: compute + 1 + async_n,
             io: TaskPoolThreadAssignmentPolicy { percent: 0.0, ..policy(1) },
-            async_compute: TaskPoolThreadAssignmentPolicy { percent: 0.0, ..policy(1) },
+            async_compute: TaskPoolThreadAssignmentPolicy { percent: 0.0, ..policy(async_n) },
             compute: policy(compute),
         },
     }

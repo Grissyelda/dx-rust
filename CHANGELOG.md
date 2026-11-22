@@ -11,6 +11,8 @@
 - Grass still growing and weapon view models still warming hold the frozen frame; shadow lights and light halos jump
   straight to their state under it (no fade-in after the wipe). Trees and the skyline aren't rebuilt on the old map
   while the new one loads.
+- Bevy compiles every render pipeline on the async compute pool, which had one thread: the ~80 pipelines Modern
+  needs compiled one after another. It now has 2-4 threads (a quarter of the hardware threads).
 - REMASTER log lines carry the time of each step; the profiler prints pipelines made / compiling / stuck.
 
 ### Performance pass (November 22)
