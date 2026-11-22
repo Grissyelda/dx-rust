@@ -809,6 +809,8 @@ pub fn scene_stats_system(
         images.len(),
         mats.len()
     );
+    let (made, compiling, stuck) = crate::remaster::pipeline_stats();
+    println!("PROF pipelines: {made} made, {compiling} compiling, {stuck} stuck in the queue{}", if stuck > 0 { format!(": {}", crate::remaster::stuck_labels()) } else { String::new() });
     // Lean Rendering's batches (batches.rs): each draws many parts that are out of the counts above.
     let (left, rebuilt) = crate::batches::churn();
     if !batches.is_empty() || left > 0 {

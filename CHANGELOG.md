@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Classic / Modern switch (November 22)
+- The switch no longer waits on pipelines that never compile (a shader that never loads keeps Bevy's pipeline queued
+  for ever): those count as stuck after 2.5 s and are logged by name. Before, the loading screen and the frozen frame
+  each ran out their caps (6 s + 8 s) on the PC.
+- After the in-place reload the switch waits for the loading screen's settle, then runs 0.6 s of game time under the
+  frozen frame (shadow lights, halos, people, fog in place) and wipes once 4 frames in a row are calm; cap ~4.5 s.
+- Grass still growing and weapon view models still warming hold the frozen frame; shadow lights and light halos jump
+  straight to their state under it (no fade-in after the wipe). Trees and the skyline aren't rebuilt on the old map
+  while the new one loads.
+- REMASTER log lines carry the time of each step; the profiler prints pipelines made / compiling / stuck.
+
 ### Performance pass (November 22)
 - **The whole level now shares one lightmap slot on the GPU.** Bevy gave every lit piece of the level its own
   lightmap slot even though they all read the same lightmap, four to a group, and rebuilt a binding for every group in

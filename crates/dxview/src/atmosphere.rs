@@ -199,7 +199,8 @@ pub fn halo_system(
     cand.truncate(MAX_HALOS);
     // Sight checks: a few lamps a frame, round robin over the candidates.
     let n = cand.len();
-    for k in 0..n.min(12) {
+    let per = if crate::remaster::covered() { n } else { n.min(12) };
+    for k in 0..per {
         let (_, i) = cand[(st.check + k) % n.max(1)];
         let l = &lvl.lights[i];
         let lp = DVec3::new(l.pos[0] as f64, l.pos[1] as f64, l.pos[2] as f64);
@@ -207,7 +208,7 @@ pub fn halo_system(
         let start = lp + (eye - lp).normalize_or_zero() * 12.0;
         st.seen[i] = lvl.collision.trace(start, eye, DVec3::ZERO).fraction >= 0.999;
     }
-    st.check = st.check.wrapping_add(12);
+    st.check = st.check.wrapping_add(per.max(1));
     let mut pos = Vec::new();
     let mut uv = Vec::new();
     let mut col = Vec::new();

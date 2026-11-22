@@ -293,6 +293,10 @@ pub fn trees_system(
     if st.gen == gen && st.on == want {
         return;
     }
+    // A map on its way in (the Classic / Modern switch reloads for the visual mods): grow them there, not here.
+    if crate::loader::busy() {
+        return;
+    }
     // Wait for the mesh actors' transforms (a frame after the map is built).
     if roots.iter().next().is_some_and(|(_, _, gt, _)| *gt == GlobalTransform::IDENTITY) {
         return;

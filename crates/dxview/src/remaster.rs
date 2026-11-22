@@ -356,7 +356,26 @@ pub enum Phase {
     Capturing(bool, f32),
     /// The frozen frame covers the screen; t seconds in, `frames` drawn, switched yet, the wipe started at `start`
     /// (once nothing is compiling), and the in-place reload for the visual mods (`Swap`).
-    Wiping { t: f32, to_modern: bool, start: Option<f32>, calm: u32, frames: u32, switched: bool, swap: Swap },
+    Wiping { t: f32, to_modern: bool, start: Option<f32>, calm: u32, frames: u32, switched: bool, swap: Swap, since: f32 },
+}
+
+/// True while the frozen frame still hides the world (the switch, the reload behind it, the warm-up). Systems that
+/// ease things in over time (shadow lights, halos, fog) jump to where they're going instead, so nothing fades or
+/// pops in once the wipe shows the new look.
+static COVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn covered() -> bool {
+    COVERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Systems still building something the new look shows (the grass field, a view model) call this each frame
+/// they aren't ready; the wipe waits for a few frames without it.
+static NOT_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn not_ready() {
+    if covered() {
+        NOT_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The captured frame, handed over by the screenshot observer.
@@ -386,16 +405,87 @@ pub fn pipelines_waiting() -> usize {
     WAITING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-fn count_waiting(cache: Res<bevy::render::render_resource::PipelineCache>) {
-    WAITING.store(cache.waiting_pipelines().count(), std::sync::atomic::Ordering::Relaxed);
+/// Pipelines that have sat in the queue past STUCK_SECS without starting to compile: their shader never loaded
+/// (Bevy keeps such a pipeline queued for ever). They will never finish, so they don't hold the frozen frame or the
+/// loading screen - on the PC a few of these kept the Classic -> Modern switch waiting for its caps (6 s + 8 s).
+static STUCK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Every pipeline the cache has made (grows with each new material / view variant).
+static TOTAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Labels of the stuck pipelines (for the profiler / the REMASTER log).
+static STUCK_LABELS: Mutex<String> = Mutex::new(String::new());
+const STUCK_SECS: f32 = 2.5;
+
+/// (pipelines made, still compiling, stuck in the queue) - for the profiler.
+pub fn pipeline_stats() -> (usize, usize, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (TOTAL.load(Relaxed), WAITING.load(Relaxed), STUCK.load(Relaxed))
 }
 
-/// The most the frozen frame is held for pipelines before the wipe goes anyway.
-const MAX_HOLD: f32 = 8.0;
+/// The labels of the pipelines stuck in the queue.
+pub fn stuck_labels() -> String {
+    STUCK_LABELS.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+fn count_waiting(
+    cache: Res<bevy::render::render_resource::PipelineCache>,
+    mut seen: Local<bevy::platform::collections::HashMap<usize, std::time::Instant>>,
+    mut last_label: Local<Option<std::time::Instant>>,
+) {
+    use bevy::render::render_resource::{CachedPipelineState, PipelineDescriptor};
+    use std::sync::atomic::Ordering::Relaxed;
+    let now = std::time::Instant::now();
+    let waiting: Vec<usize> = cache.waiting_pipelines().collect();
+    seen.retain(|id, _| waiting.contains(id));
+    let all: Vec<_> = cache.pipelines().collect();
+    let (mut live, mut stuck) = (0, Vec::new());
+    for id in waiting {
+        let t0 = *seen.entry(id).or_insert(now);
+        // A pipeline compiling (Creating) is making progress however long it takes; one still Queued after
+        // STUCK_SECS is waiting for a shader that isn't coming.
+        let queued = all.get(id).is_none_or(|p| matches!(p.state, CachedPipelineState::Queued));
+        if queued && now.duration_since(t0).as_secs_f32() > STUCK_SECS {
+            stuck.push(id);
+        } else {
+            live += 1;
+        }
+    }
+    WAITING.store(live, Relaxed);
+    STUCK.store(stuck.len(), Relaxed);
+    TOTAL.store(all.len(), Relaxed);
+    if !stuck.is_empty() && last_label.is_none_or(|t| now.duration_since(t).as_secs_f32() > 1.0) {
+        *last_label = Some(now);
+        let mut s = String::new();
+        for id in stuck.iter().take(8) {
+            let name = match all.get(*id).map(|p| &p.descriptor) {
+                Some(PipelineDescriptor::RenderPipelineDescriptor(d)) => {
+                    format!("{} [{:?}]", d.label.as_deref().unwrap_or("?"), d.vertex.shader.path())
+                }
+                Some(PipelineDescriptor::ComputePipelineDescriptor(d)) => format!("{} (compute)", d.label.as_deref().unwrap_or("?")),
+                None => "?".into(),
+            };
+            if !s.is_empty() {
+                s.push_str("; ");
+            }
+            s.push_str(&name);
+        }
+        if let Ok(mut l) = STUCK_LABELS.lock() {
+            *l = s;
+        }
+    }
+}
+
+/// The most the frozen frame is held for pipelines / builders after the switch (or the reload) before the wipe goes
+/// anyway.
+const MAX_HOLD: f32 = 4.0;
 
 /// Hold the frozen frame this long first (the switch rebuilds things - the skyline, clouds, shaders - and any
 /// hitch hides under it), then sweep it away over WIPE.
 const HOLD: f32 = 0.12;
+/// After an in-place reload: this much game time runs under the frozen frame once everything is compiled, so the
+/// new map's first frames (shadow lights picked, halos traced, people posed, fog filled) are behind it.
+const WARM_RELOAD: f32 = 0.6;
+/// Frames in a row with nothing compiling and nobody building before the wipe goes.
+const CALM_FRAMES: u32 = 4;
 const WIPE: f32 = 1.1;
 
 #[allow(clippy::too_many_arguments)]
@@ -539,18 +629,22 @@ pub fn wipe_system(
                 1.0,
                 0.0,
             );
-            *phase = Phase::Wiping { t: 0.0, to_modern, start: None, calm: 0, frames: 0, switched: false, swap: Swap::None };
+            *phase = Phase::Wiping { t: 0.0, to_modern, start: None, calm: 0, frames: 0, switched: false, swap: Swap::None, since: 0.0 };
         }
-        Phase::Wiping { t, to_modern, start, calm, frames, switched, swap } => {
+        Phase::Wiping { t, to_modern, start, calm, frames, switched, swap, since } => {
             *t += dt;
+            *since += time.delta_secs();
             *frames += 1;
+            COVERED.store(start.is_none(), std::sync::atomic::Ordering::Relaxed);
             // The switch waits for the frozen frame to be on screen (its texture uploaded, drawn a frame).
             if !*switched {
                 if *frames >= 3 {
                     *switched = true;
                     *t = 0.0;
                     let dead = ph.as_ref().is_some_and(|p| p.dead);
-                    if switch(*to_modern) && crate::save::can_save(dead) && !crate::loader::busy() {
+                    let reload = switch(*to_modern);
+                    eprintln!("REMASTER {:.2} s: settings switched to {}", *since, if *to_modern { "Modern" } else { "Classic" });
+                    if reload && crate::save::can_save(dead) && !crate::loader::busy() {
                         // The visual mods take effect at map load: save and load in place, under the frozen frame.
                         let _ = std::fs::remove_file(swap_path());
                         crate::save::request(swap_path(), "Classic / Modern");
@@ -572,25 +666,39 @@ pub fn wipe_system(
                     }
                     return;
                 }
-                Swap::Loading(settled) => {
-                    if crate::loader::busy() {
+                Swap::Loading(_) => {
+                    // The loader's own settle (time paused until the new map's pipelines are built) is the wait;
+                    // then the warm-up below runs with time going.
+                    if crate::loader::busy() || crate::loader::settling() || crate::save::restoring() {
                         *swap = Swap::Loading(0.0);
-                    } else if settled < 0.2 {
-                        *swap = Swap::Loading(settled + dt);
                     } else {
+                        eprintln!("REMASTER {:.2} s: map reloaded and settled", *since);
                         let _ = std::fs::remove_file(swap_path());
                         *swap = Swap::None;
                         *calm = 0;
-                        *t = 0.0;
+                        *t = -(WARM_RELOAD - HOLD);
                     }
                     return;
                 }
             }
             if start.is_none() {
-                // Wait for the switch's pipelines (a few quiet frames in a row), at least HOLD, at most MAX_HOLD.
-                *calm = if WAITING.load(std::sync::atomic::Ordering::Relaxed) == 0 { *calm + 1 } else { 0 };
-                if (*t >= HOLD && *calm >= 2) || *t >= MAX_HOLD {
+                // Wait for the switch's pipelines and builders (a few quiet frames in a row), at least HOLD (plus
+                // the warm-up after a reload), at most MAX_HOLD.
+                let busy = WAITING.load(std::sync::atomic::Ordering::Relaxed) > 0 || NOT_READY.swap(false, std::sync::atomic::Ordering::Relaxed);
+                *calm = if busy { 0 } else { *calm + 1 };
+                if (*t >= HOLD && *calm >= CALM_FRAMES) || *t >= MAX_HOLD {
+                    eprintln!(
+                        "REMASTER {:.2} s: wipe starts ({}; {} pipelines made, {} stuck)",
+                        *since,
+                        if *t >= MAX_HOLD { "gave up waiting" } else { "all ready" },
+                        TOTAL.load(std::sync::atomic::Ordering::Relaxed),
+                        STUCK.load(std::sync::atomic::Ordering::Relaxed)
+                    );
+                    if STUCK.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                        eprintln!("REMASTER stuck pipelines: {}", stuck_labels());
+                    }
                     *start = Some(*t);
+                    COVERED.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             let k = start.map_or(0.0, |s0| ((*t - s0) / WIPE).clamp(0.0, 1.0));
@@ -604,7 +712,7 @@ pub fn wipe_system(
                 }
             }
             if k >= 1.0 {
-                eprintln!("REMASTER wipe done");
+                eprintln!("REMASTER {:.2} s: wipe done", *since);
                 for (e, m) in &nodes {
                     if let Some(mm) = mats.get(&m.0) {
                         let tex = mm.tex.clone();

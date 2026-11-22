@@ -515,7 +515,8 @@ pub fn shadow_light_system(
             Some(rank) => RANK_WEIGHT[rank.min(SLOTS - 1)],
             None => 0.0,
         };
-        let k = dt * 1.5;
+        // Under the Classic / Modern switch's frozen frame: straight to the weight (no fade-in once it's wiped).
+        let k = if crate::remaster::covered() { 1.0 } else { dt * 1.5 };
         s.weight = if s.weight < s.target { (s.weight + k).min(s.target) } else { (s.weight - k).max(s.target) };
         if s.target == 0.0 && s.weight == 0.0 && s.light.is_some() {
             s.light = None;

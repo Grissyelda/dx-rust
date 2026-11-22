@@ -202,6 +202,9 @@ pub fn grass_system(
         if let Some(Ok(f)) = g.pending.take().map(|h| h.join()) {
             g.field = f;
         }
+    } else if g.pending.is_some() && lv > 0 {
+        // Still growing on its thread: the Classic / Modern switch keeps its frozen frame up for it.
+        crate::remaster::not_ready();
     }
     if g.field.is_empty() || lv == 0 || lres.is_none() {
         for l in g.layers.iter_mut() {

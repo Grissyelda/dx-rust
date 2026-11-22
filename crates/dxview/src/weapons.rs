@@ -4801,6 +4801,11 @@ pub fn prewarm_view_models_system(
     if inv.0.items.len() == *warmed_len && cur.is_none() {
         return;
     }
+    // Weapons still to warm: the Classic / Modern switch's frozen frame waits for them (their pipelines would
+    // otherwise compile while the new look is on show).
+    if !env_on!("DXVIEW_NO_PREWARM") && !crate::cinematic::active() {
+        crate::remaster::not_ready();
+    }
     if env_on!("DXVIEW_NO_PREWARM")
         || *frames < 20
         || crate::menus::intro_map()

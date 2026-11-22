@@ -80,6 +80,10 @@ pub fn skyline_system(
     let lvl = &level.0;
     let fresh = crate::loader::new_map(&mut map_gen);
     let want = (skyline_on(), false);
+    // A setting change while the next map loads (the Classic / Modern switch's reload): build it there instead.
+    if !fresh && want != *last && crate::loader::busy() {
+        return;
+    }
     if fresh || want != *last {
         *last = want;
         for e in &parts {
