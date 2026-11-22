@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Steadier frame times (November 22)
+- Guards switching weapons no longer rebuild their gun model: the one put away is kept hidden and shown again
+  (it was a 5-7 ms hitch every few seconds in fights), and at most 3 new gun models are built a frame.
+- The HUD's big CPU-drawn windows (InfoLink, conversation boxes, info, log) take turns: one redraws a frame, the
+  others show last frame's picture for up to 2 frames (several at once made 10 ms spikes).
+- Rain: the drawn-roof map is built when the map loads, not when rain first starts (a 15 ms hitch mid-play), and the
+  sky-height cache works out at most 48 new cells a batch.
+- JC's conversation puppet keeps his animated mesh between conversations (a ~20 ms hitch at each start).
+
 ### Classic / Modern switch (November 22)
 - The switch no longer waits on pipelines that never compile (a shader that never loads keeps Bevy's pipeline queued
   for ever): those count as stuck after 2.5 s and are logged by name. Before, the loading screen and the frozen frame

@@ -3547,7 +3547,23 @@ pub fn con_view_system(
             &map,
             None,
         ) {
-            let am = std::sync::Arc::new(dx_level::actors::anim_mesh(&lm));
+            // JC's animated mesh (every frame of every sequence) is built once per mesh: rebuilt at each conversation's
+            // start it was a ~20 ms hitch.
+            let am = {
+                static PUPPET_MESH: std::sync::Mutex<Option<(String, std::sync::Arc<dx_level::actors::AnimMesh>)>> =
+                    std::sync::Mutex::new(None);
+                // (Mod switches change what a mesh name loads: the overrides' generation is part of the key.)
+                let key = format!("{}|{}", crate::travel::jc_mesh(), unreal_pkg::classes::override_generation());
+                let mut g = PUPPET_MESH.lock().unwrap_or_else(|e| e.into_inner());
+                match g.as_ref() {
+                    Some((k, m)) if *k == key => m.clone(),
+                    _ => {
+                        let m = std::sync::Arc::new(dx_level::actors::anim_mesh(&lm));
+                        *g = Some((key, m.clone()));
+                        m
+                    }
+                }
+            };
             let seq = am
                 .seqs
                 .iter()

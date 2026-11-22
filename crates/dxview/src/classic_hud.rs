@@ -417,6 +417,8 @@ pub struct ClassicHud {
     last: HashMap<Win, Vec<u8>>,
     /// What a window was last drawn from, for windows that only change with their inputs.
     keys: HashMap<Win, u64>,
+    /// Frames a heavy window's redraw has waited (redraw budget: one heavy window a frame).
+    waited: HashMap<Win, u8>,
     /// The InfoLink's frame (conui::draw_infolink_frame) at a size, scale and settings generation, drawn once: with
     /// its portrait on a window of its own the InfoLink is redrawn from a copy of it as its text types.
     infolink_frame: Option<(u64, Canvas)>,
@@ -783,6 +785,8 @@ pub fn classic_hud_system(
     let f = hud_frame(hud, assets, &msg, snap, s, sw, sh, dt);
 
     let tiny = hud.font(assets, "FontTiny");
+    // One heavy window redraw a frame (see `heavy`).
+    let mut heavy_drawn = false;
     for w in Win::ALL {
         let (x, y, ww, wh, visible) = f.layout(w, snap, *window);
         // Radish Adventure: Trestkon.platform destroys the normal HUD (the radish one stands in).
@@ -830,7 +834,24 @@ pub fn classic_hud_system(
         // A settings change (theme, translucency, borders) redraws everything.
         let key = key.map(|k| k ^ crate::settings::generation().wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let unchanged = key.is_some() && hud.keys.get(&w) == key.as_ref() && hud.last.contains_key(&w);
-        if !unchanged {
+        // Frame-time steadiness: the big text windows (InfoLink, conversation boxes, info, log) cost 1-5 ms each to
+        // redraw on the CPU, and several changing in one frame made a 10 ms spike. One of them redraws a frame; the
+        // others keep last frame's image (at most HEAVY_WAIT frames late - text typing out a frame late is
+        // invisible). Unkeyed heavy windows (redrawn every frame) count too.
+        let deferred = !unchanged && heavy(w) && hud.last.contains_key(&w) && {
+            let waited = hud.waited.get(&w).copied().unwrap_or(0);
+            if heavy_drawn || (key.is_none() && waited == 0) {
+                hud.waited.insert(w, waited.saturating_add(1));
+                waited < HEAVY_WAIT
+            } else {
+                false
+            }
+        };
+        if !unchanged && !deferred {
+            if heavy(w) {
+                heavy_drawn = true;
+                hud.waited.insert(w, 0);
+            }
             if let Some(k) = key {
                 hud.keys.insert(w, k);
             } else {
@@ -1436,6 +1457,17 @@ impl HudFrame {
         }
     }
 }
+
+/// Windows whose CPU redraw is big (large canvases, lots of text): at most one of them is redrawn a frame.
+fn heavy(w: Win) -> bool {
+    matches!(
+        w,
+        Win::InfoLink | Win::ConFirst | Win::ConUpper | Win::ConLower | Win::Bark | Win::Info | Win::Log | Win::Start | Win::Debug
+    )
+}
+
+/// The most frames a heavy window's redraw waits for its turn.
+const HEAVY_WAIT: u8 = 2;
 
 /// A hidden window keeps its last image: its node is hidden (and out of layout with Lean Updates).
 fn hide_window(nodes: &mut Query<(&HudWindow, &mut Node, &mut Visibility, &MaterialNode<HudLayer>)>, w: Win) {

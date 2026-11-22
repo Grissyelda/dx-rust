@@ -118,6 +118,9 @@ pub struct WeatherState {
     /// height band, traced thousands at once - a hitch every few steps in a storm; drops over cells not yet known
     /// wait for a later batch).
     land_new: u32,
+    /// New sky-height cells worked out in this batch (at most CEIL_BUDGET: up to 12 traces each, and walking into a
+    /// new 256-unit height band asks for hundreds of them at once).
+    ceil_new: u32,
     /// The drawn level's roofs (built once per map).
     roofs: Option<Roofs>,
     /// GPU rain (see weather_system): when each drop / splashlet slot frees up, the next slot to fill, when the next
@@ -285,7 +288,9 @@ pub fn weather_system(
         st.seed = seed ^ 0x5EED_F00D_1234;
         st.profile = profile(&lvl.name);
     }
-    if st.roofs.is_none() && mode() > 0 && st.profile.is_some() {
+    // The drawn-roof map: built on the map's first frame (under the loading screen) whenever the map can rain, not
+    // when the rain first starts - built then, mid-play, it was a 15 ms hitch (an 80-110 ms frame).
+    if st.roofs.is_none() && st.profile.is_some() && available() {
         st.roofs = Some(Roofs::build(lvl));
     }
     let dt = time.delta_secs().min(0.1);
@@ -460,6 +465,7 @@ pub fn weather_system(
         let t_batch = st.batch_at.max(now);
         st.batch_at = t_batch + BATCH;
         st.land_new = 0;
+        st.ceil_new = 0;
         if st.drop_end.len() != MAX_DROPS {
             st.drop_end = vec![0.0; MAX_DROPS];
             st.splash_end = vec![0.0; MAX_SPLASHES];
@@ -483,6 +489,12 @@ pub fn weather_system(
                     0.0,
                 );
             let key = ((pos.x / 128.0).floor() as i32, (pos.y / 128.0).floor() as i32, (me.z / 256.0).floor() as i32);
+            if !st.ceiling.contains_key(&key) {
+                if st.ceil_new >= CEIL_BUDGET {
+                    continue;
+                }
+                st.ceil_new += 1;
+            }
             let top = *st.ceiling.entry(key).or_insert_with(|| {
                 // Up to the sky: a hit with open air above it (a roof - the dock's, a porch's) isn't the sky, so the
                 // search goes on above it and the rain starts over the roof and lands on it (it used to start just
@@ -859,3 +871,5 @@ fn land_cell(ws: &mut WeatherState, lvl: &dx_level::Level, lkey: (i32, i32, i32)
 
 /// New landing cells a batch may trace (see WeatherState::land_new).
 const LAND_BUDGET: u32 = 160;
+/// New sky-height cells a batch may trace (see WeatherState::ceil_new).
+const CEIL_BUDGET: u32 = 48;

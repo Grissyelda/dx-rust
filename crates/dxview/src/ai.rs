@@ -8907,8 +8907,8 @@ pub fn npc_weapon_models(
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    new: Query<(Entity, &Npc), Without<HeldModel>>,
-    mut held: Query<(Entity, &Npc, &Animated, &Transform, &mut HeldModel), Without<HeldRoot>>,
+    mut new: Query<(Entity, &Npc, Option<&mut HeldSpare>), Without<HeldModel>>,
+    mut held: Query<(Entity, &Npc, &Animated, &Transform, &mut HeldModel, Option<&mut HeldSpare>), Without<HeldRoot>>,
     mut roots: Query<(&mut Transform, &mut Visibility), With<HeldRoot>>,
     (mut flashes, mut shells, mut seed, blockers): (
         Query<&mut crate::weapons::MuzzleFlashPart>,
@@ -8919,13 +8919,32 @@ pub fn npc_weapon_models(
     skels: Query<&crate::skeletal::SkelBody>,
 ) {
     let _prof = crate::prof::scope("ai::npc_weapon_models");
-    for (e, npc) in &new {
+    let mut built_now = 0usize;
+    for (e, npc, spare) in &mut new {
         let Some(w) = npc.weapon.as_ref() else {
             continue;
         };
+        // Put away earlier: show that model again.
+        let wmods_now = npc.net_player.map_or(0, crate::netplay::remote_wmods);
+        if let Some(mut spare) = spare {
+            if let Some(i) = spare.0.iter().position(|m| m.class == w.class && m.wmods == wmods_now) {
+                let mut m = spare.0.swap_remove(i);
+                m.relight = 0.0;
+                m.lit_at = None;
+                m.lit_sig = None;
+                commands.entity(e).insert(m);
+                continue;
+            }
+        }
         let Some(mesh) = w.third_mesh.clone() else {
             continue;
         };
+        // A few new models a frame (each is mesh geometry + mod fitting, ~2 ms): a map's guards all drawing at
+        // once made one long frame; the rest come in over the next frames.
+        if built_now >= HELD_BUILDS_PER_FRAME {
+            continue;
+        }
+        built_now += 1;
         let mut d = assets.classes.defaults(&w.class).to_vec();
         // Augmentique: a skin for this owner's weapon (WeaponSkinManager.SetDefaultSkin).
         let npc_class = level.0.actors.get(npc.actor).map(|a| a.class.clone()).unwrap_or_default();
@@ -9001,15 +9020,47 @@ pub fn npc_weapon_models(
         }
     }
     let dt = time.delta_secs();
-    for (e, npc, an, tf, mut hm) in &mut held {
-        // Switched weapons (SwitchToBestWeapon): drop this model; a new one is made next frame.
-        if npc.weapon.as_ref().map(|w| w.class.as_str()) != Some(hm.class.as_str())
-            || npc.net_player.is_some_and(|p| crate::netplay::remote_wmods(p) != hm.wmods && hm.root != Entity::PLACEHOLDER)
-        {
-            if hm.root != Entity::PLACEHOLDER {
-                commands.entity(hm.root).despawn();
-            }
+    for (e, npc, an, tf, mut hm, spare) in &mut held {
+        let mods_changed =
+            npc.net_player.is_some_and(|p| crate::netplay::remote_wmods(p) != hm.wmods && hm.root != Entity::PLACEHOLDER);
+        // Switched weapons (SwitchToBestWeapon): put this model away (hidden, kept for switching back); the one
+        // for the new weapon comes next frame.
+        if npc.weapon.as_ref().map(|w| w.class.as_str()) != Some(hm.class.as_str()) || mods_changed {
             commands.entity(e).remove::<HeldModel>();
+            if hm.root == Entity::PLACEHOLDER {
+                continue;
+            }
+            if mods_changed {
+                commands.entity(hm.root).despawn();
+                continue;
+            }
+            if let Ok((_, mut vis)) = roots.get_mut(hm.root) {
+                vis.set_if_neq(Visibility::Hidden);
+            }
+            let kept = HeldModel {
+                root: hm.root,
+                flash: hm.flash,
+                parts: std::mem::take(&mut hm.parts),
+                handles: std::mem::take(&mut hm.handles),
+                scale: hm.scale,
+                relight: 0.0,
+                lit_at: None,
+                lit_sig: None,
+                class: std::mem::take(&mut hm.class),
+                wmods: hm.wmods,
+            };
+            match spare {
+                Some(mut sp) => {
+                    if sp.0.len() >= HELD_SPARES {
+                        let old = sp.0.remove(0);
+                        commands.entity(old.root).despawn();
+                    }
+                    sp.0.push(kept);
+                }
+                None => {
+                    commands.entity(e).insert(HeldSpare(vec![kept]));
+                }
+            }
             continue;
         }
         if npc.just_fired {
@@ -9123,6 +9174,17 @@ pub fn npc_weapon_models(
 
 #[derive(Component)]
 pub struct HeldRoot;
+
+/// Weapon models a pawn put away (SwitchToBestWeapon), kept hidden under the pawn: switching back shows the same
+/// model again instead of rebuilding its geometry and fitting its mods (a 5-7 ms main-thread hitch each time).
+#[derive(Component, Default)]
+pub struct HeldSpare(pub Vec<HeldModel>);
+
+/// New weapon models built a frame at most (see npc_weapon_models).
+const HELD_BUILDS_PER_FRAME: usize = 3;
+
+/// Models a pawn keeps put away at most (a gun, a fallback blade, a grenade).
+const HELD_SPARES: usize = 3;
 
 #[cfg(test)]
 mod player_health_tests {
