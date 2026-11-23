@@ -5287,6 +5287,10 @@ fn move_params(npc: &Npc, running: bool) -> MoveParams {
     } else if npc.nightmare {
         params.ground_speed *= 1.5;
     }
+    // The Nameless Mod: a pawn's speed augmentation.
+    if let Some(t) = npc.hp_body.tnm.as_ref() {
+        params.ground_speed *= t.speed_mult();
+    }
     // Optional (setting NpcLimp): people (not animals or robots) limp on a crippled leg.
     if crate::optfixes::npc_limp() && !npc.animal && !npc.hp_body.robot {
         let legs = npc.hp_body.parts[4..6].iter().filter(|&&h| h < 1.0).count();
@@ -5755,6 +5759,22 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
                     let d = assets.classes.defaults(class);
                     if let Some(mut w) = weapon_stats(class, &d) {
                         w.fill_projectile(&mut assets.classes);
+                        // The Nameless Mod's Legendary mode: a pawn's weapon rolls too, and each attribute makes
+                        // its owner a little more of a legend (RollForLegendary's TNMPawn(Owner) part: steadier
+                        // aim, less damage taken - TnmBody.legendary_count).
+                        if crate::legendary::on() && crate::classtree::is_a(class, "TNMWeapon") && npc.hp_body.tnm.is_some() {
+                            let mask = crate::legendary::roll(&d, lvl.mission_number());
+                            if mask != 0 {
+                                crate::legendary::apply_stats(&mut w, mask, true);
+                                let n = mask.count_ones();
+                                npc.base_accuracy -= 0.1 * n as f32;
+                                if let Some(t) = npc.hp_body.tnm.as_mut() {
+                                    t.legendary_count += n;
+                                }
+                                crate::legendary::note_pawn_weapon(&lvl.actors[npc.actor].class, class, mask);
+                                println!("LEGENDARY {} carries a legendary {class}", lvl.actors[npc.actor].name);
+                            }
+                        }
                         npc.arsenal.push(std::sync::Arc::new(w));
                     }
                 }
@@ -7503,8 +7523,7 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
                 track: None,
                 track_at: None,
                 speed: None,
-                ownerless: false,
-            });
+                ownerless: false, legendary: 0 });
         }
         return;
     }
@@ -7523,6 +7542,12 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
 fn begin_shot(npc: &mut Npc, an: &Animated, w: &crate::weapons::WeaponStats, cx: &ActCx, moving: bool) -> bool {
     let lvl = cx.lvl;
     npc.shot_timer = if npc.nightmare { (w.shot_time / 2.0).max(0.05) } else { w.shot_time.max(0.1) };
+    // The Nameless Mod: a pawn's combat augmentation swings hand-to-hand weapons faster.
+    if w.hand_to_hand {
+        if let Some(t) = npc.hp_body.tnm.as_ref() {
+            npc.shot_timer /= t.combat_value().max(0.1);
+        }
+    }
     npc.just_fired = true;
     npc.net_shots = npc.net_shots.wrapping_add(1);
     if env_val!("DXVIEW_PAWNLOG").is_some_and(|n| lvl.actors[npc.actor].name.eq_ignore_ascii_case(n)) {

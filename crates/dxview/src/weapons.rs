@@ -126,6 +126,8 @@ pub struct WeaponStats {
     /// `fill_projectile` where pawns' arsenals are built.
     pub proj: Option<ProjInfo>,
     pub snd: crate::sound::WeaponSounds,
+    /// The Nameless Mod's Legendary mode: this weapon's attributes (legendary.rs; 0 = none).
+    pub legendary: u64,
 }
 
 /// A projectile class's defaults that the AI reads.
@@ -242,7 +244,13 @@ impl WeaponStats {
         } else {
             1.0
         };
-        // The Nameless Mod's Quad Damage powerup: x4 while it runs.
+        // The Nameless Mod's Quad Damage powerup: x4 while it runs; Legendary: Lucky / Desperate weapons.
+        (combat - 2.0 * self.skill) * crate::tnmpower::damage_mult() * crate::legendary::fire_mult(self.legendary, crate::legendary::player_health())
+    }
+
+    /// The same without the Legendary dice (for sizes worked out from the multiplier).
+    pub fn damage_mult_plain(&self) -> f32 {
+        let combat = if self.hand_to_hand { crate::abilities::aug("AugCombat").unwrap_or(1.0) } else { 1.0 };
         (combat - 2.0 * self.skill) * crate::tnmpower::damage_mult()
     }
 
@@ -259,6 +267,10 @@ impl WeaponStats {
     /// WeaponDamageType for instant-hit weapons: 'Stunned' with a StunDuration (prod), 'Sabot' with sabot shells,
     /// 'KnockedOut' for the baton, else 'Shot'.
     pub fn damage_type(&self, ammo: Option<&str>) -> &'static str {
+        crate::legendary::damage_type(self.legendary, self.base_damage_type(ammo))
+    }
+
+    fn base_damage_type(&self, ammo: Option<&str>) -> &'static str {
         if let Some(t) = crate::tnmweapon::damage_type(&self.class, ammo, false) {
             return t;
         }
@@ -283,11 +295,14 @@ impl WeaponStats {
         if let Some(n) = crate::tnmweapon::slugs(self.area_of_effect == 1, self.instant, ammo) {
             return n;
         }
-        match (self.area_of_effect, self.instant) {
-            (1, true) => 5,
-            (1, false) => 3,
-            _ => 1,
-        }
+        // Legendary: a Double-Barreled weapon launches one projectile more.
+        let extra = usize::from(!self.instant && crate::legendary::has(self.legendary, crate::legendary::att::DOUBLE_BARRELED));
+        extra
+            + match (self.area_of_effect, self.instant) {
+                (1, true) => 5,
+                (1, false) => 3,
+                _ => 1,
+            }
     }
 }
 
@@ -516,6 +531,7 @@ pub fn weapon_stats(class: &str, p: &[Property]) -> Option<WeaponStats> {
         projectile_speed: fp(p, "ProjectileSpeed", 0.0),
         proj: None,
         snd: crate::sound::WeaponSounds::from_props(p),
+        legendary: 0,
     })
 }
 
@@ -2172,6 +2188,10 @@ pub fn select_system(
                 if let Some(m) = weapons.mods.get(&class) {
                     apply_mods(&mut stats, m);
                 }
+                if crate::legendary::on() {
+                    crate::legendary::acquire(&mut assets.classes, &class, crate::legendary::mission(), None);
+                    crate::legendary::apply_stats(&mut stats, crate::legendary::mask_of(&class), false);
+                }
                 if let Some(a) = weapons.loaded_ammo.get(&class) {
                     stats.ammo_class = Some(a.clone());
                 }
@@ -2539,14 +2559,40 @@ fn melee_hit(stats: &WeaponStats, cx: &mut ShotCx, hit: &imsim_core::movement::H
     if stats.penetrating && !robot {
         cx.blood.push((at - fw, fw));
     }
-    cx.pawn_hits.push(crate::damage::PawnHit { world: false,
-        blocker: b,
-        damage: base_dmg * crate::perks::piercing_mult(cls, robot),
-        damage_type: dmg_type,
-        hit_loc: at,
-        attacker: None,
-        attacker_pos: cx.player_at,
-    });
+    let dmg = base_dmg * crate::perks::piercing_mult(cls, robot);
+    legendary_hit(stats, cx, b, dmg, dmg_type, at, robot);
+}
+
+/// The player's hit on a pawn, with what a Legendary weapon's attributes add to it (legendary.rs): Pinpoint's
+/// 'headstun' point first, the hit itself (doubled against the weapon's sworn enemies), then the attribute's own
+/// second hit, and an Explosive round's blast.
+// uc: TNMWeapon.ProcessTraceHit
+fn legendary_hit(stats: &WeaponStats, cx: &mut ShotCx, b: usize, dmg: f32, dmg_type: &'static str, at: DVec3, robot: bool) {
+    let mask = stats.legendary;
+    let mut push = |cx: &mut ShotCx, damage: f32, damage_type: &'static str| {
+        cx.pawn_hits.push(crate::damage::PawnHit { world: false, blocker: b, damage, damage_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
+    };
+    if mask == 0 {
+        push(cx, dmg, dmg_type);
+        return;
+    }
+    let a = &cx.level.actors[cx.blockers[b].actor];
+    let t = crate::legendary::Target {
+        class: &a.class,
+        robot,
+        augmented: matches!(find(&a.props, "bAugmented"), Some(Value::Bool(true))),
+        health: None,
+    };
+    let s = crate::legendary::player();
+    if crate::legendary::pinpoint(mask) {
+        push(cx, 1.0, "headstun");
+    }
+    let dmg = dmg * crate::legendary::target_mult(mask, &t, s);
+    push(cx, dmg, dmg_type);
+    if let Some((d, ty)) = crate::legendary::extra_hit(mask, &t, s, dmg, stats.hit_damage) {
+        push(cx, d, ty);
+    }
+    crate::legendary::blast(mask, at, dmg, stats.damage_mult_plain());
 }
 
 
@@ -2664,6 +2710,9 @@ fn trace_fire(stats: &WeaponStats, cx: &mut ShotCx, aim: Aim3, acc: f64, scoped:
         // TraceFire: a tracer for half the single-slug shots of 10mm / 30.06 / 7.62mm ammo (never scoped).
         if stats.shots_per_fire() == 1 && !scoped && crate::impacts::tracer_ammo(stats.ammo_class.as_deref()) && crate::sound::frand() < 0.5 {
             crate::impacts::tracer(eye, end, at);
+        } else if crate::tnmmode::active() && crate::tnmweapon::beam(&stats.class) {
+            // The Nameless Mod's laser guns: the beam to where the shot lands.
+            crate::impacts::tracer(eye, end, at);
         }
         if hit.fraction >= 1.0 {
             continue;
@@ -2686,8 +2735,9 @@ fn trace_fire(stats: &WeaponStats, cx: &mut ShotCx, aim: Aim3, acc: f64, scoped:
         let Some(b) = hit.actor else {
             // ProcessTraceHit on the level or a mover: breakable doors take HitDamage x the skill multiplier, and
             // SpawnEffects (TraceHitSpawner): smoke, chips, the hole and a spark.
-            crate::movers::hit_line(eye, at, base_dmg, dmg_type);
+            crate::movers::hit_line(eye, at, base_dmg * crate::legendary::wall_mult(stats.legendary), dmg_type);
             crate::impacts::wall_hit(at, hit.normal, dir, base_dmg, crate::impacts::Source::Weapon { penetrating: stats.penetrating, hand_to_hand: false });
+            crate::legendary::blast(stats.legendary, at, base_dmg, stats.damage_mult_plain());
             // Enhancement (Bullets Through Thin Walls): on through thin wood or glass, weaker.
             if stats.penetrating && matches!(dmg_type, "Shot" | "Sabot") {
                 through_wall(cx, &world, at, dir, end, base_dmg, dmg_type);
@@ -2708,7 +2758,7 @@ fn trace_fire(stats: &WeaponStats, cx: &mut ShotCx, aim: Aim3, acc: f64, scoped:
         }
         // ProcessTraceHit: damage scaled by skill (1 - 2 * skill value); GMDX Hollow Points on animals.
         let dmg = base_dmg * crate::perks::hollow_points_mult(stats.ammo_class.as_deref(), &a.class);
-        cx.pawn_hits.push(crate::damage::PawnHit { world: false, blocker: b, damage: dmg, damage_type: dmg_type, hit_loc: at, attacker: None, attacker_pos: cx.player_at });
+        legendary_hit(stats, cx, b, dmg, dmg_type, at, robot);
     }
     // GMDX Stopping Power (TraceFire bDoExtraSlugDamage): every slug of a shotgun blast into one pawn, and the last does
     // extra. GMDX's 8 slugs get two slugs' worth (+25%); with the original's 5 the last slug does 1 + 0.25 x slugs so
@@ -2942,6 +2992,7 @@ pub fn weapon_system(
 
     pose_view_model(h, &mut meshes, dt);
     blade_lights(h, cam, &time);
+    crate::legendary::set_held(h.stats.legendary);
     light_view_model(h, &mut meshes, cx.level, cam.translation, cam.rotation, root, dt);
     place_lens(h, lens_eye.as_ref(), root);
 
@@ -3025,8 +3076,7 @@ fn halon_spray(cx: &mut WeaponCx, weapons: &mut Weapons) {
                 track: None,
                 track_at: None,
                 speed: crate::perks::has("PerkFirefighter").then_some(300.0 * 380.0 / 320.0),
-                ownerless: false,
-            });
+                ownerless: false, legendary: 0 });
         }
     }
 }
@@ -3318,6 +3368,32 @@ fn anim_notifies(h: &mut Held, cx: &mut WeaponCx) {
             blood: &mut cx.blood.0,
         };
         melee_blow(&h.stats, &mut shot, eye, fw, None);
+        // The Nameless Mod's Moonlight Blade with its bolts on: each swing throws one and uses up a bio cell.
+        // uc: WeaponMoonlightBlade.HandToHandAttack
+        if h.stats.class.eq_ignore_ascii_case("WeaponMoonlightBlade") && crate::tnmweapon::moonlight_alt() {
+            if let Some(i) = cx.inv.0.items.iter().position(|x| x.def.class == "BioelectricCell" && x.count > 0) {
+                let left = cx.inv.0.items[i].count - 1;
+                let name = cx.inv.0.items[i].def.name.clone();
+                cx.inv.0.use_one("BioelectricCell");
+                cx.launches.0.push(crate::projectiles::Launch {
+                    class: "TNMItems.MoonlightProjectile".into(),
+                    pos: eye + fw * 12.0,
+                    dir: fw,
+                    from: None,
+                    mult: 1.0,
+                    life: None,
+                    scale: None,
+                    still: false,
+                    track: None,
+                    track_at: None,
+                    speed: Some(crate::tnmweapon::moonlight_speed()),
+                    ownerless: false,
+                    legendary: h.stats.legendary,
+                });
+                crate::classic_hud::client_message(&format!("{name} - {left} left"));
+                crate::sound::play_player("DeusExSounds.Pickup.BioElectricHiss", 1.0, 256.0);
+            }
+        }
     }
     // The grenade leaves the hand halfway through the throw (or place) animation.
     if h.state == WState::Firing && h.clip.t * h.clip.rate >= h.clip.frames as f32 * 0.5 {
@@ -3603,6 +3679,36 @@ fn weapon_keys(
         }
         return;
     }
+    // The Nameless Mod's two-mode weapons: Change Ammo flips the mode (the Moonlight Blade's bolts, both pistols).
+    if (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT)) && crate::tnmmode::active() {
+        if let Some(mode) = crate::tnmweapon::cycle_mode(&h.stats.class) {
+            let d = cx.rt_assets.classes.defaults(&h.stats.class);
+            let text = |k: &str| match find(&d, k) {
+                Some(Value::Str(t)) => t.clone(),
+                _ => String::new(),
+            };
+            match mode {
+                crate::tnmweapon::Mode::Moonlight { alt } => {
+                    cx.hud.text = text(if alt { "msgSwitchedAlt" } else { "msgSwitched" });
+                    if let Some(Value::Path(s)) = find(&d, "modechange") {
+                        crate::sound::play_player(s, 1.0, 512.0);
+                    }
+                }
+                crate::tnmweapon::Mode::Double { both } => {
+                    // UpdateStats: both at once fire half as often and far less surely.
+                    let base = weapon_stats(&h.stats.class, &d);
+                    if let Some(b) = base {
+                        h.stats.shot_time = if both { b.shot_time * 2.0 } else { b.shot_time };
+                        h.stats.base_accuracy = if both { 0.95 } else { b.base_accuracy };
+                    }
+                    let mode_name = text(if both { "firemodeDoubleFireText" } else { "firemodeAltFireText" });
+                    cx.hud.text = text("firemodemessage").replacen("%s", &h.stats.name, 1).replacen("%s", &mode_name, 1);
+                }
+            }
+            cx.hud.time_left = 3.0;
+            return;
+        }
+    }
     // CycleAmmo (' in the default keys, also T): load the next ammo type this weapon takes that we have. The
     // rounds left in the clip go back to their box, then the weapon reloads with the new type.
     if (keys.just_pressed(KeyCode::Quote) || keys.just_pressed(KeyCode::KeyT) || crate::tnmaugs::take_cycle())
@@ -3744,7 +3850,10 @@ fn reload_or_fire(
 fn fire_effects(h: &mut Held, cx: &mut WeaponCx, flashes: &mut Query<&mut MuzzleFlashPart>, loaded: u32) {
     let (cam, player) = (cx.cam, cx.player);
     if !h.stats.hand_to_hand && h.stats.reload_count > 0 {
-        cx.clips.0.insert(h.stats.class.clone(), loaded - 1);
+        // Legendary: a Resourceful weapon's shot costs nothing one time in ten.
+        if !crate::legendary::free_shot(h.stats.legendary) {
+            cx.clips.0.insert(h.stats.class.clone(), loaded - 1);
+        }
     }
     h.state = WState::Firing;
     h.timer = h.stats.player_shot_time();
@@ -3844,6 +3953,18 @@ fn fire_effects(h: &mut Held, cx: &mut WeaponCx, flashes: &mut Query<&mut Muzzle
 /// (NearWallCheck), projectiles launched (ProjectileFire), a melee swing begun, or TraceFire from the eye.
 fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
     let (cam, level) = (cx.cam, cx.level);
+    // The Nameless Mod's mines, trip bombs and the black box are only ever placed: with no wall within reach the
+    // trigger does nothing.
+    if crate::tnmmode::active() && crate::tnmweapon::place_only(&h.stats.class) {
+        let e = bevy_to_ue(cam.translation.to_array());
+        let e = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
+        let f = cam.forward().as_vec3();
+        let f = DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize();
+        let world = World { level, blockers: &[], ignore: None, pushable: None, movers: Some(&cx.mv.rt) };
+        if world.trace(e, e + f * 32.0, DVec3::ZERO).fraction >= 1.0 {
+            return;
+        }
+    }
     // Instant-hit trace from the eye.
     let eye = bevy_to_ue(cam.translation.to_array());
     let eye = DVec3::new(eye[0] as f64, eye[1] as f64, eye[2] as f64);
@@ -3955,6 +4076,7 @@ fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
                 track_at: None,
                 speed: None,
                 ownerless: false,
+                legendary: h.stats.legendary,
             });
         }
         // GMDX Plasma Breeder (WeaponPlasmaRifle.OnProjectileFired): a free plasma round every PerkValue
@@ -3987,12 +4109,52 @@ fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
             blood: &mut cx.blood.0,
         };
         trace_fire(&h.stats, &mut shot, Aim3 { eye, fw, rt, up }, acc, scoped, cx.seed);
+        if crate::tnmmode::active() {
+            // WeaponDoubleGuns firing both: the other pistol too, for one more round from the clip.
+            // uc: WeaponDoubleGuns.Fire
+            if crate::tnmweapon::double_both(&h.stats.class) {
+                let left = cx.clips.0.get(&h.stats.class).copied().unwrap_or(0);
+                if left > 0 {
+                    cx.clips.0.insert(h.stats.class.clone(), left - 1);
+                    trace_fire(&h.stats, &mut shot, Aim3 { eye, fw, rt, up }, acc, scoped, cx.seed);
+                }
+            }
+            // WeaponGibinator: the blast in front of the muzzle.
+            if h.stats.class.eq_ignore_ascii_case("WeaponGibinator") {
+                let r = crate::tnmweapon::gib_radius();
+                let at = shot.player_at + fw * (cx.player.params.radius * 2.0);
+                let ty = h.stats.damage_type(None);
+                for (b, c) in shot.blockers.iter().enumerate() {
+                    let d = c.center.distance(at);
+                    if c.radius <= 0.0 || d - c.radius >= r || shot.level.collision.trace(at, c.center, DVec3::ZERO).fraction < 0.999 {
+                        continue;
+                    }
+                    let dmg = crate::tnmweapon::gib_blast(d, c.radius);
+                    if dmg <= 0.0 {
+                        continue;
+                    }
+                    if find(&shot.level.actors[c.actor].props, "GroundSpeed").is_some() {
+                        shot.pawn_hits.push(crate::damage::PawnHit { world: false, blocker: b, damage: dmg, damage_type: ty, hit_loc: c.center, attacker: None, attacker_pos: shot.player_at });
+                    } else {
+                        shot.deco_hits.push(crate::destruct::DecoHit { blocker: b, damage: dmg, damage_type: ty });
+                    }
+                }
+                crate::dynlight::explosion(at, 8.0, 128, 96);
+            }
+        }
     }
 }
 
 /// Weapons that light what's round them in hand: the Dragon's Tooth's blade, and (Emissive Surfaces) the riot
 /// prod's arcs.
 fn blade_lights(h: &Held, cam: &Transform, time: &Time) {
+    // The Nameless Mod's Legendary mode: a Luminous weapon glows in hand (LightBrightness 224, hue 160,
+    // saturation 255, radius 8).
+    if crate::legendary::has(h.stats.legendary, crate::legendary::att::LUMINOUS) && matches!(h.state, WState::Idle | WState::Firing) && !crate::consys::third_person() {
+        let at = cam.translation + cam.forward().as_vec3() * 0.45 + cam.right().as_vec3() * 0.15;
+        let ue = bevy_to_ue(at.to_array());
+        crate::dynlight::hold(0xD75_0002, DVec3::new(ue[0] as f64, ue[1] as f64, ue[2] as f64), crate::dynlight::Spec::new(160, 255, 224, 8.0), 0.0);
+    }
     // WeaponNanoSword: in hand (state Idle and swinging; not while drawn or put away) the blade lights what's round
     // it - LT_Steady, hue 160, saturation 64, brightness 224, radius 4, LE_WateryShimmer. Dark with Dragon's Tooth
     // Uses Bioenergy and no energy left.
@@ -4690,8 +4852,7 @@ pub fn activate_pickup(
                 track: None,
                 track_at: None,
                 speed: None,
-                ownerless: false,
-            });
+                ownerless: false, legendary: 0 });
         }
         "LiquorBottle" => {
             heal(ph, crate::perks::food(2.0));

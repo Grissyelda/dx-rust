@@ -138,6 +138,8 @@ pub struct Batch {
     pub class: SurfaceClass,
     /// True for geometry in the sky room (drawn as a distant backdrop around the camera).
     pub sky: bool,
+    /// Which sky room (index into Level::sky_rooms) a sky face belongs to.
+    pub sky_room: u8,
     /// Texture scroll in UV units per second (from PF_AutoUPan/PF_AutoVPan and the zone's pan speed).
     pub uv_scroll: [f32; 2],
     /// PF_Mirrored: the face's plane in Bevy space (unit normal, distance in meters along it), for a reflection.
@@ -208,6 +210,10 @@ pub struct ZoneRule {
     pub no_oxygen: bool,
     /// A WarpZoneInfo: what walks in comes out of the zone whose ThisTag is this one's OtherSideURL.
     pub warp: Option<WarpZone>,
+    /// The zone actor's class and ZoneGravity, and (for classes of a mod) its whole property list.
+    pub class: String,
+    pub gravity: [f32; 3],
+    pub props: Vec<props::Property>,
 }
 
 /// WarpZoneInfo: its ThisTag, OtherSideURL (a tag in this map) and WarpCoords (origin and axes, saved by the editor).
@@ -312,6 +318,10 @@ pub struct Level {
     pub lightmap: Option<lighting::Atlas>,
     /// Bevy-space meters location of the sky zone, if any; sky batches are positioned in the same space.
     pub sky_origin: Option<[f32; 3]>,
+    /// Every sky room's origin (Bevy-space metres; the first is `sky_origin`), and per BSP zone the room it looks
+    /// into (The Nameless Mod's MultiSkyZoneInfo names its own; every other zone sees the first).
+    pub sky_rooms: Vec<[f32; 3]>,
+    pub zone_sky_room: Vec<u8>,
     pub bounds_min: [f32; 3],
     pub bounds_max: [f32; 3],
     pub stats: LevelStats,
@@ -1085,6 +1095,50 @@ pub fn build_level(
         .filter(|(_, &za)| za > 0 && pkg.exports.get(za as usize - 1).is_some_and(|e| pkg.class_name(e.class_index) == "SkyZoneInfo"))
         .map(|(i, _)| i)
         .collect();
+    // Several sky rooms: each SkyZoneInfo zone's actor location; the room of the first SkyZoneInfo (sky_loc) first.
+    let actor_props = |za: i32| -> Vec<props::Property> {
+        let Some(e) = pkg.exports.get(za as usize - 1) else { return Vec::new() };
+        let mut r = Reader::new(pkg.export_data(e), 0);
+        if e.flags & props::RF_HAS_STACK != 0 && props::skip_state_frame(&mut r).is_err() {
+            return Vec::new();
+        }
+        props::read_properties(pkg, &mut r).unwrap_or_default()
+    };
+    let mut sky_room_list: Vec<(usize, [f32; 3])> = sky_zones
+        .iter()
+        .map(|&z| {
+            let loc = match props::find(&actor_props(model.zone_actors[z]), "Location") {
+                Some(Value::Vector(l)) => *l,
+                _ => [0.0; 3],
+            };
+            (z, loc)
+        })
+        .collect();
+    if let Some(c) = sky_loc {
+        sky_room_list.sort_by_key(|r| r.1 != c);
+    }
+    let room_of_zone = |z: usize| sky_room_list.iter().position(|r| r.0 == z).unwrap_or(0) as u8;
+    let zone_sky_room: Vec<u8> = model
+        .zone_actors
+        .iter()
+        .map(|&za| {
+            if za <= 0 || sky_room_list.len() < 2 {
+                return 0;
+            }
+            let Some(e) = pkg.exports.get(za as usize - 1) else { return 0 };
+            if !pkg.class_name(e.class_index).eq_ignore_ascii_case("MultiSkyZoneInfo") {
+                return 0;
+            }
+            match props::find(&actor_props(za), "MasterSkyZoneInfo") {
+                Some(Value::Object(m)) if *m > 0 => model
+                    .zone_actors
+                    .iter()
+                    .position(|&x| x == *m)
+                    .map_or(0, room_of_zone),
+                _ => 0,
+            }
+        })
+        .collect();
     // Per-zone texture pan speeds (zone 0 / no actor: ZoneInfo defaults of 1.0).
     let zone_pan: Vec<[f32; 2]> = model
         .zone_actors
@@ -1178,6 +1232,16 @@ pub fn build_level(
                 player_event: name("ZonePlayerEvent"),
                 no_inventory: b("bNoInventory"),
                 no_oxygen: b("bNoOxygen"),
+                class: pkg.class_name(e.class_index).to_string(),
+                gravity: match props::find(&ps, "ZoneGravity") {
+                    Some(Value::Vector(v)) => *v,
+                    _ => [0.0, 0.0, -950.0],
+                },
+                props: if matches!(pkg.class_name(e.class_index), "ZoneInfo" | "WaterZone" | "SkyZoneInfo" | "LevelInfo" | "DeusExLevelInfo" | "WarpZoneInfo") {
+                    Vec::new()
+                } else {
+                    ps.clone()
+                },
                 warp: (pkg.class_name(e.class_index) == "WarpZoneInfo"
                     || matches!(props::find(&ps, "OtherSideURL"), Some(Value::Str(_))))
                 .then(|| {
@@ -1276,7 +1340,7 @@ pub fn build_level(
     // The game's texel size of each level texture (UVs use it; an HD texture has more pixels).
     let mut logical: HashMap<usize, (f32, f32)> = HashMap::new();
     lib.hd_scope = true;
-    let mut batch_index: HashMap<(Option<usize>, SurfaceClass, bool, [i32; 2], Option<[i32; 4]>, bool, bool), usize> = HashMap::new();
+    let mut batch_index: HashMap<(Option<usize>, SurfaceClass, bool, [i32; 2], Option<[i32; 4]>, bool, bool, u8), usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
     let mut bmin = [f32::MAX; 3];
     let mut bmax = [f32::MIN; 3];
@@ -1569,11 +1633,18 @@ pub fn build_level(
         });
         let mirror_key = mirror.map(|m| [(m[0] * 1000.0) as i32, (m[1] * 1000.0) as i32, (m[2] * 1000.0) as i32, (m[3] * 100.0) as i32]);
         let one_sided = matches!(class, SurfaceClass::Translucent | SurfaceClass::Modulated) && surf.poly_flags & 0x100 == 0;
-        let bi = *batch_index.entry((tex_idx, class, is_sky, scroll_key, mirror_key, water_opaque, one_sided)).or_insert_with(|| {
+        let sky_room = if is_sky && sky_room_list.len() > 1 {
+            let zi = |v: i32| (v > 0).then_some(v as usize).filter(|z| sky_zones.contains(z));
+            zi(node.zone[1]).or(zi(node.zone[0])).map_or(0, room_of_zone)
+        } else {
+            0
+        };
+        let bi = *batch_index.entry((tex_idx, class, is_sky, scroll_key, mirror_key, water_opaque, one_sided, sky_room)).or_insert_with(|| {
             batches.push(Batch {
                 texture: tex_idx,
                 class,
                 sky: is_sky,
+                sky_room,
                 uv_scroll,
                 mirror,
                 water_opaque,
@@ -1860,6 +1931,8 @@ pub fn build_level(
         lights,
         actors: actor_list,
         sky_origin: sky_loc.map(ue_to_bevy),
+        sky_rooms: sky_room_list.iter().map(|r| ue_to_bevy(r.1)).collect(),
+        zone_sky_room,
         bounds_min: bmin,
         bounds_max: bmax,
         stats,

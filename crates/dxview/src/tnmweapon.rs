@@ -134,3 +134,99 @@ pub fn self_harm(class: &str) -> f32 {
 pub fn single_use(class: &str) -> bool {
     crate::tnmmode::active() && (class.eq_ignore_ascii_case("WeaponTNMHideAGun") || class.eq_ignore_ascii_case("WeaponFireExting"))
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// One-off weapons' own fire code.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// WeaponMoonlightBlade.altAmmoLoaded: swings also throw a bolt, one bio cell each.
+static MOONLIGHT_ALT: AtomicBool = AtomicBool::new(false);
+/// WeaponDoubleGuns.bfireboth: both pistols at once.
+static DOUBLE_BOTH: AtomicBool = AtomicBool::new(false);
+/// GibinatorAoE's (Damage, blastRadius, gradualHurtSteps) and the Moonlight Blade's projectile speed, read once.
+static NUMBERS: std::sync::Mutex<Option<(f32, f32, f32, f32)>> = std::sync::Mutex::new(None);
+
+pub fn load(classes: &mut unreal_pkg::classes::ClassDb) {
+    let Ok(mut g) = NUMBERS.lock() else { return };
+    if g.is_some() {
+        return;
+    }
+    let f = |d: &[unreal_pkg::props::Property], n: &str, dflt: f32| match unreal_pkg::props::find(d, n) {
+        Some(unreal_pkg::props::Value::Float(v)) => *v,
+        Some(unreal_pkg::props::Value::Int(v)) => *v as f32,
+        _ => dflt,
+    };
+    let a = classes.defaults("GibinatorAoE");
+    let m = classes.defaults("WeaponMoonlightBlade");
+    *g = Some((f(&a, "Damage", 0.0), f(&a, "blastRadius", 0.0), f(&a, "gradualHurtSteps", 5.0).max(1.0), f(&m, "ProjectileSpeed", 1000.0)));
+}
+
+/// WeaponMine / WeaponTripBomb / WeaponBlackBox.Fire: placed on a wall or not used at all (never thrown).
+// uc: WeaponMine.Fire, WeaponTripBomb.Fire, WeaponBlackBox.Fire
+pub fn place_only(class: &str) -> bool {
+    ["WeaponMine", "WeaponTripBomb", "WeaponBlackBox"].iter().any(|c| class.eq_ignore_ascii_case(c))
+}
+
+/// WeaponLaser.ProcessTraceHit: the shot shows as a beam from the gun to where it lands for a fifth of a second.
+// uc: WeaponLaser.ProcessTraceHit
+pub fn beam(class: &str) -> bool {
+    crate::classtree::is_a(class, "WeaponLaser") || crate::classtree::is_a(class, "WeaponTNMLaserGun")
+}
+
+/// Change Ammo with one of the two-mode weapons in hand: the mode flips. Returns the message key to show
+/// (a class default's name) and the weapon's new (shot time factor, accuracy override).
+// uc: WeaponMoonlightBlade.SwitchFireMode, WeaponDoubleGuns.CycleAmmo, WeaponDoubleGuns.UpdateStats
+pub enum Mode {
+    Moonlight { alt: bool },
+    Double { both: bool },
+}
+
+pub fn cycle_mode(class: &str) -> Option<Mode> {
+    if class.eq_ignore_ascii_case("WeaponMoonlightBlade") {
+        let alt = !MOONLIGHT_ALT.fetch_xor(true, Ordering::Relaxed);
+        Some(Mode::Moonlight { alt })
+    } else if class.eq_ignore_ascii_case("WeaponDoubleGuns") {
+        let both = !DOUBLE_BOTH.fetch_xor(true, Ordering::Relaxed);
+        Some(Mode::Double { both })
+    } else {
+        None
+    }
+}
+
+pub fn moonlight_alt() -> bool {
+    MOONLIGHT_ALT.load(Ordering::Relaxed)
+}
+
+pub fn double_both(class: &str) -> bool {
+    DOUBLE_BOTH.load(Ordering::Relaxed) && class.eq_ignore_ascii_case("WeaponDoubleGuns")
+}
+
+pub fn moonlight_speed() -> f64 {
+    NUMBERS.lock().ok().and_then(|g| g.map(|n| n.3 as f64)).unwrap_or(1000.0)
+}
+
+/// WeaponGibinator.TraceFire's GibinatorAoE: a blast of the weapon's damage type in front of the shooter (two
+/// collision radii out) that spares him - (damage to each victim by distance and its radius).
+// uc: WeaponGibinator.TraceFire, GibinatorAoE.GibinatorHurtRadius
+pub fn gib_blast(dist: f64, victim_radius: f64) -> f32 {
+    let Some((damage, radius, steps, _)) = NUMBERS.lock().ok().and_then(|g| *g) else { return 0.0 };
+    let mut total = 0.0;
+    let n = steps as i32;
+    for k in 1..=n {
+        let rk = radius as f64 * k as f64 / n as f64;
+        if dist - victim_radius < rk {
+            total += (2.0 * damage / steps) * (1.0 - ((dist - victim_radius) / rk).max(0.0)) as f32;
+        }
+    }
+    total
+}
+
+pub fn gib_radius() -> f64 {
+    NUMBERS.lock().ok().and_then(|g| g.map(|n| n.1 as f64)).unwrap_or(0.0)
+}
+
+pub fn new_game() {
+    MOONLIGHT_ALT.store(false, Ordering::Relaxed);
+    DOUBLE_BOTH.store(false, Ordering::Relaxed);
+}

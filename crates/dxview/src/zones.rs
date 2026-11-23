@@ -168,6 +168,9 @@ pub fn zone_tag(lvl: &dx_level::Level, p: DVec3) -> String {
 
 /// ZoneInfo.Trigger: zones tagged `name` with DamagePerSec toggle bPainZone.
 pub fn event(lvl: &dx_level::Level, name: &str, on: bool) {
+    if crate::tnmmode::active() {
+        tnm_event(lvl, name, on);
+    }
     if !on || name.is_empty() {
         return;
     }
@@ -325,5 +328,135 @@ pub fn barrel_fire_system(
             let off = c.center - p;
             ph.damage(5.0, "Burned", DVec3::new(0.0, 0.0, off.z));
         }
+    }
+}
+
+// ---- The Nameless Mod's zones that change under the player: altergravzone (gravtrigger / Trigger step through its
+// gravs[]), InertialMover's fan zone (ZoneGravity pushed each tick) and WaterToggleZone (Trigger floods or drains).
+// uc: altergravzone.changegrav, gravtrigger.Trigger, WaterToggleZone.Trigger, InertialMover.Tick
+
+#[derive(Default)]
+struct Live {
+    level: String,
+    /// ZoneGravity per zone where it isn't the map's any more.
+    gravity: HashMap<usize, DVec3>,
+    /// altergravzone.gravnum per zone.
+    gravnum: HashMap<usize, i32>,
+    /// bWaterZone per zone where a WaterToggleZone switched it.
+    water: HashMap<usize, bool>,
+}
+
+static LIVE: Mutex<Option<Live>> = Mutex::new(None);
+/// Any override exists (the common case, none, costs one atomic read).
+static LIVE_ANY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn live<R>(lvl: &dx_level::Level, f: impl FnOnce(&mut Live) -> R) -> R {
+    let mut g = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let l = g.get_or_insert_with(Live::default);
+    if l.level != lvl.name {
+        *l = Live { level: lvl.name.clone(), ..Default::default() };
+        // altergravzone.prebeginplay: changegrav(gravnum).
+        for (z, r) in lvl.zone_rules.iter().enumerate() {
+            if r.class.eq_ignore_ascii_case("altergravzone") {
+                let n = match unreal_pkg::props::find(&r.props, "gravnum") {
+                    Some(unreal_pkg::props::Value::Int(v)) => *v,
+                    _ => 0,
+                };
+                l.gravnum.insert(z, n);
+                if let Some(g) = grav_of(r, n) {
+                    l.gravity.insert(z, g);
+                }
+            }
+        }
+        LIVE_ANY.store(!l.gravity.is_empty(), std::sync::atomic::Ordering::Relaxed);
+    }
+    let r = f(l);
+    LIVE_ANY.store(!l.gravity.is_empty() || !l.water.is_empty(), std::sync::atomic::Ordering::Relaxed);
+    r
+}
+
+/// gravs[n].grav of an altergravzone (the struct is a vector then a bool).
+fn grav_of(r: &dx_level::ZoneRule, n: i32) -> Option<DVec3> {
+    r.props.iter().find(|p| p.name.eq_ignore_ascii_case("gravs") && p.index as i32 == n).and_then(|p| match &p.value {
+        unreal_pkg::props::Value::Struct(_, b) if b.len() >= 12 => {
+            let f = |k: usize| f32::from_le_bytes([b[k], b[k + 1], b[k + 2], b[k + 3]]) as f64;
+            Some(DVec3::new(f(0), f(4), f(8)))
+        }
+        _ => None,
+    })
+}
+
+/// Build the per-map state (altergravzones start on their gravnum).
+pub fn live_init(lvl: &dx_level::Level) {
+    live(lvl, |_| ());
+}
+
+/// ZoneGravity at `p` when a zone's gravity isn't the usual one.
+pub fn gravity_at(lvl: &dx_level::Level, p: DVec3) -> Option<DVec3> {
+    let z = lvl.collision.zone_at(p).max(0) as usize;
+    if LIVE_ANY.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some(g) = live(lvl, |l| l.gravity.get(&z).copied()) {
+            return Some(g);
+        }
+    }
+    let r = lvl.zone_rules.get(z)?;
+    let g = r.gravity;
+    (!r.class.is_empty() && g != [0.0, 0.0, 0.0] && g != [0.0, 0.0, -950.0]).then(|| DVec3::new(g[0] as f64, g[1] as f64, g[2] as f64))
+}
+
+/// A WaterToggleZone's present bWaterZone for the zone at `p` (None = as the map has it).
+pub fn water_override(lvl: &dx_level::Level, zone: usize) -> Option<bool> {
+    if !LIVE_ANY.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    live(lvl, |l| l.water.get(&zone).copied())
+}
+
+/// gravtrigger: the altergravzones tagged `tag` go to gravs[num]. `step`: Trigger (+1) / UnTrigger (-1) instead.
+pub fn change_grav(lvl: &dx_level::Level, tag: &str, num: Option<i32>, step: i32) {
+    live(lvl, |l| {
+        for (z, r) in lvl.zone_rules.iter().enumerate() {
+            if !r.class.eq_ignore_ascii_case("altergravzone") || !r.tag.eq_ignore_ascii_case(tag) {
+                continue;
+            }
+            let n = num.unwrap_or_else(|| l.gravnum.get(&z).copied().unwrap_or(0) + step).clamp(0, 9);
+            l.gravnum.insert(z, n);
+            if let Some(g) = grav_of(r, n) {
+                l.gravity.insert(z, g);
+            }
+        }
+    });
+}
+
+/// InertialMover.Tick on its fan zone: ZoneGravity += change, clamped; ZoneVelocity = it without Z.
+pub fn push_gravity(lvl: &dx_level::Level, tag: &str, change: DVec3, min: DVec3, max: DVec3) {
+    live(lvl, |l| {
+        for (z, r) in lvl.zone_rules.iter().enumerate() {
+            if r.tag.is_empty() || !r.tag.eq_ignore_ascii_case(tag) {
+                continue;
+            }
+            let g0 = l.gravity.get(&z).copied().unwrap_or(DVec3::new(r.gravity[0] as f64, r.gravity[1] as f64, r.gravity[2] as f64));
+            let g = (g0 + change).clamp(min, max);
+            l.gravity.insert(z, g);
+        }
+    });
+}
+
+/// Events for the mod's zones: an altergravzone steps its gravity, a WaterToggleZone floods or drains.
+pub fn tnm_event(lvl: &dx_level::Level, name: &str, on: bool) {
+    if name.is_empty() || !lvl.zone_rules.iter().any(|r| !r.props.is_empty() && r.tag.eq_ignore_ascii_case(name)) {
+        return;
+    }
+    change_grav(lvl, name, None, if on { 1 } else { -1 });
+    if on {
+        live(lvl, |l| {
+            for (z, r) in lvl.zone_rules.iter().enumerate() {
+                if r.class.eq_ignore_ascii_case("WaterToggleZone") && r.tag.eq_ignore_ascii_case(name) {
+                    let was = l.water.get(&z).copied().unwrap_or(lvl.zone_water.get(z).is_some_and(|w| w.is_some()));
+                    l.water.insert(z, !was);
+                    println!("ZONE {z} ({}) water {}", r.tag, !was);
+                }
+            }
+        });
     }
 }

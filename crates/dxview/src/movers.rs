@@ -49,6 +49,9 @@ pub struct MoverRt {
     /// movers (StaringMover, its turrets and the cinematic Cerberus guns).
     pub desired_rot: Option<[i32; 3]>,
     pub rot_rate: [i32; 3],
+    /// Turning for ever at this rate (pitch, yaw, roll units per second): The Nameless Mod's InertialMover fans.
+    pub spin: [f64; 3],
+    pub spin_acc: [f64; 3],
 }
 
 #[derive(Resource)]
@@ -128,6 +131,8 @@ pub fn spawn_movers(
             waiting_pawn: None,
             held: false,
             desired_rot: None,
+            spin: [0.0; 3],
+            spin_acc: [0.0; 3],
             rot_rate: [0; 3],
             opening: false,
             locked: info.locked,
@@ -262,6 +267,21 @@ pub fn carry_player(level: &dx_level::Level, movers: &Movers, loc: &mut DVec3, r
     *loc = mover_world(info, rt.location, rt.rotation, l);
     let yaw = (rt.rotation[1] - prot[1]) as f64 * std::f64::consts::TAU / 65536.0;
     yaw
+}
+
+/// Which of these movers the player's cylinder rests on (6 units down, at their present pose).
+pub fn standing_on(level: &dx_level::Level, movers: &Movers, loc: DVec3, radius: f64, height: f64, only: &[usize]) -> Option<usize> {
+    let ext = DVec3::new(radius, radius, height);
+    let down = DVec3::new(0.0, 0.0, 6.0);
+    only.iter().copied().find(|&i| {
+        let (Some(info), Some(rt)) = (level.movers.get(i), movers.rt.get(i)) else { return false };
+        if rt.destroyed {
+            return false;
+        }
+        let reach = info.reach as f64 + radius + height + 16.0;
+        (rt.location - loc).length_squared() <= reach * reach
+            && trace_mover_at(info, rt.location, rt.rotation, loc, loc - down, ext).is_some_and(|h| h.normal.z > 0.7)
+    })
 }
 
 pub fn trace_mover_at(
@@ -611,6 +631,17 @@ pub fn tick_movers(
                     changed = true;
                 } else {
                     rt.desired_rot = None;
+                }
+            }
+            if rt.spin != [0.0; 3] && !rt.destroyed {
+                for c in 0..3 {
+                    rt.spin_acc[c] += rt.spin[c] * dt;
+                    let whole = rt.spin_acc[c].trunc();
+                    if whole != 0.0 {
+                        rt.spin_acc[c] -= whole;
+                        rt.rotation[c] = (rt.rotation[c] + whole as i32).rem_euclid(65536);
+                        changed = true;
+                    }
                 }
             }
             if changed {

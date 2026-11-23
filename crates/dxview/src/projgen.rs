@@ -434,8 +434,7 @@ pub fn projgen_system(
                         track: None,
                         track_at: None,
                         speed: None,
-                        ownerless: true,
-                    });
+                        ownerless: true, legendary: 0 });
                 }
             }
             continue;
@@ -622,8 +621,7 @@ pub fn projgen_system(
                     track: None,
                     track_at: None,
                     speed: Some(speed),
-                    ownerless: true,
-                });
+                    ownerless: true, legendary: 0 });
             }
             tv += check;
         }

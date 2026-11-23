@@ -1058,6 +1058,10 @@ fn give_loot(
                 crate::classic_hud::client_message(&m);
             }
             let owned = inv.0.items.iter().any(|x| x.def.class == class);
+            if crate::legendary::on() {
+                let from = crate::legendary::pawn_weapon(owner_class, &class);
+                crate::legendary::acquire(&mut assets.classes, &class, crate::legendary::mission(), from);
+            }
             if let Some(m) = give_weapon(&mut inv.0, &class, &d, rounds, assets) {
                 msgs.push(m);
             }

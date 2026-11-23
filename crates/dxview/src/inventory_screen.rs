@@ -560,8 +560,22 @@ fn weapon_info(
     let base = weapon_stats(class, d);
     let modst = view.weapons.mods.get(class).cloned().unwrap_or_default();
     let mut w = base.clone();
+    // The Nameless Mod's Legendary mode: the weapon's title and what its attributes do.
+    let leg = crate::legendary::mask_of(class);
+    if leg != 0 {
+        let base_name = match unreal_pkg::props::find(d, "ItemName") {
+            Some(unreal_pkg::props::Value::Str(s)) => s.clone(),
+            _ => class.to_string(),
+        };
+        rows.push(Row::Text(crate::legendary::item_name(&mut assets.classes, leg, &base_name)));
+        for t in crate::legendary::descriptions(&mut assets.classes, leg) {
+            rows.push(Row::Text(t));
+        }
+        rows.push(Row::Line);
+    }
     if let Some(w) = w.as_mut() {
         apply_mods(w, &modst);
+        crate::legendary::apply_stats(w, leg, false);
         // WeaponLaser.UpdateInfo (The Nameless Mod): a scope on it earns achEMP.
         if w.has_scope && crate::tnmmode::active() && crate::classtree::is_a(class, "WeaponLaser") {
             crate::tnmach::unlock("achEMP");

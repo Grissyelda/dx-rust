@@ -220,6 +220,16 @@ impl Body {
         let tnm_rules = self.tnm.is_some() && !self.animal;
         if tnm_rules {
             dmg *= crate::tnmpawn::modify(dt, stunned, off.x < 0.0, hit.attacker_pos.distance(center));
+            // Legendary mode: the player's weapon (Assassin's / Valiant / Ruthless / Focused), and a pawn made
+            // legendary by its own weapon shrugs part of it off.
+            if hit.attacker.is_none() && !hit.world {
+                dmg *= crate::legendary::handle_mult(crate::legendary::held(), off.x as f32, (off.z as f32) < (self.height as f32) * 0.7, crate::legendary::player_crouched());
+            }
+            if let Some(t) = &self.tnm {
+                if t.legendary_count > 0 && dmg > 0.0 {
+                    dmg = (dmg * crate::legendary::pawn_resist(t.legendary_count)).max(1.0);
+                }
+            }
         } else if stunned {
             dmg *= 4.0;
         } else if off.x < 0.0 && hit.attacker_pos.distance(center) < 64.0 {

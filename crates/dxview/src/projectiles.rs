@@ -36,6 +36,8 @@ pub struct Launch {
     pub speed: Option<f64>,
     /// Spawned with no owner (ProjectileGenerator): it can hurt the player.
     pub ownerless: bool,
+    /// The Nameless Mod's Legendary mode: the attributes of the weapon that fired it (legendary.rs).
+    pub legendary: u64,
 }
 
 /// Lingering gas clouds to spawn (SpawnTearGas): (where, DrawScale, LifeSpan).
@@ -99,6 +101,8 @@ pub struct Projectile {
     pub trail: Option<u64>,
     /// GMDX Blast Energy: a plasma rifle bolt of the player's whose blast reaches further out.
     pub blast_energy: bool,
+    /// Legendary attributes of the weapon that fired it.
+    pub legendary: u64,
 }
 
 impl Projectile {
@@ -106,9 +110,12 @@ impl Projectile {
     /// rings): each ring at 0.75 and one more flat ring of half Damage over the whole radius, so the middle stays
     /// about the same and the edge takes much more.
     fn booms(&self, at: DVec3, r: f64) -> Vec<crate::explosion::Boom> {
+        // Legendary: Intense projectiles blast twice as far, Penetrative ones twice as hard.
+        let r = if crate::legendary::has(self.legendary, crate::legendary::att::INTENSE) { r * 2.0 } else { r };
+        let pen = if crate::legendary::has(self.legendary, crate::legendary::att::PENETRATIVE) { 2.0 } else { 1.0 };
         let mut v = vec![crate::explosion::Boom { world: false,
             pos: at,
-            damage: if self.blast_energy { self.damage * 0.75 } else { self.damage },
+            damage: pen * if self.blast_energy { self.damage * 0.75 } else { self.damage },
             radius: r,
             damage_type: self.damage_type,
             from: self.from,
@@ -231,8 +238,7 @@ pub fn launch_system(
             track: None,
             track_at: None,
             speed: None,
-            ownerless: false,
-        })
+            ownerless: false, legendary: 0 })
         .collect();
     // Multiplayer: what the others launched flies here too, harmlessly (`ghost`); what is launched here, they see.
     let mut ghosts: Vec<Launch> = crate::netplay::take_ghosts()
@@ -249,8 +255,7 @@ pub fn launch_system(
             track: None,
             track_at: None,
             speed,
-            ownerless: true,
-        })
+            ownerless: true, legendary: 0 })
         .collect();
     ghosts.extend(HARMLESS_CLOUDS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default().into_iter().map(|(pos, scale, life)| Launch {
         class: "TearGas".into(),
@@ -264,8 +269,7 @@ pub fn launch_system(
         track: None,
         track_at: None,
         speed: None,
-        ownerless: true,
-    }));
+        ownerless: true, legendary: 0 }));
     let n_own = launches.0.len() + gas.len();
     for (k, l) in launches.0.drain(..).chain(gas).chain(ghosts).enumerate() {
         let ghost = k >= n_own;
@@ -300,6 +304,7 @@ pub fn launch_system(
             0.0
         } else {
             l.speed.unwrap_or(f("speed", 2000.0) as f64)
+                * if crate::legendary::has(l.legendary, crate::legendary::att::SWIFT) { 2.0 } else { 1.0 }
         };
         let damage = f("Damage", 10.0) * l.mult;
         let mut damage_type = match find(&d, "DamageType") {
@@ -526,6 +531,7 @@ pub fn launch_system(
             damage_type,
             from: l.from,
             ownerless: l.still || l.ownerless,
+            legendary: l.legendary,
             life: l.life.unwrap_or(f("LifeSpan", 60.0)).max(1.0),
             stuck: false,
             stick: stick
@@ -863,13 +869,29 @@ pub fn projectile_system(
                 let a = &lvl.actors[blockers.list[b].actor];
                 if find(&a.props, "GroundSpeed").is_some() {
                     if !ghost {
+                        let from_at = at - p.vel.normalize_or_zero() * 64.0;
+                        let mut dmg = p.damage;
+                        if p.legendary != 0 {
+                            // uc: TNMProjectile.ProcessTouch
+                            let t = crate::legendary::Target {
+                                class: &a.class,
+                                robot: find(&a.props, "EMPHitPoints").is_some(),
+                                augmented: matches!(find(&a.props, "bAugmented"), Some(Value::Bool(true))),
+                                health: None,
+                            };
+                            let s = if p.from.is_none() { crate::legendary::player() } else { crate::legendary::Shooter::default() };
+                            if crate::legendary::pinpoint(p.legendary) {
+                                pawn_hits.0.push(crate::damage::PawnHit { world: false, blocker: b, damage: 1.0, damage_type: "headstun", hit_loc: at, attacker: p.from, attacker_pos: from_at });
+                            }
+                            dmg *= crate::legendary::target_mult(p.legendary, &t, s);
+                        }
                         pawn_hits.0.push(crate::damage::PawnHit { world: false,
                             blocker: b,
-                            damage: p.damage,
+                            damage: dmg,
                             damage_type: p.damage_type,
                             hit_loc: at,
                             attacker: p.from,
-                            attacker_pos: at - p.vel.normalize_or_zero() * 64.0,
+                            attacker_pos: from_at,
                         });
                     }
                     if p.bleed {

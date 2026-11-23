@@ -64,6 +64,8 @@ pub struct Trash {
 }
 
 struct FlyGen {
+    /// The pawn class it makes (Fly; The Nameless Mod's MothGenerator makes Moths).
+    class: String,
     pos: DVec3,
     active_area: f64,
     radius: f64,
@@ -218,6 +220,24 @@ pub fn trash_system(
                 ));
                 st.yaw_dirs.push(DVec3::new(yaw.cos(), yaw.sin(), 0.0));
             }
+            // The Nameless Mod's MothGenerator: a placed PawnGenerator of Moths (a TNMFly); it stops in water.
+            // uc: MothGenerator.ZoneChange
+            if a.class.eq_ignore_ascii_case("MothGenerator") && crate::tnmmode::active() {
+                let pool = crate::critters::pool_count(&a.props);
+                let max = fprop(&a.props, "MaxCount", 0.0) as usize;
+                st.flies.push(FlyGen {
+                    class: "Moth".into(),
+                    pos,
+                    active_area: fprop(&a.props, "ActiveArea", 700.0),
+                    radius: fprop(&a.props, "Radius", 50.0),
+                    max: if max == 0 { pool } else { max },
+                    pool,
+                    flies: Vec::new(),
+                    try_timer: 0.0,
+                    stopped: crate::critters::in_water(lvl, pos),
+                    burst: 0,
+                });
+            }
             // DeusExDecoration.BeginPlay: 10% of fly-generating decorations get flies.
             if flag(&a.props, "bGenerateFlies") && a.class != "FlyGenerator" && st.rand() < 0.1 {
                 let d = assets.classes.defaults("FlyGenerator");
@@ -228,6 +248,7 @@ pub fn trash_system(
                     _ => 8,
                 };
                 st.flies.push(FlyGen {
+                    class: "Fly".into(),
                     pos,
                     active_area: fprop(&d, "ActiveArea", 700.0),
                     radius: fprop(&d, "Radius", 50.0),
@@ -459,7 +480,7 @@ pub fn trash_system(
         spawn_at.push((gi, at));
     }
     for (gi, at) in spawn_at {
-        let d = assets.classes.defaults("Fly");
+        let d = assets.classes.defaults(&st.flies[gi].class);
         let Some(Value::Path(mesh_path)) = find(&d, "Mesh").cloned() else {
             continue;
         };

@@ -28,6 +28,13 @@ pub fn note(name: &str, handle: &Handle<Image>, t: &dx_level::TextureImage) {
     }
 }
 
+/// A ScriptedTexture drawn on this level: its image and size.
+pub fn level_texture(name: &str) -> Option<(Handle<Image>, u32, u32)> {
+    let g = LEVEL_TEX.lock().ok()?;
+    let (h, w, ht, _) = g.as_ref()?.get(&name.to_ascii_lowercase())?;
+    Some((h.clone(), *w, *ht))
+}
+
 pub fn reset_level() {
     if let Ok(mut g) = LEVEL_TEX.lock() {
         *g = None;
