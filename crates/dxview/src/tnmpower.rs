@@ -53,11 +53,9 @@ pub fn is_powerup(class: &str) -> bool {
 
 /// Damage multiplier for everything the player's weapons do.
 pub fn damage_mult() -> f32 {
-    if POWERS.lock().is_ok_and(|p| p.quad > 0.0) {
-        4.0
-    } else {
-        1.0
-    }
+    // Trestkon.bQuadDamage x4 and bDoubleDamage (the DuoDamage pickup) x2, together x8 (TNMWeapon.ProcessTraceHit).
+    let quad = if POWERS.lock().is_ok_and(|p| p.quad > 0.0) { 4.0 } else { 1.0 };
+    quad * if crate::tnmitems::double_damage() { 2.0 } else { 1.0 }
 }
 
 /// The ring is on: no pawn, camera or turret sees the player.

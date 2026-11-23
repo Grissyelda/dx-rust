@@ -81,6 +81,8 @@ pub struct PlayerHealth {
     pub drug_timer: f32,
     /// Hazmat suit / ballistic armor running (charged.rs), and the charge readout for the HUD.
     pub hazmat: bool,
+    /// A rebreather is running (ChargedPickupUpdate: the breath timer stays full).
+    pub rebreather: bool,
     pub armor: bool,
     /// Thermoptic camo running: CalculatePlayerVisibility returns 0 for every pawn.
     pub camo: bool,
@@ -115,6 +117,7 @@ impl Default for PlayerHealth {
             poison_damage: 0.0,
             drug_timer: 0.0,
             hazmat: false,
+            rebreather: false,
             armor: false,
             camo: false,
             energy: 100.0,
@@ -229,6 +232,10 @@ impl PlayerHealth {
             }
             if self.hazmat {
                 d *= 0.75 * enviro;
+            }
+            // The Nameless Mod's gas mask: tear gas, poison gas and halon do nothing at all.
+            if crate::tnmitems::gas_mask() && matches!(damage_type, "TearGas" | "PoisonGas" | "HalonGas") {
+                d = 0.0;
             }
         }
         if self.armor && matches!(damage_type, "Shot" | "Sabot" | "Exploded" | "AutoShot") {
@@ -1282,7 +1289,13 @@ impl Npc {
             sitting: false,
             seat: None,
             orders_failed: false,
-            hp_body: crate::damage::Body::new(p).animal(find(p, "FoodHealth").is_some()),
+            hp_body: {
+                let mut b = crate::damage::Body::new(p).animal(find(p, "FoodHealth").is_some());
+                if crate::tnmmode::active() {
+                    b.tnm = Some(crate::tnmpawn::TnmBody::new(p));
+                }
+                b
+            },
             take_hit_timer: 0.0,
             knocked_out: false,
             searched: false,
@@ -4859,7 +4872,7 @@ fn animal_tick(npc: &mut Npc, cx: &ReactCx, player_vel: DVec3, dt: f32) {
         let player_move = (!cx.player_dead).then_some((cx.player_center, player_vel));
         startle_check(npc, lvl, &me, cx.pawns, player_move, dt);
     }
-    if lvl.actors[npc.actor].class == "Rat" && npc.state != NpcState::Dead {
+    if crate::tnmpawn::kind(&lvl.actors[npc.actor].class) == "Rat" && npc.state != NpcState::Dead {
         npc.squeak_timer += dt;
         if npc.squeak_timer > 1.0 {
             npc.squeak_timer = 0.0;
@@ -5778,7 +5791,7 @@ fn lazy_init(npc: &mut Npc, deco: &mut Deco, lvl: &dx_level::Level, assets: &mut
                 blockers.list[npc.blocker].height = npc.params.height;
             }
         }
-        if a.class == "Gray" {
+        if crate::tnmpawn::kind(&a.class) == "Gray" {
             npc.aura = Some((
                 fv(&a.props, "DamageRadius", 256.0) as f64,
                 fv(&a.props, "damageInterval", 1.0),
@@ -7117,7 +7130,7 @@ fn karkian_bump(npc: &mut Npc, cx: &mut ActCx) {
     let ph = &mut *cx.ph;
     // Karkian.Bump: charging into its enemy faster than 100 with the ram (WeaponKarkianBump) out and
     // FireTimer clear hits twice for speed/5 'Shot', then FireTimer = AIFireDelay (8 s of biting).
-    if lvl.actors[npc.actor].class == "Karkian"
+    if crate::tnmpawn::kind(&lvl.actors[npc.actor].class) == "Karkian"
         && npc.target == Some(Target::Player)
         && !ph.dead
         && npc.fire_timer <= 0.0
@@ -7190,7 +7203,7 @@ fn startle_check(npc: &mut Npc, lvl: &dx_level::Level, me: &Cylinder, pawns: &[S
         return;
     }
     npc.startle_timer = 0.0;
-    let rat = lvl.actors[npc.actor].class == "Rat";
+    let rat = crate::tnmpawn::kind(&lvl.actors[npc.actor].class) == "Rat";
     let (t_max, k) = if rat {
         (3.0, 1.5)
     } else if npc.cleaner {
@@ -7470,7 +7483,7 @@ fn fire_weapon(npc: &mut Npc, an: &mut Animated, w: &crate::weapons::WeaponStats
     };
     let fwd = (aim_at - cx.my_eye).normalize_or_zero();
     let player_mod = match npc.target {
-        Some(Target::Player) => crate::smartai::accuracy_mod(cx.player.body.velocity, cx.player.body.physics == Physics::Falling, &w.class),
+        Some(Target::Player) => crate::smartai::accuracy_mod(cx.player.body.velocity, cx.player.body.physics == Physics::Falling, &w.kind),
         _ => 0.0,
     };
     let nightmare = if npc.nightmare { 0.125 } else { 0.0 };
@@ -7980,15 +7993,15 @@ struct HitCx<'a> {
     attackers: &'a mut LastAttacker,
 }
 
-/// Damage taken since last frame (ScriptedPawn.TakeDamage / HandleDamage and the reaction to it): the hits on this
-/// pawn, applied in order. Returns true when the pawn died (or was knocked out) from them.
-/// uc: ScriptedPawn.TakeDamage, ScriptedPawn.TakeDamageBase, ScriptedPawn.FilterDamageType, ScriptedPawn.GotoDisabledState, Robot.TakeDamageBase, Robot.IgnoreDamageType, Animal.ModifyDamage, Animal.GotoDisabledState, Karkian.FilterDamageType, Greasel.FilterDamageType, Gray.FilterDamageType
-#[allow(clippy::too_many_arguments)]
 thread_local! {
     /// A stun glove's blow: how long the pawn it lands on stays stunned (None = the prod's 15 s).
     static FIST_STUN: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
 }
 
+/// Damage taken since last frame (ScriptedPawn.TakeDamage / HandleDamage and the reaction to it): the hits on this
+/// pawn, applied in order. Returns true when the pawn died (or was knocked out) from them.
+/// uc: ScriptedPawn.TakeDamage, ScriptedPawn.TakeDamageBase, ScriptedPawn.FilterDamageType, ScriptedPawn.GotoDisabledState, Robot.TakeDamageBase, Robot.IgnoreDamageType, Animal.ModifyDamage, Animal.GotoDisabledState, Karkian.FilterDamageType, Greasel.FilterDamageType, Gray.FilterDamageType
+#[allow(clippy::too_many_arguments)]
 fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco, an: &mut Animated, aff: &mut Afflictions, cx: &mut HitCx) -> bool {
     let HitCx { lvl, pawns, .. } = *cx;
     let (player_center, now) = (cx.player_center, cx.now);
@@ -8016,6 +8029,23 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
             // people a knock-out blow too; ban gloves remove the pawn (deviation: BanInfo's effect isn't ported, the
             // body is blown apart instead).
             FIST_STUN.with(|c| c.set(None));
+            if let Some(t) = npc.hp_body.tnm.as_mut() {
+                let original = h.damage_type;
+                let mut banned = false;
+                let (robot, health) = (npc.hp_body.robot, npc.hp_body.max_health);
+                if matches!(crate::tnmpawn::pre_hit(&mut h, t, robot, health, now as f64, &mut banned), crate::tnmpawn::Pre::Skip) {
+                    continue;
+                }
+                if banned && !robot {
+                    crate::tnmban::start(npc.blocker);
+                }
+                if original == "Fat" && h.damage_type == "Exploded" && h.attacker.is_none() && !h.world {
+                    crate::tnmach::unlock("achPHAT");
+                }
+                if let Some(s) = crate::tnmpawn::stun_secs(original) {
+                    FIST_STUN.with(|c| c.set(Some(s)));
+                }
+            }
             match h.damage_type {
                 "FistStunned" => {
                     if !npc.animal {
@@ -8046,13 +8076,15 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
             }
             // FilterDamageType overrides: Karkians, Greasels and Grays shrug off gas; Grays also radiation and
             // fire. Animal.ModifyDamage zeroes 'Stunned' (prods don't work on animals).
-            let cls = lvl.actors[npc.actor].class.as_str();
-            if matches!(cls, "Karkian" | "KarkianBaby" | "Greasel" | "Gray")
+            let cls = crate::tnmpawn::kind(lvl.actors[npc.actor].class.as_str());
+            if matches!(cls, "Karkian" | "KarkianBaby" | "Greasel" | "Gray" | "Alien")
                 && matches!(h.damage_type, "TearGas" | "HalonGas" | "PoisonGas")
             {
                 continue;
             }
-            if cls == "Gray" && matches!(h.damage_type, "Radiation" | "Flamed" | "Burned") {
+            if (cls == "Gray" && matches!(h.damage_type, "Radiation" | "Flamed" | "Burned"))
+                || (cls == "Alien" && matches!(h.damage_type, "Radiation" | "Flamed"))
+            {
                 continue;
             }
             if npc.animal && h.damage_type == "Stunned" {
@@ -8639,7 +8671,7 @@ fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate:
                     // GMDX Piercing: 1.3 s with a hand-to-hand weapon in the player's hand
                     // (Grays and Karkians are slower to flinch there, so they keep 2).
                     let tough = matches!(
-                        lvl.actors[npc.actor].class.as_str(),
+                        crate::tnmpawn::kind(lvl.actors[npc.actor].class.as_str()),
                         "Gray" | "Karkian" | "KarkianBaby"
                     );
                     npc.take_hit_timer = crate::perks::flinch_time()

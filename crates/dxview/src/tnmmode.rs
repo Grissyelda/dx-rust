@@ -74,6 +74,25 @@ pub fn speed_system(mut time: ResMut<Time<Virtual>>, mut last: Local<f32>) {
     }
 }
 
+/// The Nameless Mod's classes that only restate an original class (another window class, a range check, a
+/// look direction): listed in a map under the original's name.
+// uc: GuardPoint.PreBeginPlay, TNMKeypad.ActivateKeypadWindow, RangelessParticleGenerator.Tick, GravLiftEffects.Tick
+const CLASS_ALIASES: [(&str, &str); 13] = [
+    ("GuardPoint", "PatrolPoint"),
+    ("RangelessParticleGenerator", "ParticleGenerator"),
+    ("RangelessWaterDrips", "ParticleGenerator"),
+    ("GravLiftEffects", "ParticleGenerator"),
+    ("TNM_RepairBot", "RepairBot"),
+    ("TNM_Medbot", "MedicalBot"),
+    ("TNMKeypad1", "Keypad1"),
+    ("TNMKeypad2", "Keypad2"),
+    ("TNMKeypad3", "Keypad3"),
+    ("WCKeypad1", "Keypad1"),
+    ("WCKeypad2", "Keypad2"),
+    ("WCKeypad3", "Keypad3"),
+    ("MelkZone", "WaterZone"),
+];
+
 /// Before a map is built: The Nameless Mod's enemy / item appearance level for this playthrough, from the
 /// difficulty picked (its Easy / Medium / Hard set both to 0 / 1 / 2; Realistic counts as Hard). Off outside TNM.
 pub fn before_load() {
@@ -90,6 +109,12 @@ pub fn before_load() {
         }
     });
     dx_level::actors::set_difficulty_filter(f);
+    // The mod's thin subclasses answer to the original classes they copy (dx_level::alias).
+    dx_level::alias::set(if active() {
+        CLASS_ALIASES.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    } else {
+        Vec::new()
+    });
     let radish = active() || env_on!("DXVIEW_RADISH");
     dx_level::actors::set_level_fixups(radish.then(|| Box::new(crate::radish::level_fixup) as dx_level::actors::LevelFixups));
 }
@@ -298,4 +323,23 @@ pub fn player_damage_mult() -> f32 {
         return 1.0;
     }
     difficulty().map_or(1.0, |d| d.pawn_health)
+}
+
+static CREDITS_TEXT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// tnmconplay.creditsText ("Credits:"), read from the mod.
+pub fn credits_text() -> String {
+    CREDITS_TEXT.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+pub fn load_texts(classes: &mut unreal_pkg::classes::ClassDb) {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    if let Some(unreal_pkg::props::Value::Str(v)) = unreal_pkg::props::find(&classes.defaults("tnmconplay"), "creditsText") {
+        if let Ok(mut s) = CREDITS_TEXT.lock() {
+            *s = v.clone();
+        }
+    }
 }

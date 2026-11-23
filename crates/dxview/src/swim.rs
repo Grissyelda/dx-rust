@@ -249,6 +249,10 @@ pub fn swim_system(
             sw.timer = want * pct;
         }
         sw.timer = (sw.timer - dt).max(0.0);
+        // Rebreather.ChargedPickupUpdate: swimTimer = swimDuration while one runs.
+        if ph.rebreather {
+            sw.timer = sw.duration;
+        }
         if sw.timer > 0.0 {
             sw.pain_time = sw.timer;
         }

@@ -251,7 +251,7 @@ pub fn weapon_noise(w: &crate::weapons::WeaponStats, pos: DVec3, who: Target) ->
     if w.silenced || w.hand_to_hand || w.noise_level <= 0.0 {
         return None;
     }
-    let volume = w.noise_level;
+    let volume = w.noise_level * crate::tnmweapon::noise_mult(&w.class, w.ammo_class.as_deref());
     Some(Noise {
         pos,
         volume,

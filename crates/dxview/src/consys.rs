@@ -1206,6 +1206,23 @@ impl ConState {
                 }
             }
         }
+        // The Nameless Mod (tnmdatalinkplay.newinfoLinkNames): its own speakers, each with a portrait texture (or
+        // none: the infolink then shows no picture).
+        if crate::tnmmode::active() {
+            let mut ports = HashMap::new();
+            for p in classes.defaults("tnmdatalinkplay").iter().filter(|p| p.name.eq_ignore_ascii_case("newinfoLinkNames")) {
+                if let Value::Struct(_, b) = &p.value {
+                    let mut r = unreal_pkg::Reader::new(b, 0);
+                    if let (Ok(a), Ok(n), Ok(pt)) = (r.fstring(), r.fstring(), r.fstring()) {
+                        ports.insert(fold(&a), pt);
+                        names.insert(a, n);
+                    }
+                }
+            }
+            if let Ok(mut t) = TNM_PORTRAITS.lock() {
+                *t = ports.into_iter().collect();
+            }
+        }
         let st = |p: &[unreal_pkg::props::Property], n: &str, dflt: &str| match find(p, n) {
             Some(Value::Str(s)) => s.clone(),
             _ => dflt.to_string(),
@@ -1323,7 +1340,8 @@ impl ConState {
     }
 
     fn check_flags(flags: &FlagBase, refs: &[FlagRef]) -> bool {
-        refs.iter().all(|r| flags.get_bool(&r.name) == r.value)
+        // (The Nameless Mod reads some flag names as questions about the game: tnmpawn::flag_set.)
+        refs.iter().all(|r| crate::tnmpawn::flag_set(flags, &r.name) == r.value)
     }
 
     fn played(flags: &FlagBase, name: &str) -> bool {
@@ -1819,9 +1837,37 @@ impl ConState {
                     _ => Ok(label(&l)),
                 }
             }
-            EventKind::Random { labels, .. } => {
+            EventKind::Random { labels, cycle, cycle_once, cycle_random } => {
                 if labels.is_empty() {
                     return Ok(next);
+                }
+                // The Nameless Mod (tnmconplay.SetupEventRandomLabel with bCycleEvents, RandomEventInfoLink.GetLabel):
+                // the labels in order; once through, at random (bCycleRandom), the last one for ever (bCycleOnce),
+                // or from the top again.
+                if cycle && crate::tnmmode::active() {
+                    let at = RANDOM_CYCLES.lock().ok().map(|mut m| {
+                        let at = match m.iter().position(|x| x.0 == (con, ev)) {
+                            Some(p) => p,
+                            None => {
+                                m.push(((con, ev), 0));
+                                m.len() - 1
+                            }
+                        };
+                        let i = &mut m[at].1;
+                        if *i >= labels.len() {
+                            if cycle_random {
+                                return usize::MAX;
+                            } else if cycle_once {
+                                return labels.len() - 1;
+                            }
+                            *i = 0;
+                        }
+                        *i += 1;
+                        *i - 1
+                    });
+                    if let Some(k) = at.filter(|&k| k != usize::MAX) {
+                        return Ok(label(&labels[k]));
+                    }
                 }
                 let k = ((sfrand() * labels.len() as f32) as usize).min(labels.len() - 1);
                 Ok(label(&labels[k]))
@@ -1872,6 +1918,10 @@ impl ConState {
                             0.0,
                         );
                     }
+                    // The Nameless Mod (tnmconplay.SetupEventAddGoal): a goal already held gets the new text; one
+                    // completed before it was ever given is recorded as done.
+                    (Some(i), false) if crate::tnmmode::active() => self.goals[i].text = text,
+                    (None, true) if crate::tnmmode::active() => self.goals.insert(0, Goal { name, text, primary, completed: true }),
                     _ => {}
                 }
                 Ok(next)
@@ -2328,6 +2378,11 @@ impl ConState {
         }
         self.last_con_end.insert(p.invoke, self.time);
         println!("CONVERSATION {} ended", c.name);
+        // The Nameless Mod (tnmconplay.PostTerminateConversation): triggers tagged "<conversation>_Stopped" fire
+        // unless the conversation was interrupted.
+        if crate::tnmmode::active() && !flags.get_bool(&format!("{}_Interrupted", c.name)) {
+            self.events.push((format!("{}_Stopped", c.name), true));
+        }
         // EndConversation -> ResumeDataLinks.
         if let Some(l) = self.link.as_mut() {
             if l.phase == LinkPhase::Held {
@@ -2390,9 +2445,21 @@ impl ConState {
                             l.text = text.clone();
                             l.typed = 0.0;
                             l.name = display.clone();
-                            let portrait = crate::travel::portrait(&speaker);
-                            l.portrait = Some(portrait);
-                            l.show_portrait = true;
+                            if crate::tnmmode::active() {
+                                // tnmdatalinkplay.SetupEventSpeech: the speaker's own portrait, or none.
+                                let key = fold(&speaker);
+                                let pt = TNM_PORTRAITS
+                                    .lock()
+                                    .ok()
+                                    .and_then(|t| t.iter().find(|x| x.0 == key).map(|x| x.1.clone()))
+                                    .filter(|p| !p.is_empty());
+                                l.show_portrait = pt.is_some();
+                                l.portrait = pt;
+                            } else {
+                                let portrait = crate::travel::portrait(&speaker);
+                                l.portrait = Some(portrait);
+                                l.show_portrait = true;
+                            }
                             l.show_icon = false;
                             l.last_len = text.chars().count();
                         }
@@ -2602,9 +2669,20 @@ fn wav_seconds(b: &[u8]) -> Option<f32> {
 }
 /// Actors the player can see this frame (CanActorSeePlayer), filled by the update.
 static SIGHT: Mutex<Vec<Who>> = Mutex::new(Vec::new());
+/// The Nameless Mod's infolink portraits by (folded) speaker bind name.
+static TNM_PORTRAITS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// The Nameless Mod's cycling random labels: how far each (conversation, event) has got. Lasts the session
+/// (Trestkon.randoms isn't a travel variable either).
+static RANDOM_CYCLES: Mutex<Vec<((usize, usize), usize)>> = Mutex::new(Vec::new());
 /// Inventory classes the player carries (for CheckObject), refreshed each frame.
 static HAS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static HAS_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PLAYER_CREDITS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// The player's credits as of this frame (the conversation window shows them in The Nameless Mod).
+pub fn player_credits() -> i64 {
+    PLAYER_CREDITS.load(std::sync::atomic::Ordering::Relaxed)
+}
 /// Credits added by conversations, applied to the inventory by the update.
 static CREDITS: Mutex<i32> = Mutex::new(0);
 /// Infolinks finished this frame (their _Played flag is set by the update, which holds the flags).
@@ -3013,6 +3091,7 @@ pub fn consys_system(
         }
         h.finish()
     };
+    PLAYER_CREDITS.store(inv.0.credits as i64, std::sync::atomic::Ordering::Relaxed);
     if HAS_SIG.swap(has_sig, std::sync::atomic::Ordering::Relaxed) != has_sig {
         if let Ok(mut has) = HAS.lock() {
             has.clear();

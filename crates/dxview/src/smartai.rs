@@ -532,7 +532,7 @@ pub fn grenade_kind(class: &str) -> (&'static str, f32) {
 pub fn nade_chance(npc: &Npc) -> f32 {
     let mut m = 0.0;
     if npc.weapon.as_ref().is_some_and(|w| {
-        matches!(w.class.as_str(), "WeaponFlamethrower" | "WeaponMiniCrossbow" | "WeaponSawedOffShotgun" | "WeaponAssaultShotgun")
+        matches!(w.kind.as_str(), "WeaponFlamethrower" | "WeaponMiniCrossbow" | "WeaponSawedOffShotgun" | "WeaponAssaultShotgun")
     }) {
         m = 0.015;
     }
@@ -668,7 +668,7 @@ pub fn combat_tick(npc: &mut Npc, class: &str, seen: bool, target_is_player: boo
     let weapon = npc.weapon.clone();
     let (wclass, skill, crossbow) = weapon
         .as_ref()
-        .map(|w| (w.class.as_str(), w.governing_skill.as_deref().unwrap_or_default(), w.class == "WeaponMiniCrossbow"))
+        .map(|w| (w.kind.as_str(), w.governing_skill.as_deref().unwrap_or_default(), w.kind == "WeaponMiniCrossbow"))
         .unwrap_or_default();
     // Sight of the enemy flickers (a doorway, cover, the 0.1 s sight checks): only losing it for half a second
     // counts as losing it. Restarting the react time on every flicker left a pawn staring without ever firing.
@@ -704,7 +704,7 @@ pub fn attack_started(npc: &mut Npc, class: &str) {
     if !on() {
         return;
     }
-    let (wclass, skill) = npc.weapon.as_ref().map(|w| (w.class.clone(), w.governing_skill.clone().unwrap_or_default())).unwrap_or_default();
+    let (wclass, skill) = npc.weapon.as_ref().map(|w| (w.kind.clone(), w.governing_skill.clone().unwrap_or_default())).unwrap_or_default();
     npc.smart.react_left = fire_react_time(class, &wclass, &skill);
     npc.smart.spotted = false;
     npc.smart.sfire = 0.0;

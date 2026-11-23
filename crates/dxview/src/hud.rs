@@ -91,6 +91,14 @@ pub struct Bracket {
 /// Bracket corner length in pixels (AugmentationDisplayWindow.corner).
 const CORNER: f32 = 9.0;
 
+/// Standing time shots took back (ms), applied by aim_system.
+static BLOOM: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The Nameless Mod: a shot takes `secs` off the standing timer.
+pub fn shot_bloom(secs: f32) {
+    BLOOM.fetch_add((secs * 1000.0) as u32, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Update the standing timer and accuracy every frame, like DeusExWeapon.Tick.
 pub fn aim_system(
     time: Res<Time>,
@@ -123,14 +131,29 @@ pub fn aim_system(
             Some(v) if skill_of("SkillWeaponRifle") => 1.0 + v,
             _ => 1.0,
         };
-        aim.standing += dt * mult;
+        if crate::tnmmode::active() {
+            // TNMWeapon.Tick: 1.2 x real time up to 8 s, and not while reloading.
+            if aim.standing < crate::tnmweapon::STAND_CAP && h.state != WState::Reloading {
+                aim.standing += crate::tnmweapon::STAND_GROW * dt;
+            }
+        } else {
+            aim.standing += dt * mult;
+        }
+    } else if crate::tnmmode::active() {
+        aim.standing = (aim.standing - crate::tnmweapon::STAND_MOVE * dt * speed).max(0.0);
     } else {
         aim.standing = (aim.standing - 0.03 * dt * speed).max(0.0);
+    }
+    // TNMWeapon.Fire: shots since last frame took standing time back.
+    let bloom = BLOOM.swap(0, std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+    if bloom > 0.0 {
+        aim.standing = (aim.standing - bloom).max(0.0);
     }
     let skill = h.stats.skill;
     // Wounded arms and head make aiming worse.
     let ambidextrous = skill_of("SkillWeaponPistol") && crate::perks::has("PerkAmbidextrous");
     let mut acc = h.stats.base_accuracy + skill + ph.accuracy_penalty_with(ambidextrous);
+    acc += crate::tnmweapon::accuracy_add(&h.stats.class, zoom.0.is_some() || h.lasing);
     let before = acc;
     if aim.standing > 0.0 {
         let div = (15.0 + 29.0 * skill).max(0.0);
@@ -150,8 +173,11 @@ pub fn aim_system(
         return;
     }
     // TraceFire: an unused scope costs 0.2.
+    // (The Nameless Mod's TraceFire has no such cost.)
     if h.stats.has_scope && zoom.0.is_none() {
-        acc += 0.2;
+        if !crate::tnmmode::active() {
+            acc += 0.2;
+        }
     } else if h.stats.has_scope {
         // Zoomed in: the shot goes where the (swaying) scope points.
         acc = 0.0;

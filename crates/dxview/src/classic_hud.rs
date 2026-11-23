@@ -3137,7 +3137,7 @@ fn slot_text(
                     .unwrap_or_default();
             }
             if matches!(
-                class.as_str(),
+                crate::tnmweapon::canon(class.as_str()),
                 "WeaponNanoVirusGrenade" | "WeaponGasGrenade" | "WeaponEMPGrenade" | "WeaponLAM"
             ) {
                 let n = hud_ammo(inv, &ammo_name, it);

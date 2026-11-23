@@ -37,13 +37,15 @@ pub fn is_charged(class: &str) -> bool {
     matches!(
         class,
         "HazMatSuit" | "BallisticArmor" | "Rebreather" | "TechGoggles" | "AdaptiveArmor"
-    )
+    ) || crate::tnmitems::is_charged(class)
 }
 
 impl ActiveCharged {
     /// Turn one on. Returns false if one of that kind is already running.
     pub fn activate(&mut self, class: &str, defaults: &[unreal_pkg::props::Property]) -> bool {
         use unreal_pkg::props::{find, Value};
+        // (The Nameless Mod's own charged pickups under one spelling.)
+        let class = if crate::tnmitems::is_charged(class) { crate::tnmitems::charged_name(class) } else { class };
         if self.0.iter().any(|c| c.class == class) {
             return false;
         }
@@ -205,6 +207,10 @@ pub fn charged_system(
     ph.hazmat = active.has("HazMatSuit");
     ph.armor = active.has("BallisticArmor");
     ph.camo = active.has("AdaptiveArmor");
+    ph.rebreather = active.has("Rebreather");
+    if crate::tnmmode::active() {
+        crate::tnmitems::set_running(active.has("GasMask"), active.has("DuoDamage"), active.has("LollerSkates"), &mut ph);
+    }
 
     // Tech goggles: the light-amplification box covers the middle half of the screen.
     // AugVision (Vision Enhancement) draws the same light-amplification box (DrawVisionAugmentation, level 0).

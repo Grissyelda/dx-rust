@@ -935,7 +935,10 @@ fn dev_goto(world: &mut World) {
                     if let Some(b) = b {
                         if crate::fixtures::is_fixture(&class) {
                             crate::fixtures::frob(b);
-                        } else if crate::classtree::is_a(&class, "InformationDevices") || crate::classtree::is_a(&class, "TNMInformationDevices") {
+                        } else if crate::classtree::is_a(&class, "InformationDevices")
+                            || crate::classtree::is_a(&class, "TNMInformationDevices")
+                            || crate::devices::is_reader(&class)
+                        {
                             // Readables go through the player's frob (pickups.rs) with this one as the target.
                             *crate::pickups::FORCE_DEVICE.lock().unwrap() = Some(b);
                             world.resource_mut::<crate::pickups::FrobRequest>().0 = true;

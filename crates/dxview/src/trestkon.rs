@@ -345,6 +345,8 @@ pub fn kit_system(
         return;
     }
     crate::tnmach::load(&mut assets.classes);
+    crate::tnmpawn::load(&mut assets.classes);
+    crate::tnmmode::load_texts(&mut assets.classes);
     // TrestkonTick: credits_diff = Credits - CreditsPrev, counted when it rose.
     {
         let mut g = lock();

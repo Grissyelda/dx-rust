@@ -115,7 +115,7 @@ pub fn item_def(class: &str, p: &[Property]) -> ItemDef {
             max_copies: if matches!(find(p, "bCanHaveMultipleCopies"), Some(Value::Bool(true))) {
                 match i(p, "maxCopies") {
                     // GMDX Combat Medic's Bag: PerkValue (5) more medkits and bio cells.
-                    Some(n) if n > 0 && matches!(class, "MedKit" | "BioelectricCell") => {
+                    Some(n) if n > 0 && matches!(crate::tnmitems::canon(class), "MedKit" | "BioelectricCell") => {
                         n as u32 + crate::perks::value_if("PerkCombatMedicsBag").unwrap_or(0.0) as u32
                     }
                     Some(n) if n > 0 => n as u32,
@@ -910,7 +910,8 @@ fn take_pickup(
         true
     } else if copies == 1
         && setting!("FloorConsumables") > 0.5
-        && matches!(class, "MedKit" | "BioelectricCell" | "Candybar" | "Sodacan" | "SoyFood" | "Liquor40oz" | "WineBottle" | "Cigarettes")
+        && (matches!(crate::tnmitems::canon(class), "MedKit" | "BioelectricCell" | "Candybar" | "Sodacan" | "SoyFood" | "Liquor40oz" | "WineBottle" | "Cigarettes")
+            || (crate::tnmmode::active() && matches!(class, "Beans" | "KetchupBar" | "PlasticCoffee" | "PlasticCoffeeDecaf")))
     {
         // Ours: no room for it, so use it where it lies.
         *floor_use = Some(class.to_string());
@@ -1405,6 +1406,23 @@ fn frob_device(
     if crate::fixtures::is_fixture(&a.class) {
         crate::fixtures::frob(b);
         crate::netplay::frob_fixture(blockers.list[b].actor);
+    }
+    if tool.is_none() && crate::devices::is_reader(&a.class) {
+        let d = cx.assets.classes.defaults("Trestkon");
+        let t = |n: &str| match find(&d, n) {
+            Some(unreal_pkg::props::Value::Str(v)) => v.clone(),
+            _ => String::new(),
+        };
+        let texts = [
+            t("querypurchasewindowtitle"),
+            t("querypurchasewindowtext"),
+            t("purchasedmessage"),
+            t("notpurchasedmessage"),
+            t("cantpurchasemessage"),
+        ];
+        let alarm_off = crate::tnmach::shop_alarm_off();
+        crate::devices::frob_reader(b, &a.props, texts, alarm_off, hacking, events);
+        return;
     }
     if let Some(msg) =
         crate::devices::frob_device(b, &a.props, &a.class, tool, hacking, events)

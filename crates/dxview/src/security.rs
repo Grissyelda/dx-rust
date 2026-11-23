@@ -373,6 +373,8 @@ struct Turret {
     muzzle: Option<Skin>,
     gone: bool,
     seed: u64,
+    /// The Nameless Mod's tnmLaserAutoTurret: a burning beam instead of bullets.
+    laser: bool,
     /// The lens shown (netplay::LENS_*) and shots fired (wrapping), for the joiners.
     net_lens: u8,
     shots: u8,
@@ -466,6 +468,9 @@ struct Laser {
     gone: bool,
     /// BeamTrigger: a blue beam that triggers Event (once with bTriggerOnceOnly) instead of an alarm.
     beam: Option<BeamEvent>,
+    /// The Nameless Mod's TripProj (a tranquilizer trip mine): its beam poisons who crosses it - (charge left,
+    /// cool-down). No alarm.
+    trip: Option<(i32, f32)>,
 }
 
 struct BeamEvent {
@@ -2002,6 +2007,9 @@ fn turret_turn_and_fire(
 /// breaking it does, beam visuals, hum / klaxon and the alarm.
 /// uc: LaserTrigger.Tick, BeamTrigger.Tick
 #[allow(clippy::too_many_arguments)]
+/// Pawns a trip mine's beam poisoned this frame (None = the player), applied by tnmworld::trip_system.
+pub static TRIP_HITS: std::sync::Mutex<Vec<Option<usize>>> = std::sync::Mutex::new(Vec::new());
+
 fn laser_tick(
     l: &mut Laser,
     cx: &mut DevCx,
@@ -2066,7 +2074,31 @@ fn laser_tick(
         // LaserTrigger / BeamTrigger.Tick return while bConfused, before any check: the flickering beam is only
         // drawn and trips nothing until the EMP wears off (GitHub issue #61 - it set the alarm off).
         let hit_now = if l.confused { None } else { hit_now };
-        if !view_only {
+        if let Some((charge, cool)) = l.trip.as_mut() {
+            // TripProj.Tick: 5 'Poison' to the pawn in the beam each time it has cooled (cooltime 0.05 s), one
+            // charge a time; out of charge it switches off for good.
+            *cool -= dt;
+            if !view_only && *cool <= 0.0 {
+                let pawn = match hit_now {
+                    Some(Broke::Player) => true,
+                    Some(Broke::Blocker(b)) => find(&cx.lvl.actors[cx.blockers.list[b].actor].props, "GroundSpeed").is_some(),
+                    None => false,
+                };
+                if pawn {
+                    *cool = 0.05;
+                    *charge -= 1;
+                    if let Ok(mut q) = TRIP_HITS.lock() {
+                        q.push(match hit_now {
+                            Some(Broke::Blocker(b)) => Some(b),
+                            _ => None,
+                        });
+                    }
+                    if *charge < 0 {
+                        l.on = false;
+                    }
+                }
+            }
+        } else if !view_only {
             laser_broken(l, cx, ph, hit_now);
         }
         l.last_hit = hit_now;
@@ -2428,13 +2460,19 @@ fn fire(
     }
     let at = start + (end - start) * f;
     // A shell casing out of the side, PistolFire, the muzzle flash (0.1 s), and noise.
-    let side = rotator_axes([0, (t.rot.1 - 16384.0).round() as i32, 0]);
-    shells.0.push((
-        "ShellCasing",
-        start,
-        DVec3::new(side[0][0] as f64, side[0][1] as f64, side[0][2] as f64) * 100.0,
-    ));
-    crate::sound::play("DeusExSounds.Weapons.PistolFire", start, 1.0, 1600.0, 1.0);
+    // (tnmLaserAutoTurret.Fire: no casing, LaserFire, a blue beam for laserDuration - drawn as a tracer along it.)
+    if t.laser {
+        crate::sound::play("TNM.Weapons.LaserFire", start, 1.0, 1600.0, 1.0);
+        crate::impacts::tracer(start, end, at);
+    } else {
+        let side = rotator_axes([0, (t.rot.1 - 16384.0).round() as i32, 0]);
+        shells.0.push((
+            "ShellCasing",
+            start,
+            DVec3::new(side[0][0] as f64, side[0][1] as f64, side[0][2] as f64) * 100.0,
+        ));
+        crate::sound::play("DeusExSounds.Weapons.PistolFire", start, 1.0, 1600.0, 1.0);
+    }
     noises.0.push(crate::stealth::Noise {
         pos: start,
         volume: 1.0,
@@ -2448,7 +2486,7 @@ fn fire(
         println!("TURRET fire at {:.0?} player_hit={} frac={:.3}", at, player_hit, f);
     }
     // A tracer half the time (when the shot goes more than 250 units).
-    if rnd(&mut t.seed) < 0.5 {
+    if !t.laser && rnd(&mut t.seed) < 0.5 {
         crate::impacts::tracer(start, end, at);
     }
     let dir = (end - start).normalize_or_zero();
@@ -2459,7 +2497,7 @@ fn fire(
         } else {
             crate::living::hurt_by_staff();
         }
-        ph.damage(t.damage, "AutoShot", crate::ai::player_offset(player_cyl.center, player_yaw, at));
+        ph.damage(t.damage, if t.laser { "Burned" } else { "AutoShot" }, crate::ai::player_offset(player_cyl.center, player_yaw, at));
         // A spark where it hits and the player bleeds (SpawnBlood: pawns that aren't robots).
         crate::impacts::spark(at, -dir);
         blood.0.push((at - dir, dir));
@@ -2509,7 +2547,7 @@ fn fire(
                 pawn_hits.0.push(crate::damage::PawnHit { world,
                     blocker: b,
                     damage: t.damage,
-                    damage_type: "AutoShot",
+                    damage_type: if t.laser { "Burned" } else { "AutoShot" },
                     hit_loc: at,
                     attacker,
                     attacker_pos: start,
@@ -2589,9 +2627,18 @@ fn init(
                 st.cams.push(cam);
             }
             "AutoTurret" => new_guns.push((i, "AutoTurretGun")),
+            // The Nameless Mod (tnmLaserAutoTurret.PreBeginPlay: its own gun class).
+            c if crate::tnmmode::active() && c.eq_ignore_ascii_case("tnmLaserAutoTurret") => new_guns.push((i, "tnmLaserAutoTurretGun")),
             "AutoTurretSmall" => new_guns.push((i, "AutoTurretGunSmall")),
             "LaserTrigger" | "BeamTrigger" => {
                 let laser = new_laser(i, &class, &p, alarms, &mesh_entity);
+                st.lasers.push(laser);
+            }
+            // The Nameless Mod's placed trip mines (TripProj.Tick: a beam along its facing).
+            c if crate::tnmmode::active() && c.eq_ignore_ascii_case("TripProj") => {
+                let mut laser = new_laser(i, "LaserTrigger", &p, alarms, &mesh_entity);
+                laser.no_alarm = true;
+                laser.trip = Some((fv(&p, "Charge", 15.0) as i32, 0.0));
                 st.lasers.push(laser);
             }
             _ => {}
@@ -2605,6 +2652,7 @@ fn init(
             continue;
         };
         let mut turret = new_turret(i, &p, gun, &by_actor, blockers);
+        turret.laser = gun_class == "tnmLaserAutoTurretGun";
         if crate::deathmatch::classic() && crate::deathmatch::versus() && crate::deathmatch::is_dm_map(&lvl.name) {
             mp_turret_setup(&mut turret, &lvl.actors[i].class);
         }
@@ -2759,6 +2807,7 @@ fn new_laser(i: usize, class: &str, p: &[Property], alarms: &mut Alarms, mesh_en
         seek: pos,
         gone: false,
         beam,
+        trip: None,
     }
 }
 
@@ -2929,6 +2978,7 @@ fn new_turret(i: usize, p: &[Property], gun: GunSpawn, by_actor: &HashMap<usize,
         muzzle: None,
         gone: false,
         seed,
+        laser: false,
         net_lens: 0,
         shots: 0,
         mp_safe: None,

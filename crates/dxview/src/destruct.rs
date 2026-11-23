@@ -869,7 +869,8 @@ pub struct Shells(pub Vec<(&'static str, DVec3, DVec3)>);
 /// DeusExAmmo.UseAmmo for bullet ammo: a shell casing pops out sideways from the shooter at chest height.
 pub fn shell_for(ammo: Option<&str>, silenced: bool) -> Option<&'static str> {
     match ammo? {
-        "Ammo10mm" | "Ammo762mm" | "Ammo3006" => Some(if silenced {
+        // (Ammo45 / AmmoMaleDeath: The Nameless Mod's pistol rounds throw the same casing.)
+        "Ammo10mm" | "Ammo762mm" | "Ammo3006" | "Ammo45" | "AmmoMaleDeath" => Some(if silenced {
             "ShellCasingSilent"
         } else {
             "ShellCasing"

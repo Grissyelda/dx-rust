@@ -497,8 +497,8 @@ pub fn dualsense_system(
             // Out of ammo or reloading: a dead trigger.
             _ if empty => OFF,
             WState::Reloading | WState::Selecting | WState::Lowering => OFF,
-            WState::Firing if h.stats.automatic => trigger_for(class, Some(1.0 / h.stats.shot_time.max(0.02)), strength),
-            _ => trigger_for(class, None, strength),
+            WState::Firing if h.stats.automatic => trigger_for(&h.stats.kind, Some(1.0 / h.stats.shot_time.max(0.02)), strength),
+            _ => trigger_for(&h.stats.kind, None, strength),
         };
         // The left trigger (aim / scope): a light pull for anything that shoots.
         let left = if h.stats.hand_to_hand || !class.starts_with("Weapon") { OFF } else { feedback(4, (2.0 * strength).round().max(1.0) as u8) };

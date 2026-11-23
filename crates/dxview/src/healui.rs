@@ -85,7 +85,7 @@ pub fn heal_ui_system(
     let Some(win) = windows.iter().next() else { return };
     let dt = time.delta_secs().min(0.1);
     let pad = crate::gamepad::frame();
-    let medkit = weapons.held.as_ref().is_some_and(|h| h.stats.class == "MedKit");
+    let medkit = weapons.held.as_ref().is_some_and(|h| crate::tnmitems::is_medkit(&h.stats.class));
     // DXVIEW_HEALUI=1 holds it up (screenshots).
     let held = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight) || (pad.connected && pad.lt > 0.5) || env_on!("DXVIEW_HEALUI");
     let blocked = crate::menus::open() || crate::inventory_screen::screen_open() || crate::consys::third_person() || ph.dead;

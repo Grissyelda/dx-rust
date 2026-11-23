@@ -461,7 +461,7 @@ fn item_info(key: &str, view: &View, assets: &mut RuntimeAssets) -> (String, Vec
             let mut rows = Vec::new();
             let count_label = str_p(&d, "CountLabel");
             let copies = int_p(&d, "maxCopies", 1) > 1 || bool_p(&d, "bCanHaveMultipleCopies");
-            if class == "MedKit" {
+            if crate::tnmitems::is_medkit(class) {
                 rows.push(Row::Text(format!(
                     "{desc}\n\n\n{}\n\n{count_label} {count}",
                     str_p(&d, "MustBeUsedOn")

@@ -259,10 +259,20 @@ const GIVE: [(&str, &str); 14] = [
     ("WeaponFireStaff", "achFirestaff"),
 ];
 
+static SHOP_ALARM_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The flag WeaponShopAlarmDisabled (CreditReaders read it when bypassed).
+pub fn shop_alarm_off() -> bool {
+    SHOP_ALARM_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// GiveTo of the weapons above (checked as items arrive: a new item of a class is a GiveTo).
 pub fn inventory_system(inv: Res<crate::pickups::PlayerInventory>, mut flags: ResMut<crate::ai::GameFlags>, mut seen: Local<usize>) {
     for (name, exp) in FLAG_SETS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         flags.0.set(name, imsim_core::flags::FlagValue::Bool(true), exp);
+    }
+    if flags.is_changed() {
+        SHOP_ALARM_OFF.store(flags.0.get_bool("WeaponShopAlarmDisabled"), std::sync::atomic::Ordering::Relaxed);
     }
     // Trestkon.FrobTarget: no room for the fire staff before it has been decrypted.
     if FIRESTAFF.swap(false, std::sync::atomic::Ordering::Relaxed) && !flags.0.get_bool("Firestaff_Decrypted") {

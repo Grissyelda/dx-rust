@@ -206,6 +206,8 @@ struct CompData {
     specials: Vec<SpecialOption>,
     node: Node,
     text_package: String,
+    /// The Nameless Mod (tnmComputers.AttachedPrinter): a printer is attached - emails can be printed.
+    printer: bool,
     bulletin_tags: Vec<String>,
     lockout_delay: f32,
     msg_locked_out: String,
@@ -395,6 +397,7 @@ impl CompData {
             specials,
             node,
             text_package: pstr(p, "TextPackage", "DeusExText"),
+            printer: crate::tnmmode::active() && !crate::devices::name_prop(p, "AttachedPrinter").is_empty(),
             bulletin_tags: {
                 // bulletinTags[0..10] up to the first empty one (tnmComputerPublic), else the original's bulletinTag.
                 let mut v: Vec<(u32, String)> = p
@@ -756,6 +759,8 @@ enum Btn {
     Close,
     /// GMDX Data Recovery: "Save To Datavault" (and its greyed "Saved To Datavault").
     SaveEmail,
+    /// The Nameless Mod's Print (an attached Printer).
+    Print,
     SavedEmail,
     /// The Nameless Mod's vending machines.
     Purchase,
@@ -1819,6 +1824,12 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
                 g.buttons.push((Btn::Special, false, true));
                 g.left_edge = true;
             }
+            // The Nameless Mod (tnmComputerScreenEmail.AddPrinterButton / Print): the attached Printer prints the
+            // email as a sheet whose reading adds it to the DataVault. Ours: the note is added at once.
+            if email && d.printer && m.sel.is_some() && !m.body.trim().is_empty() {
+                g.buttons.push((Btn::Print, false, !crate::consys::has_vault_note(&m.body)));
+                g.left_edge = true;
+            }
             if email && !t.games.is_empty() {
                 g.buttons.push((Btn::Games, false, true));
                 g.left_edge = true;
@@ -2068,6 +2079,7 @@ fn btn_label(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str, b: B
         Btn::Close => txt(hud, assets, class, "ButtonLabelClose", "|&Close"),
         Btn::SaveEmail => "Save To Datavault".into(),
         Btn::SavedEmail => "Saved To Datavault".into(),
+        Btn::Print => txt(hud, assets, "tnmComputerScreenEmail", "strPrint", "|&Print"),
         Btn::Purchase => txt(hud, assets, class, "ButtonLabelPurchase", "|&Purchase"),
         Btn::Games => txt(hud, assets, "tnmComputerScreenEmail", "ButtonLabelApplications", "|&Applications"),
         Btn::Start => txt(hud, assets, class, "ButtonLabelStart", "S|&tart"),
@@ -2692,6 +2704,11 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
                     }
                 }
                 Btn::SavedEmail => {}
+                Btn::Print => {
+                    if let Some(Screen::Email(m)) = t.screen.as_ref() {
+                        crate::consys::add_vault_note(&m.body);
+                    }
+                }
                 Btn::Return => t.close_screen("RETURN", wx),
                 Btn::Withdraw => t.withdraw(wx),
                 Btn::Purchase => t.purchase(wx),
@@ -4317,6 +4334,7 @@ mod tests {
             specials: vec![],
             node: Node::default(),
             text_package: String::new(),
+            printer: false,
             bulletin_tags: Vec::new(),
             lockout_delay: 60.0,
             msg_locked_out: String::new(),

@@ -851,7 +851,7 @@ fn m20_first(c: &mut Ctx, map: &str) {
                     c.ally(Sel::tag(t), 1.0, true);
                 }
             }
-            if c.b("ALLIED_WC") && c.b("Killed_20_PDXHQ01_and_20_PDXHQ02_0") {
+            if c.b("ALLIED_WC") && crate::tnmpawn::flag_set(c.fl, "Killed_20_PDXHQ01_and_20_PDXHQ02_0") {
                 c.hostile("SecurityBot2PDXHQ");
             }
             if (last == "20_WCFLOOR1" || last == "20_WCFLOOR2") && c.b("QC_MAIN_WCSpyware") && !c.b("KillCount_WCHQDone") {
@@ -1866,7 +1866,7 @@ pub fn display_news(file: &str, fl: &imsim_core::flags::FlagBase) -> bool {
     let wc = b("ALLIED_WC");
     let ao_dead = b("AlphaOperator_Dead");
     let sols_post = b("MS_SolsTrouble_Post");
-    let hq_spared = b("Killed_20_PDXHQ01_and_20_PDXHQ02_0");
+    let hq_spared = crate::tnmpawn::flag_set(fl, "Killed_20_PDXHQ01_and_20_PDXHQ02_0");
     let hq_news = b("QC_MAIN_GetNewsscript") && b("NS_PDXHQ");
     match n {
         // Deaths reported whatever the mission.
@@ -1890,7 +1890,7 @@ pub fn display_news(file: &str, fl: &imsim_core::flags::FlagBase) -> bool {
         // Mission 22.
         10 => pdx,
         11 => wc,
-        12 => !b("Killed_20_FCDowntown_and_20_FCCorporate_and_20_FCSlums_20"),
+        12 => !crate::tnmpawn::flag_set(fl, "Killed_20_FCDowntown_and_20_FCCorporate_and_20_FCSlums_20"),
         22 => b("Athena_Dead") || b("Athena_Fight_Dead"),
         23 => b("Beefman_Dead"),
         24 => pdx && !ao_dead,

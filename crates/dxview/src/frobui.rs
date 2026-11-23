@@ -286,7 +286,7 @@ pub fn frob_target_system(
                 // each) drawn on it, or "Bypassed" / "INF".
                 if crate::devices::is_hackable(&a.props) {
                     let hackable = !matches!(find(&a.props, "bHackable"), Some(Value::Bool(false)));
-                    let s = *hacking.strength.get(&b).unwrap_or(&crate::devices::initial_strength(&a.props));
+                    let s = hacking.strength.get(&b).copied().unwrap_or_else(|| crate::devices::initial_strength(&a.props)).max(0.0);
                     if s != 0.0 {
                         let tools = hackable.then(|| {
                             let n = ((s / crate::devices::tech_skill()) + 0.99) as i32;
@@ -325,7 +325,7 @@ pub fn frob_target_system(
         if let Some((b, t)) = crate::devices::wireless_target(lvl, &blockers, &hacking, eye, dir) {
             let c = blockers.list[b];
             let a = &lvl.actors[c.actor];
-            let s = *hacking.strength.get(&b).unwrap_or(&crate::devices::initial_strength(&a.props));
+            let s = hacking.strength.get(&b).copied().unwrap_or_else(|| crate::devices::initial_strength(&a.props)).max(0.0);
             let tools = ((s / crate::devices::tech_skill()) + 0.99) as i32;
             let text = format!("{}\nBypass Str: {}%", display_name(&a.props), (s * 100.0 + 0.5) as i32);
             let bars = Some(Bars::Hack { strength: s as f32, tools: Some(tool_text(tools, "Multitool", "tool", "tools")) });

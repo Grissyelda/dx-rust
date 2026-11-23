@@ -449,6 +449,13 @@ pub fn draw_lower(
     let Some((sf, nf)) = con_fonts(hud, assets, sw) else {
         return;
     };
+    // The Nameless Mod (tnmconplay.SetupEventChoice / SetupEventAddCredits: TNMConWindowActive's creditsWindow):
+    // the player's credits, top right, while he chooses.
+    if crate::tnmmode::active() && !p.choices.is_empty() {
+        let label = format!("{} {}", crate::tnmmode::credits_text(), crate::consys::player_credits());
+        let lw = sf.width(&label);
+        c.text(&sf, w - lw - 6, 2, lw + 4, sf.height, HAlign::Right, VAlign::Top, COL_NAME, &label);
+    }
     let mut y = 2;
     // Every choice has to fit (deviation: the original clipped them at the bottom - Gunther's third choice after the
     // rescue). The choices' room first; the speech above them only if it fits too, else just its first line; rows

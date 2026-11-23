@@ -65,7 +65,7 @@ impl NavGraph {
             exports.push(s.end);
         }
         for (i, e) in pkg.exports.iter().enumerate() {
-            if pkg.class_name(e.class_index) == "PatrolPoint" && e.size > 0 {
+            if crate::alias::is(pkg.class_name(e.class_index), "PatrolPoint") && e.size > 0 {
                 exports.push(i as i32 + 1);
             }
         }
@@ -87,7 +87,7 @@ impl NavGraph {
             index.insert(x, g.points.len());
             g.points.push(NavPoint {
                 name: e.name.clone(),
-                class: pkg.class_name(e.class_index).to_string(),
+                class: crate::alias::of(pkg.class_name(e.class_index)),
                 tag: name_of("Tag"),
                 pos: [l[0] as f64, l[1] as f64, l[2] as f64],
                 yaw: match find(&p, "Rotation") {

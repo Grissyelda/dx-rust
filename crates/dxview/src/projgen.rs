@@ -130,6 +130,8 @@ struct ProjGen {
     spew_time: f32,
     wait_time: f32,
     random: bool,
+    /// LavaSpitter: pitch thrown +-45 degrees, speed x 0.5..1.5.
+    lava: bool,
     check: f32,
     num: i32,
     only_once: bool,
@@ -232,7 +234,10 @@ pub fn projgen_system(
         for (i, a) in lvl.actors.iter().enumerate() {
             let p = &a.props;
             let tag = name_at(p, "Tag", 0);
-            match a.class.as_str() {
+            // (The Nameless Mod's LavaSpitter is a ProjectileGenerator that throws within 45 degrees of its aim at
+            // half to one and a half times the speed.)
+            let lava = crate::tnmmode::active() && a.class.eq_ignore_ascii_case("LavaSpitter");
+            match if lava { "ProjectileGenerator" } else { a.class.as_str() } {
                 "ProjectileGenerator" => {
                     let triggered = bl(p, "bTriggered", false);
                     st.gens.push(ProjGen {
@@ -246,6 +251,7 @@ pub fn projgen_system(
                         spew_time: fl(p, "spewTime", 0.0),
                         wait_time: fl(p, "WaitTime", 0.0),
                         random: bl(p, "bRandomEject", false),
+                        lava,
                         check: fl(p, "checkTime", 0.25),
                         num: fl(p, "numPerSpawn", 1.0) as i32,
                         only_once: bl(p, "bOnlyOnce", false),
@@ -452,6 +458,7 @@ pub fn projgen_system(
                 spew_time: 0.0,
                 wait_time: 0.0,
                 random: true,
+                lava: false,
                 check: 0.5,
                 num: 1,
                 only_once: false,
@@ -585,7 +592,18 @@ pub fn projgen_system(
         let mut tv = time_val;
         for _ in 0..count {
             for _ in 0..st.gens[gi].num.max(0) {
-                let (dir, speed) = if st.gens[gi].random {
+                let (dir, speed) = if st.gens[gi].lava {
+                    // LavaSpitter.Tick: bRandomEject = VRand(), else the pitch +-8192; speed x (FRand() + 0.5).
+                    let d = if st.gens[gi].random {
+                        st.vrand()
+                    } else {
+                        let d0 = st.gens[gi].dir;
+                        let yaw = d0.y.atan2(d0.x);
+                        let pitch = d0.z.atan2(d0.truncate().length()) + (st.rand() - 0.5) * std::f64::consts::FRAC_PI_2;
+                        DVec3::new(pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), pitch.sin())
+                    };
+                    (d, st.gens[gi].eject * (st.rand() + 0.5))
+                } else if st.gens[gi].random {
                     let d = st.vrand();
                     (d, st.gens[gi].eject * st.rand())
                 } else {

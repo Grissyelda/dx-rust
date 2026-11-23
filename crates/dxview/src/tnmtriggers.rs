@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use unreal_pkg::props::{find, Property, Value};
 
 /// The trigger classes this module answers for (only while The Nameless Mod is played).
-pub const CLASSES: [&str; 24] = [
+pub const CLASSES: [&str; 32] = [
     "CESequenceTrigger",
     "TNMBindNameTrigger",
     "GoalAddTrigger",
@@ -43,6 +43,14 @@ pub const CLASSES: [&str; 24] = [
     "insanedeathtrigger",
     "SetGoalTrigger",
     "oxygenzonetrigger",
+    "ShoutConversationTrigger",
+    "LoudNoiseTrigger",
+    "NoteAddTrigger",
+    "CutsceneSoundTrigger",
+    "CutsceneShakeTrigger",
+    "WeaponSenseTrigger",
+    "TurretDisableTurretTrigger",
+    "TurretDisableStaringTrigger",
 ];
 
 pub fn is_class(class: &str) -> bool {
@@ -81,6 +89,18 @@ pub enum TnmKind {
     /// The Event's decorations solid again (Trigger) or not (UnTrigger): bodies of collision only; kept as a
     /// plain trigger.
     Inert,
+    /// LoudNoiseTrigger: an AI LoudNoise at the trigger (volume, radius) when triggered.
+    LoudNoise { pos: DVec3, volume: f32, radius: f32 },
+    /// NoteAddTrigger: the text NoteTag of Textpackage goes into the DataVault.
+    NoteAdd { tag: String, package: String },
+    /// CutsceneSoundTrigger: the sound, heard everywhere.
+    CutSound { sound: String, volume: f32 },
+    /// CutsceneShakeTrigger: the cut-scene camera shakes from one magnitude to another over a time.
+    CutShake { start: f32, end: f32, time: f32 },
+    /// WeaponSenseTrigger: fires only when the player carries (or holds) a weapon of the kind; else failedEvent.
+    WeaponSense { failed: String, in_hand: bool, cause: u8 },
+    /// BSPTurretTriggers: the StaringMovers tagged Event stop firing (true) or stop following (false).
+    TurretOff(bool),
 }
 
 /// What a TNM trigger asks triggers.rs to do after it ran.
@@ -179,9 +199,90 @@ pub fn kind_for(class: &str, p: &[Property]) -> TnmKind {
             Some(Value::Str(v)) | Some(Value::Name(v)) => v.clone(),
             _ => String::new(),
         }),
+        "shoutconversationtrigger" => TnmKind::Con {
+            con: s(p, "conversationTag"),
+            bind: s(p, "BindName"),
+            check: s(p, "checkFlag"),
+            check_false: b(p, "bCheckFalse", false),
+            timer: false,
+            breathe: 0.0,
+        },
+        "loudnoisetrigger" => {
+            let l = match find(p, "Location") {
+                Some(Value::Vector(v)) => DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64),
+                _ => DVec3::ZERO,
+            };
+            TnmKind::LoudNoise {
+                pos: l,
+                volume: i(p, "SoundVolume", 128) as f32 / 255.0,
+                radius: 25.0 * (i(p, "SoundRadius", 32) as f32 + 1.0),
+            }
+        }
+        "noteaddtrigger" => TnmKind::NoteAdd { tag: s(p, "NoteTag"), package: s(p, "Textpackage") },
+        "cutscenesoundtrigger" => TnmKind::CutSound {
+            sound: match find(p, "Sound") {
+                Some(Value::Path(v)) => v.clone(),
+                _ => String::new(),
+            },
+            volume: match find(p, "volume") {
+                Some(Value::Float(v)) => *v,
+                _ => 1.0,
+            },
+        },
+        "cutsceneshaketrigger" => {
+            let f = |n: &str| match find(p, n) {
+                Some(Value::Float(v)) => *v,
+                Some(Value::Int(v)) => *v as f32,
+                _ => 0.0,
+            };
+            TnmKind::CutShake { start: f("MagnitudeStart"), end: f("MagnitudeEnd"), time: f("TransitionTime") }
+        }
+        "weaponsensetrigger" => TnmKind::WeaponSense {
+            failed: s(p, "failedEvent"),
+            in_hand: b(p, "binhand", false),
+            cause: i(p, "TriggerCause", 0).clamp(0, 3) as u8,
+        },
+        "turretdisableturrettrigger" => TnmKind::TurretOff(true),
+        "turretdisablestaringtrigger" => TnmKind::TurretOff(false),
         _ => TnmKind::Inert,
     }
 }
+
+/// NoteAddTrigger.givenote.
+fn note_add(tag: &str, package: &str) {
+    if tag.is_empty() {
+        return;
+    }
+    let Some(root) = unreal_pkg::paths::root() else { return };
+    let pkg = if package.is_empty() { "DeusExText" } else { package };
+    let Ok(p) = unreal_pkg::Package::open(root.join("System").join(format!("{pkg}.u"))) else { return };
+    if let Some(t) = p.text_named(tag) {
+        let v = crate::info::parse_tnm(&t).vault;
+        if !crate::consys::has_vault_note(&v) {
+            crate::consys::add_vault_note(&v);
+        }
+    }
+}
+
+/// WeaponSenseTrigger.Touch's test: a weapon in hand (bInHand), or any carried weapon that sets it off
+/// (TriggerCause: 0 any, 1 Concealability Visual or None, 2 None, 3 a TNMWeapon with bNoMetal).
+fn weapon_sensed(in_hand: bool, cause: u8) -> bool {
+    if in_hand {
+        return crate::perks::in_hand().is_some_and(|(c, _)| crate::classtree::is_a(&c, "DeusExWeapon"));
+    }
+    CARRIED.lock().is_ok_and(|w| {
+        w.iter().any(|&(conc, no_metal)| match cause {
+            0 => true,
+            3 => no_metal,
+            // EConcealability: CONC_None 0, CONC_Visual 1, CONC_Metal 2, CONC_All 3.
+            1 => conc <= 1,
+            _ => conc == 0,
+        })
+    })
+}
+
+/// The weapons the player carries, as (Concealability, bNoMetal), for WeaponSenseTriggers.
+static CARRIED: Mutex<Vec<(u8, bool)>> = Mutex::new(Vec::new());
 
 fn flag_ok(flags: &FlagBase, check: &str, check_false: bool) -> bool {
     check.is_empty() || flags.get_bool(check) != check_false
@@ -460,6 +561,29 @@ pub fn on_touch(k: &mut TnmKind, event: &str, once: bool, by_player: bool, relev
         // OxygenZoneTrigger's Touch does nothing.
         TnmKind::Oxygen { .. } => {}
         TnmKind::BindName { .. } | TnmKind::Limited(_) | TnmKind::Autosave => act.base = relevant,
+        // Trigger only.
+        TnmKind::LoudNoise { .. } | TnmKind::CutSound { .. } | TnmKind::CutShake { .. } => {}
+        TnmKind::NoteAdd { tag, package } => {
+            act.base = relevant;
+            if relevant && by_player {
+                note_add(tag, package);
+            }
+        }
+        TnmKind::WeaponSense { failed, in_hand, cause } => {
+            if relevant && by_player {
+                if weapon_sensed(*in_hand, *cause) {
+                    act.base = true;
+                } else if !failed.is_empty() {
+                    act.events.push((failed.clone(), true));
+                }
+            }
+        }
+        TnmKind::TurretOff(turret) => {
+            if relevant {
+                crate::staring::disable(event, *turret);
+                act.destroy = once;
+            }
+        }
     }
     act
 }
@@ -579,6 +703,36 @@ pub fn on_trigger(k: &mut TnmKind, event: &str, once: bool, on: bool, flags: &mu
             act.destroy = once;
         }
         TnmKind::Inert => act.base = true,
+        TnmKind::LoudNoise { pos, volume, radius } => crate::smartai::push_noise(crate::stealth::Noise {
+            pos: *pos,
+            volume: *volume,
+            radius: *radius,
+            maker: Some(crate::ai::Target::Player),
+            instigator: Some(crate::ai::Target::Player),
+            kind: crate::stealth::NoiseKind::Loud,
+        }),
+        TnmKind::NoteAdd { tag, package } => {
+            act.base = true;
+            note_add(tag, package);
+        }
+        TnmKind::CutSound { sound, volume } => {
+            act.base = true;
+            if !sound.is_empty() {
+                crate::sound::play_player(sound, *volume, 0.0);
+            }
+        }
+        TnmKind::CutShake { start, end, time } => {
+            // (tnmCameraPoint's ShakeMagnitude ramp: one shake of the mean strength for the time.)
+            let m = (*start + *end) * 0.5;
+            crate::shake::shake_view(time.max(0.1), m, m * 0.5);
+            act.destroy = once;
+        }
+        TnmKind::WeaponSense { .. } => act.base = true,
+        TnmKind::TurretOff(turret) => {
+            crate::staring::disable(event, *turret);
+            act.base = true;
+            act.destroy = once;
+        }
     }
     act
 }
@@ -669,6 +823,9 @@ pub struct TnmMovers {
     built: bool,
     ces: Vec<Ce>,
     dispatchers: Vec<Dispatch>,
+    /// TrackMovers (not the advanced kind): (mover, resetChance, randomized base and added move time).
+    tracks: Vec<(usize, i32, Option<(i32, i32)>)>,
+    seed: u64,
 }
 
 fn name_arr<const N: usize>(p: &[Property], n: &str) -> [String; N] {
@@ -686,8 +843,18 @@ fn name_arr<const N: usize>(p: &[Property], n: &str) -> [String; N] {
 fn build(lvl: &dx_level::Level, st: &mut TnmMovers) {
     st.ces.clear();
     st.dispatchers.clear();
+    st.tracks.clear();
+    st.seed = 0x7472_6163_6B6D_6F76;
     for (mi, m) in lvl.movers.iter().enumerate() {
         let a = &lvl.actors[m.actor];
+        if a.class.eq_ignore_ascii_case("TrackMover") && !b(&a.props, "bAdvancedTrackMover", false) {
+            let p = &a.props;
+            st.tracks.push((
+                mi,
+                i(p, "resetChance", 1).max(1),
+                b(p, "bRandomizedMoveTime", false).then(|| (i(p, "baseMoveTime", 0), i(p, "addRandomMoveTime", 1).max(1))),
+            ));
+        }
         if !a.class.eq_ignore_ascii_case("CaroneElevator") {
             continue;
         }
@@ -812,10 +979,31 @@ pub fn tnm_system(
     mut events: ResMut<crate::devices::GameEvents>,
     blockers: Res<crate::actors::Blockers>,
     mut ph: ResMut<crate::ai::PlayerHealth>,
+    inv: Res<crate::pickups::PlayerInventory>,
+    mut assets: ResMut<crate::weapons::RuntimeAssets>,
     mut gen: Local<u64>,
 ) {
     if !crate::tnmmode::active() {
         return;
+    }
+    if inv.is_changed() {
+        let list: Vec<(u8, bool)> = inv
+            .0
+            .items
+            .iter()
+            .filter(|i| crate::classtree::is_a(&i.def.class, "DeusExWeapon"))
+            .map(|i| {
+                let d = assets.classes.defaults(&i.def.class);
+                let conc = match find(&d, "Concealability") {
+                    Some(Value::Byte(b)) => *b,
+                    _ => 0,
+                };
+                (conc, matches!(find(&d, "bNoMetal"), Some(Value::Bool(true))))
+            })
+            .collect();
+        if let Ok(mut c) = CARRIED.lock() {
+            *c = list;
+        }
     }
     if crate::loader::new_map(&mut gen) {
         st.built = false;
@@ -968,6 +1156,38 @@ pub fn tnm_system(
             }
         }
     }
+    // TrackMover.Tick: at rest on its last key it jumps back to the first (one chance in resetChance a tick, with a
+    // new random MoveTime when asked); at rest on the first it sets off again.
+    // uc: TrackMover.Tick
+    if !st.tracks.is_empty() {
+        let mut seed = st.seed;
+        let mut rnd = |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n.max(1) as u64) as i32
+        };
+        for &(mi, chance, random) in &st.tracks {
+            let info = &lvl.movers[mi];
+            let rt = &mut movers.rt[mi];
+            if rt.interpolating || rt.destroyed {
+                continue;
+            }
+            if rt.key_num + 1 == info.num_keys {
+                if rnd(chance) == 0 {
+                    crate::movers::move_to(info, rt, 0, 0.001);
+                }
+            } else if rt.key_num == 0 {
+                match random {
+                    Some((base, add)) if info.num_keys == 2 => {
+                        crate::movers::move_to(info, rt, 1, (rnd(add) + base).max(0) as f64 + 0.001)
+                    }
+                    _ => crate::movers::trigger(info, rt),
+                }
+            }
+        }
+        st.seed = seed;
+    }
     // Actor work asked for by triggers.
     for (w, tag) in WORK.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         match w {
@@ -1013,7 +1233,19 @@ pub fn tnm_system(
     if insane() && !ph.dead {
         ph.drug_timer = ph.drug_timer.max(2.0);
     }
+    for e in FIRED.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        out.push((e, true));
+    }
     if !out.is_empty() {
         events.0.extend(out);
+    }
+}
+
+static FIRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// An event fired by code that doesn't hold the GameEvents (a knock on a KnockableMover).
+pub fn fire_event(name: &str) {
+    if let Ok(mut q) = FIRED.lock() {
+        q.push(name.to_string());
     }
 }

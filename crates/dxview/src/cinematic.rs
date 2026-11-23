@@ -70,6 +70,8 @@ struct Exit {
     transition: bool,
     path_tag: String,
     touch: bool,
+    /// The Nameless Mod's bTriggerOnlyOnce teleporters: gone after one use.
+    once: bool,
     /// Touchable again: the player arrived standing in it (a "map#tag" arrival at a teleporter) and must step
     /// out first, or he'd bounce straight back.
     armed: bool,
@@ -964,10 +966,10 @@ fn load_exits(level: &dx_level::Level) -> Vec<Exit> {
     level
         .actors
         .iter()
-        .filter(|a| a.class == "MapExit" || a.class == "Teleporter")
+        .filter(|a| a.class == "MapExit" || is_teleporter(&a.class))
         .filter_map(|a| {
             let p = &a.props;
-            let teleporter = a.class == "Teleporter";
+            let teleporter = is_teleporter(&a.class);
             let dest = if teleporter { s(p, "URL") } else { s(p, "DestMap") };
             if dest.is_empty() || matches!(find(p, "bEnabled"), Some(Value::Bool(false))) {
                 return None;
@@ -985,7 +987,9 @@ fn load_exits(level: &dx_level::Level) -> Vec<Exit> {
                 teleporter,
                 transition: matches!(find(p, "bPlayTransition"), Some(Value::Bool(true))),
                 path_tag: s(p, "cameraPathTag"),
+                // TriggerablePlayerTeleporter is only ever triggered... its Touch still works as a Teleporter's.
                 touch,
+                once: matches!(find(p, "bTriggerOnlyOnce"), Some(Value::Bool(true))),
                 armed: false,
                 loc: DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64),
                 radius: num("CollisionRadius", r_d),
@@ -993,6 +997,14 @@ fn load_exits(level: &dx_level::Level) -> Vec<Exit> {
             })
         })
         .collect()
+}
+
+/// A Teleporter, or one of The Nameless Mod's (TriggerablePlayerTeleporter: its Trigger is a Touch by the player;
+/// TriggerOnceTeleporter).
+fn is_teleporter(class: &str) -> bool {
+    class == "Teleporter"
+        || (crate::tnmmode::active()
+            && (class.eq_ignore_ascii_case("TriggerablePlayerTeleporter") || class.eq_ignore_ascii_case("TriggerOnceTeleporter")))
 }
 
 /// MapExit.LoadMap / Teleporter.Touch.
@@ -1006,13 +1018,19 @@ fn load_map(level: &dx_level::Level, x: &Exit, player: &mut Player) {
             };
             crate::loader::request(&m, crate::loader::Goal::Travel(tag));
         } else if let Some(d) = level.actors.iter().find(|a| {
-            a.class == "Teleporter"
+            is_teleporter(&a.class)
                 && matches!(find(&a.props, "Tag"), Some(Value::Name(t)) if t.eq_ignore_ascii_case(&x.dest))
         }) {
             // A teleporter in this map: Accept puts the player there.
             let l = d.location();
             player.body.location = DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
             player.body.velocity = DVec3::ZERO;
+            // TriggerablePlayerTeleporter / TriggerOnceTeleporter with bTriggerOnlyOnce: spent.
+            if x.once {
+                if let Ok(mut e) = EXITS.try_lock() {
+                    e.retain(|y| !(y.once && y.tag == x.tag && y.loc == x.loc));
+                }
+            }
         }
         return;
     }
@@ -1034,7 +1052,7 @@ fn load_itriggers(level: &dx_level::Level) -> Vec<ITrigger> {
     level
         .actors
         .iter()
-        .filter(|a| a.class == "InterpolateTrigger")
+        .filter(|a| a.class == "InterpolateTrigger" || (crate::tnmmode::active() && a.class.eq_ignore_ascii_case("TNMInterpolateTrigger")))
         .map(|a| {
             let p = &a.props;
             let nm = |n: &str| match find(p, n) {

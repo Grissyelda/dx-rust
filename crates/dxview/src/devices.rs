@@ -187,6 +187,47 @@ pub fn hack_action(p: &[Property], events: &mut GameEvents) {
     }
 }
 
+// ---- The Nameless Mod's CreditReader (a HackableDevices: pay its cost or bypass it; then it opens what OpenEvent
+// names every time it is used). A paid / bypassed reader is kept as hack strength -1 (saved with the others).
+// uc: CreditReader.HackAction, CreditReader.Bought, CreditReader.Hacked, Trestkon.tryBuy, Trestkon.purchaseitems
+
+/// The reader waiting for the player's yes / no: (blocker, cost, [bought, declined, can't afford] messages).
+static READER_ASK: std::sync::Mutex<Option<(usize, i32, [String; 3])>> = std::sync::Mutex::new(None);
+
+pub fn is_reader(class: &str) -> bool {
+    crate::tnmmode::active() && class.eq_ignore_ascii_case("CreditReader")
+}
+
+/// Trestkon's shop strings: [window title, question, bought, declined, can't afford].
+pub fn frob_reader(blocker: usize, p: &[Property], texts: [String; 5], alarm_off: bool, hacking: &mut Hacking, events: &mut GameEvents) {
+    let strength = *hacking.strength.entry(blocker).or_insert_with(|| initial_strength(p));
+    let open = name_prop(p, "OpenEvent");
+    let cost = match find(p, "cost") {
+        Some(Value::Int(v)) => *v,
+        _ => 0,
+    };
+    let bought = strength < -0.5 || matches!(find(p, "bBought"), Some(Value::Bool(true)));
+    if bought || strength <= 0.0 {
+        if !bought {
+            // Hacked(): HackEvent (the shop's alarm, unless it was switched off), then Bought().
+            let hack = name_prop(p, "HackEvent");
+            if !hack.is_empty() && !alarm_off {
+                events.0.push((hack, true));
+            }
+            hacking.strength.insert(blocker, -1.0);
+        }
+        if !open.is_empty() {
+            events.0.push((open, true));
+        }
+        return;
+    }
+    let [title, question, a, b, c] = texts;
+    crate::menus::open_yes_no(&title, &question.replacen("%d", &cost.to_string(), 1));
+    if let Ok(mut q) = READER_ASK.lock() {
+        *q = Some((blocker, cost, [a, b, c]));
+    }
+}
+
 /// What using a device with the given tool does (called from the frob system). Returns a message.
 pub fn frob_device(
     blocker: usize,
@@ -305,6 +346,16 @@ pub fn device_system(
             hud.text = "You bypassed the device".into();
             hud.time_left = 2.0;
             let p = props(b).clone();
+            if is_reader(&lvl.actors[blockers.list[b].actor].class) {
+                // CreditReader.HackAction(bHacked): Hacked() = HackEvent, then Bought() = OpenEvent.
+                for n in ["HackEvent", "OpenEvent"] {
+                    let e = name_prop(&p, n);
+                    if !e.is_empty() {
+                        events.0.push((e, true));
+                    }
+                }
+                hacking.strength.insert(b, -1.0);
+            }
             hack_action(&p, &mut events);
             crate::alarms::hacked(blockers.list[b].actor);
             crate::security::hacked(b);
@@ -323,6 +374,27 @@ pub fn device_system(
             let free = s <= 1e-6 && crate::perks::value_if("PerkCracked").is_some_and(|v| initial <= v + 1e-4);
             if !free && inv.0.use_one("Multitool") == 0 && holding {
                 weapons.held = None;
+            }
+        }
+    }
+    // The Nameless Mod's CreditReader: the answer to its purchase question.
+    if READER_ASK.lock().is_ok_and(|q| q.is_some()) {
+        if let Some(yes) = crate::menus::take_box_answer() {
+            if let Some((b, cost, [bought, declined, cant])) = READER_ASK.lock().ok().and_then(|mut q| q.take()) {
+                let msg = if !yes {
+                    declined
+                } else if inv.0.credits as i64 >= cost as i64 {
+                    inv.0.credits = (inv.0.credits as i64 - cost as i64).max(0) as _;
+                    hacking.strength.insert(b, -1.0);
+                    let open = name_prop(props(b), "OpenEvent");
+                    if !open.is_empty() {
+                        events.0.push((open, true));
+                    }
+                    bought.replacen("%d", &cost.to_string(), 1)
+                } else {
+                    cant.replacen("%d", &cost.to_string(), 1)
+                };
+                crate::classic_hud::client_message(&msg);
             }
         }
     }

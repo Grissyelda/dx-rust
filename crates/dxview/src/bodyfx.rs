@@ -466,7 +466,7 @@ pub fn fp_body_system(
             tf.translation -= flat * st.extra.max(0.0);
         }
     }
-    let medkit = weapons.held.as_ref().is_some_and(|h| h.stats.class == "MedKit");
+    let medkit = weapons.held.as_ref().is_some_and(|h| crate::tnmitems::is_medkit(&h.stats.class));
     if let Some((seq, start, frames, f, looped)) = b.cur.clone() {
         let dt = time.delta_secs().min(0.1);
         // The mirror body (posed just before this, same rig, same move) already has this frame's pose: copied, not

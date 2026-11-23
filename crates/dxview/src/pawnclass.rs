@@ -54,13 +54,13 @@ pub fn ignores_gas_reaction(class: &str) -> bool {
 /// Gunther, Walton and MJ12 commandos.
 /// uc: PaulDenton.GotoDisabledState, AnnaNavarre.GotoDisabledState, GuntherHermann.GotoDisabledState, WaltonSimons.GotoDisabledState, MJ12Commando.GotoDisabledState
 pub fn no_disabled_states(class: &str) -> bool {
-    ["PaulDenton", "AnnaNavarre", "GuntherHermann", "WaltonSimons", "MJ12Commando"].iter().any(|c| is_a(class, c))
+    ["PaulDenton", "AnnaNavarre", "GuntherHermann", "WaltonSimons", "MJ12Commando", "GenericAlien"].iter().any(|c| is_a(class, c))
 }
 
 /// SpawnCarcass explodes instead of leaving a body (when not stunned).
 /// uc: MIB.SpawnCarcass, WIB.SpawnCarcass, AnnaNavarre.SpawnCarcass, GuntherHermann.SpawnCarcass
 pub fn explodes_on_death(class: &str) -> bool {
-    ["MIB", "WIB", "AnnaNavarre", "GuntherHermann"].iter().any(|c| is_a(class, c))
+    ["MIB", "WIB", "AnnaNavarre", "GuntherHermann", "TNMMIB", "TNMWIB", "WCIDAgent", "Ghand"].iter().any(|c| is_a(class, c))
 }
 
 /// MJ12Commando.PlayShoot / TweenToShoot: the wrist-gun pose (Shoot2), never the reload or idle anims.

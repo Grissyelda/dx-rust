@@ -54,6 +54,8 @@ pub struct Grenade {
     pub net: u32,
     /// A joiner's copy of the host's grenade: drawn, beeping, never deciding anything (no explosion, no trip).
     pub remote: bool,
+    /// A glop (The Nameless Mod): sticks to the first thing it hits, no beeps.
+    pub glop: bool,
 }
 
 /// Grenades to create: thrown (class, pos, dir, thrower) or placed on a wall (pos, normal).
@@ -65,17 +67,32 @@ struct NpcThrow {
     class: &'static str,
     pos: DVec3,
     vel: DVec3,
-    from: usize,
+    from: Option<usize>,
     blast: f64,
 }
 
 static NPC_THROWS: std::sync::Mutex<Vec<NpcThrow>> = std::sync::Mutex::new(Vec::new());
 
 /// Queue a pawn's grenade (thrower = its blocker), spawned by grenade_system on its next run.
+/// The Nameless Mod's glops (NapalmGlop / ConcussionGlop: a blob that sticks where it lands and goes off when its
+/// fuse runs out): flown and blown up by the grenade system. `from` None = the player's.
+pub fn glop_throw(class: &str, pos: DVec3, vel: DVec3, from: Option<usize>, blast: f64) {
+    if let Ok(mut q) = NPC_THROWS.lock() {
+        if q.len() < 64 {
+            q.push(NpcThrow { class: crate::util::intern(class), pos, vel, from, blast });
+        }
+    }
+}
+
+/// A projectile class that is one of those glops.
+pub fn is_glop(p: &[Property]) -> bool {
+    find(p, "numBlobs").is_some() && find(p, "fuseLength").is_some()
+}
+
 pub fn npc_throw(class: &'static str, pos: DVec3, vel: DVec3, from: usize, blast: f64) {
     if let Ok(mut q) = NPC_THROWS.lock() {
         if q.len() < 16 {
-            q.push(NpcThrow { class, pos, vel, from, blast });
+            q.push(NpcThrow { class, pos, vel, from: Some(from), blast });
         }
     }
 }
@@ -86,6 +103,8 @@ fn damage_type_of(n: &str) -> &'static str {
         "emp" => "EMP",
         "poisongas" => "PoisonGas",
         "nanovirus" => "NanoVirus",
+        "flamed" => "Flamed",
+        "knockedout" => "KnockedOut",
         _ => "Exploded",
     }
 }
@@ -145,7 +164,10 @@ fn make(
         prox_radius: f("proxRadius", 128.0) as f64,
         prox_check: 0.0,
         // The Nameless Mod's Quad Damage powerup: the player's own thrown grenades too.
-        damage: f("Damage", 100.0) * if from.is_none() && !placed { crate::tnmpower::damage_mult() } else { 1.0 },
+        damage: f("Damage", 100.0)
+            * if from.is_none() && !placed { crate::tnmpower::damage_mult() } else { 1.0 }
+            // NapalmGlop.PostBeginPlay: Damage *= NumBlobs.
+            * if is_glop(d) { f("numBlobs", 1.0) } else { 1.0 },
         blast: f("blastRadius", 256.0) as f64,
         damage_type: match find(d, "DamageType") {
             Some(Value::Name(n)) => damage_type_of(n),
@@ -163,6 +185,7 @@ fn make(
         },
         net: 0,
         remote: false,
+        glop: is_glop(d),
     }
 }
 
@@ -228,7 +251,8 @@ pub fn attach_grenades(
     for (e, r) in &q {
         let ma = &level.0.mesh_actors[r.0];
         let a = &level.0.actors[ma.actor];
-        if !is_grenade_class(&a.props) {
+        // (The Nameless Mod's TripProj is a trip beam, not a bomb: security.rs.)
+        if !is_grenade_class(&a.props) || (crate::tnmmode::active() && a.class.eq_ignore_ascii_case("TripProj")) {
             continue;
         }
         let l = a.location();
@@ -301,7 +325,7 @@ pub fn grenade_system(
         .into_iter()
         .chain(crate::netplay::take_grenade_throws())
         .map(|(c, p, d, f, w)| (c, p, d, f, w, None, None))
-        .chain(npc_throws.into_iter().map(|t| (t.class.to_string(), t.pos, DVec3::ZERO, Some(t.from), None, Some((t.vel, t.blast)), None)))
+        .chain(npc_throws.into_iter().map(|t| (t.class.to_string(), t.pos, DVec3::ZERO, t.from, None, Some((t.vel, t.blast)), None)))
         .chain(remote_in.into_iter().map(|g| {
             let v = |a: [f32; 3]| DVec3::new(a[0] as f64, a[1] as f64, a[2] as f64);
             (g.class.clone(), v(g.pos), DVec3::ZERO, Some(usize::MAX), g.wall.map(v), Some((v(g.vel), g.blast as f64)), Some((g.id, g.fuse)))
@@ -495,7 +519,7 @@ pub fn grenade_system(
                     (crate::sound::frand() as f64 * 2.0 - 1.0) * 65536.0,
                     (crate::sound::frand() as f64 * 2.0 - 1.0) * 65536.0,
                 ];
-                if speed < 60.0 && n.z > 0.7 {
+                if g.glop || (speed < 60.0 && n.z > 0.7) {
                     if let Some(snd) = &g.misc_snd {
                         crate::sound::play(
                             snd,
@@ -541,7 +565,7 @@ pub fn grenade_system(
             tf.translation = Vec3::from(ue_to_bevy(g.pos.as_vec3().to_array()));
         }
         // Beep faster as the fuse runs down: every 0.5 s, 0.3 s in the last half, 0.1 s in the last 0.75 s.
-        if !g.disabled && g.time < g.fuse {
+        if !g.disabled && !g.glop && g.time < g.fuse {
             g.beep_time += dt;
             let left = g.fuse - g.time;
             let rate = if left <= 0.75 {
@@ -697,7 +721,7 @@ fn remote_tick(g: &mut Grenade, tf: &mut Transform, lvl: &dx_level::Level, block
     let m = rotator_to_bevy_mat3(r);
     tf.rotation = Quat::from_mat3(&Mat3::from_cols(Vec3::from(m[0]), Vec3::from(m[1]), Vec3::from(m[2])));
     tf.translation = Vec3::from(ue_to_bevy(g.pos.as_vec3().to_array()));
-    if !g.disabled && g.time < g.fuse && !g.proximity {
+    if !g.disabled && !g.glop && g.time < g.fuse && !g.proximity {
         g.beep_time += dt;
         let left = g.fuse - g.time;
         let rate = if left <= 0.75 { 0.1 } else if left <= g.fuse * 0.5 { 0.3 } else { 0.5 };

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### The Nameless Mod: weapons, items, creatures and world (November 23)
+- Its weapons and items behave as theirs: the mod's own copies of Deus Ex weapons and consumables answer to the
+  original rules, plus the mod's differences - taser slugs, sabot slugs fire one projectile, weapons that need air,
+  the hide-a-gun and the fire extinguisher are gone once empty, the rifle's hip-fire penalty, the mod's standing
+  accuracy and shot bloom, the Dai Katana hurts its user, beans, ketchup, coffee, red bio cells, the gas mask,
+  Duo Damage and the Loller Skates.
+- Its damage rules for people and robots: stun gloves, tasers, the fat rifle (people swell and burst), the
+  Gibinator, the temporal weapon (people fade out), rice bags to a bare head, helmets, the mod's backstab and stun
+  multipliers, firewall programs hurt by EMP, augmented enemies' shields and bioenergy, aliens and the mod's own
+  Karkians, Grays, Greasels and rats treated as the creatures they are, more bosses that blow up when killed.
+- Napalm and concussion glops stick where they land and go off on their fuse.
+- World: decal spawners, lava spitters, the laser turret, tranquilizer trip mines (a beam that poisons who crosses
+  it), track movers, barricades, knockable doors, credit readers (pay or bypass), the mod's keypads, medical and
+  repair bots, guard points, its own particle generators, triggerable teleporters and path triggers, and eight more
+  trigger classes (shouted conversations, loud noises, notes, cut-scene sound and shake, weapon detectors, turret
+  switches).
+- Conversations: "how many did you kill" checks read the maps' body counts as the mod does (they were always
+  false), cycling replies play in order, a finished conversation fires its "_Stopped" triggers, goals can be
+  updated, the player's credits show while choosing, infolinks use the mod's own speakers and portraits.
+- Terminals with a printer attached can print an email (it goes to the DataVault).
+- Not yet: Legendary mode's weapon attributes, the in-game web pages, IRC and the larger terminal games, the mod's
+  own new-game character screen, several one-off weapons.
+
 ### Ragdolls, mods, menu (November 22)
 - Ragdolls fall like people instead of loose capsules (ideas from Euphoria-style active ragdolls): every joint has
   muscles that hold the pose the body was hit in and let go over a fraction of a second (knees first, then the arms,

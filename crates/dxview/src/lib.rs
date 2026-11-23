@@ -25,6 +25,10 @@ mod sdl3pad;
 mod tnmmode;
 mod tnmtriggers;
 mod tnmpower;
+mod tnmitems;
+mod tnmpawn;
+mod tnmworld;
+mod tnmweapon;
 mod trestkon;
 mod radish;
 mod tnmeggs;
@@ -1193,6 +1197,8 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, trestkon::kit_system.after(radish::radish_system).run_if(tnmmode::active))
         .add_systems(First, tnmmode::speed_system)
         .add_systems(Update, tnmban::ban_system.after(ai::npc_system).run_if(tnmmode::active))
+        .add_systems(Update, tnmworld::decal_spawner_system.before(impacts::impacts_system).run_if(tnmmode::active))
+        .add_systems(Update, tnmworld::trip_system.after(security::security_system).before(ai::npc_system).run_if(tnmmode::active))
         .add_systems(Update, tnmach::inventory_system.run_if(tnmmode::active))
         .add_systems(Update, staring::staring_system.before(movers::tick_movers).run_if(tnmmode::active))
         .add_systems(Update, warpzone::warp_system.after(fly))
@@ -3438,6 +3444,10 @@ fn move_params(cx: &FlyCx, w: &Walk, player: &Player, carried_mass: f64, leg_spe
     if let Some(v) = crate::abilities::aug("AugSpeed") {
         params.ground_speed *= v as f64;
         params.jump_z *= v as f64;
+    }
+    // The Nameless Mod's lollerskates (Trestkon.GetCurrentGroundSpeed: Default.GroundSpeed x 17).
+    if crate::tnmitems::skating() {
+        params.ground_speed = player.params.ground_speed * 17.0;
     }
     // Radish Adventure: jumpz 600 and full air control.
     if crate::radish::active() {

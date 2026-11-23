@@ -270,6 +270,15 @@ pub fn is_staring(mover: usize) -> bool {
     STARING.lock().is_ok_and(|s| s.contains(&mover))
 }
 
+static DISABLE: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+
+/// BSPTurretTriggers: the StaringMovers tagged `tag` stop firing (`turret`) or stop following.
+pub fn disable(tag: &str, turret: bool) {
+    if let Ok(mut q) = DISABLE.lock() {
+        q.push((tag.to_string(), turret));
+    }
+}
+
 pub fn event(tag: &str, on: bool) {
     if let Ok(mut q) = EVENTS.lock() {
         if q.len() < 256 {
@@ -580,6 +589,18 @@ pub fn staring_system(
         }
     };
     // Events: each state's Trigger.
+    // TurretDisableTurretTrigger / TurretDisableStaringTrigger.
+    for (tag, turret) in DISABLE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        for t in st.turrets.iter_mut() {
+            if lvl.movers[t.mover].tag.eq_ignore_ascii_case(&tag) {
+                if turret {
+                    t.turret_on = false;
+                } else {
+                    t.staring = false;
+                }
+            }
+        }
+    }
     for (tag, on) in EVENTS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         if !on {
             continue;

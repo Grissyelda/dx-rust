@@ -389,6 +389,14 @@ pub fn frob(
     ignore_locks: bool,
 ) -> Option<String> {
     let info = &level.movers[idx];
+    // The Nameless Mod's KnockableMover (Frob: whatever KnockTrigger names is triggered; the door stays shut).
+    if crate::tnmmode::active() && level.actors[info.actor].class.eq_ignore_ascii_case("KnockableMover") {
+        let k = crate::devices::name_prop(&level.actors[info.actor].props, "KnockTrigger");
+        if !k.is_empty() {
+            crate::tnmtriggers::fire_event(&k);
+        }
+        return None;
+    }
     if !movers.rt[idx].frobbable.unwrap_or(info.frobbable) {
         return None;
     }
@@ -1034,6 +1042,13 @@ pub fn mover_damage_system(
         {
             continue;
         }
+        // The Nameless Mod's Barricade (Barricade.TakeDamage): bullets do nothing; 'Uberexploded' blows it up.
+        let barricade = crate::tnmmode::active() && lvl.actors[info.actor].class.eq_ignore_ascii_case("Barricade");
+        if barricade && ty == "Shot" {
+            continue;
+        }
+        let bypass = bypass || (barricade && ty == "Uberexploded");
+        let dmg = if barricade && ty == "Uberexploded" { 100_000.0 } else { dmg };
         let mut threshold = crate::sound::fprop(p, "minDamageThreshold", 10.0);
         if !rt.breakable.unwrap_or(matches!(
             unreal_pkg::props::find(p, "bBreakable"),

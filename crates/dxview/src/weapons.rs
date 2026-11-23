@@ -52,6 +52,10 @@ pub struct WeaponStats {
     /// Weapon ShakeTime, ShakeMag, ShakeVert (the kick on firing).
     pub shake: [f32; 3],
     pub class: String,
+    /// The Deus Ex weapon this acts as (itself, or what a Nameless Mod weapon copies: tnmweapon::canon).
+    pub kind: String,
+    /// EnviroEffective (0 all, 1 air, 2 water, 3 vacuum, 4 fire, 5 air and water).
+    pub enviro: u8,
     pub name: String,
     pub hit_damage: f32,
     pub shot_time: f32,
@@ -255,7 +259,10 @@ impl WeaponStats {
     /// WeaponDamageType for instant-hit weapons: 'Stunned' with a StunDuration (prod), 'Sabot' with sabot shells,
     /// 'KnockedOut' for the baton, else 'Shot'.
     pub fn damage_type(&self, ammo: Option<&str>) -> &'static str {
-        if self.class == "WeaponBaton" {
+        if let Some(t) = crate::tnmweapon::damage_type(&self.class, ammo, false) {
+            return t;
+        }
+        if self.kind == "WeaponBaton" {
             "KnockedOut"
         } else if self.stun {
             "Stunned"
@@ -268,6 +275,14 @@ impl WeaponStats {
 
     /// TraceFire: instant-hit cone weapons fire 5 slugs; ProjectileFire: cone weapons launch 3.
     pub fn shots_per_fire(&self) -> usize {
+        self.shots_with(self.ammo_class.as_deref())
+    }
+
+    /// The same with the ammo loaded (The Nameless Mod: sabot is one slug).
+    pub fn shots_with(&self, ammo: Option<&str>) -> usize {
+        if let Some(n) = crate::tnmweapon::slugs(self.area_of_effect == 1, self.instant, ammo) {
+            return n;
+        }
         match (self.area_of_effect, self.instant) {
             (1, true) => 5,
             (1, false) => 3,
@@ -322,7 +337,9 @@ impl WeaponStats {
     /// uc: ScriptedPawn.WeaponDamageType
     pub fn ai_damage_type(&self, ammo: Option<&str>) -> &'static str {
         if self.instant {
-            if self.stun {
+            if let Some(t) = crate::tnmweapon::damage_type(&self.class, ammo, false) {
+                t
+            } else if self.stun {
                 "Stunned"
             } else if ammo == Some("AmmoSabot") {
                 "Sabot"
@@ -421,6 +438,12 @@ pub fn weapon_stats(class: &str, p: &[Property]) -> Option<WeaponStats> {
     Some(WeaponStats {
         shake: [fp(p, "ShakeTime", 0.1), fp(p, "ShakeMag", 300.0), fp(p, "ShakeVert", 5.0)],
         class: class.to_string(),
+        kind: crate::tnmweapon::canon(class).to_string(),
+        enviro: match find(p, "EnviroEffective") {
+            Some(Value::Byte(b)) => *b,
+            Some(Value::Int(b)) => *b as u8,
+            _ => 0,
+        },
         name: match find(p, "ItemName") {
             Some(Value::Str(s)) => s.clone(),
             _ => class.to_string(),
@@ -940,7 +963,7 @@ impl Held {
             silencer: stats.silenced,
             laser: stats.has_laser,
             lasing,
-            scope: stats.has_scope && stats.class != "WeaponRifle",
+            scope: stats.has_scope && stats.kind != "WeaponRifle",
         }
     }
 }
@@ -980,7 +1003,7 @@ fn view_defaults(
     let mut d = defaults.to_vec();
     crate::augmentique::apply_weapon_skin(&mut d, &stats.class, &skin, true);
     // A dark Dragon's Tooth (GMDX SetWeaponSkin with the charge used up): the blade sections masked out.
-    if stats.class == "WeaponNanoSword" && DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed) {
+    if stats.kind == "WeaponNanoSword" && DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed) {
         let off: Vec<(u32, String)> = [1u32, 4, 5, 6, 7]
             .iter()
             .map(|&i| (i, "DeusExItems.Skins.PinkMaskTex".to_string()))
@@ -1004,7 +1027,7 @@ static DTS_EMPTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 /// The key `Held::vis` compares.
 fn vis_key(f: crate::visattach::Fitted, stats: &WeaponStats, loaded: bool) -> String {
-    let dts = stats.class == "WeaponNanoSword" && DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed);
+    let dts = stats.kind == "WeaponNanoSword" && DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed);
     format!("{f:?}|{:?}|{loaded}|{}|{dts}", stats.ammo_class, crate::augmentique::player_skin(&stats.class))
 }
 
@@ -1626,7 +1649,7 @@ fn begin_reload_clip(h: &mut Held) {
     if !has("ReloadBegin") && !has("ReloadEnd") {
         if let Some(mut c) = Clip::named(&h.mesh, "Reload", false) {
             let len = c.frames as f32 / c.rate.max(0.1);
-            let offset = match h.stats.class.as_str() {
+            let offset = match h.stats.kind.as_str() {
                 "WeaponPistol" => 1.14,
                 "WeaponRifle" => 1.5,
                 _ => 0.0,
@@ -1730,7 +1753,7 @@ fn build_held(
     }
     let hdtp_mesh = crate::hdtp::is_view_mesh(&stats.class, &stats.view_mesh);
     let sight = sight_point(&am, &parts, muzzle_slot, stats.view_scale, hdtp_mesh);
-    let scope_eye = if stats.class == "WeaponRifle" { scope_eyepiece(&am, &parts, stats.view_scale) } else { None };
+    let scope_eye = if stats.kind == "WeaponRifle" { scope_eyepiece(&am, &parts, stats.view_scale) } else { None };
     if env_on!("DXVIEW_SCOPELOG") {
         println!("SCOPE eyepiece {} {:?}", stats.view_mesh, scope_eye);
     }
@@ -3265,7 +3288,7 @@ fn anim_notifies(h: &mut Held, cx: &mut WeaponCx) {
     {
         h.racked = true;
         let left = *cx.clips.0.get(&h.stats.class).unwrap_or(&0);
-        if h.stats.class == "WeaponSawedOffShotgun" && left > 0 {
+        if h.stats.kind == "WeaponSawedOffShotgun" && left > 0 {
             if let Some(s) = &h.stats.snd.select {
                 crate::sound::play_player(s, 1.0, 1024.0);
             }
@@ -3278,7 +3301,7 @@ fn anim_notifies(h: &mut Held, cx: &mut WeaponCx) {
     {
         h.melee_pending = false;
         // Enhancement: each Dragon's Tooth swing costs bioenergy (GMDX WeaponNanoSword.DrainPower, 5 a use).
-        if h.stats.class == "WeaponNanoSword" && dts_energy() {
+        if h.stats.kind == "WeaponNanoSword" && dts_energy() {
             cx.ph.energy = (cx.ph.energy - DTS_DRAIN).max(0.0);
         }
         let eye = bevy_to_ue(cx.cam.translation.to_array());
@@ -3658,10 +3681,31 @@ fn reload_or_fire(
             crate::sound::play_player(s, 1.0, 1024.0);
         }
         begin_reload_clip(h);
-    } else if h.state == WState::Idle && locked && pulled && h.stats.class == "WeaponNanoSword" && dts_energy() && cx.ph.energy < 1.0 {
+    } else if h.state == WState::Idle && locked && pulled && h.stats.kind == "WeaponNanoSword" && dts_energy() && cx.ph.energy < 1.0 {
         // Enhancement (Dragon's Tooth energy, after GMDX's ChargeManager): no bioenergy, no blade.
         cx.hud.text = "Not enough bioelectric energy".into();
         cx.hud.time_left = 1.5;
+    } else if h.state == WState::Idle
+        && locked
+        && pulled
+        && crate::tnmmode::active()
+        && crate::tnmweapon::needs_air(h.stats.enviro)
+        && crate::zones::no_oxygen(cx.level, cx.player.body.location)
+    {
+        // TNMWeapon.Fire: a weapon that needs air does nothing where there is none (msgNeedOxygen, the dry click);
+        // once per message while the trigger stays down.
+        if cx.hud.time_left < 1.5 {
+            let d = cx.rt_assets.classes.defaults(&h.stats.class);
+            if let Some(Value::Str(m)) = find(&d, "msgNeedOxygen") {
+                cx.hud.text = m.clone();
+                cx.hud.time_left = 2.0;
+            }
+            if !h.stats.hand_to_hand {
+                if let Some(s) = &h.stats.snd.misc[0] {
+                    crate::sound::play_player(s, h.stats.snd.volume * 2.0, 1024.0);
+                }
+            }
+        }
     } else if h.state == WState::Idle && locked && pulled {
         let thrown = h.stats.hand_to_hand && h.stats.reload_count > 0;
         let has_round = if thrown {
@@ -3681,6 +3725,16 @@ fn reload_or_fire(
         } else {
             fire_effects(h, cx, flashes, loaded);
             launch_shot(h, cx, aim);
+            if crate::tnmmode::active() {
+                // TNMWeapon.Fire: each shot costs standing time; the DaiKatana bites its wielder.
+                if !h.stats.hand_to_hand {
+                    crate::hud::shot_bloom(crate::tnmweapon::shot_bloom(h.stats.recoil, h.stats.skill));
+                }
+                let hurt = crate::tnmweapon::self_harm(&h.stats.class);
+                if hurt > 0.0 {
+                    cx.ph.damage(hurt, "Shot", DVec3::ZERO);
+                }
+            }
         }
     }
 }
@@ -3702,7 +3756,7 @@ fn fire_effects(h: &mut Held, cx: &mut WeaponCx, flashes: &mut Query<&mut Muzzle
         h.stats.snd.fire.clone()
     };
     // The flamethrower (FlameThrowerOn) roars once per seven shots instead of every 0.1 s.
-    let flame = h.stats.class == "WeaponFlamethrower";
+    let flame = h.stats.kind == "WeaponFlamethrower";
     let sound_now = !flame || h.flame_shots == 0;
     if flame {
         h.flame_shots = if h.flame_shots == 0 {
@@ -3810,7 +3864,7 @@ fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
     if !h.stats.hand_to_hand {
         let [t, m, v] = h.stats.shake;
         crate::shake::shake_view(t, aim.accuracy * m + m, aim.accuracy * v);
-        let heavy = matches!(h.stats.class.as_str(), "WeaponGEPGun" | "WeaponLAW" | "WeaponSawedOffShotgun" | "WeaponAssaultShotgun");
+        let heavy = matches!(h.stats.kind.as_str(), "WeaponGEPGun" | "WeaponLAW" | "WeaponSawedOffShotgun" | "WeaponAssaultShotgun");
         let s = if heavy { 1.0 } else { (h.stats.hit_damage / 30.0).clamp(0.25, 0.9) };
         crate::dualsense::event(crate::dualsense::Haptic::Shot(s));
     }
@@ -3841,10 +3895,21 @@ fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
             h.last_throw = true;
         }
     }
+    // The Nameless Mod's one-clip weapons (WeaponTNMHideAGun NormalFire / Reload.BeginState; the fire
+    // extinguisher is thrown away empty - deviation: it is simply gone): no rounds left anywhere = the weapon goes.
+    if crate::tnmmode::active() && crate::tnmweapon::single_use(&h.stats.class) && h.stats.reload_count > 0 {
+        let pool = h.stats.ammo_class.as_ref().map_or(0, |a| cx.inv.0.ammo.iter().find(|x| &x.0 == a).map_or(0, |x| x.1));
+        if pool + cx.clips.0.get(&h.stats.class).copied().unwrap_or(0) == 0 {
+            h.last_throw = true;
+        }
+    }
+    // (The Nameless Mod: any hand weapon whose projectile is a ThrownProjectile - mines, trip bombs, beacons...)
     let thrown = matches!(
-        h.stats.class.as_str(),
+        h.stats.kind.as_str(),
         "WeaponLAM" | "WeaponGasGrenade" | "WeaponEMPGrenade" | "WeaponNanoVirusGrenade"
-    );
+    ) || (crate::tnmmode::active()
+        && h.stats.hand_to_hand
+        && h.stats.projectile.as_deref().is_some_and(|p| crate::classtree::is_a(p, "ThrownProjectile")));
     let grenade = h.stats.projectile.clone().filter(|_| thrown);
     if let Some(class) = grenade {
         // Thrown weapons (LAM, gas, EMP): placed on a wall within a foot (NearWallCheck), else thrown.
@@ -3894,7 +3959,7 @@ fn launch_shot(h: &mut Held, cx: &mut WeaponCx, aim: &crate::hud::Aim) {
         }
         // GMDX Plasma Breeder (WeaponPlasmaRifle.OnProjectileFired): a free plasma round every PerkValue
         // (5) bolts fired (never checked against the maximum, as in GMDX).
-        if h.stats.class == "WeaponPlasmaRifle" {
+        if h.stats.kind == "WeaponPlasmaRifle" {
             if let Some(v) = crate::perks::value_if("PerkPlasmaBreeder") {
                 let n = PLASMA_BRED.fetch_add(h.stats.shots_per_fire() as u32, std::sync::atomic::Ordering::Relaxed)
                     + h.stats.shots_per_fire() as u32;
@@ -3931,7 +3996,7 @@ fn blade_lights(h: &Held, cam: &Transform, time: &Time) {
     // WeaponNanoSword: in hand (state Idle and swinging; not while drawn or put away) the blade lights what's round
     // it - LT_Steady, hue 160, saturation 64, brightness 224, radius 4, LE_WateryShimmer. Dark with Dragon's Tooth
     // Uses Bioenergy and no energy left.
-    if h.stats.class == "WeaponNanoSword"
+    if h.stats.kind == "WeaponNanoSword"
         && matches!(h.state, WState::Idle | WState::Firing)
         && !DTS_EMPTY.load(std::sync::atomic::Ordering::Relaxed)
         && !crate::consys::third_person()
@@ -3943,7 +4008,7 @@ fn blade_lights(h: &Held, cam: &Transform, time: &Time) {
     }
     // Emissive Surfaces: the riot prod's arcs light what's round its tip (a dim blue-white flicker), like the
     // Dragon's Tooth's blade does in the original.
-    if h.stats.class == "WeaponProd"
+    if h.stats.kind == "WeaponProd"
         && matches!(h.state, WState::Idle | WState::Firing)
         && crate::relight::emissive_on()
         && !crate::consys::third_person()
@@ -4534,14 +4599,26 @@ pub fn activate_pickup(
     weapons: &mut Weapons,
 ) -> UseResult {
     let class = class.to_string();
-    let d: Option<f32> = if class == "MedKit" { Some(30.0) } else { None };
+    // The Nameless Mod's pickups act as the Deus Ex ones they copy (tnmitems::canon), with their own numbers.
+    let kind = crate::tnmitems::canon(&class).to_string();
+    let cd = rt_assets.classes.defaults(&class);
+    let class_int = |n: &str, def: f32| match unreal_pkg::props::find(&cd, n) {
+        Some(Value::Int(v)) => *v as f32,
+        _ => def,
+    };
+    let d: Option<f32> = if kind == "MedKit" { Some(class_int("healAmount", 30.0)) } else { None };
     let heal = |ph: &mut crate::ai::PlayerHealth, n: f32| {
         ph.heal(n);
     };
     let mut consumed = true;
     let mut msg = String::new();
     let mut weapons_spray = false;
-    match class.as_str() {
+    match crate::tnmitems::activate(&class, &cd, ph) {
+        crate::tnmitems::Used::Consumed(msg) => return UseResult { consumed: true, msg, spray: false },
+        crate::tnmitems::Used::Kept(msg) => return UseResult { consumed: false, msg, spray: false },
+        crate::tnmitems::Used::No => {}
+    }
+    match kind.as_str() {
         "MedKit" => {
             // HealPlayer(healAmount, bUseMedicineSkill): x the Medicine skill's value.
             let n = (d.unwrap_or(30.0) * crate::abilities::skill("SkillMedicine")).floor();
@@ -4640,7 +4717,7 @@ pub fn activate_pickup(
         "VialAmbrosia" => msg = "Strange...nothing happens...".into(),
         "BioelectricCell" => {
             // GMDX Biogenic: PerkValue (5) more.
-            let n = 25.0 + crate::perks::value_if("PerkBiogenic").unwrap_or(0.0);
+            let n = class_int("rechargeAmount", 25.0) + crate::perks::value_if("PerkBiogenic").unwrap_or(0.0);
             ph.energy = (ph.energy + n).min(100.0);
             crate::sound::play_player("DeusExSounds.Generic.BioElectricHiss", 1.0, 256.0);
             msg = format!("Recharged {} points", n as i32);
@@ -4672,10 +4749,15 @@ pub fn activate_pickup(
             zoom.0 = if zoom.0.is_some() { None } else { Some(20.0) };
             consumed = false;
         }
+        c if crate::tnmitems::mask_refused(c, &cd).is_some() => {
+            // GasMask.Activate: its skill must be trained.
+            consumed = false;
+            msg = crate::tnmitems::mask_refused(c, &cd).unwrap_or_default();
+        }
         c if crate::charged::is_charged(c) => {
             // ChargedPickup Activated: bOneUseOnly, so it leaves the hand and runs until used up.
             let d = rt_assets.classes.defaults(&class);
-            if charged.activate(&class, &d) {
+            if charged.activate(c, &d) {
                 let name = match unreal_pkg::props::find(&d, "ItemName") {
                     Some(Value::Str(n)) => n.clone(),
                     _ => class.clone(),

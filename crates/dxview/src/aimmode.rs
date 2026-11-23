@@ -103,7 +103,7 @@ pub fn sightable(h: &crate::weapons::Held) -> bool {
         && !st.has_scope
         && st.class.starts_with("Weapon")
         // No sights to look down: the riot prod, the shoulder-fired launchers, thrown weapons.
-        && !NO_SIGHTS.iter().any(|c| st.class.eq_ignore_ascii_case(c))
+        && !NO_SIGHTS.iter().any(|c| st.kind.eq_ignore_ascii_case(c))
         && st.ammo_class.as_deref().is_some_and(|a| !crate::util::contains_ci(a, "ammonone"))
 }
 

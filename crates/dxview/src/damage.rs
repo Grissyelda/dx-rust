@@ -73,6 +73,8 @@ pub struct Body {
     pub invincible: bool,
     /// Animal.HandleDamage: damage comes straight off Health (no parts), hit location TorsoFront / TorsoBack.
     pub animal: bool,
+    /// A pawn of The Nameless Mod: its extra state and rules (tnmpawn.rs).
+    pub tnm: Option<crate::tnmpawn::TnmBody>,
 }
 
 fn fv(p: &[Property], n: &str, d: f32) -> f32 {
@@ -130,6 +132,7 @@ impl Body {
             height: fv(p, "CollisionHeight", 47.5) as f64,
             invincible: matches!(find(p, "bInvincible"), Some(Value::Bool(true))),
             animal: false,
+            tnm: None,
         }
     }
 
@@ -214,7 +217,10 @@ impl Body {
 
         // ModifyDamage: stunned pawns take 4x; point blank from behind is 10x.
         let mut dmg = hit.damage.floor();
-        if stunned {
+        let tnm_rules = self.tnm.is_some() && !self.animal;
+        if tnm_rules {
+            dmg *= crate::tnmpawn::modify(dt, stunned, off.x < 0.0, hit.attacker_pos.distance(center));
+        } else if stunned {
             dmg *= 4.0;
         } else if off.x < 0.0 && hit.attacker_pos.distance(center) < 64.0 {
             dmg *= 10.0;
@@ -252,12 +258,19 @@ impl Body {
         let head_z = self.height * 0.7;
         let head_y = self.radius * 0.3;
         let arm = self.radius * 0.35;
-        let stun_type = matches!(dt, "Stunned" | "KnockedOut");
+        let stun_type = matches!(dt, "Stunned" | "KnockedOut" | "headstun");
         let mut loc = HitLoc::None;
         if dmg > 0.0 {
             if off.z > head_z {
                 if off.x.abs() < head_y || off.y.abs() < head_y {
-                    self.parts[HEAD] -= if stun_type { dmg } else { dmg * 8.0 };
+                    self.parts[HEAD] -= match &self.tnm {
+                        Some(t) if tnm_rules => match crate::tnmpawn::head_mult(dt, t.helmeted) {
+                            Some(m) => dmg * m,
+                            None => self.parts[HEAD].max(0.0) + 1.0,
+                        },
+                        _ if stun_type => dmg,
+                        _ => dmg * 8.0,
+                    };
                     loc = if off.x < 0.0 {
                         HitLoc::HeadBack
                     } else {

@@ -341,7 +341,9 @@ pub fn build(
 ) -> (Vec<MeshActor>, Vec<ActorInfo>) {
     let mut actors = Vec::new();
     for (i, e) in pkg.exports.iter().enumerate() {
-        let class = pkg.class_name(e.class_index).to_string();
+        // (A mod's thin subclass is listed under the class it stands for - alias.rs; its own defaults are already
+        // in the properties.)
+        let class = crate::alias::of(pkg.class_name(e.class_index));
         if e.size == 0 || e.class_index == 0 || SKIP.contains(&class.as_str()) {
             continue;
         }
@@ -383,7 +385,7 @@ pub fn build(
     if let Ok(h) = LEVEL_EXTRAS.read() {
         if let Some(f) = h.as_ref() {
             let mut patrols = Vec::new();
-            for e in pkg.exports.iter().filter(|e| e.size > 0 && pkg.class_name(e.class_index) == "PatrolPoint") {
+            for e in pkg.exports.iter().filter(|e| e.size > 0 && crate::alias::is(pkg.class_name(e.class_index), "PatrolPoint")) {
                 let Some(p) = classes.actor_properties(pkg, e) else { continue };
                 let Some(Value::Vector(l)) = find(&p, "Location") else { continue };
                 let tag = match find(&p, "Tag") {

@@ -12,6 +12,7 @@ use unreal_pkg::objects::{self, pf, Palette, Texture};
 use unreal_pkg::props::{self, Value};
 use unreal_pkg::{Package, Reader};
 
+pub mod alias;
 pub mod collision;
 pub mod conversations;
 pub mod actors;

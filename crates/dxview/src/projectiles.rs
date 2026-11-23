@@ -178,6 +178,19 @@ fn damage_type_of(n: &str) -> &'static str {
         "flamed" => "Flamed",
         "emp" => "EMP",
         "sabot" => "Sabot",
+        "knockedout" => "KnockedOut",
+        "radiation" => "Radiation",
+        "halongas" => "HalonGas",
+        "shocked" => "Shocked",
+        "nanovirus" => "NanoVirus",
+        // The Nameless Mod's own (tnmpawn.rs).
+        "headstun" => "headstun",
+        "fat" => "Fat",
+        "gibbed" => "gibbed",
+        "nogib" => "nogib",
+        "temporal" => "Temporal",
+        "stunnedtaser" => "StunnedTaser",
+        "uberexploded" => "Uberexploded",
         _ => "Shot",
     }
 }
@@ -263,6 +276,19 @@ pub fn launch_system(
         // Augmentique: rockets from the player's skinned GEP gun.
         if l.from.is_none() && l.class.starts_with("Rocket") {
             crate::augmentique::apply_projectile_skin(&mut d, "WeaponGEPGun");
+        }
+        // The Nameless Mod's glops stick and go off on a fuse: the grenade system flies them.
+        if !ghost && crate::grenades::is_glop(&d) {
+            let sp = match find(&d, "speed") {
+                Some(Value::Float(v)) => *v as f64,
+                _ => 800.0,
+            };
+            let blast = match find(&d, "blastRadius") {
+                Some(Value::Float(v)) => *v as f64,
+                _ => 64.0,
+            };
+            crate::grenades::glop_throw(&l.class, l.pos, l.dir * l.speed.unwrap_or(sp), l.from, blast);
+            continue;
         }
         let f = |n: &str, dflt: f32| match find(&d, n) {
             Some(Value::Float(v)) => *v,
