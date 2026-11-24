@@ -26,6 +26,9 @@ underneath.
 ## Features
 - **The whole game**, faithful by default: the original rules, numbers and quirks, checked against the original
   scripts. Every modern change is an optional switch in *Settings > Enhancements* (one searchable list).
+
+  ![Settings > Enhancements: the Classic / Modern switch and every enhancement in searchable groups](docs/enhancements-menu.png)
+
 - **Multiplayer**:
   - **co-op** for up to 16 players through the story, in one shared world;
   - **Classic deathmatch**: the original multiplayer patch rebuilt (its four game types, rules and screens);
