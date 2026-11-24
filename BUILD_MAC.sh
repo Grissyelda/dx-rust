@@ -2,6 +2,8 @@
 # Builds a shareable copy for Apple Silicon: dist/DX RUST.app (the launcher and the game) and dist/dxrust-macos-arm64.zip.
 # No game files are copied: the player picks their own Deus Ex folder in the launcher.
 # RUST_TOOLCHAIN=<name> selects a rustup toolchain (Bevy needs Rust 1.95 or later).
+# MAC_TARGET=aarch64-apple-darwin builds for Apple Silicon from an Intel Mac (the release workflow's fallback when
+# GitHub's Apple Silicon runners are short of capacity); unset = this Mac's own architecture.
 set -e
 cd "$(dirname "$0")"
 VERSION="${1:-$(git describe --tags --always 2>/dev/null || echo dev)}"
@@ -12,13 +14,20 @@ TOOLCHAIN=()
 # Own build folders, as in BUILD_RELEASE.bat: what is copied below always comes from these two builds, whatever
 # CARGO_TARGET_DIR is set to.
 ROOT="$PWD"
-CARGO_TARGET_DIR="$ROOT/target/dist-build" cargo "${TOOLCHAIN[@]}" build --release -p dxview
-(cd crates/dxlauncher && CARGO_TARGET_DIR="$ROOT/target/dist-launcher" cargo "${TOOLCHAIN[@]}" build --release)
+TARGET_ARGS=()
+OUT=release
+if [ -n "$MAC_TARGET" ]; then
+  rustup target add "$MAC_TARGET"
+  TARGET_ARGS=(--target "$MAC_TARGET")
+  OUT="$MAC_TARGET/release"
+fi
+CARGO_TARGET_DIR="$ROOT/target/dist-build" cargo "${TOOLCHAIN[@]}" build --release -p dxview "${TARGET_ARGS[@]}"
+(cd crates/dxlauncher && CARGO_TARGET_DIR="$ROOT/target/dist-launcher" cargo "${TOOLCHAIN[@]}" build --release "${TARGET_ARGS[@]}")
 
 APP="dist/DX RUST.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/dist-build/release/dxview target/dist-launcher/release/dxlauncher "$APP/Contents/MacOS/"
+cp "target/dist-build/$OUT/dxview" "target/dist-launcher/$OUT/dxlauncher" "$APP/Contents/MacOS/"
 sed "s/VERSION/$VERSION/g" tools/macos/Info.plist > "$APP/Contents/Info.plist"
 cp LICENSE README.md THIRD_PARTY.md "$APP/Contents/Resources/"
 # Relief maps for Remastered Lighting: see BUILD_RELEASE.bat. The game looks for them beside its executable.

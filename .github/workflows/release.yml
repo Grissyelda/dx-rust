@@ -16,6 +16,11 @@ on:
         required: false
         default: "dev"
         type: string
+      mac_runner:
+        description: "macOS runner: macos-latest (Apple Silicon) or macos-15-intel (builds for Apple Silicon from Intel)"
+        required: false
+        default: "macos-latest"
+        type: string
       fast:
         description: "Thin LTO (quicker build): true / false"
         required: false
@@ -28,8 +33,8 @@ env:
 jobs:
   macos:
     if: contains(inputs.platforms, 'macos')
-    runs-on: macos-latest
-    timeout-minutes: 120
+    runs-on: ${{ inputs.mac_runner || 'macos-latest' }}
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,6 +47,9 @@ jobs:
           echo "CARGO_PROFILE_RELEASE_LTO=thin" >> "$GITHUB_ENV"
           echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" >> "$GITHUB_ENV"
       - name: Build
+        env:
+          # An Intel runner builds for Apple Silicon (the release is arm64).
+          MAC_TARGET: ${{ contains(inputs.mac_runner, 'intel') && 'aarch64-apple-darwin' || '' }}
         run: bash BUILD_MAC.sh "${{ inputs.version }}"
       - uses: actions/upload-artifact@v4
         with:
