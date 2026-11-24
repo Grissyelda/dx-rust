@@ -513,6 +513,8 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 fn reset_modules() {
     crate::reskin::reset_level();
     crate::tnmpuzzle::reset_level();
+    crate::tnmcheats::reset_level();
+    crate::tnmpawn::reset_cheats();
     crate::tnminvasion::reset_level();
     crate::warpzone::reset_level();
     crate::staring::reset_level();

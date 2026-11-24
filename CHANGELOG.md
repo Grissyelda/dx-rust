@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### The Nameless Mod: its own menus, music player, notes and HUD details (November 24)
+- Menus: the mod's main menu (its title, buttons and version line; in a game the first button goes back to the
+  title screen), its Settings menu and the screens behind it - Options (with IRC Settings), Display, Sound and
+  Controls with the mod's own art and choices (soundtrack, mouse sensitivity in its 0.1-10 steps, item refusal,
+  IRC messages), and the TNM Settings, Item Refusal and Cheats lists, each switch with its description. The
+  Load and Save screens use the mod's art and wider date column, put the difficulty in front of a new save's
+  name and follow the Use EU Timestamps option. Saving is off where the mod forbids it (after certain story
+  events, in the stealth course, during an infolink unless Allow Saves During Infolinks is on).
+- Cheats: the cheat list runs the mod's cheats - invisibility, god mode, flying and walking, PlayersOnly, the
+  upside-down view, nobody seeing you, every pawn hating or loving you, MassBan, firewalls for all, the "bruh"
+  sounds, burning or killing what you look at, opening the door you look at, a summoned ghand, all keys, items,
+  images, credits and weapons, EquipMe's kit, reset ATMs, shrinking the world, and more. A few that only open
+  the original's developer windows say they aren't in this port.
+- The music player: the Jukebox accessory (once you've finished the game) and the PlayMusicWindow cheat open
+  the mod's music player - play, skip back or forward five seconds, restart, pause, CD names, and set any song
+  as the map's ambient, combat, conversation or death music. Music CDs found in the world unlock songs for it,
+  kept across games.
+- Notes: a fullscreen button on the Goals screen shows only the notes (and back), and F2 at a computer opens
+  the notes over the terminal.
+- HUD: the Moonlight Blade with its bolts on shows the bio cells left on the ammo display; the belt shows the
+  two-mode pistols' mode, the blade's charge, the mod's grenades and mines counted, and a Legendary weapon's
+  name in its attributes' colour; the Enlarged Belt option gives 12 slots (wheel to reach the last two), and a
+  weapon a script took away goes back to its old slot; infolinks type at the mod's slower speed; things that
+  aren't people bark under their item name; medical and repair bot screens close when the bot dies.
+
 ### The Nameless Mod: story leftovers, puzzle machines, invasions (November 24)
 - Weather: the mod's maps now rain and snow where they say - each PrecipitationZone's own rate, radius, wind
   and sound, snowflakes drifting in its snow zones (with crunching footsteps), and rain or snow seen past the

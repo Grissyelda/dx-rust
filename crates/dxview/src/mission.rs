@@ -429,7 +429,7 @@ fn mission00_timer(
         // item and all ammo).
         if fl.get_bool("MunitionsTrooperReady") && (!inv.0.items.is_empty() || !inv.0.ammo.is_empty()) {
             inv.0.items.clear();
-            inv.0.belt = [None; 10];
+            inv.0.belt = [None; 12];
             inv.0.ammo.clear();
             weapons.held = None;
             weapons.pending = None;

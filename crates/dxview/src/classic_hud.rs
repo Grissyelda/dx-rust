@@ -254,7 +254,8 @@ impl Win {
             Win::Hit => (84, 106),
             Win::Compass => (73, 40),
             Win::Ammo => (95, 77),
-            Win::Belt => (541, 69),
+            // The Nameless Mod's Enlarged Belt: 12 slots, 645 wide (tnmHUDObjectBelt.InitWindow).
+            Win::Belt => (if crate::tnmmode::option("bEnlargedBelt") { 645 } else { 541 }, 69),
             Win::Log
             | Win::Received
             | Win::Active
@@ -1575,6 +1576,7 @@ fn window_key(
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             inv.0.belt.hash(&mut h);
+            inv.0.big_belt.hash(&mut h);
             for &i in inv.0.belt.iter().flatten() {
                 if let Some(it) = inv.0.items.get(i) {
                     (&it.def.class, &it.def.name, &it.def.belt_name, &it.def.icon, it.count, it.uid).hash(&mut h);
@@ -2895,7 +2897,15 @@ fn draw_ammo(
         clips_real
     };
     let info_x = 66;
-    if reload > 1 {
+    // The Nameless Mod's Moonlight Blade with its bolts on shows the bio cells it throws them with (none is "N/A"),
+    // and N/A for clips; with them off it reads like any blade.
+    // uc: TNMHUDAmmoDisplay.DrawWindow
+    if crate::tnmmode::active() && class.eq_ignore_ascii_case("WeaponMoonlightBlade") && crate::tnmweapon::moonlight_alt() {
+        let cells: u32 = inv.0.items.iter().filter(|x| x.def.class == "BioelectricCell").map(|x| x.count).sum();
+        let top = if cells > 0 { cells.to_string() } else { "N/A".to_string() };
+        c.text(f, info_x, 26, 20, 9, HAlign::Center, VAlign::Center, col, &top);
+        c.text(f, info_x, 38, 20, 9, HAlign::Center, VAlign::Center, col, "N/A");
+    } else if reload > 1 {
         let t = if reloading {
             "---".to_string()
         } else {
@@ -2999,9 +3009,9 @@ fn ammo_counts(reload: i32, has_ammo_type: bool, amount: i32, loaded: i32) -> (i
 }
 
 /// Belt slot x positions (UI units inside the belt window): 1..9 left to right, then the key ring slot 0.
-fn slot_rect(slot: usize) -> (i32, i32, i32) {
+fn slot_rect(slot: usize, slots: usize) -> (i32, i32, i32) {
     if slot == 0 {
-        (10 + 9 * 51, 6, 44)
+        (10 + (slots as i32 - 1) * 51, 6, 44)
     } else {
         (10 + (slot as i32 - 1) * 51, 6, 51)
     }
@@ -3019,16 +3029,33 @@ fn draw_belt(
     if let Some(t) = hud.ui(assets, "HUDObjectBeltBackground_Left") {
         c.texture(2, 6, 9, 54, 0, 0, &t, crate::menuui::bg_style(), crate::menuui::h_col(0));
     }
+    // The Nameless Mod's Enlarged Belt: 12 slots, the right end at 616 and its own border art (ExtraTexBorder).
+    // uc: tnmHUDObjectBelt.DrawBackground, tnmHUDObjectBelt.DrawBorder, tnmHUDObjectBelt.CreateSlots
+    let slots = inv.0.belt_slots();
+    let big = slots > 10;
     if let Some(t) = hud.ui(assets, "HUDObjectBeltBackground_Right") {
-        c.texture(514, 6, 8, 54, 0, 0, &t, crate::menuui::bg_style(), crate::menuui::h_col(0));
+        c.texture(if big { 616 } else { 514 }, 6, 8, 54, 0, 0, &t, crate::menuui::bg_style(), crate::menuui::h_col(0));
     }
-    for (name, x, w) in [
-        ("HUDObjectBeltBorder_1", 0, 256),
-        ("HUDObjectBeltBorder_2", 256, 256),
-        ("HUDObjectBeltBorder_3", 512, 29),
-    ] {
-        if let Some(t) = hud.ui(assets, name) {
-            c.texture(x, 0, w, 69, 0, 0, &t, crate::menuui::border_style(), crate::menuui::border_col());
+    if big {
+        let d = hud.defaults(assets, "tnmHUDObjectBelt").to_vec();
+        for (i, (x, w)) in [(0, 256), (256, 256), (512, 133)].into_iter().enumerate() {
+            let path = d.iter().find(|p| p.name.eq_ignore_ascii_case("ExtraTexBorder") && p.index as usize == i).and_then(|p| match &p.value {
+                Value::Path(p) => Some(p.clone()),
+                _ => None,
+            });
+            if let Some(t) = path.and_then(|p| hud.tex(assets, &p)) {
+                c.texture(x, 0, w, 69, 0, 0, &t, crate::menuui::border_style(), crate::menuui::border_col());
+            }
+        }
+    } else {
+        for (name, x, w) in [
+            ("HUDObjectBeltBorder_1", 0, 256),
+            ("HUDObjectBeltBorder_2", 256, 256),
+            ("HUDObjectBeltBorder_3", 512, 29),
+        ] {
+            if let Some(t) = hud.ui(assets, name) {
+                c.texture(x, 0, w, 69, 0, 0, &t, crate::menuui::border_style(), crate::menuui::border_col());
+            }
         }
     }
     let cell = hud.ui(assets, "HUDObjectBeltBackground_Cell");
@@ -3037,8 +3064,8 @@ fn draw_belt(
     ]
     .map(|n| hud.ui(assets, &format!("PersonaItemHighlight_{n}")));
     let held_class = snap.held.as_ref().map(|h| h.class.clone());
-    for slot in 0..10usize {
-        let (sx, sy, sw) = slot_rect(slot);
+    for slot in 0..slots {
+        let (sx, sy, sw) = slot_rect(slot, slots);
         let sh = 54;
         // DrawHUDBackground.
         if let Some(t) = &cell {
@@ -3091,17 +3118,13 @@ fn draw_belt(
                 [255, 255, 255],
             );
             if let Some(f) = font {
-                c.text(
-                    f,
-                    sx + 1,
-                    sy + 42,
-                    42,
-                    7,
-                    HAlign::Center,
-                    VAlign::Center,
-                    COL_SLOT_TEXT,
-                    &desc,
-                );
+                // tnmHUDObjectSlot.DrawWindow: a Legendary weapon's label in its attributes' colour, 1 unit right.
+                // uc: tnmHUDObjectSlot.DrawWindow
+                let (lx, lcol) = match class.as_deref().filter(|_| crate::tnmmode::active()) {
+                    Some(cl) => (sx + 2, crate::legendary::attribute_color(crate::legendary::mask_of(cl)).unwrap_or(COL_SLOT_TEXT)),
+                    None => (sx + 1, COL_SLOT_TEXT),
+                };
+                c.text(f, lx, sy + 42, 42, 7, HAlign::Center, VAlign::Center, lcol, &desc);
                 if !text.is_empty() {
                     c.text(
                         f,
@@ -3177,7 +3200,46 @@ fn slot_text(
                     .str_default(assets, &current, "beltDescription")
                     .unwrap_or_default();
             }
-            if matches!(
+            if crate::tnmmode::active() {
+                // tnmHUDObjectSlot.UpdateItemText: a two-mode TNMWeapon shows its mode instead of the ammo, the
+                // Moonlight Blade with its bolts on says so, and the mod's own throwables (and the hide-a-gun,
+                // always) show their count.
+                // uc: tnmHUDObjectSlot.UpdateItemText
+                let fire_mode = matches!(find(&d, "busefiremode"), Some(Value::Bool(true)));
+                if fire_mode && !text.is_empty() {
+                    let key = if crate::tnmweapon::double_both(&class) { "belttextDoubleFire" } else { "belttextAltFire" };
+                    text = match find(&d, key).or_else(|| find(&d, "belttext")) {
+                        Some(Value::Str(t)) => t.clone(),
+                        _ => text,
+                    };
+                } else if text.is_empty()
+                    && class.eq_ignore_ascii_case("WeaponMoonlightBlade")
+                    && crate::tnmweapon::moonlight_alt()
+                {
+                    if let Some(Value::Str(t)) = find(&d, "strOvercharged") {
+                        text = t.clone();
+                    }
+                }
+                let counted = [
+                    "WeaponMine",
+                    "WeaponPlasmaNade",
+                    "WeaponTNMEMPGrenade",
+                    "WeaponTNMLAM",
+                    "WeaponTNMNanoVirusGrenade",
+                    "WeaponTripBomb",
+                    "WeaponMolBottle",
+                    "WeaponTNMGasGrenade",
+                    "WeaponFirewallBeacon",
+                    "WeaponTNMHideAGun",
+                ];
+                if counted.iter().any(|c| crate::classtree::is_a(&class, c)) {
+                    let n = hud_ammo(inv, &ammo_name, it);
+                    if n > 1 || crate::classtree::is_a(&class, "WeaponTNMHideAGun") {
+                        let label = hud.str_default(assets, "HUDObjectSlot", "CountLabel").unwrap_or_else(|| "COUNT:".into());
+                        text = format!("{label} {n}");
+                    }
+                }
+            } else if matches!(
                 crate::tnmweapon::canon(class.as_str()),
                 "WeaponNanoVirusGrenade" | "WeaponGasGrenade" | "WeaponEMPGrenade" | "WeaponLAM"
             ) {

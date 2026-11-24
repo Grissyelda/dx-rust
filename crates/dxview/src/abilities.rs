@@ -27,7 +27,7 @@ static STATE: Mutex<Option<Abilities>> = Mutex::new(None);
 /// so a mod weapon's GoverningSkill or a script naming its own class finds the same skill.
 static ALIASES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-fn canon(class: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn canon(class: &str) -> std::borrow::Cow<'_, str> {
     if let Ok(g) = ALIASES.lock() {
         if let Some((_, b)) = g.iter().find(|(o, _)| o.eq_ignore_ascii_case(class)) {
             return std::borrow::Cow::Owned(b.clone());
@@ -625,7 +625,7 @@ pub static CHEAT_INVISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::A
 pub fn invisible_to(robot: bool, camo: bool) -> bool {
     // A player using a computer is bIgnore (Computers.ChangePlayerVisibility): pawns don't see him.
     // The Nameless Mod's PlayerVisibilityTrigger hides the player (bHidden) in its scripted scenes.
-    camo || CHEAT_INVISIBLE.load(std::sync::atomic::Ordering::Relaxed) || crate::computers::player_ignored()
+    camo || CHEAT_INVISIBLE.load(std::sync::atomic::Ordering::Relaxed) || crate::tnmcheats::despot() || crate::computers::player_ignored()
         || crate::tnmtriggers::player_hidden() || crate::tnmpower::shadowed() || if robot {
         aug_active("AugRadarTrans")
     } else {

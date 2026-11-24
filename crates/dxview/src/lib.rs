@@ -46,6 +46,8 @@ mod tnmclicker;
 mod tnmconsole;
 mod tnmpc;
 mod tnmpuzzle;
+mod jukebox;
+mod tnmcheats;
 mod tnminvasion;
 mod legendary;
 mod scripted_tv;
@@ -560,10 +562,11 @@ fn shot_system(
 }
 
 /// Developer aid: `DXVIEW_SHOT_TIMES="dir;t1,t2,..."` saves a screenshot at each of those seconds after start
-/// (game time) without touching the camera - for cut scenes - and exits after the last.
+/// (game time; real time with DXVIEW_SHOT_REAL=1) without touching the camera - for cut scenes - and exits after the last.
 fn timed_shot_system(
     mut commands: Commands,
     time: Res<Time>,
+    real: Res<Time<Real>>,
     mut done: Local<usize>,
     mut cfg: Local<Option<Option<(String, Vec<f32>)>>>,
     mut exit: MessageWriter<AppExit>,
@@ -574,7 +577,8 @@ fn timed_shot_system(
         Some((dir.to_string(), ts.split(',').filter_map(|t| t.trim().parse().ok()).collect()))
     });
     let Some((dir, ts)) = cfg.as_ref() else { return };
-    let t = time.elapsed_secs();
+    // DXVIEW_SHOT_REAL=1: real seconds (menus pause game time).
+    let t = if env_on!("DXVIEW_SHOT_REAL") { real.elapsed_secs() } else { time.elapsed_secs() };
     if let Some(&want) = ts.get(*done) {
         if t >= want {
             let path = format!("{dir}/t{:05.1}.png", want);
@@ -1175,6 +1179,7 @@ fn add_input_systems(app: &mut App) {
                 .after(classic_hud::classic_hud_system),
         )
         .add_systems(Update, outfit_view::outfit_view_system.after(inventory_screen::inventory_screen_system))
+        .add_systems(Update, inventory_screen::notes_light_z_system.after(inventory_screen::inventory_screen_system))
         .add_systems(Update, newgame_view::newgame_view_system.after(menus::menu_system))
         .add_systems(
             Update,
@@ -1218,6 +1223,7 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, scripted_tv::tv_system.run_if(tnmmode::active))
         .add_systems(Update, texctl::texctl_system.run_if(tnmmode::active))
         .add_systems(Update, reskin::reskin_system.run_if(tnmmode::active))
+        .add_systems(Update, tnmcheats::cheat_system.run_if(tnmmode::active))
         .add_systems(Update, tnminvasion::invasion_system.run_if(tnmmode::active))
         .add_systems(Update, legendary::legendary_system.run_if(tnmmode::active))
         .add_systems(Update, (tnmpawn::aug_system, tnmpawn::respawn_system).run_if(tnmmode::active).after(ai::npc_system))
@@ -2759,7 +2765,9 @@ fn fly(
     // Leaning rolls the view: ViewRotation.Roll = curLeanDist * 20 (Unreal units).
     // ViewShake adds its own roll and eye bob (PlayerPawn.ViewShake).
     let (shake_roll, shake_vert) = crate::shake::tick(time.delta_secs());
-    let roll = (((player.lean + player.peek) * 20.0 + shake_roll) / 65536.0 * std::f64::consts::TAU) as f32;
+    // The Nameless Mod's AustralianOutback cheat: the view upside down (ViewRotation.Roll + 32768).
+    let upside = if crate::tnmcheats::australian() { 32768.0 } else { 0.0 };
+    let roll = (((player.lean + player.peek) * 20.0 + shake_roll + upside) / 65536.0 * std::f64::consts::TAU) as f32;
     tf.rotation = Quat::from_rotation_y(cam.yaw)
         * Quat::from_rotation_x(cam.pitch)
         * Quat::from_rotation_z(-roll);
@@ -2870,8 +2878,11 @@ fn look_step(
 
 /// Debug Mode's V: fly mode on / off; leaving it drops the body where the camera is.
 fn toggle_noclip(cx: &FlyCx, player: &mut ResMut<Player>, tf: &Transform) {
-    if cx.keys.just_pressed(KeyCode::KeyV) && crate::settings::debug_mode() {
+    // The Nameless Mod's Fly / Ghost / Walk cheats ask for a state.
+    let cheat = crate::tnmcheats::take_noclip().filter(|&on| on != player.noclip);
+    if cheat.is_some() || (cx.keys.just_pressed(KeyCode::KeyV) && crate::settings::debug_mode()) {
         player.noclip = !player.noclip;
+        crate::tnmcheats::note_noclip(player.noclip);
         if !player.noclip {
             // Drop the body where the camera is.
             let ue = bevy_to_ue(tf.translation.to_array());

@@ -32,7 +32,17 @@ use imsim_core::movement::CollisionWorld;
 use std::sync::Mutex;
 
 pub fn enabled() -> bool {
-    setting!("ThirdPerson") > 0.5
+    setting!("ThirdPerson") > 0.5 || BEHIND_VIEW.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The Nameless Mod's BehindView cheat: third person on / off whatever the setting says.
+static BEHIND_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn cheat_toggle() {
+    let on = !BEHIND_VIEW.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut st) = STATE.lock() {
+        st.active = on;
+    }
 }
 
 #[derive(Clone, Copy, Default)]

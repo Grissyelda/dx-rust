@@ -76,6 +76,35 @@ pub mod att {
     pub const FAITHFUL: u8 = 58;
 }
 
+/// TNMWeapon.GetAttributeColor: the colour a weapon's belt label takes, by the group its attributes fall in (the
+/// first group holding one of them wins). None for a weapon without attributes.
+// uc: TNMWeapon.GetAttributeColor
+pub fn attribute_color(mask: u64) -> Option<[u8; 3]> {
+    use att::*;
+    if mask == 0 {
+        return None;
+    }
+    let any = |l: &[u8]| l.iter().any(|a| has(mask, *a));
+    Some(if any(&[
+        DESPERATE, VALIANT, OON, RUTHLESS, VENOMOUS, DOUBLE_BARRELED, LAMAR, JUNKIE, EXPLOSIVE, HUNTER, LOW_TECH,
+        AUGMENTED, TECHNOPHOBIC, NARCISSIAN, LUCKY, PINPOINT, ARMOR_PIERCING, ASSASSIN, EMBIGGENING, FOCUSED, FAITHFUL,
+    ]) {
+        [170, 0, 0]
+    } else if any(&[FLEETING, LUMINOUS]) {
+        [56, 243, 171]
+    } else if any(&[
+        CRAZED, ENVIRONMENTAL, LEECHING, MESSY, GASEOUS, IRRITATING, FRYING, QUAKING, TRACKING, PARALYZING, INTENSE,
+        SWIFT, RESOURCEFUL, PUNCTURING, PHREAKING, PENETRATIVE, PANICKED, PAINFUL, IMMOLATIVE, INCENDIARY, BLINDING,
+        DISMANTLING, ENERGIZED,
+    ]) {
+        [112, 176, 74]
+    } else if any(&[DIRECTED, LONG, DOCILE, LIGHTENED, ZOOMED, WILD, LUBRICATED, SHRUNKEN, SILENCED, RAPID, PRECISE, ENLARGED]) {
+        [207, 106, 50]
+    } else {
+        [134, 80, 172]
+    })
+}
+
 pub fn has(mask: u64, a: u8) -> bool {
     mask & (1u64 << a) != 0
 }

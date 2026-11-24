@@ -508,8 +508,13 @@ static TNM_ACCOUNTS: Mutex<Option<Vec<Account>>> = Mutex::new(None);
 /// The accounts Trestkon.CreateATMAccountManager starts the game with: read from the player's own copy of the mod
 /// (the assignments in that function's script text; the training map has its own single account).
 fn tnm_starting_accounts(assets: &mut RuntimeAssets, training: bool) -> Vec<Account> {
+    accounts_from(assets, "function CreateATMAccountManager", training)
+}
+
+/// The UserList assignments in one of Trestkon's functions (CreateATMAccountManager, or the ResetATMs cheat).
+fn accounts_from(assets: &mut RuntimeAssets, func: &str, training: bool) -> Vec<Account> {
     let Some(src) = assets.classes.script_text("Trestkon") else { return Vec::new() };
-    let Some(start) = src.find("function CreateATMAccountManager") else { return Vec::new() };
+    let Some(start) = src.find(func) else { return Vec::new() };
     let body = &src[start..];
     let body = &body[..body.find("\nfunction ").or_else(|| body[1..].find("function ").map(|i| i + 1)).unwrap_or(body.len())];
     // The training branch is the block after the first test of the training map's name; the rest is the game's.
@@ -585,6 +590,17 @@ pub fn tnm_accounts_add(adds: &[(usize, i32)]) {
             if let Ok(mut q) = TNM_ACCOUNT_ADDS.lock() {
                 q.extend_from_slice(adds);
             }
+        }
+    }
+}
+
+/// Trestkon.ResetATMs (a cheat): the accounts as that function sets them.
+// uc: Trestkon.ResetATMs
+pub fn tnm_accounts_cheat_reset(assets: &mut RuntimeAssets) {
+    let v = accounts_from(assets, "exec function ResetATMs", false);
+    if !v.is_empty() {
+        if let Ok(mut g) = TNM_ACCOUNTS.lock() {
+            *g = Some(v);
         }
     }
 }
@@ -3710,16 +3726,29 @@ fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWh
                     .any(|k| binds.keys.just_pressed(*k));
             let over_choice = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(fr.mouse, *r)).is_some_and(|h| matches!(h.0, Wid::Choice(_)));
             let right = binds.buttons.just_pressed(MouseButton::Right) && !over_choice;
-            leave |= walk || right;
+            leave |= (walk || right) && !crate::persona::notes_light_recent();
         }
         if leave {
             t.close_screen("EXIT", &mut wx);
         }
+        // The Nameless Mod: F2 (not while typing) opens the light notes screen over the terminal, which then has the
+        // keys and mouse until it closes (tnmNetworkTerminal.VirtualKeyPressed, TNMPersonaScreenNotesLight).
+        // uc: tnmNetworkTerminal.VirtualKeyPressed
+        if crate::tnmmode::active() && binds.keys.just_pressed(KeyCode::F2) && !matches!(t.focus, Some(Wid::Edit(_))) && !crate::persona::notes_light() {
+            crate::persona::set_notes_light(true);
+            crate::inventory_screen::request_open(crate::persona::SCREEN_GOALS);
+        }
+        let notes_up = crate::persona::notes_light_recent();
         // ---- input (hits from the last frame)
         let hover = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(fr.mouse, *r)).map(|(w, _, e)| (*w, *e));
-        term_mouse(t, &mut wx, binds, fr, hover, dt);
-        let wheel_lines = term_wheel(t, wheel, hover.map(|h| h.0));
-        term_keys(t, &mut wx, binds);
+        let wheel_lines = if notes_up {
+            Default::default()
+        } else {
+            term_mouse(t, &mut wx, binds, fr, hover, dt);
+            let n = term_wheel(t, wheel, hover.map(|h| h.0));
+            term_keys(t, &mut wx, binds);
+            n
+        };
         // ---- ticking
         tick_hack(t, &mut wx, dt, &fr.fill);
         let origin = (t.comp_rect.0 + t.game_origin.0, t.comp_rect.1 + t.game_origin.1);

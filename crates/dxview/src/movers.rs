@@ -464,6 +464,8 @@ pub fn frob(
 /// Doors pawns open (ScriptedPawn.FrobDoor): (mover, pawn blocker) frobbed, or a tag triggered by the door's button.
 pub enum PawnDoor {
     Frob(usize, usize),
+    /// Opened by nobody in particular (The Nameless Mod's OpenSesame cheat): as a pawn's frob, locked or not.
+    Open(usize),
     Trigger(String, usize),
 }
 static PAWN_DOORS: std::sync::Mutex<Vec<PawnDoor>> = std::sync::Mutex::new(Vec::new());
@@ -522,6 +524,11 @@ pub fn tick_movers(
                 if i < movers.rt.len() {
                     frob_by_pawn(level, &mut movers, i);
                     movers.rt[i].waiting_pawn = Some(pawn);
+                }
+            }
+            PawnDoor::Open(i) => {
+                if i < movers.rt.len() {
+                    frob_by_pawn(level, &mut movers, i);
                 }
             }
             PawnDoor::Trigger(tag, pawn) => {

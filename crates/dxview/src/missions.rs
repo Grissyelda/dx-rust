@@ -160,6 +160,12 @@ pub enum PlayerReq {
     SoundVolume(Option<f32>),
     /// The debug menu's DeusExPlayer cheats: AllHealth, AllEnergy, AllAmmo, AllWeapons, AllCredits, AllSkills.
     Cheat(&'static str),
+    /// DeusExPlayer.Give for each class (weapons with their rounds, ammo, pickups): The Nameless Mod's EquipMe.
+    Give(Vec<String>),
+    /// Skill CurrentLevel by skill class (EquipMe).
+    Skills(Vec<(String, u8)>),
+    /// DeusExPlayer.CatchFire (The Nameless Mod's ChemMan cheat).
+    CatchFire,
 }
 
 /// Every player weapon (DeusExPlayer.AllWeapons).
@@ -2119,6 +2125,8 @@ pub fn mission_fx_system(
                     if inv.0.items.is_empty() {
                         break;
                     }
+                    // TNMWeapon.lastBeltPos: where it sat on the belt, for when it's picked up again.
+                    let last_belt = inv.0.belt_pos(0);
                     let item = inv.0.remove(0);
                     let class = item.def.class.clone();
                     if weapons.held.as_ref().is_some_and(|h| h.stats.class == class) {
@@ -2135,13 +2143,16 @@ pub fn mission_fx_system(
                     for (k, a) in item.data.iter().enumerate() {
                         props.push(Property { name: "AddAugs".into(), index: k as u32, value: Value::Name(a.clone()) });
                     }
+                    if let (true, Some(b)) = (crate::tnmmode::active() && item.def.kind == imsim_core::inventory::ItemKind::Weapon, last_belt) {
+                        props.push(Property { name: "lastBeltPos".into(), index: 0, value: Value::Int(b as i32) });
+                    }
                     println!("MISSION inventory: {class} left at {at:.0}");
                     throws.0.push((class, at, DVec3::ZERO, None, props));
                 }
             }
             PlayerReq::RemoveAll => {
                 inv.0.items.clear();
-                inv.0.belt = [None; 10];
+                inv.0.belt = [None; 12];
                 inv.0.ammo.clear();
                 weapons.held = None;
                 weapons.pending = None;
@@ -2158,6 +2169,43 @@ pub fn mission_fx_system(
             PlayerReq::Quote(lines, secs) => crate::classic_hud::quote_text(&lines, secs),
             PlayerReq::Credits => crate::credits::show(),
             PlayerReq::SoundVolume(v) => crate::sound::set_instant_sound_volume(v),
+            PlayerReq::Give(list) => {
+                for class in list {
+                    let d = assets.classes.defaults(&class).to_vec();
+                    if d.is_empty() {
+                        continue;
+                    }
+                    if crate::classtree::is_a(&class, "Weapon") || unreal_pkg::props::find(&d, "AmmoName").is_some() {
+                        let _ = crate::pickups::give_weapon(&mut inv.0, &class, &d, 0, &mut assets);
+                    } else if crate::classtree::is_a(&class, "Ammo") || unreal_pkg::props::find(&d, "AmmoAmount").is_some() {
+                        let n = match unreal_pkg::props::find(&d, "AmmoAmount") {
+                            Some(Value::Int(n)) => (*n).max(1) as u32,
+                            _ => 1,
+                        };
+                        match inv.0.ammo.iter_mut().find(|x| x.0.eq_ignore_ascii_case(&class)) {
+                            Some(x) => x.1 += n,
+                            None => inv.0.ammo.push((class.clone(), n)),
+                        }
+                    } else {
+                        let _ = inv.0.pick_up(&crate::pickups::item_def(&class, &d), 1);
+                    }
+                }
+            }
+            PlayerReq::CatchFire => {
+                if ph.on_fire.is_none() {
+                    ph.on_fire = Some(0.0);
+                }
+            }
+            PlayerReq::Skills(list) => {
+                if let Some(a) = crate::abilities::lock().as_mut() {
+                    for (class, level) in list {
+                        let canon = crate::abilities::canon(&class);
+                        if let Some(sk) = a.skills.list.iter_mut().find(|s| s.def.class.eq_ignore_ascii_case(canon.as_ref()) || s.def.class.eq_ignore_ascii_case(&class)) {
+                            sk.level = (level as usize).min(3);
+                        }
+                    }
+                }
+            }
             PlayerReq::Cheat(c) => match c {
                 "AllHealth" => {
                     ph.heal(10000.0);

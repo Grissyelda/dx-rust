@@ -68,6 +68,11 @@ pub fn intro_map() -> bool {
     MISSION.load(Ordering::Relaxed) < 0
 }
 
+/// The map's DeusExLevelInfo.MissionNumber.
+pub fn mission() -> i32 {
+    MISSION.load(Ordering::Relaxed)
+}
+
 #[derive(Component)]
 pub struct MenuBackdrop;
 
@@ -252,8 +257,52 @@ struct MenuBtn {
     enabled: bool,
 }
 
+static TNM_VERSION_LINE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// What kind of window a pushed class is: The Nameless Mod's subclasses of Deus Ex's screens act as those.
+fn tnm_role(class: &str) -> &str {
+    if !crate::tnmmode::active() {
+        return class;
+    }
+    const ROLES: [(&str, &str); 12] = [
+        ("tnmMenuSettings", "MenuSettings"),
+        ("tnmMenuMain", "MenuMain"),
+        ("TNMMenuMainInGame", "MenuMain"),
+        ("TNMMenuScreenDisplay", "MenuScreenDisplay"),
+        ("TNMMenuScreenSound", "MenuScreenSound"),
+        ("TNMMenuScreenControls", "MenuScreenControls"),
+        ("TNMMenuScreenOptions", "MenuScreenOptions"),
+        ("tnmMenuScreenCustomizeKeys", "MenuScreenCustomizeKeys"),
+        ("TNMMenuScreenLoadGame", "MenuScreenLoadGame"),
+        ("TNMMenuScreenSaveGame", "MenuScreenSaveGame"),
+        ("TNMAchievementsMenu", "MenuScreenAchievements"),
+        ("TNMMenuSelectDifficulty", "tnmMenuSelectDifficulty"),
+    ];
+    ROLES.iter().find(|(t, _)| t.eq_ignore_ascii_case(class)).map(|(_, r)| *r).unwrap_or(class)
+}
+
+/// The class a menu window is built from: The Nameless Mod's main menus stand in for MenuMain.
+fn main_menu_class(class: &str) -> &str {
+    if class == "MenuMain" && crate::tnmmode::active() {
+        if intro_map() {
+            "tnmMenuMain"
+        } else {
+            "TNMMenuMainInGame"
+        }
+    } else {
+        class
+    }
+}
+
+/// The main menu's strings (message boxes): from The Nameless Mod's menu while it plays.
+fn main_defaults(assets: &mut RuntimeAssets) -> std::sync::Arc<[Property]> {
+    assets.classes.defaults(main_menu_class("MenuMain"))
+}
+
 fn menu_buttons(assets: &mut RuntimeAssets, class: &str) -> (Vec<MenuBtn>, i32, i32) {
     let d = assets.classes.defaults(class);
+    // Invoked classes are object indices in the menu class's own package.
+    let pkg = assets.classes.package_of(class).unwrap_or_else(|| "deusex".into());
     let names: Vec<String> = indexed(&d, "ButtonNames")
         .into_iter()
         .filter_map(|(_, v)| match v {
@@ -274,7 +323,7 @@ fn menu_buttons(assets: &mut RuntimeAssets, class: &str) -> (Vec<MenuBtn>, i32, 
         let invoke_i = r.compact_index().unwrap_or(0);
         let key = r.fstring().unwrap_or_default();
         let invoke = if invoke_i != 0 {
-            assets.classes.packages.get("deusex").map(|p| short(&p.object_path(invoke_i))).unwrap_or_default()
+            assets.classes.packages.get(&pkg).map(|p| short(&p.object_path(invoke_i))).unwrap_or_default()
         } else {
             String::new()
         };
@@ -320,7 +369,10 @@ pub const RESOLUTIONS: &[(u32, u32)] = &[
 
 fn choice(assets: &mut RuntimeAssets, class: &str) -> Choice {
     let d = assets.classes.defaults(class);
-    let key = class.trim_start_matches("MenuChoice_").to_string();
+    let mut key = class.trim_start_matches("MenuChoice_").to_string();
+    if let Some(c) = tnm_choice(&d, class, &mut key) {
+        return c;
+    }
     let enums: Vec<String> = indexed(&d, "enumText")
         .into_iter()
         .filter_map(|(_, v)| match v {
@@ -375,6 +427,85 @@ fn choice(assets: &mut RuntimeAssets, class: &str) -> Choice {
         dropdown: key == "Resolution",
         key,
     }
+}
+
+/// The Nameless Mod's choices on its settings screens: which of our settings each one is.
+/// * Ones that set a Trestkon variable (configSetting "Trestkon bX", the soundtrack) are its option flags.
+/// * The rain multiplier is kept (TnmRainMultiplier); the mod's own rain never reads Trestkon.rainMultiplier, so it
+///   changes nothing there either.
+/// * Mouse sensitivity steps 0.1 .. 0.9 then 1 .. 10 (TNMMenuChoice_MouseSensitivity.SetEnumerators).
+/// * Item Refusal opens its screen.
+/// * The renderer, sample rate / quality, effects channels, surround, 3D hardware, field of view and UI scaling are
+///   ours (Display's own field of view and HUD Scale stand in): their keys are dropped with Deus Ex's.
+// uc: MenuChoice_WeatherMult.SaveSetting, TNMMenuChoice_Soundtrack.SaveSetting, TNMMenuChoice_MouseSensitivity.SetEnumerators
+// uc: TNMMenuChoice_ItemRefusal.ButtonActivated
+fn tnm_choice(d: &[Property], class: &str, key: &mut String) -> Option<Choice> {
+    let renamed = match class {
+        "TNMMenuChoice_RenderDevice" | "MenuChoice_TNMRenderDevice" => Some("RenderDevice"),
+        "MenuChoice_TNMResolution" => Some("Resolution"),
+        "MenuChoice_TNMSampleRate" => Some("SampleRate"),
+        "MenuChoice_TNMSoundQuality" => Some("SoundQuality"),
+        "TNMMenuChoice_EffectsChannels" => Some("EffectsChannels"),
+        "tnmMenuChoice_SurroundSound" => Some("SurroundSound"),
+        "MenuChoice_TNMUse3DHardware" => Some("Use3DHardware"),
+        "TNMMenuChoiceFOV" => Some("TnmFOV"),
+        "TNMMenuChoice_UIScaling" => Some("TnmUIScaling"),
+        _ => None,
+    };
+    if let Some(k) = renamed {
+        *key = k.to_string();
+        return None;
+    }
+    let base = |key: String, kind: ChoiceKind, value: f32| Choice {
+        label: pstr(d, "actionText"),
+        help: pstr(d, "HelpText"),
+        kind,
+        value,
+        saved: value,
+        info_w: pint(d, "defaultInfoWidth", 77),
+        info_x: pint(d, "defaultInfoPosX", 270),
+        control_x: pint(d, "choiceControlPosX", 270),
+        voff: pint(d, "buttonVerticalOffset", 0),
+        dropdown: false,
+        key,
+    };
+    let enums = || -> Vec<String> {
+        indexed(d, "enumText")
+            .into_iter()
+            .filter_map(|(_, v)| match v {
+                Value::Str(s) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let option = |var: &str| -> Choice {
+        let v = if crate::tnmmode::option(var) { 1.0 } else { 0.0 };
+        base(crate::tnmmode::option_key(var), ChoiceKind::Enum(enums()), v)
+    };
+    if let Some(var) = pstr(d, "configSetting").strip_prefix("Trestkon ") {
+        return Some(option(var.trim()));
+    }
+    match class {
+        "TNMMenuChoice_Soundtrack" => Some(option("bAltSoundtrack")),
+        "MenuChoice_WeatherMult" => Some(base("TnmRainMultiplier".into(), ChoiceKind::Enum(enums()), crate::settings::get("TnmRainMultiplier"))),
+        "TNMMenuChoice_MouseSensitivity" => {
+            let labels: Vec<String> = (0..9).map(|i| format!("0.{}", i + 1)).chain((9..19).map(|i| (i - 8).to_string())).collect();
+            let s = crate::settings::mouse_sensitivity();
+            let tick = if s < 1.0 { s * 10.0 - 1.0 } else { s + 8.0 };
+            Some(base("MouseSensitivity".into(), ChoiceKind::Enum(labels), tick.round().clamp(0.0, 18.0)))
+        }
+        "TNMMenuChoice_ItemRefusal" => Some(base(String::new(), ChoiceKind::Action { action: 1, invoke: "TNMMenuScreenItemRefusal".into() }, 0.0)),
+        _ => None,
+    }
+}
+
+/// A choice's value as the setting keeps it (The Nameless Mod's sensitivity list is a step number).
+fn setting_value(c: &Choice) -> f32 {
+    if c.key == "MouseSensitivity" && matches!(c.kind, ChoiceKind::Enum(_)) {
+        let t = c.value.round();
+        return if t < 9.0 { (t + 1.0) / 10.0 } else { t - 8.0 };
+    }
+    c.value
 }
 
 /// Our own choice: HUD Scale on the Display screen.
@@ -611,6 +742,8 @@ impl Keys {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum MsgPurpose {
     Exit,
+    /// The Nameless Mod's in-game menu: back to the title screen.
+    TitleScreen,
     AskToTrain,
     Info,
     NameBlank,
@@ -855,6 +988,10 @@ enum Body {
     Loadout(LoadEdit),
     /// Ours: Settings > Mods, the mod manager (modscreen.rs).
     Mods(crate::modscreen::ModsView),
+    /// The Nameless Mod's switch lists: tnmMenuTNMOptions, TNMMenuScreenItemRefusal, TNMMenuCheats.
+    TnmList(TnmList),
+    /// The Nameless Mod's music player (a ToolWindow).
+    Juke(Box<JukeView>),
 }
 
 /// TNMAchievementsMenu: the shown category (0 = all), the selected row, the list's scroll and its sort (column,
@@ -1705,11 +1842,19 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
     if class == "PadLayout" {
         return pad_map_box(hud, assets);
     }
-    let mut f = frame(assets, class);
+    // The Nameless Mod's main menu: tnmMenuMain on the title map, TNMMenuMainInGame (its first button goes back to
+    // the title screen) anywhere else; kept under the name MenuMain for the window stack.
+    // The Nameless Mod's own screens are built like the Deus Ex ones they extend, from their own defaults (art,
+    // choices, buttons).
+    let own = class;
+    let class = tnm_role(own);
+    let src = if class == "MenuMain" { main_menu_class(class) } else { own };
+    let mut f = frame(assets, src);
+    f.class = class.to_string();
     let body = match class {
         "MenuMain" | "MenuSelectDifficulty" | "MenuSettings" | "tnmMenuSelectDifficulty" | "tnmMenuSelectExtras" | "tnmMenuSelectStealthDifficulty"
         | "tnmMenuSelectCombatDifficulty" => {
-            let (mut buttons, x, w) = menu_buttons(assets, class);
+            let (mut buttons, x, w) = menu_buttons(assets, src);
             if class == "MenuSettings" {
                 // Ours: Enhancements, in the free slot above Previous Menu (optional features beyond the original).
                 let at = buttons.iter().position(|b| b.action == 2).unwrap_or(buttons.len());
@@ -1734,7 +1879,25 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                     }
                 }
             }
-            if class == "MenuMain" {
+            if class == "MenuMain" && crate::tnmmode::active() {
+                // tnmMenuMain.UpdateButtonStatus: no Save Game (button 1) or Back to Game (7) on the title map or
+                // while dead, and no saving where Trestkon.IsSaveAllowed says no; its own title and Achievements.
+                // uc: tnmMenuMain.UpdateButtonStatus
+                let dead = DEAD.load(Ordering::Relaxed);
+                // tnmMenuMain.ShowVersionInfo: "<GameName> <version>" at the window's bottom left.
+                let line = format!("{} {}", pstr(&assets.classes.defaults(src), "GameName"), crate::tnmconsole::tnm_version(assets));
+                if let Ok(mut v) = TNM_VERSION_LINE.lock() {
+                    *v = line;
+                }
+                for (i, b) in buttons.iter_mut().enumerate() {
+                    if (i == 1 || i == 7) && (intro_map() || dead) {
+                        b.enabled = false;
+                    }
+                    if i == 1 && !crate::save::can_save(dead) {
+                        b.enabled = false;
+                    }
+                }
+            } else if class == "MenuMain" {
                 // Our title.
                 f.title = "Welcome to DX RUST!".into();
                 // UpdateButtonStatus: no saving or "back to game" on the logo map (or dead).
@@ -1794,6 +1957,12 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
         }
         "MenuScreenSaveGame" | "MenuScreenLoadGame" => {
             let mut sl = SaveLoad::new(class == "MenuScreenSaveGame");
+            if sl.saving && crate::tnmmode::active() {
+                let p = tnm_save_prefix(assets);
+                if let Ok(mut g) = TNM_SAVE_PREFIX.lock() {
+                    *g = Some(p);
+                }
+            }
             if sl.saving {
                 sl.edit.text = default_save_name().chars().collect();
                 sl.edit.cur = sl.edit.text.len();
@@ -1935,8 +2104,9 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             f.min_title = 250;
             Body::Msg(Msg { text: String::new(), yes_no: true, purpose: MsgPurpose::Info })
         }
+        "TNMMenuCheats" | "tnmMenuTNMOptions" | "TNMMenuScreenItemRefusal" => Body::TnmList(tnm_list(assets, class)),
         _ => {
-            let d = assets.classes.defaults(class);
+            let d = assets.classes.defaults(src);
             let paths: Vec<String> = indexed(&d, "choices")
                 .into_iter()
                 .filter_map(|(_, v)| match v {
@@ -1954,7 +2124,9 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             let original: Vec<String> = choices.iter().map(|c| c.key.clone()).collect();
             // Settings the renderer and mixer decide for themselves (always the best): not offered.
             // So do the old-hardware sound options (voice count, Dolby Surround, A3D/EAX hardware): the mixer is ours.
-            const DROPPED: [&str; 11] = [
+            const DROPPED: [&str; 13] = [
+                "TnmFOV",
+                "TnmUIScaling",
                 "RenderDevice",
                 "TextureColorBits",
                 "WorldTextureDetail",
@@ -2342,6 +2514,9 @@ fn win_size(f: &Frame, fonts: &Fonts) -> (i32, i32) {
     if f.class == "HUDKeypadWindow" {
         return (103, 162);
     }
+    if f.class == "tnmJukeboxWindow" {
+        return (JUKE_W, JUKE_H);
+    }
     let (so, ss) = f.shadow.unwrap_or(((0, 0), (0, 0)));
     let tw = title_width(f, fonts);
     let w = (f.cw + TITLE_LEFT_BOTTOM.0 + if f.right_edge { 4 } else { 0 }).max(tw) + so.0;
@@ -2533,6 +2708,12 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
             (d.sel, d.scroll, d.others.len(), &d.weapons).hash(h);
         }
         Body::Mods(m) => m.key(h),
+        Body::TnmList(l) => hash_debug(h, l),
+        Body::Juke(v) => {
+            (v.cd, v.sel, v.scroll, v.rows.len(), &v.now).hash(h);
+            // The position readout (UpdatePosition, twice a second).
+            ((juke_pos(v, juke_now()) * 2.0) as i64).hash(h);
+        }
         Body::Loadout(l) => {
             edit_key(&l.name, h);
             hash_debug(h, &l.c);
@@ -2598,6 +2779,10 @@ fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waitin
     let (ox, oy) = (so.0, so.1);
     let (ww, wh) = win_size(&f, fonts);
     u.hit(W::Win, (0, 0, ww, wh), true);
+    if let Body::Juke(v) = &mut win.body {
+        draw_jukebox(u, v, juke_now());
+        return;
+    }
     if let Body::Keypad(k) = &win.body {
         // Diegetic keypads are used in the world: no window (diegetic.rs).
         if !crate::diegetic::keypad_active() {
@@ -2761,6 +2946,14 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
             for (y, text) in notes.iter() {
                 draw_menu_note(u, *x, *w, *y, text, cx, cy);
             }
+            if win.f.class == "MenuMain" && crate::tnmmode::active() {
+                // uc: tnmMenuMain.ShowVersionInfo
+                let line = TNM_VERSION_LINE.lock().map(|v| v.clone()).unwrap_or_default();
+                let fh = fonts.small.height;
+                let ft = fonts.small.clone();
+                let left = cx - crate::menuui::TITLE_LEFT_BOTTOM.0;
+                u.text(&ft, left + 57, cy + win.f.ch - fh, 400, fh, HAlign::Left, VAlign::Bottom, WHITE, &line);
+            }
         }
         Body::Host(h) => draw_mp_host(u, h, &win.f, &mut win.drop, cx, cy),
         Body::Join(j) => draw_mp_join(u, j, cx, cy),
@@ -2781,6 +2974,11 @@ fn draw_body(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, cx: i32, cy: i32, wait
         }
         Body::Achieve(av) => draw_achieve(u, av, fonts, cx, cy),
         Body::TnmAch(tv) => draw_tnm_ach(u, tv, fonts, cx, cy),
+        Body::TnmList(l) => {
+            let class = win.f.class.clone();
+            draw_tnm_list(u, l, &class, fonts, cx, cy)
+        }
+        Body::Juke(_) => {}
         Body::Keys(k) => draw_keys(u, k, cx, cy, waiting_keys),
         Body::SaveLoad(sl) => draw_save_load(u, sl, fonts, cx, cy),
         Body::Keypad(_) => {}
@@ -3161,8 +3359,12 @@ fn draw_save_load(u: &mut Ui<W>, sl: &mut SaveLoad, fonts: &Fonts, cx: i32, cy: 
     let fs = fonts.small.clone();
     let d = u.assets.classes.defaults("MenuScreenLoadGame");
     let l = |k: &str| pstr(&d, k);
-    header_button(u, W::Header(0), cx + 10, cy + 3, 238, &l("strHeaderNameLabel"));
-    header_button(u, W::Header(1), cx + 251, cy + 3, 131, &l("strHeaderDateLabel"));
+    // The Nameless Mod's load / save screens give the date column more room (its day-first dates).
+    // uc: TNMMenuScreenLoadGame.CreateHeaderButtons, TNMMenuScreenLoadGame.CreateGamesList, TNMMenuScreenSaveGame.CreateEditControl
+    let tnm = crate::tnmmode::active();
+    let (name_w, date_x, date_w, col0, edit_w) = if tnm { (223, 236, 146, 225, 220) } else { (238, 251, 131, 240, 236) };
+    header_button(u, W::Header(0), cx + 10, cy + 3, name_w, &l("strHeaderNameLabel"));
+    header_button(u, W::Header(1), cx + date_x, cy + 3, date_w, &l("strHeaderDateLabel"));
     let new_label = l("NewSaveGameButtonText");
     let mut rows: Vec<Vec<String>> = sl.list.iter().map(|r| sl.row_text(*r, &new_label).to_vec()).collect();
     // The row being named shows the typed description.
@@ -3173,12 +3375,12 @@ fn draw_save_load(u: &mut Ui<W>, sl: &mut SaveLoad, fonts: &Fonts, cx: i32, cy: 
         }
     }
     let (lx, ly, lw, lh) = (cx + 11, cy + 22, 371, 270);
-    list(u, 0, (lx, ly, lw, lh), &[240, 131], &rows, sl.sel, &mut sl.scroll, false);
+    list(u, 0, (lx, ly, lw, lh), &[col0, date_w], &rows, sl.sel, &mut sl.scroll, false);
     if let Some(r) = editing {
         let ey = ly + r as i32 * ROW_H - sl.scroll;
         if ey >= ly && ey + ROW_H <= ly + lh {
             u.c.set_clip(Some((lx, ly, lw, lh)));
-            edit_field(u, W::Edit(1), lx + 1, ey - 3, 236, &mut sl.edit, true, true);
+            edit_field(u, W::Edit(1), lx + 1, ey - 3, edit_w, &mut sl.edit, true, true);
             u.c.set_clip(None);
         }
     }
@@ -3366,11 +3568,41 @@ enum Act {
 /// A new save's description: where the player is (DeusExLevelInfo.MissionLocation), as the original's default.
 fn default_save_name() -> String {
     let l = LOCATION.lock().map(|l| l.clone()).unwrap_or_default();
-    if l.is_empty() {
-        "Saved Game".into()
-    } else {
-        l
+    let l = if l.is_empty() { "Saved Game".into() } else { l };
+    // TNMMenuScreenSaveGame.SaveMissionLocationString: the difficulty in front (its strEasy .. strRealistic, or
+    // strCustom for a custom difficulty).
+    // uc: TNMMenuScreenSaveGame.SaveMissionLocationString
+    if crate::tnmmode::active() {
+        if let Some(p) = TNM_SAVE_PREFIX.lock().ok().and_then(|p| p.clone()) {
+            if !p.is_empty() {
+                return format!("{p} {l}");
+            }
+        }
     }
+    l
+}
+/// The difficulty word The Nameless Mod's save screen puts before the location (set when the screen opens).
+static TNM_SAVE_PREFIX: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn tnm_save_prefix(assets: &mut RuntimeAssets) -> String {
+    let d = assets.classes.defaults("TNMMenuScreenSaveGame");
+    let custom = crate::tnmmode::difficulty().is_some_and(|df| df.custom);
+    if custom {
+        return pstr(&d, "strCustom");
+    }
+    let c = crate::travel::combat_difficulty();
+    let key = if (c - 1.0).abs() < 1e-3 {
+        "strEasy"
+    } else if (c - 1.5).abs() < 1e-3 {
+        "strMedium"
+    } else if (c - 2.0).abs() < 1e-3 {
+        "strHard"
+    } else if (c - 4.0).abs() < 1e-3 {
+        "strRealistic"
+    } else {
+        return String::new();
+    };
+    pstr(&d, key)
 }
 static LOCATION: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
@@ -3392,7 +3624,7 @@ fn menu_action(b: &MenuBtn, _hud: &mut ClassicHud, assets: &mut RuntimeAssets, o
             if setting!("AskedToTrain") < 0.5 {
                 crate::settings::set("AskedToTrain", 1.0);
                 crate::settings::save();
-                let d = assets.classes.defaults("MenuMain");
+                let d = main_defaults(assets);
                 out.push(Act::Msg(pstr(&d, "AskToTrainTitle"), pstr(&d, "AskToTrainMessage"), true, MsgPurpose::AskToTrain));
             } else {
                 out.push(Act::Push("MenuSelectDifficulty".into()));
@@ -3404,7 +3636,7 @@ fn menu_action(b: &MenuBtn, _hud: &mut ClassicHud, assets: &mut RuntimeAssets, o
             let running = !intro_map() && !DEAD.load(Ordering::Relaxed) && !crate::cinematic::active();
             let training = b.action == 4;
             if running {
-                let d = assets.classes.defaults("MenuMain");
+                let d = main_defaults(assets);
                 let key = if training { "TrainingWarningMessage" } else { "IntroWarningMessage" };
                 let purpose = if training { MsgPurpose::Training } else { MsgPurpose::Intro };
                 out.push(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, key), true, purpose));
@@ -3413,7 +3645,7 @@ fn menu_action(b: &MenuBtn, _hud: &mut ClassicHud, assets: &mut RuntimeAssets, o
             }
         }
         6 => {
-            let d = assets.classes.defaults("MenuMain");
+            let d = main_defaults(assets);
             out.push(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, "ExitMessage"), true, MsgPurpose::Exit));
         }
         7 if crate::tnmmode::active() => tnm_menu_key(assets, &b.key, out),
@@ -3493,6 +3725,7 @@ fn tnm_custom_difficulty() -> crate::tnmmode::Difficulty {
         enemies: v("TnmCustomNPCAmt", 1.0) as i32,
         legendary: v("TnmCustomLegendary", 0.0) > 0,
         nightmare: v("TnmCustomNightmare", 0.0) > 0,
+        custom: true,
     }
 }
 
@@ -3503,8 +3736,6 @@ fn tnm_menu(class: &str) -> &str {
     }
     match class {
         "MenuSelectDifficulty" => "tnmMenuSelectDifficulty",
-        // The mod's settings list lives in our Enhancements list (group "The Nameless Mod").
-        "tnmMenuTNMOptions" => "MenuScreenEnhancements",
         _ => class,
     }
 }
@@ -3515,13 +3746,20 @@ fn tnm_menu(class: &str) -> &str {
 /// unlocked by easter eggs found.
 fn tnm_menu_key(assets: &mut RuntimeAssets, key: &str, out: &mut Vec<Act>) {
     use crate::tnmmode::Difficulty;
+    // TNMMenuMainInGame.ProcessCustomMenuButton / ConfirmTitleScreen.
+    // uc: TNMMenuMainInGame.ConfirmTitleScreen
+    if key == "TITLE SCREEN" {
+        let d = assets.classes.defaults("TNMMenuMainInGame");
+        out.push(Act::Msg(pstr(&d, "MessageBoxTitle"), pstr(&d, "TitleScreenMessage"), true, MsgPurpose::TitleScreen));
+        return;
+    }
     let d = assets.classes.defaults("tnmMenuSelectDifficulty");
     let eggs = crate::tnmeggs::count();
     let locked = |n: usize, out: &mut Vec<Act>| {
         let text = pstr(&d, "MessageBoxText2").replacen("%d", &n.to_string(), 1);
         out.push(Act::Msg(pstr(&d, "MessageBoxTitle2"), text, false, MsgPurpose::Info));
     };
-    let pick = |combat: f32, pawn_health: f32, enemies: i32, items: i32| Difficulty { combat, pawn_health, enemies, items, legendary: false, nightmare: false };
+    let pick = |combat: f32, pawn_health: f32, enemies: i32, items: i32| Difficulty { combat, pawn_health, enemies, items, legendary: false, nightmare: false, custom: false };
     let ng = |combat: f32| crate::travel::NewGame { difficulty: combat, ..Default::default() };
     let diff = match key {
         "EASY" => Some(pick(1.0, 1.33, 0, 0)),
@@ -3592,7 +3830,7 @@ fn save_choices(win: &Win) {
     if let Body::Choices { choices } = &win.body {
         for c in choices {
             if !matches!(c.kind, ChoiceKind::Action { .. }) {
-                crate::settings::set(&c.key, c.value);
+                crate::settings::set(&c.key, setting_value(c));
             }
         }
         crate::settings::save();
@@ -3630,7 +3868,9 @@ fn cancel_choices(win: &Win) {
     if let Body::Choices { choices } = &win.body {
         for c in choices {
             if !matches!(c.kind, ChoiceKind::Action { .. }) {
-                crate::settings::set(&c.key, c.saved);
+                let mut was = c.clone();
+                was.value = c.saved;
+                crate::settings::set(&c.key, setting_value(&was));
             }
         }
     }
@@ -3749,6 +3989,7 @@ pub fn menu_system(
     let others_before = std::mem::replace(&mut st.others_last, others);
     open_from_game(st, &binds, &ph, dt, others || others_before, &mut hud, &mut assets);
     keypad_tick(st, dt, ph.dead);
+    juke_tick(st, &mut assets);
     quick_save_load(st, &binds, &ph, others || others_before, &mut hud, &mut assets);
     mp_tick(st, dt, &mut hud, &mut assets);
     mods_tick(st, &mut hud, &mut assets);
@@ -3979,6 +4220,11 @@ fn dev_menu_open(st: &mut Menus, vtime: &ResMut<Time<Virtual>>, hud: &mut ResMut
             for c in v.split(',') {
                 // "MenuScreenNewGame#3": the new-game screen on portrait 3.
                 let (c, portrait) = c.split_once('#').map(|(a, b)| (a, b.parse().ok())).unwrap_or((c, None));
+                // "Jukebox": The Nameless Mod's music player with every song.
+                if c.trim() == "Jukebox" {
+                    crate::jukebox::open(false);
+                    continue;
+                }
                 let mut w = open_window(hud, assets, c.trim());
                 if let (Some(Body::NewGame(ng)), Some(p)) = (w.as_mut().map(|w| &mut w.body), portrait) {
                     ng.portrait = p;
@@ -4377,6 +4623,20 @@ fn left_press(cx: &mut InCx) -> Option<&'static str> {
                         Body::TnmAch(tv) if l == 0 => {
                             tv.sel = Some(r);
                             tv.desc_scroll = 0;
+                        }
+                        Body::TnmList(tl) if l == 0 => {
+                            tl.sel = Some(r);
+                            // ListRowActivated: SwitchVariable.
+                            if double {
+                                tnm_list_switch(tl, cx.assets, acts);
+                            }
+                        }
+                        Body::Juke(v) if l == 0 => {
+                            v.sel = Some(r);
+                            // ListRowActivated: PlaySong(row) from the start.
+                            if double {
+                                juke_play(v, r, Some(0.0), juke_now());
+                            }
                         }
                         Body::Keys(k) => {
                             k.sel = Some(r);
@@ -5388,6 +5648,13 @@ fn box_answer(st: &mut Menus, top: usize, yes: bool, _hud: &mut ClassicHud, _ass
                 acts.push(Act::Intro);
             }
         }
+        // TNMMenuMainInGame.BoxOptionSelected: "OPEN TNMONLY" (its title map).
+        MsgPurpose::TitleScreen => {
+            if yes {
+                crate::loader::request("DX.dx", crate::loader::Goal::Title);
+                acts.push(Act::PopAll);
+            }
+        }
         MsgPurpose::MpLeave => {
             if yes {
                 acts.push(Act::MpLeave);
@@ -5494,6 +5761,13 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                 }
                 3 => reset_defaults(win),
                 5 if matches!(win.body, Body::SaveLoad(_)) => save_load_action(st, top, &key, hud, assets, acts),
+                5 if matches!(win.body, Body::TnmList(_)) => {
+                    if let Body::TnmList(tl) = &mut win.body {
+                        tnm_list_action(tl, &key, assets, acts);
+                    }
+                }
+                // TNMMenuScreenOptions.ProcessAction.
+                5 if key == "IRCSettings" => acts.push(Act::Push("TNMMenuScreenIRCSettings".into())),
                 5 if win.f.class == "tnmMenuScreenCustomDifficulty" && key == "DONE" => {
                     save_choices(win);
                     let df = tnm_custom_difficulty();
@@ -5614,6 +5888,23 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
         (W::Header(k), Body::Host(h)) => {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
             mp_host_widget(h, k, acts);
+        }
+        (W::Header(k), Body::TnmList(tl)) => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            tl.sort = (k, if tl.sort.0 == k { !tl.sort.1 } else { false });
+            tnm_list_sort(tl);
+        }
+        (W::Header(0), Body::Juke(v)) => {
+            v.cd = !v.cd;
+            juke_rows(v);
+        }
+        (W::MenuBtn(i), Body::Juke(v)) => {
+            if i == 200 {
+                crate::sound::juke(crate::sound::JukeReq::Release);
+                acts.push(Act::Pop);
+            } else if let Some(var) = v.lay.buttons.get(i as usize).map(|b| b.var.clone()) {
+                juke_button(v, &var, juke_now(), acts);
+            }
         }
         (W::Header(k), Body::TnmAch(tv)) => {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
@@ -8431,5 +8722,519 @@ pub fn reset_level() {
     }
     if let Ok(mut v) = KEYPAD_RESULTS.lock() {
         v.clear();
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ The Nameless Mod lists
+
+/// tnmMenuTNMOptions / TNMMenuScreenItemRefusal / TNMMenuCheats: one list of switches each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ListKind {
+    Options,
+    Refusal,
+    Cheats,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TnmListRow {
+    /// The shown columns (setting, value; or type, item, value).
+    cols: Vec<String>,
+    /// The setting key (Options / Refusal), or the console command (Cheats).
+    var: String,
+    /// Cheats: the row's number, its varSetting, varInvert, varCustomCondition, varRequirePop.
+    idx: usize,
+    state_var: String,
+    invert: bool,
+    custom: bool,
+    pop: bool,
+    desc: String,
+}
+
+#[derive(Clone, Debug)]
+struct TnmList {
+    kind: ListKind,
+    rows: Vec<TnmListRow>,
+    sel: Option<usize>,
+    scroll: i32,
+    /// The sorted column and descending.
+    sort: (u8, bool),
+}
+
+/// UnrealScript's bool to string.
+fn ue_bool(b: bool) -> String {
+    if b { "True" } else { "False" }.into()
+}
+
+/// tnmMenuTNMOptions.BuildItemString / TNMMenuScreenItemRefusal.BuildItemString / TNMMenuCheats.BuildItemString.
+// uc: tnmMenuTNMOptions.populateItemList, TNMMenuScreenItemRefusal.populateItemList, TNMMenuCheats.populateItemList
+fn tnm_list(assets: &mut RuntimeAssets, class: &str) -> TnmList {
+    let kind = match class {
+        "TNMMenuCheats" => ListKind::Cheats,
+        "TNMMenuScreenItemRefusal" => ListKind::Refusal,
+        _ => ListKind::Options,
+    };
+    crate::tnmmode::load_options(&mut assets.classes);
+    crate::tnmmode::load_refusals(&mut assets.classes);
+    let mut rows = Vec::new();
+    match kind {
+        ListKind::Options => {
+            for (var, label, desc, _) in crate::tnmmode::options() {
+                let on = crate::tnmmode::option(&var);
+                rows.push(TnmListRow { cols: vec![label.clone(), ue_bool(on)], desc: format!("{label}\n\n{desc}"), var: crate::tnmmode::option_key(&var), ..default() });
+            }
+        }
+        ListKind::Refusal => {
+            for (var, ty, label) in crate::tnmmode::refusals() {
+                let key = format!("Tnm.{var}");
+                let allowed = crate::settings::get(&key) < 0.5;
+                rows.push(TnmListRow { cols: vec![ty, label, ue_bool(allowed)], var: key, ..default() });
+            }
+        }
+        ListKind::Cheats => {
+            let d = assets.classes.defaults("TNMMenuCheats");
+            let na = pstr(&d, "strNA");
+            let at = |n: &str, i: usize| d.iter().find(|p| p.name.eq_ignore_ascii_case(n) && p.index as usize == i).map(|p| p.value.clone());
+            for i in 0..64 {
+                let Some(Value::Str(name)) = at("strSetting", i) else { continue };
+                if name.is_empty() {
+                    continue;
+                }
+                let state_var = match at("varSetting", i) {
+                    Some(Value::Str(s)) => s,
+                    _ => String::new(),
+                };
+                let byte = |n: &str| matches!(at(n, i), Some(Value::Byte(b)) if b != 0);
+                let (invert, custom, pop) = (byte("varInvert"), byte("varCustomCondition"), byte("varRequirePop"));
+                let desc = match at("strDescription", i) {
+                    Some(Value::Str(s)) => s,
+                    _ => String::new(),
+                };
+                let value = crate::tnmcheats::value(i, &state_var, invert, custom).map_or(na.clone(), ue_bool);
+                rows.push(TnmListRow { cols: vec![name.clone(), value], desc: format!("{name}\n\n{desc}"), var: name, idx: i, state_var, invert, custom, pop });
+            }
+        }
+    }
+    let mut l = TnmList { kind, rows, sel: None, scroll: 0, sort: (0, false) };
+    tnm_list_sort(&mut l);
+    // SelectRow(IndexToRowId(0)): the first row shown.
+    l.sel = (!l.rows.is_empty()).then_some(0);
+    l
+}
+
+fn tnm_list_sort(l: &mut TnmList) {
+    let (c, desc) = (l.sort.0 as usize, l.sort.1);
+    let selected = l.sel.and_then(|i| l.rows.get(i)).map(|r| r.var.clone());
+    l.rows.sort_by(|a, b| {
+        let o = a.cols.get(c).map(|s| s.to_lowercase()).cmp(&b.cols.get(c).map(|s| s.to_lowercase()));
+        if desc { o.reverse() } else { o }
+    });
+    l.sel = selected.and_then(|v| l.rows.iter().position(|r| r.var == v));
+}
+
+/// SwitchVariable for the selected row.
+// uc: tnmMenuTNMOptions.SwitchVariable, TNMMenuScreenItemRefusal.SwitchVariable, TNMMenuCheats.SwitchVariable
+fn tnm_list_switch(l: &mut TnmList, assets: &mut RuntimeAssets, acts: &mut Vec<Act>) {
+    let Some(i) = l.sel else { return };
+    let kind = l.kind;
+    let Some(r) = l.rows.get_mut(i) else { return };
+    match kind {
+        ListKind::Options => {
+            let on = r.cols[1] == "True";
+            crate::settings::set(&r.var, if on { 0.0 } else { 1.0 });
+            crate::settings::save();
+            r.cols[1] = ue_bool(!on);
+        }
+        ListKind::Refusal => {
+            let allowed = r.cols[2] == "True";
+            crate::settings::set(&r.var, if allowed { 1.0 } else { 0.0 });
+            crate::settings::save();
+            r.cols[2] = ue_bool(!allowed);
+        }
+        ListKind::Cheats => {
+            let before = crate::tnmcheats::value(r.idx, &r.state_var, r.invert, r.custom);
+            if r.pop {
+                acts.push(Act::Pop);
+            }
+            crate::tnmcheats::run(assets, &r.var, before);
+            if !r.state_var.is_empty() || r.custom {
+                // Walk shows True afterwards; the others flip.
+                r.cols[1] = ue_bool(if r.idx == 45 { true } else { r.cols[1] != "True" });
+            }
+        }
+    }
+}
+
+/// ProcessAction: SWITCH, REFUSAL, IRCSettings, CHEATS (the options list), ALLTRUE / ALLFALSE (the refusal list).
+fn tnm_list_action(l: &mut TnmList, key: &str, assets: &mut RuntimeAssets, acts: &mut Vec<Act>) {
+    match key {
+        "SWITCH" => tnm_list_switch(l, assets, acts),
+        "REFUSAL" => acts.push(Act::Push("TNMMenuScreenItemRefusal".into())),
+        "IRCSettings" => acts.push(Act::Push("TNMMenuScreenIRCSettings".into())),
+        "CHEATS" => acts.push(Act::Push("TNMMenuCheats".into())),
+        // SetAllTrue sets every bRefuse... False (all allowed), SetAllFalse True.
+        "ALLTRUE" | "ALLFALSE" => {
+            let refuse = key == "ALLFALSE";
+            for r in l.rows.iter_mut() {
+                crate::settings::set(&r.var, if refuse { 1.0 } else { 0.0 });
+                if let Some(v) = r.cols.get_mut(2) {
+                    *v = ue_bool(!refuse);
+                }
+            }
+            crate::settings::save();
+        }
+        _ => {}
+    }
+}
+
+fn draw_tnm_list(u: &mut Ui<W>, l: &mut TnmList, class: &str, fonts: &Fonts, cx: i32, cy: i32) {
+    let d = u.assets.classes.defaults(class);
+    let fh = fonts.headers.clone();
+    let (heads, widths, list_rect): (Vec<(i32, i32, String)>, Vec<i32>, (i32, i32, i32, i32)) = match l.kind {
+        ListKind::Refusal => (
+            vec![(7, 99, pstr(&d, "HeaderTypeLabel")), (108, 320, pstr(&d, "HeaderTitleLabel")), (428, 58, pstr(&d, "HeaderValueLabel"))],
+            vec![106, 320, 58],
+            (7, 40, 477, 316),
+        ),
+        _ => (vec![(7, 419, pstr(&d, "HeaderSettingLabel")), (428, 58, pstr(&d, "HeaderValueLabel"))], vec![426, 58], (7, 38, 477, 192)),
+    };
+    for (k, (x, w, t)) in heads.iter().enumerate() {
+        header_button(u, W::Header(k as u8), cx + x, cy + 17, *w, t);
+    }
+    let (lx, ly, lw, lh) = (cx + list_rect.0, cy + list_rect.1, list_rect.2, list_rect.3);
+    let rh = fh.height.max(ROW_H);
+    let inner = scrollbar(u, 0, lx, ly, lw, lh, l.rows.len() as i32 * rh, &mut l.scroll);
+    u.c.set_clip(Some((lx, ly, inner, lh)));
+    for (i, r) in l.rows.iter().enumerate() {
+        let ry = ly + i as i32 * rh - l.scroll;
+        if ry + rh <= ly || ry >= ly + lh {
+            continue;
+        }
+        let selected = l.sel == Some(i);
+        if selected {
+            u.c.fill(lx, ry, inner, rh, Style::Normal, m_col(10));
+        }
+        let col = if selected { m_col(9) } else { m_col(8) };
+        let mut x = lx;
+        for (k, w) in widths.iter().enumerate() {
+            let t = r.cols.get(k).cloned().unwrap_or_default();
+            u.c.set_clip(Some((x.max(lx), ly.max(ry), (*w).min(lx + inner - x), lh)));
+            u.c.text(&fh, x + 2, ry, *w, rh, HAlign::Left, VAlign::Center, col, &t);
+            u.c.set_clip(Some((lx, ly, inner, lh)));
+            x += w;
+        }
+        let vy = ry.max(ly);
+        let vh = (ry + rh).min(ly + lh) - vy;
+        if vh > 0 {
+            u.hit(W::Row(0, i), (lx, vy, inner, vh), true);
+        }
+    }
+    u.c.set_clip(None);
+    if l.kind != ListKind::Refusal {
+        // The description (LargeTextWindow, colDesc, margins 5).
+        let desc = l.sel.and_then(|i| l.rows.get(i)).map(|r| r.desc.clone()).unwrap_or_default();
+        let col = match find(&d, "colDesc") {
+            Some(Value::Struct(_, b)) if b.len() >= 3 => [b[0], b[1], b[2]],
+            _ => [200, 200, 200],
+        };
+        u.wrapped(&fh, cx + 12, cy + 244, 467, 111, HAlign::Left, VAlign::Top, col, &desc);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ music player
+
+/// tnmPlayMusicWindow / tnmJukeboxWindow (jukebox.rs): a ToolWindow on the stack.
+#[derive(Clone, Debug)]
+struct JukeView {
+    unlocked_only: bool,
+    songs: Vec<crate::jukebox::Song>,
+    lay: crate::jukebox::Layout,
+    /// Rows shown (indices into songs), sorted by the shown name.
+    rows: Vec<usize>,
+    cd: bool,
+    sel: Option<usize>,
+    scroll: i32,
+    /// Now playing: (name, musician), and the song's clock (seconds in, real time it was at that).
+    now: Option<(String, String)>,
+    clock: Option<(f32, f64)>,
+}
+
+const JUKE_W: i32 = 370;
+const JUKE_H: i32 = 430;
+
+fn juke_view(assets: &mut RuntimeAssets, unlocked_only: bool) -> JukeView {
+    let mut v = JukeView {
+        unlocked_only,
+        songs: crate::jukebox::songs(assets),
+        lay: crate::jukebox::layout(assets),
+        rows: Vec::new(),
+        cd: false,
+        sel: None,
+        scroll: 0,
+        now: None,
+        clock: None,
+    };
+    juke_rows(&mut v);
+    v
+}
+
+/// PopulateSongsList: (the unlocked) rows by name or CD name, sorted.
+// uc: tnmPlayMusicWindow.PopulateSongsList, tnmJukeboxWindow.PopulateSongsList
+fn juke_rows(v: &mut JukeView) {
+    let mut rows: Vec<usize> = (0..v.songs.len()).filter(|&i| !v.unlocked_only || crate::jukebox::unlocked(v.songs[i].index)).collect();
+    let cd = v.cd;
+    let songs = &v.songs;
+    rows.sort_by_key(|&i| if cd { songs[i].cd_name.to_lowercase() } else { songs[i].name.to_lowercase() });
+    v.rows = rows;
+    v.sel = None;
+}
+
+fn juke_name(v: &JukeView, i: usize) -> String {
+    if v.cd {
+        v.songs[i].cd_name.clone()
+    } else {
+        v.songs[i].name.clone()
+    }
+}
+
+/// The playing song's position (GetCurrentSongPosition).
+fn juke_pos(v: &JukeView, now: f64) -> f32 {
+    v.clock.map_or(0.0, |(at, t0)| at + (now - t0) as f32)
+}
+
+/// PlaySong(row, StartPos): with StartPos -10 the song starts over with a fade, else at StartPos (no less than 0).
+fn juke_play(v: &mut JukeView, row: usize, start: Option<f32>, now: f64) {
+    let Some(&i) = v.rows.get(row) else { return };
+    let s = v.songs[i].clone();
+    v.now = Some((juke_name(v, i), s.musician.clone()));
+    let at = start.unwrap_or(0.0).max(0.0);
+    let intro = if s.intro.eq_ignore_ascii_case("Blank.ogg") { String::new() } else { s.intro.clone() };
+    crate::sound::juke(crate::sound::JukeReq::Play(intro, s.file.clone(), at));
+    v.clock = Some((at, now));
+}
+
+/// ButtonActivated for a tool button (by its variable name).
+// uc: tnmPlayMusicWindow.ButtonActivated
+fn juke_button(v: &mut JukeView, var: &str, now: f64, acts: &mut Vec<Act>) {
+    let sel = v.sel;
+    let pos = juke_pos(v, now);
+    let set = |kind: &str, v: &JukeView| {
+        let Some(&i) = sel.and_then(|r| v.rows.get(r)) else { return };
+        let s = &v.songs[i];
+        let intro = if s.intro.eq_ignore_ascii_case("Blank.ogg") { String::new() } else { s.intro.clone() };
+        let mut f = vec![(format!("{kind}OggFile"), s.file.clone())];
+        if kind != "Death" {
+            f.push((format!("{kind}IntroOggFile"), intro));
+        }
+        crate::tnmmode::retrack(f);
+    };
+    match var {
+        "btnPlay" => {
+            if let Some(r) = sel {
+                juke_play(v, r, None, now);
+            }
+        }
+        "btnClose" => {
+            crate::sound::juke(crate::sound::JukeReq::Release);
+            acts.push(Act::Pop);
+        }
+        "btnBack5" => {
+            if let Some(r) = sel {
+                juke_play(v, r, Some(pos - 5.0), now);
+            }
+        }
+        "btnForward5" => {
+            if let Some(r) = sel {
+                juke_play(v, r, Some(pos + 5.0), now);
+            }
+        }
+        "btnBackAll" => {
+            if let Some(r) = sel {
+                juke_play(v, r, Some(0.0), now);
+            }
+        }
+        "btnPause" => {
+            crate::sound::juke(crate::sound::JukeReq::Stop);
+            v.clock = None;
+        }
+        "btnSetAmb" => set("Ambient", v),
+        "btnSetCombat" => set("Combat", v),
+        "btnSetConvo" => set("Conversation", v),
+        "btnSetDeath" => set("Death", v),
+        _ => {}
+    }
+}
+
+/// The ToolWindow: grey with its border, the blue title bar (icon, title, close button), the song list in its
+/// border, the CD Names box, what's playing, the buttons.
+fn draw_jukebox(u: &mut Ui<W>, v: &mut JukeView, now: f64) {
+    let grey = [192, 192, 192];
+    let black = [0, 0, 0];
+    u.c.fill(0, 0, JUKE_W, JUKE_H, Style::Normal, grey);
+    let tex = |u: &mut Ui<W>, n: &str| u.tex(n);
+    // ToolWindowBorder_*: corners, then the edges stretched between them.
+    let parts: Vec<Option<std::sync::Arc<crate::uicanvas::UiTex>>> = ["TL", "TR", "BL", "BR", "L", "R", "T", "B"].iter().map(|p| tex(u, &format!("ToolWindowBorder_{p}"))).collect();
+    let (lw, th) = (parts[0].as_ref().map_or(2, |t| t.w as i32), parts[0].as_ref().map_or(2, |t| t.h as i32));
+    let (rw, bh) = (parts[3].as_ref().map_or(2, |t| t.w as i32), parts[3].as_ref().map_or(2, |t| t.h as i32));
+    if let Some(t) = &parts[0] {
+        u.c.texture(0, 0, lw, th, 0, 0, t, Style::Normal, WHITE);
+    }
+    if let Some(t) = &parts[1] {
+        u.c.texture(JUKE_W - rw, 0, rw, th, 0, 0, t, Style::Normal, WHITE);
+    }
+    if let Some(t) = &parts[2] {
+        u.c.texture(0, JUKE_H - bh, lw, bh, 0, 0, t, Style::Normal, WHITE);
+    }
+    if let Some(t) = &parts[3] {
+        u.c.texture(JUKE_W - rw, JUKE_H - bh, rw, bh, 0, 0, t, Style::Normal, WHITE);
+    }
+    if let Some(t) = &parts[4] {
+        u.c.texture(0, th, lw, JUKE_H - th - bh, 0, 0, t, Style::Normal, WHITE);
+    }
+    if let Some(t) = &parts[5] {
+        u.c.texture(JUKE_W - rw, th, rw, JUKE_H - th - bh, 0, 0, t, Style::Normal, WHITE);
+    }
+    if let Some(t) = &parts[6] {
+        u.c.texture(lw, 0, JUKE_W - lw - rw, th, 0, 0, t, Style::Normal, WHITE);
+    }
+    if let Some(t) = &parts[7] {
+        u.c.texture(lw, JUKE_H - bh, JUKE_W - lw - rw, bh, 0, 0, t, Style::Normal, WHITE);
+    }
+    // The container starts inside the border; the title bar sits 2 in, 18 high.
+    let (ox, oy) = (lw, th);
+    let cw = JUKE_W - lw - rw;
+    u.c.fill(ox + 2, oy + 2, cw - 4, 18, Style::Normal, [0, 0, 128]);
+    let bold = u.hud.font(u.assets, "FontSansSerif_8_Bold").unwrap_or_else(|| u.f.small.clone());
+    let sans = u.hud.font(u.assets, "FontSansSerif_8").unwrap_or_else(|| u.f.small.clone());
+    let title_font = u.hud.font(u.assets, "FontMenuTitle").unwrap_or_else(|| u.f.title.clone());
+    let small = u.f.small.clone();
+    u.icon("DeusExSmallIcon", ox + 4, oy + 3, Style::Masked, WHITE);
+    let title = v.lay.title.clone();
+    u.c.text(&bold, ox + 2 + 21, oy + 2, cw - 25, 18, HAlign::Left, VAlign::Center, WHITE, &title);
+    u.hit(W::Title, (ox + 2, oy + 2, cw - 24, 18), true);
+    let close = W::MenuBtn(200);
+    let cx_ = ox + cw - 2 - 16 - 2;
+    let st = if u.pressed == Some(close) { "Pressed" } else { "Normal" };
+    u.draw(&format!("ToolWindowButtonClose_{st}"), cx_, oy + 4, 16, 14, Style::Normal, WHITE);
+    u.hit(close, (cx_, oy + 4, 16, 14), true);
+    // The song list (CreateToolList(15, 38, 255, 372)) in its ToolWindowListBorder.
+    let (lx, ly, lw2, lh) = (ox + 15, oy + 38, 255, 372);
+    let lb: Vec<Option<std::sync::Arc<crate::uicanvas::UiTex>>> = ["TL", "TR", "BL", "BR", "L", "R", "T", "B"].iter().map(|p| tex(u, &format!("ToolWindowListBorder_{p}"))).collect();
+    let bw = lb[0].as_ref().map_or(2, |t| t.w as i32);
+    u.c.fill(lx, ly, lw2, lh, Style::Normal, WHITE);
+    for (k, t) in lb.iter().enumerate() {
+        let Some(t) = t else { continue };
+        let (x, y, w, h) = match k {
+            0 => (lx, ly, bw, bw),
+            1 => (lx + lw2 - bw, ly, bw, bw),
+            2 => (lx, ly + lh - bw, bw, bw),
+            3 => (lx + lw2 - bw, ly + lh - bw, bw, bw),
+            4 => (lx, ly + bw, bw, lh - 2 * bw),
+            5 => (lx + lw2 - bw, ly + bw, bw, lh - 2 * bw),
+            6 => (lx + bw, ly, lw2 - 2 * bw, bw),
+            _ => (lx + bw, ly + lh - bw, lw2 - 2 * bw, bw),
+        };
+        u.c.texture(x, y, w, h, 0, 0, t, Style::Normal, WHITE);
+    }
+    let (ix, iy, iw, ih) = (lx + bw, ly + bw, lw2 - 2 * bw, lh - 2 * bw);
+    let rh = sans.height + 2;
+    let inner = scrollbar(u, 0, ix, iy, iw, ih, v.rows.len() as i32 * rh, &mut v.scroll);
+    u.c.set_clip(Some((ix, iy, inner, ih)));
+    for (r, &i) in v.rows.iter().enumerate() {
+        let ry = iy + r as i32 * rh - v.scroll;
+        if ry + rh <= iy || ry >= iy + ih {
+            continue;
+        }
+        let selected = v.sel == Some(r);
+        if selected {
+            u.c.fill(ix, ry, inner, rh, Style::Normal, [0, 0, 128]);
+        }
+        let name = juke_name(v, i);
+        u.c.text(&sans, ix + 2, ry, inner - 4, rh, HAlign::Left, VAlign::Center, if selected { WHITE } else { black }, &name);
+        let vy = ry.max(iy);
+        let vh = (ry + rh).min(iy + ih) - vy;
+        if vh > 0 {
+            u.hit(W::Row(0, r), (ix, vy, inner, vh), true);
+        }
+    }
+    u.c.set_clip(None);
+    // CD Names (ToolCheckboxWindow at 280, 52).
+    let cb = W::Header(0);
+    // ToolCheckboxWindow's toggleOn / toggleOff (Extension.CheckboxOn / Off).
+    let tdef = u.assets.classes.defaults("ToolCheckboxWindow");
+    let tpath = match find(&tdef, if v.cd { "toggleOn" } else { "toggleOff" }) {
+        Some(Value::Path(p)) => p.clone(),
+        _ => String::new(),
+    };
+    if let Some(t) = u.hud.tex(u.assets, &tpath) {
+        u.c.texture(ox + 280, oy + 52, t.w as i32, t.h as i32, 0, 0, &t, Style::Masked, WHITE);
+    }
+    let cd = crate::inventory_screen::label(&v.lay.cd_caption);
+    u.c.text(&sans, ox + 296, oy + 52, 70, 13, HAlign::Left, VAlign::Center, black, &cd);
+    u.hit(cb, (ox + 280, oy + 52, 86, 13), true);
+    // What's playing.
+    if let Some((name, musician)) = v.now.clone() {
+        let np = v.lay.now_playing.clone();
+        u.c.text(&title_font, ox + 280, oy + 75, 85, 16, HAlign::Left, VAlign::Top, black, &np);
+        u.wrapped(&small, ox + 280, oy + 95, 85, 40, HAlign::Left, VAlign::Top, black, &name);
+        u.wrapped(&small, ox + 280, oy + 135, 85, 30, HAlign::Center, VAlign::Center, black, &musician);
+        let p = crate::jukebox::elapsed(juke_pos(v, now));
+        u.c.text(&title_font, ox + 280, oy + 170, 85, 16, HAlign::Center, VAlign::Top, black, &p);
+    }
+    // The buttons (EnableButtons: all but Close want a row).
+    let any = v.sel.is_some();
+    for (k, b) in v.lay.buttons.clone().iter().enumerate() {
+        let w = W::MenuBtn(k as u8);
+        let enabled = any || b.var == "btnClose";
+        let small_b = b.w < 75;
+        let set = if !enabled {
+            "Normal"
+        } else if u.pressed == Some(w) && u.hover == Some(w) {
+            "Pressed"
+        } else {
+            "Normal"
+        };
+        let name = if small_b { format!("SmallToolButtonWindow_{set}") } else { format!("ToolButtonWindow_{set}") };
+        // The small buttons' art is the mod's (an import of tnmPlayMusicWindow's package).
+        match u.assets.classes.resolve_ref("tnmPlayMusicWindow", &name, "Texture").and_then(|p| u.hud.tex(u.assets, &p)) {
+            Some(t) => u.c.texture(ox + b.x, oy + b.y, b.w, b.h, 0, 0, &t, Style::Normal, WHITE),
+            None => u.draw(&name, ox + b.x, oy + b.y, b.w, b.h, Style::Normal, WHITE),
+        }
+        let cap = crate::inventory_screen::label(&b.caption);
+        let shift = if set == "Pressed" { 1 } else { 0 };
+        if enabled {
+            u.c.text(&sans, ox + b.x + shift, oy + b.y + shift, b.w, b.h, HAlign::Center, VAlign::Center, black, &cap);
+        } else {
+            u.c.text(&sans, ox + b.x + 1, oy + b.y + 1, b.w, b.h, HAlign::Center, VAlign::Center, WHITE, &cap);
+            u.c.text(&sans, ox + b.x, oy + b.y, b.w, b.h, HAlign::Center, VAlign::Center, [128, 128, 128], &cap);
+        }
+        u.hit(w, (ox + b.x, oy + b.y, b.w, b.h), enabled);
+    }
+    // tnmJukeboxWindow: how many are unlocked.
+    if v.unlocked_only && !v.lay.unlocked.is_empty() {
+        let t = v.lay.unlocked.replacen("%s", &format!("{}/{}", v.rows.len(), crate::jukebox::slots()), 1);
+        u.wrapped(&small, ox + 17, oy + 413, 255, 14, HAlign::Center, VAlign::Top, black, &t);
+    }
+}
+
+/// The music player's clock (real seconds since the first call).
+fn juke_now() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
+
+/// The music player: open one asked for (the Jukebox accessory, the PlayMusicWindow cheat); once its window is
+/// gone however it closed (Escape too), the map's music comes back (DestroyWindow).
+fn juke_tick(st: &mut Menus, assets: &mut RuntimeAssets) {
+    static UP: AtomicBool = AtomicBool::new(false);
+    if let Some(unlocked_only) = crate::jukebox::take_open() {
+        let f = Frame { class: "tnmJukeboxWindow".into(), cw: JUKE_W, ch: JUKE_H, ..default() };
+        // tnmPlayMusicWindow.InitWindow: the music manager goes quiet ("Blank.ogg") while it's up.
+        crate::sound::juke(crate::sound::JukeReq::Stop);
+        st.stack.push(Win { f, body: Body::Juke(Box::new(juke_view(assets, unlocked_only))), pos: None, focus: None, hides_below: true, drop: None });
+        UP.store(true, Ordering::Relaxed);
+    }
+    let up = st.stack.iter().any(|w| matches!(w.body, Body::Juke(_)));
+    if !up && UP.swap(false, Ordering::Relaxed) {
+        crate::sound::juke(crate::sound::JukeReq::Release);
     }
 }

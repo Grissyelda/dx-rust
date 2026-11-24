@@ -58,6 +58,8 @@ pub struct Actor {
     pub pawn: bool,
     pub familiar: String,
     pub unfamiliar: String,
+    /// ItemName (decorations and items: what The Nameless Mod's barks name them by).
+    pub item_name: String,
     pub alive: bool,
     pub hostile: bool,
     /// BarkBindName, else BindName: barks are "<this>_Bark<Mode>".
@@ -415,6 +417,11 @@ pub fn third_person() -> bool {
 /// An infolink (DataLinkPlay) is on screen (the DualSense mic LED pulses).
 pub fn datalink_playing() -> bool {
     lock().as_ref().is_some_and(|s| s.link.is_some())
+}
+
+/// DataLinkPlay.bStartTransmission: an infolink is still opening (or waiting to).
+pub fn datalink_starting() -> bool {
+    lock().as_ref().is_some_and(|s| s.link.as_ref().is_some_and(|l| matches!(l.phase, LinkPhase::Start(_) | LinkPhase::Held)))
 }
 
 /// The conversation an actor is in: where it should look. None when it isn't conversing.
@@ -881,7 +888,13 @@ impl ConState {
         let duration = duration.unwrap_or_else(|| (text.chars().count() as f32 * 0.1).max(3.0));
         // BarkManager: the line shows only with Subtitles on.
         if !text.trim().is_empty() && crate::settings::subtitles() {
-            let name = self.actors.get(&Who::Actor(who)).map(|a| a.unfamiliar.clone()).unwrap_or_default();
+            // TNMHUDBarkDisplayItem.SetBarkSpeech: a decoration or item that barks goes by its ItemName.
+            // uc: TNMHUDBarkDisplayItem.SetBarkSpeech
+            let name = self
+                .actors
+                .get(&Who::Actor(who))
+                .map(|a| if crate::tnmmode::active() && !a.pawn { a.item_name.clone() } else { a.unfamiliar.clone() })
+                .unwrap_or_default();
             self.bark_lines.push(BarkLine {
                 name,
                 text: text.trim().to_string(),
@@ -2557,7 +2570,8 @@ impl ConState {
 
     fn link_tick(&mut self, flags: &mut FlagBase, dt: f32) {
         let Some(l) = self.link.as_mut() else { return };
-        l.typed += dt / 0.03;
+        // The Nameless Mod types infolinks slower (tnmHUDInfoLinkDisplay.CreateControls: 0.05 s a character).
+        l.typed += dt / if crate::tnmmode::active() { 0.05 } else { 0.03 };
         l.blink += dt;
         match l.phase {
             LinkPhase::Held => {}
@@ -2936,6 +2950,7 @@ pub fn consys_system(
                             pawn: find(&a.props, "GroundSpeed").is_some(),
                             familiar: sv(&a.props, "FamiliarName"),
                             unfamiliar: sv(&a.props, "UnfamiliarName"),
+                            item_name: sv(&a.props, "ItemName"),
                             bark_bind,
                             alive: true,
                             ..default()

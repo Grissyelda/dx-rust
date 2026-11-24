@@ -1571,25 +1571,29 @@ struct RealIrc {
     version: String,
 }
 
-/// Trestkon.GetTNMVersion: major, then minor and build when not zero (constants of the player's Trestkon script).
-fn tnm_version(assets: &mut RuntimeAssets) -> String {
+/// Trestkon.GetTNMVersion: major, then minor, build and revision when not zero, then TNM_VERSION_STRING (constants
+/// of the player's Trestkon script).
+// uc: Trestkon.GetTNMVersion
+pub(crate) fn tnm_version(assets: &mut RuntimeAssets) -> String {
     let src = assets.classes.script_text("Trestkon").unwrap_or_default();
-    let c = |n: &str| -> i64 {
-        src.lines()
-            .find_map(|l| {
-                let t = l.trim();
-                let rest = t.strip_prefix("CONST ").or_else(|| t.strip_prefix("const "))?;
-                let (k, v) = rest.split_once('=')?;
-                (k.trim().eq_ignore_ascii_case(n)).then(|| v.trim().trim_end_matches(';').trim().parse().unwrap_or(0))
-            })
-            .unwrap_or(0)
+    let raw = |n: &str| -> Option<String> {
+        src.lines().find_map(|l| {
+            let t = l.trim();
+            let rest = t.strip_prefix("CONST ").or_else(|| t.strip_prefix("const "))?;
+            let (k, v) = rest.split_once('=')?;
+            k.trim().eq_ignore_ascii_case(n).then(|| v.trim().trim_end_matches(';').trim().to_string())
+        })
     };
+    let c = |n: &str| -> i64 { raw(n).and_then(|v| v.parse().ok()).unwrap_or(0) };
     let mut s = c("REVISION_VERSION_MAJOR").to_string();
-    for k in ["REVISION_VERSION_MINOR", "REVISION_VERSION_BUILD"] {
+    for k in ["REVISION_VERSION_MINOR", "REVISION_VERSION_BUILD", "REVISION_VERSION_REVISION"] {
         let v = c(k);
         if v > 0 {
             s.push_str(&format!(".{v}"));
         }
+    }
+    if let Some(v) = raw("TNM_VERSION_STRING") {
+        s.push_str(v.trim_matches('"'));
     }
     s
 }

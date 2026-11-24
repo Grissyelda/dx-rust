@@ -229,7 +229,7 @@ pub fn pre_hit(h: &mut PawnHit, t: &mut TnmBody, robot: bool, health: f32, now: 
                 h.damage_type = "Stunned";
             }
         }
-        "EMP" if t.firewall && !robot => h.damage_type = "Shot",
+        "EMP" if (t.firewall || ALL_FIREWALL.load(std::sync::atomic::Ordering::Relaxed)) && !robot => h.damage_type = "Shot",
         "headstun" => {}
         _ => {}
     }
@@ -576,4 +576,17 @@ pub fn respawn_system(
             _ => {}
         }
     }
+}
+
+/// The TrestWoke cheat: every TNMPawn and TNMRobot of the map turned firewall (bFirewall = true).
+// uc: Trestkon.TrestWoke
+static ALL_FIREWALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_all_firewall() {
+    ALL_FIREWALL.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A new map's pawns are their own again.
+pub fn reset_cheats() {
+    ALL_FIREWALL.store(false, std::sync::atomic::Ordering::Relaxed);
 }

@@ -97,8 +97,10 @@ pub fn class_of(key: &str) -> &str {
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Inventory {
     pub items: Vec<Item>,
-    /// Belt slots 0..9 hold indices into `items`.
-    pub belt: [Option<usize>; 10],
+    /// Belt slots 0..9 hold indices into `items` (0..11 with The Nameless Mod's Enlarged Belt; saves from before
+    /// it have 10).
+    #[serde(deserialize_with = "belt_from_any")]
+    pub belt: [Option<usize>; 12],
     pub ammo: Vec<(String, u32)>,
     pub credits: u32,
     /// Last uid handed out (Item::uid).
@@ -106,6 +108,19 @@ pub struct Inventory {
     /// Ours (item rotation, a setting the game sets each frame): pickups may go in turned, Pack may turn items.
     #[serde(skip)]
     pub allow_rotate: bool,
+    /// The Nameless Mod's Enlarged Belt (an option the game sets each frame): 12 slots instead of 10.
+    #[serde(skip)]
+    pub big_belt: bool,
+}
+
+/// A belt saved with any number of slots up to 12.
+fn belt_from_any<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[Option<usize>; 12], D::Error> {
+    let v: Vec<Option<usize>> = serde::Deserialize::deserialize(d)?;
+    let mut out = [None; 12];
+    for (i, x) in v.into_iter().take(12).enumerate() {
+        out[i] = x;
+    }
+    Ok(out)
 }
 
 impl Inventory {
@@ -385,6 +400,15 @@ impl Inventory {
     }
 
     /// Belt slot holding item `idx`.
+    /// How many belt slots there are: 10, or 12 with the enlarged belt.
+    pub fn belt_slots(&self) -> usize {
+        if self.big_belt {
+            12
+        } else {
+            10
+        }
+    }
+
     pub fn belt_pos(&self, idx: usize) -> Option<usize> {
         self.belt.iter().position(|b| *b == Some(idx))
     }
@@ -429,8 +453,8 @@ impl Inventory {
         };
         self.items.push(Item { def: def.clone(), count, pos: Some(pos), uid, data: Vec::new(), rotated });
         let idx = self.items.len() - 1;
-        // First free belt slot 1..9 (0 is the nano key ring's).
-        if let Some(slot) = (1..10).find(|&s| self.belt[s].is_none()) {
+        // First free belt slot 1..9 (0 is the nano key ring's; up to 11 with the enlarged belt).
+        if let Some(slot) = (1..self.belt_slots()).find(|&s| self.belt[s].is_none()) {
             self.belt[slot] = Some(idx);
         }
         Some(idx)

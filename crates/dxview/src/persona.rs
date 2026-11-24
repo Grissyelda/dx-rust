@@ -84,6 +84,8 @@ pub enum PB {
     ShowImageNotes,
     /// The Nameless Mod's notes search: its edit box and its Search button.
     SearchBox,
+    /// The Nameless Mod's notes fullscreen / back button.
+    Fullscreen,
     Search,
     /// A medical bot's canister list: (canister, which of its two augs).
     CanAug(usize, usize),
@@ -589,7 +591,8 @@ fn draw_base(
             crate::menuui::h_col(7),
             &t,
         );
-    } else {
+    } else if !notes_light() {
+        // (TNMPersonaScreenNotesLight has no nav bar: CreateNavBarWindow only starts its Escape check.)
         let nav = ctx.lay.nav.clone();
         let labels = nav_labels();
         let arrow_hover = match hover {
@@ -645,6 +648,9 @@ fn draw_base(
 }
 
 fn nav_hits(lay: &Layout) -> Vec<(PB, (i32, i32, i32, i32), bool)> {
+    if notes_light() {
+        return Vec::new();
+    }
     let mut v: Vec<(PB, (i32, i32, i32, i32), bool)> = lay
         .nav
         .iter()
@@ -1274,6 +1280,10 @@ fn screen_action(screen: usize, ui: &mut PersonaUi, ctx: &mut Ctx, b: PB) -> Opt
         (SCREEN_LOGS, PB::ClearLog) => LOG.lock().unwrap_or_else(|e| e.into_inner()).clear(),
         (_, PB::ShowCompleted) => ui.show_completed = !ui.show_completed,
         // uc: tnmPersonaScreenGoals.ButtonActivated, tnmPersonaScreenGoals.PopulateNotesSearch
+        (_, PB::Fullscreen) => {
+            set_notes_full(!NOTES_FULL.load(std::sync::atomic::Ordering::Relaxed));
+            ui.scroll = 0;
+        }
         (_, PB::SearchBox) => {
             ui.search_focus = true;
             ui.edit = None;
@@ -3077,6 +3087,46 @@ fn notes_list() -> Vec<String> {
 
 const NOTES_AREA: (i32, i32, i32, i32) = (16, 226, 574, 182);
 
+/// The Nameless Mod's full-screen notes (the Goals screen's fullscreen button), and the light notes screen opened
+/// over a terminal or keypad (F2): only the notes, from the top of the page.
+static NOTES_FULL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static NOTES_LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn notes_full() -> bool {
+    NOTES_FULL.load(std::sync::atomic::Ordering::Relaxed) || notes_light()
+}
+pub fn notes_light() -> bool {
+    NOTES_LIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub fn set_notes_full(on: bool) {
+    NOTES_FULL.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn set_notes_light(on: bool) {
+    let was = NOTES_LIGHT.swap(on, std::sync::atomic::Ordering::Relaxed);
+    if was && !on {
+        if let Ok(mut t) = LIGHT_CLOSED.lock() {
+            *t = Some(std::time::Instant::now());
+        }
+    }
+}
+
+/// When the light notes screen last closed: the Escape that closed it isn't also the terminal's (DoPop waits 0.1 s).
+static LIGHT_CLOSED: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// The light notes screen is up, or closed just now.
+pub fn notes_light_recent() -> bool {
+    notes_light() || LIGHT_CLOSED.lock().ok().and_then(|t| *t).is_some_and(|t| t.elapsed().as_secs_f32() < 0.2)
+}
+
+/// Where the notes are listed (CreateScrollTileWindow): under the goals, or the whole page.
+fn notes_area() -> (i32, i32, i32, i32) {
+    if notes_full() {
+        (16, 21, 574, 387)
+    } else {
+        NOTES_AREA
+    }
+}
+
 /// Note boxes: (top, height, chars, line spans); 5 px text margins top and bottom, 4 px between boxes.
 fn note_boxes(f: &Fonts, search: &str) -> Vec<(i32, i32, Vec<char>, Vec<(usize, usize)>)> {
     let mut y = 0;
@@ -3112,11 +3162,9 @@ fn goals_hits(
     ));
     // The fonts aren't at hand here; the note rows are hit-tested in draw order below, so register the whole
     // notes area per note using the cached layout from the last draw.
-    hits.push((
-        PB::ShowCompleted,
-        (cx + 604 - 13 - 200, cy + 180, 200, 14),
-        true,
-    ));
+    if !notes_full() {
+        hits.push((PB::ShowCompleted, (cx + 604 - 13 - 200, cy + 180, 200, 14), true));
+    }
     hits.push((PB::AddNote, (cx + 10, cy + 411, 89, 16), true));
     hits.push((
         PB::DeleteNote,
@@ -3124,8 +3172,13 @@ fn goals_hits(
         ui.note_sel.is_some(),
     ));
     if crate::tnmmode::active() {
-        hits.push((PB::SearchBox, (cx + 183, cy + 209, 280, 14), true));
-        hits.push((PB::Search, (cx + 464, cy + 206, 100, 16), true));
+        let full = notes_full();
+        let dy = if full { -205 } else { 0 };
+        hits.push((PB::SearchBox, (cx + 183, cy + 209 + dy, 280, 14), true));
+        hits.push((PB::Search, (cx + 464, cy + 206 + dy, 100, 16), true));
+        if !notes_light() {
+            hits.push((PB::Fullscreen, (cx + 576, cy + if full { 1 } else { 206 }, 16, 16), true));
+        }
     }
     let boxes = NOTE_HITS.lock().map(|v| v.clone()).unwrap_or_default();
     for (i, (y, h)) in boxes.into_iter().enumerate() {
@@ -3133,14 +3186,15 @@ fn goals_hits(
             continue;
         }
         let top = (y - ui.scroll).max(0);
-        let bottom = (y + h - ui.scroll).min(NOTES_AREA.3);
+        let area = notes_area();
+        let bottom = (y + h - ui.scroll).min(area.3);
         if bottom > top {
             hits.push((
                 PB::Note(i),
                 (
-                    cx + NOTES_AREA.0,
-                    cy + NOTES_AREA.1 + top,
-                    NOTES_AREA.2,
+                    cx + area.0,
+                    cy + area.1 + top,
+                    area.2,
                     bottom - top,
                 ),
                 true,
@@ -3161,10 +3215,14 @@ fn draw_goals(
 ) -> i32 {
     let f = ctx.fonts;
     let notes_title = s_default(ctx, "PersonaScreenGoals", "NotesTitleText", "Notes");
+    // The Nameless Mod's full-screen notes (TNMPersonaScreenNotesFullscreen / NotesLight): no goals, the notes from
+    // the top of the page.
+    let full = notes_full();
+    let dy = if full { -205 } else { 0 };
     c.text(
         &f.headers,
         cx + 9,
-        cy + 209,
+        cy + 209 + dy,
         300,
         f.headers.height,
         HAlign::Left,
@@ -3173,6 +3231,7 @@ fn draw_goals(
         &notes_title,
     );
     // Goals.
+    if !full {
     let (gx, gy, gw, gh) = (cx + 16, cy + 21, 574, 154);
     c.set_clip(Some((gx, gy, gw, gh)));
     let mut y = gy;
@@ -3234,15 +3293,18 @@ fn draw_goals(
     );
     let r = checkbox_rect(f, cx, 604, 13, cy + 180, &lab);
     draw_checkbox(c, ctx, r, &lab, ui.show_completed, true);
+    }
+    // TNMPersonaFullscreenButton (576, 206) / TNMPersonaUnFullscreenButton (576, 1).
+    // uc: tnmPersonaScreenGoals.CreateNotesButtons, TNMPersonaScreenNotesFullscreen.CreateNotesButtons
+    if crate::tnmmode::active() && !notes_light() {
+        let cls = if full { "TNMPersonaUnFullscreenButton" } else { "TNMPersonaFullscreenButton" };
+        draw_border_button(c, ctx, cls, cx + 576, cy + if full { 1 } else { 206 }, 16, state(PB::Fullscreen));
+    }
     // Notes: each in its bracketed box; the selected one in the focus box.
     let boxes = note_boxes(f, &ui.search_applied);
     *NOTE_HITS.lock().unwrap() = boxes.iter().map(|b| (b.0, b.1)).collect();
-    let (nx, ny, nw, nh) = (
-        cx + NOTES_AREA.0,
-        cy + NOTES_AREA.1,
-        NOTES_AREA.2,
-        NOTES_AREA.3,
-    );
+    let area = notes_area();
+    let (nx, ny, nw, nh) = (cx + area.0, cy + area.1, area.2, area.3);
     c.set_clip(Some((nx, ny, nw, nh)));
     let normal: [Option<std::sync::Arc<crate::uicanvas::UiTex>>; 9] = [
         "TL", "TR", "BL", "BR", "Left", "Right", "Top", "Bottom", "Center",
@@ -3310,20 +3372,20 @@ fn draw_goals(
     if crate::tnmmode::active() {
         // tnmPersonaScreenGoals.CreateNotesButtons: "Search" label, its edit box and button (the mod's strings).
         let label = s_default(ctx, "tnmPersonaScreenGoals", "strSearch", "");
-        c.text(&f.headers, cx + 133, cy + 209, 50, f.headers.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(7), &label);
-        c.fill(cx + 183, cy + 209, 280, 14, Style::Normal, [0, 0, 0]);
+        c.text(&f.headers, cx + 133, cy + 209 + dy, 50, f.headers.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(7), &label);
+        c.fill(cx + 183, cy + 209 + dy, 280, 14, Style::Normal, [0, 0, 0]);
         let edges: [Option<std::sync::Arc<crate::uicanvas::UiTex>>; 9] = [
             "TL", "TR", "BL", "BR", "Left", "Right", "Top", "Bottom", "Center",
         ]
         .map(|n| ctx.hud.ui(ctx.assets, &format!("PersonaNote{}_{n}", if ui.search_focus { "Focus" } else { "Normal" })));
-        c.borders(cx + 183, cy + 207, 280, 18, &edges, Style::Masked, crate::menuui::h_col(7));
-        c.text(&f.small, cx + 187, cy + 210, 272, f.small.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(9), &ui.search);
+        c.borders(cx + 183, cy + 207 + dy, 280, 18, &edges, Style::Masked, crate::menuui::h_col(7));
+        c.text(&f.small, cx + 187, cy + 210 + dy, 272, f.small.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(9), &ui.search);
         if ui.search_focus {
             let x = cx + 187 + f.small.width(&ui.search);
-            c.fill(x, cy + 210, 1, f.small.height, Style::Normal, crate::menuui::h_col(13));
+            c.fill(x, cy + 210 + dy, 1, f.small.height, Style::Normal, crate::menuui::h_col(13));
         }
         let btn = s_default(ctx, "tnmPersonaScreenGoals", "strSearchButton", "");
-        draw_button(c, ctx.hud, ctx.assets, &f.headers, cx + 464, cy + 206, 100, &btn, state(PB::Search), true);
+        draw_button(c, ctx.hud, ctx.assets, &f.headers, cx + 464, cy + 206 + dy, 100, &btn, state(PB::Search), true);
     }
     let add = s_default(ctx, "PersonaScreenGoals", "AddButtonLabel", "Add |&Note");
     let del = s_default(
@@ -4547,5 +4609,24 @@ pub fn reset_level() {
     // (The message log travels with the player, as DeusExPlayer's log does.)
     if let Ok(mut v) = NOTE_HITS.lock() {
         v.clear();
+    }
+}
+
+/// PersonaBorderButtonWindow with its Center_Textures (Normal / Pressed): the texture refs are object indices in the
+/// button class's own package (The Nameless Mod's fullscreen buttons in TNMGUI.u).
+fn draw_border_button(c: &mut Canvas, ctx: &mut Ctx, class: &str, x: i32, y: i32, w: i32, state: usize) {
+    let d = ctx.assets.classes.defaults(class);
+    let idx = if state == 2 { 1 } else { 0 };
+    let Some(unreal_pkg::props::Value::Struct(_, b)) =
+        d.iter().find(|p| p.name.eq_ignore_ascii_case("Center_Textures") && p.index == idx).map(|p| p.value.clone())
+    else {
+        return;
+    };
+    let mut r = unreal_pkg::Reader::new(&b, 0);
+    let Ok(obj) = r.compact_index() else { return };
+    let Some(pkg) = ctx.assets.classes.package_of(class) else { return };
+    let Some(path) = ctx.assets.classes.packages.get(&pkg).map(|p| p.object_path(obj)) else { return };
+    if let Some(t) = ctx.hud.tex(ctx.assets, &path) {
+        c.texture(x, y, w, 16, 0, 0, &t, Style::Translucent, crate::menuui::h_col(3));
     }
 }

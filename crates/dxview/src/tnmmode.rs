@@ -12,6 +12,7 @@
 
 use bevy::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The Nameless Mod's folder for this run: `--tnm <folder>`, DXVIEW_TNM, or launcher.txt Game=tnm with TNMPath=.
@@ -95,7 +96,20 @@ const CLASS_ALIASES: [(&str, &str); 13] = [
 
 /// Before a map is built: The Nameless Mod's enemy / item appearance level for this playthrough, from the
 /// difficulty picked (its Easy / Medium / Hard set both to 0 / 1 / 2; Realistic counts as Hard). Off outside TNM.
+/// Trestkon.CantSave: set by a mission script (the PDX massacre, Scara dead in the Citadel); a new map clears it
+/// (the variable doesn't travel).
+static CANT_SAVE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_cant_save(v: bool) {
+    CANT_SAVE.store(v, Ordering::Relaxed);
+}
+
+pub fn cant_save() -> bool {
+    CANT_SAVE.load(Ordering::Relaxed)
+}
+
 pub fn before_load() {
+    set_cant_save(false);
     // A new map plays at normal speed (the slow-motion scenes end on their own map).
     set_speed(1.0);
     // Trestkon's PawnDifficulty / ItemDifficulty: chosen with the difficulty (games from before the mod's menus
@@ -360,11 +374,14 @@ pub struct Difficulty {
     pub items: i32,
     pub legendary: bool,
     pub nightmare: bool,
+    /// Trestkon.bCustomDifficulty: chosen on the custom difficulty screen.
+    #[serde(default)]
+    pub custom: bool,
 }
 
 impl Default for Difficulty {
     fn default() -> Self {
-        Difficulty { combat: 1.5, pawn_health: 1.0, enemies: 1, items: 1, legendary: false, nightmare: false }
+        Difficulty { combat: 1.5, pawn_health: 1.0, enemies: 1, items: 1, legendary: false, nightmare: false, custom: false }
     }
 }
 

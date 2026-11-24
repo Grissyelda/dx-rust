@@ -2063,20 +2063,22 @@ pub fn select_system(
             .pending
             .or_else(|| {
                 let class = weapons.held.as_ref().map(|h| h.stats.class.clone())?;
-                (0..10).find(|&s| {
+                (0..inv.0.belt_slots()).find(|&s| {
                     inv.0.belt[s]
                         .and_then(|i| inv.0.items.get(i))
                         .is_some_and(|it| it.def.class == class)
                 })
             })
             .unwrap_or(0);
-        let step = if wheel.delta.y < 0.0 { 1 } else { 9 };
+        // The Nameless Mod's enlarged belt wraps at 12 (Trestkon.NextBeltItem / PrevBeltItem).
+        let n = inv.0.belt_slots();
+        let step = if wheel.delta.y < 0.0 { 1 } else { n - 1 };
         // Empty-handed, the start slot counts too (only the key ring in slot 0 on an empty belt: it was never
         // reached). With something in hand it doesn't (that would put it away).
         let empty_handed = weapons.held.is_none() && weapons.pending.is_none();
         let mut s = cur;
-        for _ in 0..10 {
-            s = (s + step) % 10;
+        for _ in 0..n {
+            s = (s + step) % n;
             if s == cur && !empty_handed {
                 break;
             }
@@ -2089,8 +2091,10 @@ pub fn select_system(
             }
         }
     }
-    for (k, slot) in KEYS {
-        if keys.just_pressed(k) || injected == Some(slot) {
+    // Slots 10 and 11 of the enlarged belt have no number key: only the wheel reaches them.
+    let extra: &[(Option<KeyCode>, usize)] = if inv.0.belt_slots() > 10 { &[(None, 10), (None, 11)] } else { &[] };
+    for (k, slot) in KEYS.iter().map(|(k, s)| (Some(*k), *s)).chain(extra.iter().copied()) {
+        if k.is_some_and(|k| keys.just_pressed(k)) || injected == Some(slot) {
             let is_weapon = usable(slot);
             if !is_weapon {
                 continue;

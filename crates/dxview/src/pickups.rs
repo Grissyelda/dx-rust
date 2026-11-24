@@ -904,6 +904,16 @@ fn take_pickup(
         inv.0.pick_up(&def, copies)
     };
     let Some(msg) = got else { return false };
+    // The Nameless Mod: a weapon a script took off the player goes back in its old belt slot
+    // (tnmHUDObjectBelt.AddObjectToBelt with TNMWeapon.lastBeltPos).
+    // uc: tnmHUDObjectBelt.AddObjectToBelt
+    if let Some(slot) = i(props, "lastBeltPos").filter(|&n| n > 0).map(|n| n as usize) {
+        if slot < inv.0.belt_slots() {
+            if let Some(idx) = inv.0.items.iter().rposition(|x| x.def.class == class) {
+                inv.0.belt_assign(idx, slot);
+            }
+        }
+    }
     let after = inv.0.items.len()
         + inv.0.credits as usize
         + inv.0.ammo.iter().map(|x| x.1 as usize).sum::<usize>()
@@ -1347,6 +1357,15 @@ fn frob_device(
         ))));
         return;
     }
+    // The Nameless Mod's music CDs (CollectableCD.Frob): their songs unlocked for the music player, the CD gone.
+    if crate::tnmmode::active() && crate::classtree::is_a(&a.class, "CollectableCD") {
+        let props = a.props.clone();
+        crate::jukebox::frob_cd(&mut cx.assets, &props);
+        let actor = blockers.list[b].actor;
+        crate::scriptworld::mark_hidden(actor, true);
+        crate::scriptworld::push(crate::scriptworld::ActorReq::Destroy(crate::scriptworld::ActorSel::tag(&format!("#actor{actor}"))));
+        return;
+    }
     // The Nameless Mod's accessory boxes and coat bags: the look is unlocked for the new-game screen, for good.
     if crate::tnmlook::is_accessory(&a.class) {
         let kind = match find(&a.props, "AccessoryType") {
@@ -1690,6 +1709,7 @@ pub fn device_like(a: &dx_level::actors::ActorInfo) -> bool {
             || crate::augmentique::is_spawner(&a.class)
             || crate::tnmpower::is_powerup(&a.class)
             || crate::tnmlook::is_accessory(&a.class)
+            || (crate::tnmmode::active() && crate::classtree::is_a(&a.class, "CollectableCD"))
             || a.class.eq_ignore_ascii_case("ammocrate")
             || crate::computers::is_terminal(&a.class)
             || !crate::devices::name_prop(p, "Event").is_empty()

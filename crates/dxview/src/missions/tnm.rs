@@ -456,6 +456,7 @@ fn pdx_murder(c: &mut Ctx) {
         return;
     }
     c.set("MS_KashueKilling", true, 23);
+    crate::tnmmode::set_cant_save(true);
     let kashue_here = c.pawns.iter().any(|p| p.in_world && (p.tag.eq_ignore_ascii_case("KingKashue_Evil") || p.tag.eq_ignore_ascii_case("KingKashue")));
     c.leave_tag("KingKashue_Evil");
     c.leave_tag("KingKashue");
@@ -476,6 +477,10 @@ fn pdx_murder(c: &mut Ctx) {
 
 /// Missions 20 and 22's shared checks, once a second.
 fn m20and22_timer(c: &mut Ctx, map: &str) {
+    // Scara dead on the Citadel's top floor: no saving there (lest the player be stuck).
+    if (map == "20_WCFLOOR4" || map == "22_WCFLOOR4") && c.b("Scara_Dead") {
+        crate::tnmmode::set_cant_save(true);
+    }
     if c.b("Scara_Dead") {
         crate::cinematic::redirect_exits(Some(("20_WCFloor4#Narcissus", "Narcissus")));
     }

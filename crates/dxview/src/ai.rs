@@ -3621,6 +3621,10 @@ pub fn npc_system(
         Local<NpcScratch>,
     ),
 ) {
+    // The Nameless Mod's PlayersOnly cheat (Level.bPlayersOnly): every pawn stands still.
+    if crate::tnmcheats::players_only() {
+        return;
+    }
     let _prof = crate::prof::scope("ai::npc_system");
     let NpcScratch { snaps, solid: solid_buf, heard: heard_buf } = &mut *scratch;
     let danger: Vec<(DVec3, f64, Option<usize>)> = crate::grenades::DANGER
@@ -8598,7 +8602,10 @@ fn pawn_hurt(npc: &mut Npc, an: &mut Animated, aff: &mut Afflictions, h: &crate:
         } else {
             "HitSound2"
         };
-        if let Some(snd) = crate::sound::prop(props, which) {
+        // The Nameless Mod's LookAtThisDood cheat: TNMPawn.PlayTakeHitSound plays its bruhSound instead (volume 3).
+        // uc: TNMPawn.PlayTakeHitSound
+        let snd = if crate::tnmcheats::bruh() { Some("TNM.BruhSound".to_string()) } else { crate::sound::prop(props, which) };
+        if let Some(snd) = snd {
             let vol = crate::sound::fprop(props, "TransientSoundVolume", 1.0)
                 .max(2.0);
             crate::sound::play_req(crate::sound::Req {

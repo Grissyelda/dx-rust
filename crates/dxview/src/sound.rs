@@ -609,6 +609,9 @@ pub struct SoundState {
     other_song: Option<imsim_audio::Song>,
     /// An Ogg track asked for by name (The Nameless Mod's credits): decoding, then playing until set_music(None).
     other_ogg: Option<(crate::tnmmode::Decoded, bool)>,
+    /// The Nameless Mod's music player: (intro, song, seconds in, started), while its window holds the music.
+    juke: Option<(Option<crate::tnmmode::Decoded>, crate::tnmmode::Decoded, f32, bool)>,
+    juke_on: bool,
     /// Enhancements (audiofx.rs): occlusion cache, when the room was last measured, the HQ setting sent.
     occl: crate::audiofx::Occluder,
     room_t: f32,
@@ -624,6 +627,31 @@ pub struct SoundState {
 
 /// ClientSetMusic with another song (Some(package.name)) or back to the level's song and section (None).
 static MUSIC_REQ: Mutex<Option<Option<String>>> = Mutex::new(None);
+
+/// The music player (jukebox.rs) asks for a song, a stop, or the map's own music back.
+pub enum JukeReq {
+    /// Intro file (may be empty), song file, seconds into it.
+    Play(String, String, f32),
+    Stop,
+    Release,
+}
+static JUKE: Mutex<Vec<JukeReq>> = Mutex::new(Vec::new());
+
+pub fn juke(r: JukeReq) {
+    if let Ok(mut q) = JUKE.lock() {
+        q.push(r);
+    }
+}
+
+/// A clip from `secs` on (DXOgg's SetCurrentOgg start position).
+fn clip_from(c: &Arc<imsim_audio::Clip>, secs: f32) -> Arc<imsim_audio::Clip> {
+    if secs <= 0.0 {
+        return c.clone();
+    }
+    let ch = c.channels.max(1) as usize;
+    let at = ((secs * c.rate as f32) as usize * ch).min(c.data.len());
+    Arc::new(imsim_audio::Clip { data: c.data[at..].to_vec(), channels: c.channels, rate: c.rate, loop_range: None })
+}
 
 pub fn set_music(song: Option<&str>) {
     if let Ok(mut m) = MUSIC_REQ.lock() {
@@ -735,6 +763,8 @@ fn build_state(audio: Audio, level: &dx_level::Level, root: &std::path::Path) ->
         actor_ambients: None,
         other_song: None,
         other_ogg: None,
+        juke: None,
+        juke_on: false,
         occl: Default::default(),
         room_t: 0.0,
         hq_sent: None,
@@ -1138,6 +1168,52 @@ pub fn sound_system(
                 }
             }
         }
+    }
+    // The music player: its song while its window is up (tnmPlayMusicWindow.PlaySong / StopPlayback), then the
+    // map's ambient track again with a fade (DestroyWindow).
+    // uc: tnmPlayMusicWindow.PlaySong, tnmPlayMusicWindow.DestroyWindow
+    for r in JUKE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        match r {
+            JukeReq::Play(intro, song, at) => {
+                st.juke_on = true;
+                let i = (!intro.is_empty() && !intro.eq_ignore_ascii_case("Blank.ogg")).then(|| crate::tnmmode::decode_ogg_file(&intro)).flatten();
+                st.juke = crate::tnmmode::decode_ogg_file(&song).map(|m| (i, m, at, false));
+            }
+            JukeReq::Stop => {
+                st.juke_on = true;
+                st.juke = None;
+                st.audio.stop_music(Transition::Instant);
+            }
+            JukeReq::Release => {
+                if st.juke_on {
+                    st.juke_on = false;
+                    st.juke = None;
+                    st.audio.stop_music(Transition::Fade);
+                    st.ogg_want = Some((crate::tnmmode::Track::Ambient, Transition::Fade));
+                }
+            }
+        }
+    }
+    if st.juke_on {
+        if let Some((intro, main, at, started)) = st.juke.as_mut() {
+            let ready = |d: &crate::tnmmode::Decoded| d.lock().ok().and_then(|s| s.clone());
+            let main_ready = ready(main);
+            let intro_ready = intro.as_ref().map(ready);
+            if !*started && main_ready.is_some() && intro_ready.as_ref().is_none_or(|i| i.is_some()) {
+                *started = true;
+                let intro_clip = intro_ready.flatten().flatten();
+                if let Some(m) = main_ready.flatten() {
+                    // The start position runs through the intro first.
+                    let (ic, mc) = match intro_clip {
+                        Some(i) if *at < i.duration() => (Some(clip_from(&i, *at)), m),
+                        Some(i) => (None, clip_from(&m, *at - i.duration())),
+                        None => (None, clip_from(&m, *at)),
+                    };
+                    st.audio.play_music_clips(ic, mc, Transition::Instant);
+                }
+            }
+        }
+        return;
     }
     if let Some((slot, started)) = st.other_ogg.as_mut() {
         if !*started {

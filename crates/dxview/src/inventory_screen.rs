@@ -42,6 +42,15 @@ pub fn persona_open() -> bool {
     SCREEN_OPEN.load(Ordering::Relaxed)
 }
 
+/// A screen asked to open from elsewhere (the light notes screen over a terminal).
+static OPEN_REQ: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+
+pub fn request_open(screen: usize) {
+    if let Ok(mut g) = OPEN_REQ.lock() {
+        *g = Some(screen);
+    }
+}
+
 pub fn screen_open() -> bool {
     SCREEN_OPEN.load(Ordering::Relaxed) || crate::computers::open() || crate::menus::open() || crate::menus::intro_map() || crate::credits::open()
 }
@@ -850,6 +859,9 @@ fn fists_info(assets: &mut RuntimeAssets) -> (String, Vec<Row>) {
 // uc: tnmPersonaScreenInventory.UpdateAccessoryDisplay, tnmPersonaInventoryInfoWindow.AddAccessoryInfoWindows
 /// What he carries that isn't an item: the subway pass, the program disk, the ID card, the USB stick, the ABI
 /// vouchers (with how many are left), and the binoculars and poster tube when he has them.
+/// The accessory row that is the Jukebox's button (a fist row's number otherwise).
+const JUKEBOX_BUTTON: u8 = 255;
+
 fn accessories_info(view: &View, flags: &imsim_core::flags::FlagBase, assets: &mut RuntimeAssets) -> (String, Vec<Row>) {
     let cls = "tnmPersonaInventoryInfoWindow";
     let d = assets.classes.defaults(cls);
@@ -914,6 +926,14 @@ fn accessories_info(view: &View, flags: &imsim_core::flags::FlagBase, assets: &m
             found = true;
         }
     }
+    // The music player, once the sword is unlocked (a game won): a button that opens the Jukebox.
+    // uc: tnmPersonaInventoryInfoWindow.AddAccessoryInfoWindows, tnmPersonaInventoryInfoWindow.AddAccessory
+    if crate::tnminvasion::unlocked() {
+        let text = str_p(&d, "strMusicPlayerTitle") + &str_p(&d, "strMusicPlayerDescription");
+        rows.push(Row::Icon("TNMGUI.UI.IconMusicPlayer".into(), text, Some(JUKEBOX_BUTTON), false));
+        rows.push(Row::Line);
+        found = true;
+    }
     if !found {
         return (str_p(&d, "strAccessories"), vec![Row::Text(str_p(&d, "strNoAccessories"))]);
     }
@@ -959,10 +979,19 @@ pub(crate) fn inside(p: (i32, i32), r: (i32, i32, i32, i32)) -> bool {
     p.0 >= r.0 && p.1 >= r.1 && p.0 < r.0 + r.2 && p.1 < r.1 + r.3
 }
 
-/// Belt slot rectangles (HUDObjectBelt: 1..9 then 0).
+/// How many belt slots: 12 with The Nameless Mod's Enlarged Belt (tnmPersonaInventoryObjectBelt), else 10.
+fn belt_n() -> usize {
+    if crate::tnmmode::option("bEnlargedBelt") {
+        12
+    } else {
+        10
+    }
+}
+
+/// Belt slot rectangles (HUDObjectBelt: 1..9 (..11) then 0).
 fn belt_slot_rect(slot: usize) -> (i32, i32, i32, i32) {
     let (x, w) = if slot == 0 {
-        (10 + 9 * 51, 44)
+        (10 + (belt_n() as i32 - 1) * 51, 44)
     } else {
         (10 + (slot as i32 - 1) * 51, 51)
     };
@@ -1136,7 +1165,7 @@ fn snap_rects(view: &View, lay: &Layout) -> Vec<(i32, i32, i32, i32)> {
     v.push((lay.exit.0, 8, lay.exit.1, 16));
     v.extend(lay.actions.iter().map(|(_, x, w)| (*x, BUTTONS.1, *w, 16)));
     v.extend(view.inv.items.iter().filter_map(item_rect));
-    v.extend((0..10).map(belt_slot_rect));
+    v.extend((0..belt_n()).map(belt_slot_rect));
     let (k, a) = (keyring_r(), ammo_r());
     v.push((k.0, k.1, 55, 55));
     v.push((a.0, a.1, 55, 55));
@@ -1192,7 +1221,7 @@ fn hit_test(
     ) {
         return Hit::Grid((p.0 - ITEMS.0) / INV_BUTTON, (p.1 - ITEMS.1) / INV_BUTTON);
     }
-    for slot in 0..10 {
+    for slot in 0..belt_n() {
         if inside(p, belt_slot_rect(slot)) {
             return Hit::Belt(slot);
         }
@@ -1407,6 +1436,10 @@ pub fn inventory_screen_system(
     if cx.inv.0.allow_rotate != rot {
         cx.inv.0.allow_rotate = rot;
     }
+    let big = belt_n() > 10;
+    if cx.inv.0.big_belt != big {
+        cx.inv.0.big_belt = big;
+    }
     if !cx.st.built {
         build_nodes(cx, &mut commands);
     }
@@ -1577,12 +1610,21 @@ fn toggle_screen(cx: &mut InvCx, npcs: &mut Query<&mut crate::ai::Npc>) -> bool 
         Some(crate::persona::SCREEN_GOALS)
     } else {
         // Touch: the health figure, compass or log tapped (touch.rs).
-        crate::touch::take_open_screen().filter(|_| st.bot.is_none() && !editing)
+        crate::touch::take_open_screen()
+            .or_else(|| OPEN_REQ.lock().ok().and_then(|mut g| g.take()))
+            .filter(|_| st.bot.is_none() && !editing)
     };
     // Optional Fixes: a bot's screen closes when the bot dies or is disabled (HUDMedBot*Screen.Tick PopWindow).
-    let bot_gone = crate::optfixes::fixes()
-        && st.open
-        && st.bot.is_some_and(|(e, _)| npcs.get(e).map_or(true, |n| n.state == crate::ai::NpcState::Dead || (n.hp_body.robot && n.emp_hp <= 0.0)));
+    // The Nameless Mod always closes them when the bot is dead (TNMHUDMedBotHealthScreen / AddAugsScreen /
+    // TNMHUDRechargeWindow.Tick).
+    // uc: TNMHUDMedBotHealthScreen.Tick, TNMHUDMedBotAddAugsScreen.Tick, TNMHUDRechargeWindow.Tick
+    let bot_gone = st.open
+        && st.bot.is_some_and(|(e, _)| {
+            npcs.get(e).map_or(true, |n| {
+                let dead = n.state == crate::ai::NpcState::Dead;
+                (crate::optfixes::fixes() && (dead || (n.hp_body.robot && n.emp_hp <= 0.0))) || (crate::tnmmode::active() && dead)
+            })
+        });
     let mut toggle = (st.open && binds.keys.just_pressed(KeyCode::Escape) && !st.persona.modal())
         || bot_gone
         || want.is_some_and(|w| !st.open || w == st.screen);
@@ -1595,10 +1637,15 @@ fn toggle_screen(cx: &mut InvCx, npcs: &mut Query<&mut crate::ai::Npc>) -> bool 
         st.screen = w;
     }
     if toggle && !binds.open {
-        if !st.open && (ph.dead || crate::computers::open()) {
+        // (The light notes screen opens over a terminal.)
+        if !st.open && (ph.dead || (crate::computers::open() && !crate::persona::notes_light())) {
             return false;
         }
         st.open = !st.open;
+        if !st.open {
+            // The light notes screen is gone: the terminal has the keys again.
+            crate::persona::set_notes_light(false);
+        }
         crate::sound::play_player(
             if st.open {
                 "DeusExSounds.UserInterface.Menu_Activate"
@@ -2123,7 +2170,7 @@ fn release_input(cx: &mut InvCx, fr: &InvFrame, hit: &Hit, action: &mut Option<B
                         if let Some(b) = inv.0.belt_pos(idx).filter(|b| *b != 0) {
                             inv.0.belt[b] = None;
                             st.set_status("Taken off the belt".into());
-                        } else if let Some(slot) = (1..10).find(|&s| inv.0.belt[s].is_none()) {
+                        } else if let Some(slot) = (1..belt_n()).find(|&s| inv.0.belt[s].is_none()) {
                             inv.0.belt_assign(idx, slot);
                             st.belt_sel = Some(slot);
                             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
@@ -2149,6 +2196,11 @@ fn release_input(cx: &mut InvCx, fr: &InvFrame, hit: &Hit, action: &mut Option<B
                 Hit::Fists => select(st, Sel::Fists, inv),
                 Hit::Accessories => select(st, Sel::Accessories, inv),
                 // uc: tnmPersonaInventoryInfoWindow.SelectFistType, DisplayFistSelectionMessage
+                // btnJukebox: the screen closes and the Jukebox opens (Trestkon.Jukebox).
+                Hit::Fist(ft) if *ft == JUKEBOX_BUTTON => {
+                    st.open = false;
+                    crate::jukebox::open(true);
+                }
                 Hit::Fist(ft) => {
                     let d = assets.classes.defaults("tnmPersonaInventoryInfoWindow");
                     if crate::trestkon::set_fist(*ft) {
@@ -3763,7 +3815,7 @@ fn draw_belt(
     }
     if let Some(t) = hud.ui(assets, "HUDObjectBeltBackground_Right") {
         c.texture(
-            bx + 514,
+            bx + if belt_n() > 10 { 616 } else { 514 },
             by + 6,
             8,
             54,
@@ -3779,15 +3831,31 @@ fn draw_belt(
         ("HUDObjectBeltBorder_2", 256, 256),
         ("HUDObjectBeltBorder_3", 512, 29),
     ] {
+        if belt_n() > 10 {
+            break;
+        }
         if let Some(t) = hud.ui(assets, name) {
             c.texture(bx + x, by, w, 69, 0, 0, &t, Style::Translucent, crate::menuui::h_col(1));
+        }
+    }
+    // The enlarged belt's border (tnmHUDObjectBelt ExtraTexBorder: 256 + 256 + 133).
+    if belt_n() > 10 {
+        let d = assets.classes.defaults("tnmHUDObjectBelt");
+        for (i, (x, w)) in [(0, 256), (256, 256), (512, 133)].into_iter().enumerate() {
+            let path = d.iter().find(|p| p.name.eq_ignore_ascii_case("ExtraTexBorder") && p.index as usize == i).and_then(|p| match &p.value {
+                Value::Path(p) => Some(p.clone()),
+                _ => None,
+            });
+            if let Some(t) = path.and_then(|p| hud.tex(assets, &p)) {
+                c.texture(bx + x, by, w, 69, 0, 0, &t, Style::Translucent, crate::menuui::h_col(1));
+            }
         }
     }
     let cell = hud.ui(assets, "HUDObjectBeltBackground_Cell");
     let borders = item_borders(hud, assets);
     let dragging = st.drag.as_ref().filter(|d| d.active);
     let tiny = &f.tiny;
-    for slot in 0..10 {
+    for slot in 0..belt_n() {
         let (sx, sy, sw, sh) = belt_slot_rect(slot);
         if let Some(t) = &cell {
             c.texture(sx, sy, sw, sh, 0, 0, t, Style::Translucent, crate::menuui::h_col(0));
@@ -4070,5 +4138,20 @@ pub fn reset_level() {
     SCREEN_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut v) = OPEN_BOT.lock() {
         *v = None;
+    }
+}
+
+/// The light notes screen sits over the terminal it was opened from: its canvases go above the computer's layers
+/// (48..53) while it's up, back under them after.
+pub fn notes_light_z_system(st: Res<InvScreen>, mut z: Query<&mut GlobalZIndex>) {
+    let light = crate::persona::notes_light();
+    for (k, e) in [st.canvas.as_ref().map(|c| c.1), st.cursor.as_ref().map(|c| c.1)].into_iter().enumerate() {
+        let Some(e) = e else { continue };
+        if let Ok(mut zi) = z.get_mut(e) {
+            let want = if light { 60 + k as i32 * 3 } else { 40 + k as i32 * 3 };
+            if zi.0 != want {
+                zi.0 = want;
+            }
+        }
     }
 }

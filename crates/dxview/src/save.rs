@@ -724,6 +724,11 @@ pub fn format_date(unix: u64) -> String {
         12 => (12, "pm"),
         _ => (h - 12, "pm"),
     };
+    // The Nameless Mod's Use EU Timestamps: day/month/year and a 24-hour clock (TNMMenuScreenLoadGame.BuildEUTimeString).
+    // uc: TNMMenuScreenLoadGame.BuildEUTimeString
+    if crate::tnmmode::option("bUseEUTimestamps") {
+        return format!("{d:02}/{m:02}/{y} {h:02}:{min:02}");
+    }
     format!("{m}/{d}/{y} {h12}:{min:02} {ap}")
 }
 
@@ -1631,6 +1636,23 @@ pub fn write_for_test(char_id: &str, name: &str, description: &str, n: usize) {
 
 /// DeusExPlayer.QuickSave: not on the logo map, while dead, or during an infolink.
 pub fn can_save(dead: bool) -> bool {
+    if crate::tnmmode::active() {
+        // Trestkon.IsSaveAllowed: also not once a script has set CantSave, in the stealth course (mission 95), and
+        // with Allow Saves During Infolinks only once the infolink is under way.
+        // uc: Trestkon.IsSaveAllowed
+        let link_ok = if crate::tnmmode::option("bAllowSavesDuringInfolinks") {
+            !crate::consys::datalink_starting()
+        } else {
+            !crate::consys::datalink_playing()
+        };
+        return !crate::menus::intro_map()
+            && !dead
+            && !restoring()
+            && !crate::radish::active()
+            && !crate::tnmmode::cant_save()
+            && crate::menus::mission() != 95
+            && link_ok;
+    }
     !crate::menus::intro_map() && !dead && !restoring() && !crate::radish::active() && crate::consys::lock().as_ref().is_none_or(|c| c.link.is_none())
 }
 
