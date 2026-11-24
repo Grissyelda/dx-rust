@@ -29,3 +29,6 @@ builder.txt
 *.umx
 *.dx
 *.unr
+
+# Local developer tools (map surveys); not part of the public tree.
+crates/dx-level/examples/
