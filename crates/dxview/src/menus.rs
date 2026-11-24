@@ -2877,6 +2877,8 @@ fn draw_new_game(u: &mut Ui<W>, ng: &mut NewGame, focus: Option<W>, fonts: &Font
         if let Some(t) = path.and_then(|p| u.hud.tex(u.assets, &p)) {
             u.c.texture(cx + 18, cy + 152, 114, 161, 0, 0, &t, Style::Masked, WHITE);
         }
+        // The look in 3D over it (newgame_view.rs; the portrait stays under it until the model is up).
+        crate::newgame_view::set_box(Some((cx + 18, cy + 152, 114, 161)));
         action_button(u, W::Header(30), cx + 15, cy + 333, 70, &label(&l("strCoat")), true);
         action_button(u, W::Header(31), cx + 15, cy + 350, 70, &label(&l("strEyewear")), true);
         action_button(u, W::Header(33), cx + 85, cy + 333, 70, &label(&l("strBoots")), true);
@@ -5073,6 +5075,13 @@ fn draw_windows(
         let pos = win_pos(&st.stack[wi], fonts, sw, sh);
         let (ww, wh) = win_size(&st.stack[wi].f, fonts);
         let is_top = wi == top_i;
+        // The Nameless Mod's new-game screen on top: its 3D look over the portrait.
+        if is_top && crate::tnmmode::active() && matches!(st.stack[wi].body, Body::NewGame(_)) {
+            if let Some((bx, by, bw, bh)) = crate::newgame_view::box_rect() {
+                let k = d / sf;
+                crate::newgame_view::request(Some(((pos.0 + bx) as f32 * k, (pos.1 + by) as f32 * k, bw as f32 * k, bh as f32 * k)));
+            }
+        }
         let (w_pressed, w_hover) = if is_top { (pressed, hover_w) } else { (None, None) };
         let w_help = if is_top { help.as_str() } else { "" };
         let key = |win: &Win| {

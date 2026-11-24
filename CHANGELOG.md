@@ -30,9 +30,22 @@
   hidden in the maps unlock more for good. What a look means in meshes and textures is read from the mod.
 - The mod's settings (auto-saving, paranoid reload, password and keycode managers, epilepsy reduction and the
   rest) and its item refusal list are in Settings > Enhancements under "The Nameless Mod" and "Item Refusal".
-- Not yet: IRC, the clicker, the three file-system console games; buying on the accessory shop page and the
-  trivia page's answers; a few Legendary attributes (gaseous, irritating, messy, faithful, incendiary fire on the
-  ground, shrunken); advanced track movers (no map uses them).
+- The terminals' text programs: the GSI command line with its little file system (cd, dir, read, del, echo,
+  help, the access levels of the three accounts, and the admin's thread delete that ends the second day's job),
+  the editing archive that summons one item a day (its weapons always legendary) and the ABI assembly line that
+  makes the gun the third day's event hands out; the scripted Narcissus chat (its conversation is read from the
+  mod) and a real IRC client (the mod's server and channel, nicknames, /me, /msg, /join, the CTCP answers for your
+  game records); and the idle game, The Idle Mod (targets, loot, selling, weapons and their mods, lockpicks and
+  passwords, quests, places and bosses - its tables are read from the mod; progress is kept between games). Its
+  windows share one terminal window here instead of spreading over the whole screen.
+- The accessory shop page sells and puts on its coats, eyewear and vests (with the mod's yes / no boxes and
+  prices), and the trivia page asks its thirty questions and keeps score.
+- The last Legendary attributes: incendiary shots leave fires burning where they land, irritating and gaseous
+  explosions leave tear or poison gas, messy weapons blow apart what they kill, faithful weapons level up every ten
+  kills (steadier, and at five a cone), and shrunken weapons take one column less in the inventory.
+- Advanced track movers (their own time for every key) and track movers that loop while triggered. No shipped map
+  uses them, so they have not been seen in play.
+- The new-game screen shows the chosen look in 3D, turning, over the portrait.
 
 ### The Nameless Mod: weapons, items, creatures and world (November 23)
 - Its weapons and items behave as theirs: the mod's own copies of Deus Ex weapons and consumables answer to the

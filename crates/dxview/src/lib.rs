@@ -41,6 +41,9 @@ mod tnmbonus;
 mod tnmaugs;
 mod breath;
 mod tnmgames;
+mod newgame_view;
+mod tnmclicker;
+mod tnmconsole;
 mod tnmpc;
 mod legendary;
 mod scripted_tv;
@@ -1169,6 +1172,7 @@ fn add_input_systems(app: &mut App) {
                 .after(classic_hud::classic_hud_system),
         )
         .add_systems(Update, outfit_view::outfit_view_system.after(inventory_screen::inventory_screen_system))
+        .add_systems(Update, newgame_view::newgame_view_system.after(menus::menu_system))
         .add_systems(
             Update,
             abilities::abilities_system.before(dynlight::aug_light_system),

@@ -297,6 +297,11 @@ impl WeaponStats {
         }
         // Legendary: a Double-Barreled weapon launches one projectile more.
         let extra = usize::from(!self.instant && crate::legendary::has(self.legendary, crate::legendary::att::DOUBLE_BARRELED));
+        // Faithful at level five: as a cone (three slugs for a melee weapon, five for a gun, three projectiles).
+        let cone = self.area_of_effect == 1 || crate::legendary::faith_level(&self.class) >= 5;
+        if cone && self.area_of_effect != 1 {
+            return extra + if !self.instant || self.hand_to_hand { 3 } else { 5 };
+        }
         extra
             + match (self.area_of_effect, self.instant) {
                 (1, true) => 5,
@@ -2588,6 +2593,7 @@ fn legendary_hit(stats: &WeaponStats, cx: &mut ShotCx, b: usize, dmg: f32, dmg_t
         push(cx, 1.0, "headstun");
     }
     let dmg = dmg * crate::legendary::target_mult(mask, &t, s);
+    crate::legendary::messy_hit(mask, b);
     push(cx, dmg, dmg_type);
     if let Some((d, ty)) = crate::legendary::extra_hit(mask, &t, s, dmg, stats.hit_damage) {
         push(cx, d, ty);
@@ -2993,6 +2999,7 @@ pub fn weapon_system(
     pose_view_model(h, &mut meshes, dt);
     blade_lights(h, cam, &time);
     crate::legendary::set_held(h.stats.legendary);
+    crate::legendary::set_held_class(&h.stats.class);
     light_view_model(h, &mut meshes, cx.level, cam.translation, cam.rotation, root, dt);
     place_lens(h, lens_eye.as_ref(), root);
 
@@ -3138,7 +3145,9 @@ fn place_view_model(h: &mut Held, cx: &WeaponCx, root: &mut Transform) -> Option
         .governing_skill
         .as_deref()
         .map_or(0.0, crate::abilities::skill)
-        + crate::abilities::aug("AugTarget").unwrap_or(0.0);
+        + crate::abilities::aug("AugTarget").unwrap_or(0.0)
+        // The Nameless Mod's Faithful weapons get better with their kills (-0.34 a level).
+        - 0.34 * crate::legendary::faith_level(&h.stats.class) as f32;
     // View model placement: Weapon.SetHand scales PlayerViewOffset by 100, then Inventory.CalcDrawOffset uses
     // 0.9 / FOV of it, plus the walk bob damped by BobDamping (0.96). The camera itself already carries the full
     // walk bob, and the view model is drawn relative to the camera, so only the difference shows: the weapon lags

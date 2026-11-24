@@ -222,6 +222,12 @@ pub fn unlock_accessory(class: &str, kind: u8) -> bool {
     new
 }
 
+/// Trestkon's bUnlockedAccessory* flag (the ABI shop's ItemIsUnlocked reads it as a property).
+pub fn is_unlocked(flag: &str) -> bool {
+    let mut g = lock();
+    has_flag(&mut g, flag)
+}
+
 pub fn is_accessory(class: &str) -> bool {
     crate::tnmmode::active() && (class.eq_ignore_ascii_case("ABICoatBag") || class.eq_ignore_ascii_case("ABIAccessoryBox"))
 }

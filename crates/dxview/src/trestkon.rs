@@ -50,6 +50,9 @@ pub struct TrestkonSave {
     /// Legendary mode: the player's weapons' attributes by class (legendary.rs).
     #[serde(default)]
     pub legendary: Vec<(String, u64)>,
+    /// Faithful weapons' kills and levels (TNMWeapon numKills / katanaLevel, travel).
+    #[serde(default)]
+    pub faith: Vec<(String, u32, u32)>,
 }
 
 struct State {
@@ -328,7 +331,7 @@ pub fn new_game(training: bool) {
 pub fn save() -> TrestkonSave {
     let g = lock();
     let (lives, radish_health, radishes) = crate::radish::save();
-    TrestkonSave { fists: g.fists, credits_earned: g.credits_earned, lives, radish_health, radishes, difficulty: crate::tnmmode::difficulty(), legendary: crate::legendary::save(), look: crate::tnmlook::current() }
+    TrestkonSave { fists: g.fists, credits_earned: g.credits_earned, lives, radish_health, radishes, difficulty: crate::tnmmode::difficulty(), legendary: crate::legendary::save(), faith: crate::legendary::save_faith(), look: crate::tnmlook::current() }
 }
 
 pub fn restore(s: &TrestkonSave) {
@@ -341,6 +344,7 @@ pub fn restore(s: &TrestkonSave) {
     crate::radish::restore(s.lives, s.radish_health, s.radishes);
     crate::tnmmode::restore_difficulty(s.difficulty);
     crate::legendary::restore(&s.legendary);
+    crate::legendary::restore_faith(&s.faith);
     crate::tnmlook::restore(s.look);
     REBUILD.store(true, Ordering::Relaxed);
 }

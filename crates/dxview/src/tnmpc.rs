@@ -17,7 +17,7 @@ use crate::weapons::RuntimeAssets;
 
 type Rgb = [u8; 3];
 
-fn num(d: &[Property], k: &str, def: f32) -> f32 {
+pub(crate) fn num(d: &[Property], k: &str, def: f32) -> f32 {
     match find(d, k) {
         Some(Value::Float(v)) => *v,
         Some(Value::Int(v)) => *v as f32,
@@ -25,16 +25,16 @@ fn num(d: &[Property], k: &str, def: f32) -> f32 {
         _ => def,
     }
 }
-fn flag(d: &[Property], k: &str) -> bool {
+pub(crate) fn flag(d: &[Property], k: &str) -> bool {
     matches!(find(d, k), Some(Value::Bool(true)))
 }
-fn path(d: &[Property], k: &str) -> String {
+pub(crate) fn path(d: &[Property], k: &str) -> String {
     match find(d, k) {
         Some(Value::Path(p)) if !p.ends_with(".None") => p.clone(),
         _ => String::new(),
     }
 }
-fn text(d: &[Property], k: &str) -> String {
+pub(crate) fn text(d: &[Property], k: &str) -> String {
     match find(d, k) {
         Some(Value::Str(s)) => s.clone(),
         _ => String::new(),
@@ -69,16 +69,16 @@ fn fmt1(f: &str, v: impl std::fmt::Display) -> String {
 }
 
 /// A small random generator (FRand / Rand).
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         self.0 >> 33
     }
-    fn frand(&mut self) -> f32 {
+    pub(crate) fn frand(&mut self) -> f32 {
         (self.next() % 1_000_000) as f32 / 1_000_000.0
     }
-    fn rand(&mut self, n: i32) -> i32 {
+    pub(crate) fn rand(&mut self, n: i32) -> i32 {
         if n <= 0 {
             0
         } else {
@@ -87,13 +87,13 @@ impl Rng {
     }
 }
 
-fn sound(s: &str) {
+pub(crate) fn sound(s: &str) {
     if !s.is_empty() {
         crate::sound::play_player(s, 1.0, 0.0);
     }
 }
 
-fn font(assets: &mut RuntimeAssets, p: &str) -> Option<Arc<UiFont>> {
+pub(crate) fn font(assets: &mut RuntimeAssets, p: &str) -> Option<Arc<UiFont>> {
     if p.is_empty() {
         return None;
     }
@@ -101,7 +101,7 @@ fn font(assets: &mut RuntimeAssets, p: &str) -> Option<Arc<UiFont>> {
 }
 
 /// Draws a texture (a full path) stretched over a box, tinted (gc.DrawStretchedTexture).
-fn stretch<W: KitWid>(u: &mut Ui<W>, tex: &str, (x, y, w, h): (f32, f32, f32, f32), src: Option<(i32, i32, i32, i32)>, style: Style, col: Rgb) {
+pub(crate) fn stretch<W: KitWid>(u: &mut Ui<W>, tex: &str, (x, y, w, h): (f32, f32, f32, f32), src: Option<(i32, i32, i32, i32)>, style: Style, col: Rgb) {
     let (x, y, w, h) = (x as i32, y as i32, w as i32, h as i32);
     if w <= 0 || h <= 0 {
         return;
@@ -2374,7 +2374,7 @@ impl Packets {
 // ------------------------------------------------------------------------------------------------ the text adventure
 
 /// sprintf with several %s / %d / %i, in order.
-fn fmtn(f: &str, args: &[&str]) -> String {
+pub(crate) fn fmtn(f: &str, args: &[&str]) -> String {
     let mut out = String::new();
     let mut rest = f;
     let mut next = args.iter();
@@ -2397,7 +2397,7 @@ fn fmtn(f: &str, args: &[&str]) -> String {
 }
 
 /// The command line's words: plain words, or "quoted text" as one (TextConsoleInterface.ParseRaw).
-fn words(text: &str) -> Vec<String> {
+pub(crate) fn words(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quoted = false;
@@ -2424,15 +2424,15 @@ fn words(text: &str) -> Vec<String> {
 }
 
 /// The text adventure's words (TextBasedGameInterface / TextConsoleInterface defaults).
-struct Words {
-    d: Vec<Property>,
+pub(crate) struct Words {
+    pub(crate) d: Vec<Property>,
 }
 
 impl Words {
-    fn s(&self, k: &str) -> String {
+    pub(crate) fn s(&self, k: &str) -> String {
         text(&self.d, k)
     }
-    fn at(&self, k: &str, i: u32) -> String {
+    pub(crate) fn at(&self, k: &str, i: u32) -> String {
         self.d
             .iter()
             .find(|p| p.name.eq_ignore_ascii_case(k) && p.index == i)
@@ -2442,7 +2442,7 @@ impl Words {
             })
             .unwrap_or_default()
     }
-    fn list(&self, k: &str) -> Vec<String> {
+    pub(crate) fn list(&self, k: &str) -> Vec<String> {
         (0..256).map_while(|i| Some(self.at(k, i)).filter(|s| !s.is_empty())).collect()
     }
 }
@@ -2878,6 +2878,10 @@ pub enum Game {
     Web(Box<crate::tnmweb::Browser>),
     /// The user database (whoisWindow; tnmweb.rs).
     Whois(Box<crate::tnmweb::Whois>),
+    /// The text consoles: the GSI command line, the two dispensers, the two chat clients (tnmconsole.rs).
+    Console(Box<crate::tnmconsole::Console>),
+    /// The idle game (clickerWindow; tnmclicker.rs).
+    Idle(Box<crate::tnmclicker::Clicker>),
 }
 
 /// What a game's tick asks of its terminal.
@@ -2899,6 +2903,7 @@ impl Game {
             "TEXTGAME" => Some(Game::Text(Box::new(TextGame::new(assets, seed)))),
             "HTML" => Some(Game::Web(Box::new(crate::tnmweb::Browser::new(assets, None)))),
             "WHOIS" => Some(Game::Whois(Box::new(crate::tnmweb::Whois::new(assets, seed)))),
+            "IDLE" => Some(Game::Idle(Box::new(crate::tnmclicker::Clicker::new(assets, seed)))),
             _ => None,
         }
     }
@@ -2911,6 +2916,8 @@ impl Game {
             Game::Text(_) => "tnmTextGameWindow",
             Game::Web(_) => "htmlWindow",
             Game::Whois(_) => "whoisWindow",
+            Game::Console(c) => c.class(),
+            Game::Idle(_) => "clickerWindow",
         }
     }
     /// The client area (board plus scoreboard).
@@ -2923,6 +2930,8 @@ impl Game {
             Game::Text(t) => t.client,
             Game::Web(w) => w.client,
             Game::Whois(w) => w.client,
+            Game::Console(c) => c.client,
+            Game::Idle(c) => c.client,
         }
     }
     /// Has a Start button (T presses it).
@@ -2950,7 +2959,7 @@ impl Game {
         match self {
             Game::Pong(p) => p.start(),
             Game::Tetris(t) => t.started = !t.started,
-            Game::Breakout(_) | Game::Packets(_) | Game::Text(_) | Game::Web(_) | Game::Whois(_) => {}
+            Game::Breakout(_) | Game::Packets(_) | Game::Text(_) | Game::Web(_) | Game::Whois(_) | Game::Console(_) | Game::Idle(_) => {}
         }
     }
     pub fn title_suffix(&self) -> String {
@@ -2962,7 +2971,17 @@ impl Game {
     }
     /// The game takes typed keys (the terminal's own keys - Tab, Escape's Return - stay the terminal's).
     pub fn types(&self) -> bool {
-        matches!(self, Game::Text(_) | Game::Breakout(_))
+        matches!(self, Game::Text(_) | Game::Breakout(_) | Game::Console(_))
+    }
+    /// Return / Logout hidden (the GSI thread delete running).
+    pub fn busy(&self) -> bool {
+        matches!(self, Game::Console(c) if c.busy)
+    }
+    /// The consoles' own tick (they read flags and the level).
+    pub fn tick_console(&mut self, dt: f32, keys: &ButtonInput<KeyCode>, typed: &[char], ptr: Pointer, cx: &crate::tnmconsole::Ctx) {
+        if let Game::Console(c) = self {
+            c.tick(dt, keys, typed, ptr, cx);
+        }
     }
     /// The browser's own tick (it loads pages, so it needs the game's packages).
     pub fn tick_web(&mut self, assets: &mut RuntimeAssets, keys: &ButtonInput<KeyCode>, ptr: Pointer) {
@@ -2992,7 +3011,8 @@ impl Game {
                 }
             }
             Game::Text(t) => t.tick(dt, keys, typed),
-            Game::Web(_) | Game::Whois(_) => {}
+            Game::Idle(c) => c.tick(dt, keys, ptr),
+            Game::Web(_) | Game::Whois(_) | Game::Console(_) => {}
         }
         Outcome::Stay
     }
@@ -3005,6 +3025,8 @@ impl Game {
             Game::Text(t) => t.draw(u, x, y),
             Game::Web(w) => w.draw(u, x, y),
             Game::Whois(w) => w.draw(u, x, y),
+            Game::Console(c) => c.draw(u, x, y),
+            Game::Idle(c) => c.draw(u, x, y),
         }
     }
 }
@@ -3016,7 +3038,7 @@ mod tests {
 
     fn db() -> Option<unreal_pkg::classes::ClassDb> {
         let dir = std::env::var("TNM_SYS").ok()?;
-        unreal_pkg::classes::set_extra_packages(&["TNMGUI", "TNM"]);
+        unreal_pkg::classes::set_extra_packages(unreal_pkg::tnm::PACKAGES);
         Some(unreal_pkg::classes::ClassDb::open(std::path::Path::new(&dir)))
     }
 

@@ -379,6 +379,10 @@ pub fn trigger(info: &MoverInfo, rt: &mut MoverRt) {
     if rt.destroyed {
         return;
     }
+    // The Nameless Mod's TrackMover in TriggerLoop runs its own labels (tnmtriggers.rs).
+    if crate::tnmtriggers::scripted_track(info.actor) {
+        return;
+    }
     match info.initial_state.as_str() {
         // ElevatorMover (and a plain Mover's BumpOpenTimed / StandOpenTimed) have no Trigger: a SequenceTrigger
         // moves an elevator (set_seq).

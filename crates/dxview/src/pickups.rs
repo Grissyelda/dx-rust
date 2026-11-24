@@ -126,6 +126,12 @@ pub fn item_def(class: &str, p: &[Property]) -> ItemDef {
             },
         }
     };
+    let mut inv_size = (i(p, "invSlotsX").unwrap_or(1).max(1) as u32, i(p, "invSlotsY").unwrap_or(1).max(1) as u32);
+    let mut large_icon = path(p, "largeIcon");
+    let mut large_w = i(p, "largeIconWidth").unwrap_or(42).max(1) as u32;
+    // The Nameless Mod's Legendary Shrunken: one column narrower.
+    let default_w = inv_size.0;
+    crate::legendary::shrink(class, &mut inv_size, &mut large_icon, &mut large_w, path(p, "Icon").as_deref(), default_w);
     ItemDef {
         class: class.to_string(),
         name: s(p, "ItemName"),
@@ -141,13 +147,10 @@ pub fn item_def(class: &str, p: &[Property]) -> ItemDef {
         belt_name: s(p, "beltDescription"),
         icon: path(p, "Icon"),
         kind,
-        inv_size: (
-            i(p, "invSlotsX").unwrap_or(1).max(1) as u32,
-            i(p, "invSlotsY").unwrap_or(1).max(1) as u32,
-        ),
-        large_icon: path(p, "largeIcon"),
+        inv_size,
+        large_icon,
         large_size: (
-            i(p, "largeIconWidth").unwrap_or(42).max(1) as u32,
+            large_w,
             i(p, "largeIconHeight").unwrap_or(37).max(1) as u32,
         ),
         description: s(p, "Description"),
@@ -1487,6 +1490,10 @@ pub fn give_weapon(
     rounds: u32,
     assets: &mut crate::weapons::RuntimeAssets,
 ) -> Option<String> {
+    // (Legendary: the class's roll first, so Shrunken already sizes the item.)
+    if crate::legendary::on() {
+        crate::legendary::acquire(&mut assets.classes, class, crate::legendary::mission(), None);
+    }
     let ammo = match find(p, "AmmoName") {
         Some(Value::Path(a)) if !a.ends_with("AmmoNone") => {
             Some(a.rsplit('.').next().unwrap_or("").to_string())

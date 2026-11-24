@@ -8287,7 +8287,9 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
     }
     // Robots blow up (Robot.Explode: HurtRadius(0.5 r, 8 r) with r = (radius + height) / 2);
     // anyone else killed by an explosion is gibbed (Health < -100).
-    if npc.hp_body.robot || h.damage_type == "Exploded" || self_destruct {
+    // The Nameless Mod's Legendary Messy: the kill leaves Health at -200 (gibbed).
+    let messy = crate::legendary::on() && crate::legendary::messy_kill(npc.blocker, center);
+    if npc.hp_body.robot || h.damage_type == "Exploded" || self_destruct || messy {
         let r = (npc.params.radius + npc.params.height) / 2.0;
         if npc.hp_body.robot {
             // Robot.Explode: explosionSound (volume 2) and a large explosion, out to r x 32.
@@ -8351,6 +8353,9 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         let firewall = matches!(find(&lvl.actors[npc.actor].props, "bFirewall"), Some(Value::Bool(true)));
         crate::tnmach::pawn_died(&lvl.actors[npc.actor].class, h.attacker.is_none(), false, h.damage_type, lvl.mission_number(), firewall, true, &flags.0);
         crate::achievements::takedown(h.attacker.is_none(), &lvl.actors[npc.actor].class, &npc.bind_name, npc.blocker, h.damage_type == "Exploded");
+        if h.attacker.is_none() && !knocked_out && crate::legendary::on() {
+            crate::legendary::note_kill(&crate::legendary::held_class());
+        }
         crate::netplay::credit_pawn_kill(h.attacker);
         if npc.important && !npc.bind_name.is_empty() {
             flags.0.set_bool(&format!("{}_Dead", npc.bind_name), true);

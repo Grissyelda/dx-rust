@@ -108,6 +108,11 @@ fn save(s: &Store) {
     let _ = std::fs::write(p, out);
 }
 
+/// The achievement was earned (the real chat answers CTCP ACHIEVEMENT with it).
+pub fn earned(id: &str) -> bool {
+    STORE.lock().map(|s| s.earned.keys().any(|k| k.eq_ignore_ascii_case(id))).unwrap_or(false)
+}
+
 /// Trestkon.SetAchievement: earned for good; announced the first time (with notifications on).
 pub fn unlock(id: &str) {
     if !crate::tnmmode::active() {

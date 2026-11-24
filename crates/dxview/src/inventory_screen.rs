@@ -568,7 +568,7 @@ fn weapon_info(
             _ => class.to_string(),
         };
         rows.push(Row::Text(crate::legendary::item_name(&mut assets.classes, leg, &base_name)));
-        for t in crate::legendary::descriptions(&mut assets.classes, leg) {
+        for t in crate::legendary::descriptions(&mut assets.classes, leg, class) {
             rows.push(Row::Text(t));
         }
         rows.push(Row::Line);

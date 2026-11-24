@@ -141,6 +141,10 @@ impl Projectile {
 
 impl Projectile {
     fn impact(&self, at: DVec3) {
+        // Legendary Incendiary: a fire left where it lands (TNMProjectile.SpawnEffects).
+        if crate::legendary::has(self.legendary, crate::legendary::att::INCENDIARY) {
+            crate::legendary::ground_fire(at);
+        }
         if let Some(s) = &self.impact_snd {
             let r = (self.explodes.unwrap_or(0.0) * 4.0).max(1024.0) as f32;
             crate::sound::play(s, at, 2.0, r, 1.0);
@@ -270,6 +274,25 @@ pub fn launch_system(
         track_at: None,
         speed: None,
         ownerless: true, legendary: 0 }));
+    // Legendary: the fires and gas a weapon's attributes leave (legendary.rs).
+    let gas: Vec<Launch> = gas
+        .into_iter()
+        .chain(crate::legendary::take_clouds().into_iter().map(|(class, pos, scale, life)| Launch {
+            class: class.into(),
+            pos,
+            dir: DVec3::X,
+            from: None,
+            mult: 1.0,
+            life: Some(life),
+            scale: Some(scale),
+            still: true,
+            track: None,
+            track_at: None,
+            speed: None,
+            ownerless: false,
+            legendary: 0,
+        }))
+        .collect();
     let n_own = launches.0.len() + gas.len();
     for (k, l) in launches.0.drain(..).chain(gas).chain(ghosts).enumerate() {
         let ghost = k >= n_own;
@@ -737,6 +760,8 @@ pub fn projectile_system(
             if let Some(r) = p.explodes.filter(|_| true) {
                 p.impact(p.pos);
                 booms.0.extend(p.booms(p.pos, r));
+                crate::legendary::blast_gas(p.legendary, p.pos, r);
+                crate::legendary::messy_blast(p.legendary, p.pos, r);
             }
             commands.entity(e).despawn();
             continue;
@@ -840,6 +865,8 @@ pub fn projectile_system(
                 let at = start + (end - start) * f - p.vel.normalize_or_zero() * 4.0;
                 p.impact(at);
                 booms.0.extend(p.booms(at, r));
+                crate::legendary::blast_gas(p.legendary, at, r);
+                crate::legendary::messy_blast(p.legendary, at, r);
                 commands.entity(e).despawn();
                 continue;
             }
@@ -871,6 +898,7 @@ pub fn projectile_system(
                     if !ghost {
                         let from_at = at - p.vel.normalize_or_zero() * 64.0;
                         let mut dmg = p.damage;
+                        crate::legendary::messy_hit(p.legendary, b);
                         if p.legendary != 0 {
                             // uc: TNMProjectile.ProcessTouch
                             let t = crate::legendary::Target {

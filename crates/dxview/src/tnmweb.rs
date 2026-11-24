@@ -3,8 +3,8 @@
 //! DrawWindow places them and draws the pictures - so each page's own script is run once from the player's TNMGUI.u
 //! as a data loader (uscript.rs with objects) against a recording window system, and what comes out is a flat list
 //! of pictures, texts and links at their places. That list is what we draw and click; no script runs after that.
-//! Text bodies come from TNMText by name (ProcessDeusExText). Interactive pages (the ABI accessory shop's buying,
-//! the trivia quiz's answers) show, but only their links work.
+//! Text bodies come from TNMText by name (ProcessDeusExText). Two pages do more than link, and their rules are
+//! ported here: the trivia quiz (TriviahtmlPageWindow) and the ABI accessory shop (ABIhtmlPageWindowAccessories).
 // uc: htmlWindow.CreateWebPage, htmlWindow.ReplaceScreen, htmlWindow.goToPreviousPage, htmlWindow.goToNextPage,
 // uc: htmlPageWindow.InitWindow, htmlPageWindow.ProcessDeusExText, TNMhyperlinkButton.HandlePress
 
@@ -361,6 +361,11 @@ impl crate::uscript::Host for Builder<'_> {
                 _ => (V::None, Vec::new()),
             },
             V::Obj(PLAYER) => match name {
+                // ItemIsUnlocked: Trestkon's bUnlockedAccessory* flags.
+                "getpropertytext" => {
+                    let n = a.first().map(|v| v.str()).unwrap_or_default();
+                    (V::Str(if crate::tnmlook::is_unlocked(&n) { "True".into() } else { "False".into() }), Vec::new())
+                }
                 "getlevelinfo" => (V::Obj(INFO), Vec::new()),
                 "getrootwindow" | "gettopwindow" => (V::Obj(PLAYER), Vec::new()),
                 _ => (V::None, Vec::new()),
@@ -380,6 +385,8 @@ impl crate::uscript::Host for Builder<'_> {
             V::Obj(PLAYER) => match name {
                 "flagbase" => V::Obj(FLAGS),
                 "trueplayername" => V::Str(crate::travel::player_name()),
+                "credits" => V::Int(crate::tnmconsole::credits_now()),
+                "playerskin" => V::Int(crate::tnmlook::current().portrait() as i64),
                 _ => V::None,
             },
             V::Obj(INFO) => match name {
@@ -507,6 +514,80 @@ pub struct Browser {
     /// A page asked for (a link, back or forward): loaded on the next tick.
     want: Option<(String, u8)>,
     drag: bool,
+    /// The pages that do more than link (TriviahtmlPageWindow, ABIhtmlPageWindowAccessories).
+    trivia: Option<Trivia>,
+    shop: Option<Shop>,
+    /// The shop page is rebuilt this many ticks after a purchase (once the flags it reads have caught up).
+    reload_in: u8,
+}
+
+/// TriviahtmlPageWindow: thirty questions (Trivia_<n> in TNMText) asked in a random order, answered 1-4.
+// uc: TriviahtmlPageWindow.InitWindow, TriviahtmlPageWindow.AnswerButton, TriviahtmlPageWindow.UpdateScore,
+// uc: TriviahtmlPageWindow.NextQuestion, TriviahtmlPageWindow.Over, TriviahtmlPageWindow.VirtualKeyPressed
+struct Trivia {
+    correct: Vec<i64>,
+    answers: Vec<i64>,
+    answered: Vec<bool>,
+    current: usize,
+    score: i64,
+    count: i64,
+    over: bool,
+    seed: u64,
+    /// The recorded answer button (picture + label) and score bar items, copied for the four answers / the score.
+    button: Vec<Item>,
+    bar: Vec<Item>,
+    question: String,
+}
+
+impl Trivia {
+    fn rand(&mut self, n: usize) -> usize {
+        self.seed ^= self.seed << 13;
+        self.seed ^= self.seed >> 7;
+        self.seed ^= self.seed << 17;
+        (self.seed % n.max(1) as u64) as usize
+    }
+    /// NextQuestion: up to a thousand random tries at an unanswered one, then the first left; none = Over.
+    fn next(&mut self, assets: &mut RuntimeAssets) {
+        let n = self.answers.len();
+        let mut pick = None;
+        for _ in 0..1000 {
+            let i = self.rand(n);
+            if !self.answered[i] {
+                pick = Some(i);
+                break;
+            }
+        }
+        if pick.is_none() {
+            pick = (0..n).find(|i| !self.answered[*i]);
+        }
+        match pick {
+            Some(i) => {
+                self.current = i;
+                let dir = assets.lib.system_dir().to_path_buf();
+                let raw = unreal_pkg::Package::open(dir.join("TNMText.u")).ok().and_then(|p| p.text_named(&format!("Trivia_{i}"))).unwrap_or_default();
+                self.question = crate::info::parse_tnm(&raw).paras.iter().map(|p| p.text.clone()).collect::<Vec<_>>().join("\n");
+            }
+            None => self.over = true,
+        }
+    }
+}
+
+/// Where the shop's message box sits in the browser's client (MenuUIMessageBoxWindow, centred over the page).
+fn box_place() -> (i32, i32) {
+    (VIEW.0 + (PAGE_W - 280) / 2, VIEW.1 + (VIEW.3 - 100) / 2)
+}
+
+/// ABIhtmlPageWindowAccessories: twenty coats, eyewear and vests, bought (or put on again) with a yes / no box.
+// uc: ABIhtmlPageWindowAccessories.DrawSidebar, ABIhtmlPageWindowAccessories.ItemIsUnlocked,
+// uc: ABIhtmlPageWindowAccessories.ButtonActivated, ABIhtmlPageWindowAccessories.BoxOptionSelected,
+// uc: ABIhtmlPageWindowAccessories.RemoveCoat, ABIhtmlPageWindowAccessories.BuyCoat, ABIhtmlPageWindowAccessories.BuyCoatPDX,
+// uc: ABIhtmlPageWindowAccessories.RemoveEyewear, ABIhtmlPageWindowAccessories.BuyGlasses, ABIhtmlPageWindowAccessories.BuyVisor,
+// uc: ABIhtmlPageWindowAccessories.BuySunglasses, ABIhtmlPageWindowAccessories.BuyAviators, ABIhtmlPageWindowAccessories.BuyVaporwave,
+// uc: ABIhtmlPageWindowAccessories.BuyJCVest, ABIhtmlPageWindowAccessories.BuyMJ12Vest
+struct Shop {
+    d: Vec<unreal_pkg::props::Property>,
+    /// The box on screen: (title, text, yes/no or OK, the mode a Yes carries out, buying).
+    boxed: Option<(String, String, bool, usize, bool)>,
 }
 
 /// The page the terminal being opened starts on (its defaultWebPage; None = by where it stands).
@@ -559,7 +640,7 @@ impl Browser {
             _ => String::new(),
         };
         let page = load_page(assets, &class, &game_flag, mission, &location).unwrap_or_default();
-        Browser {
+        let mut b = Browser {
             page,
             previous: None,
             next: None,
@@ -571,7 +652,85 @@ impl Browser {
             client: (int("ClientWidth", VIEW.0 * 2 + VIEW.2).max(VIEW.0 + VIEW.2 + 4), int("ClientHeight", VIEW.1 + VIEW.3 + 8).max(VIEW.1 + VIEW.3 + 4)),
             want: None,
             drag: false,
+            trivia: None,
+            shop: None,
+            reload_in: 0,
+        };
+        b.interactive(assets);
+        b
+    }
+
+    /// The page just loaded: its own state when it is one of the interactive ones.
+    fn interactive(&mut self, assets: &mut RuntimeAssets) {
+        self.trivia = None;
+        self.shop = None;
+        let class = self.page.class.clone();
+        if class.eq_ignore_ascii_case("TriviahtmlPageWindow") {
+            let d = assets.classes.defaults(&class).to_vec();
+            let arr = |k: &str| -> Vec<i64> {
+                let mut v = vec![0i64; 30];
+                for p in d.iter().filter(|p| p.name.eq_ignore_ascii_case(k)) {
+                    if let (Some(s), Value::Int(n)) = (v.get_mut(p.index as usize), &p.value) {
+                        *s = *n as i64;
+                    }
+                }
+                v
+            };
+            // The recorded buttons: the "1" button's picture and label, the score bar's.
+            let find = |pred: &dyn Fn(&Item) -> bool| -> Vec<Item> { self.page.items.iter().filter(|it| pred(it)).cloned().collect() };
+            let button = find(&|it: &Item| it.r.0 == 69 && it.r.1 == 320);
+            let bar = find(&|it: &Item| it.r.0 == 0 && it.r.1 == 20);
+            let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1;
+            let mut t = Trivia { correct: arr("correctAnswer"), answers: arr("numAnswers"), answered: vec![false; 30], current: 0, score: 0, count: 0, over: false, seed, button, bar, question: String::new() };
+            t.next(assets);
+            self.trivia = Some(t);
+            self.rebuild_trivia(assets);
+        } else if class.eq_ignore_ascii_case("ABIhtmlPageWindowAccessories") {
+            self.shop = Some(Shop { d: assets.classes.defaults(&class).to_vec(), boxed: None });
         }
+    }
+
+    /// The trivia page's items: the score bar, the question, the answer buttons (3 and 4 only when it has them).
+    fn rebuild_trivia(&mut self, assets: &mut RuntimeAssets) {
+        let Some(t) = self.trivia.as_ref() else { return };
+        let mut items = Vec::new();
+        let pct = if t.count > 0 { (t.score as f64 / t.count as f64 * 100.0) as i64 } else { 0 };
+        let score = if t.over { format!("Game Complete! Score: {} / {} [{pct}%]", t.score, t.count) } else if t.count == 0 { "Score: 0 / 0".to_string() } else { format!("Score: {} / {} [{pct}%]", t.score, t.count) };
+        for it in &t.bar {
+            let mut it = it.clone();
+            if let Kind::Text { lines, .. } = &mut it.kind {
+                *lines = vec![score.clone()];
+            }
+            items.push(it);
+        }
+        if !t.over {
+            // winNews at (15, 94), 570 wide, FontMenuTitle, margins 4 / 1.
+            let col = t.bar.iter().find_map(|it| match &it.kind {
+                Kind::Text { color, .. } => Some(*color),
+                _ => None,
+            });
+            let lines = match cached_font(&mut self.fonts, assets, "FontMenuTitle") {
+                Some(f) => t.question.split('\n').flat_map(|p| crate::uicanvas::wrap(&f, p, 600 - 30 - 8)).collect(),
+                None => vec![t.question.clone()],
+            };
+            items.push(Item { r: (19, 95, 600 - 30 - 8, 400 - 160 - 94), kind: Kind::Text { font: "FontMenuTitle".into(), lines, color: col.unwrap_or([255, 255, 255]), center: false }, link: None });
+            let n = t.answers.get(t.current).copied().unwrap_or(2);
+            for k in 0..4i64 {
+                if k >= 2 && n < k + 1 {
+                    continue;
+                }
+                for it in &t.button {
+                    let mut it = it.clone();
+                    it.r.0 += 128 * k as i32;
+                    it.link = Some(format!("#answer{}", k + 1));
+                    if let Kind::Text { lines, .. } = &mut it.kind {
+                        *lines = vec![(k + 1).to_string()];
+                    }
+                    items.push(it);
+                }
+            }
+        }
+        self.page.items = items;
     }
 
     pub fn title_suffix(&self) -> String {
@@ -597,6 +756,11 @@ impl Browser {
             return;
         };
         let old = std::mem::replace(&mut self.page, page).class;
+        if how == 3 {
+            // Rebuilt in place (the shop after a purchase): history and scroll kept.
+            self.interactive(assets);
+            return;
+        }
         match how {
             // A link: the page left is the way back, and there is no way forward.
             0 => {
@@ -615,11 +779,33 @@ impl Browser {
             }
         }
         self.scroll = 0;
+        self.interactive(assets);
     }
 
     pub fn tick(&mut self, assets: &mut RuntimeAssets, keys: &ButtonInput<KeyCode>, ptr: crate::tnmpc::Pointer) {
         if let Some((class, how)) = self.want.take() {
             self.go(assets, &class, how);
+        }
+        if self.reload_in > 0 {
+            self.reload_in -= 1;
+            if self.reload_in == 0 {
+                let c = self.page.class.clone();
+                self.go(assets, &c, 3);
+            }
+        }
+        // The shop's box takes the input while it's up.
+        if self.shop.as_ref().is_some_and(|s| s.boxed.is_some()) {
+            self.shop_box_input(keys, ptr);
+            return;
+        }
+        // Trivia: 1-4 answer.
+        if self.trivia.is_some() {
+            let keys_n = [(KeyCode::Digit1, KeyCode::Numpad1), (KeyCode::Digit2, KeyCode::Numpad2), (KeyCode::Digit3, KeyCode::Numpad3), (KeyCode::Digit4, KeyCode::Numpad4)];
+            for (k, (a, b)) in keys_n.iter().enumerate() {
+                if keys.just_pressed(*a) || keys.just_pressed(*b) {
+                    self.answer(assets, k as i64 + 1);
+                }
+            }
         }
         let step = |k: KeyCode, d: i32| if keys.just_pressed(k) { d } else { 0 };
         let mut s = self.scroll
@@ -650,8 +836,23 @@ impl Browser {
                 self.hover = hit.and_then(|it| it.link.clone());
                 if ptr.pressed {
                     if let Some(l) = self.hover.clone() {
-                        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Activate", 0.25, 0.0);
-                        self.want = Some((l, 0));
+                        if let Some(n) = l.strip_prefix("#answer") {
+                            let n = n.parse().unwrap_or(0);
+                            self.answer(assets, n);
+                        } else {
+                            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Activate", 0.25, 0.0);
+                            self.want = Some((l, 0));
+                        }
+                    } else if self.shop.is_some() {
+                        // hyperlinkBuyItem[i]: 100 x 100 at (105 j + 61, 164 k + 48), four a row from the second.
+                        for i in 0..20usize {
+                            let (k, j) = ((i / 4 + 1) as i32, (i % 4 + 1) as i32);
+                            let (bx, by) = (105 * j + 61, 32 + 164 * k + 16);
+                            if px >= bx && px < bx + 100 && py >= by && py < by + 100 {
+                                self.shop_press(i);
+                                break;
+                            }
+                        }
                     }
                 }
             } else if ptr.pressed && my < VIEW.1 {
@@ -667,6 +868,239 @@ impl Browser {
             self.back();
         }
         self.scroll = s.clamp(0, self.max_scroll());
+    }
+
+    /// AnswerButton.
+    fn answer(&mut self, assets: &mut RuntimeAssets, n: i64) {
+        let Some(t) = self.trivia.as_mut() else { return };
+        if t.over || (n >= 3 && t.answers.get(t.current).copied().unwrap_or(0) < n) {
+            return;
+        }
+        if t.correct.get(t.current).copied() == Some(n) {
+            t.score += 1;
+            crate::sound::play_player("TNMGUI.BreakoutPowerupGood", 1.0, 0.0);
+        } else {
+            crate::sound::play_player("TNMGUI.BreakoutPowerupBad", 1.0, 0.0);
+        }
+        t.count += 1;
+        let c = t.current;
+        if let Some(a) = t.answered.get_mut(c) {
+            *a = true;
+        }
+        t.next(assets);
+        self.rebuild_trivia(assets);
+    }
+
+    /// The shop's buttons (ButtonActivated): the box to show, or nothing.
+    fn shop_press(&mut self, i: usize) {
+        let credits = crate::tnmconsole::credits_now();
+        let Some(shop) = self.shop.as_mut() else { return };
+        let d = &shop.d;
+        let s = |k: &str| match find(d, k) {
+            Some(Value::Str(v)) => v.clone(),
+            _ => String::new(),
+        };
+        let at = |k: &str, i: usize| {
+            d.iter()
+                .find(|p| p.name.eq_ignore_ascii_case(k) && p.index as usize == i)
+                .map(|p| match &p.value {
+                    Value::Str(v) => v.clone(),
+                    Value::Int(n) => n.to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default()
+        };
+        let cost = |i: usize| at("itemCost", i).parse::<i64>().unwrap_or(0);
+        let unlocked = |i: usize| i < 5 || crate::tnmlook::is_unlocked(&at("requiredFlag", i - 5));
+        let f = game_flag;
+        let look = crate::tnmlook::current();
+        let fmt = |t: &str, a: &[&str]| crate::tnmpc::fmtn(t, a);
+        let fail = |key: &str| (s(&format!("MessageBoxTitle{key}")), s(&format!("MessageBoxText{key}")), false, i, false);
+        // The thing worn now: (worn, its bought flag).
+        let coat_ids = ["", "PDX", "WC", "Goat", "Llama", "ShortBlack", "ShortTrest", "DXI", "Gold", "GS", "Bum"];
+        let b = match i {
+            0 => {
+                if look.coat {
+                    (s("MessageBoxTitleRemoveCoat"), s("MessageBoxTextRemoveCoat"), true, 0, false)
+                } else {
+                    fail("Fail")
+                }
+            }
+            1 => {
+                let bought = f("ABI_BoughtCoat");
+                if !look.coat && (credits >= cost(1) || bought) {
+                    if bought {
+                        (s("MessageBoxTitleEquipCoat"), s("MessageBoxTextEquipCoat"), true, 1, false)
+                    } else {
+                        (s("MessageBoxTitleBuyCoat"), fmt(&s("MessageBoxTextBuyCoat"), &[&cost(1).to_string()]), true, 1, true)
+                    }
+                } else if credits < cost(1) && !f("TNMPACS_Coat") {
+                    fail("FailCredits")
+                } else {
+                    fail("Fail")
+                }
+            }
+            2 => {
+                if look.eye_stage > 0 {
+                    (s("MessageBoxTitleRemoveEyewear"), s("MessageBoxTextRemoveEyewear"), true, 2, false)
+                } else {
+                    fail("Fail")
+                }
+            }
+            3 | 4 => {
+                let (worn, bought, key) = if i == 3 { (look.eye_stage == 2, f("ABI_BoughtGlasses"), "Glasses") } else { (look.eye_stage == 1, f("ABI_BoughtVisor"), "Visor") };
+                if !worn && (credits >= cost(i) || bought) {
+                    if bought {
+                        (s(&format!("MessageBoxTitleEquip{key}")), s(&format!("MessageBoxTextEquip{key}")), true, i, false)
+                    } else {
+                        let k = if i == 3 { "Glasses" } else { "Visor" };
+                        (s(&format!("MessageBoxTitleBuy{k}")), fmt(&s(&format!("MessageBoxTextBuy{k}")), &[&cost(i).to_string()]), true, i, true)
+                    }
+                } else if credits < cost(i) && !worn {
+                    fail("FailCredits")
+                } else {
+                    fail("Fail")
+                }
+            }
+            _ => {
+                let name = at("SkinText1", i);
+                let (worn, bought) = match i {
+                    5..=14 => (look.coat && look.coat_id as usize == i - 4, f(&format!("ABI_BoughtCoat{}", coat_ids[i - 4]))),
+                    15 => (look.vest_id == 1, f("ABI_BoughtVestMJ12")),
+                    16 => (look.vest_id == 2, f("ABI_BoughtVestJC")),
+                    17 => (look.eye_stage == 2 && look.eye_id == 1, f("ABI_BoughtSunglasses")),
+                    18 => (look.eye_stage == 2 && look.eye_id == 3, f("ABI_BoughtAviators")),
+                    _ => (look.eye_stage == 1 && look.eye_id == 2, f("ABI_BoughtVaporwave")),
+                };
+                if unlocked(i) && !worn && (credits >= cost(i) || bought) {
+                    if bought {
+                        (fmt(&s("MessageBoxTitleEquipGeneric"), &[&name]), fmt(&s("MessageBoxTextEquipGeneric"), &[&name]), true, i, false)
+                    } else {
+                        (fmt(&s("MessageBoxTitleBuyGeneric"), &[&name]), fmt(&s("MessageBoxTextBuyGeneric"), &[&name, &cost(i).to_string()]), true, i, true)
+                    }
+                } else if !unlocked(i) {
+                    fail("FailLocked")
+                } else if credits < cost(i) {
+                    fail("FailCredits")
+                } else {
+                    fail("Fail")
+                }
+            }
+        };
+        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Activate", 0.25, 0.0);
+        shop.boxed = Some(b);
+    }
+
+    /// The message box: Yes / No (or OK); Enter is Yes, Escape No.
+    fn shop_box_input(&mut self, keys: &ButtonInput<KeyCode>, ptr: crate::tnmpc::Pointer) {
+        let Some(shop) = self.shop.as_mut() else { return };
+        let Some((_, _, yes_no, mode, buying)) = shop.boxed.clone() else { return };
+        let (bx, by) = box_place();
+        let mut choice: Option<bool> = None;
+        if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::KeyY) {
+            choice = Some(true);
+        }
+        if keys.just_pressed(KeyCode::KeyN) || keys.just_pressed(KeyCode::Backspace) {
+            choice = Some(false);
+        }
+        if let (true, Some((mx, my))) = (ptr.pressed, ptr.pos) {
+            let inside = |x: i32, w: i32| mx >= x && mx < x + w && my >= by + 74 && my < by + 90;
+            if yes_no {
+                if inside(bx + 60, 70) {
+                    choice = Some(true);
+                } else if inside(bx + 150, 70) {
+                    choice = Some(false);
+                }
+            } else if inside(bx + 105, 70) {
+                choice = Some(false);
+            }
+        }
+        let Some(c) = choice else { return };
+        shop.boxed = None;
+        if c && yes_no {
+            self.shop_apply(mode, buying);
+        }
+    }
+
+    /// BoxOptionSelected's Yes: the item put on (and paid for when buying); the page rebuilt to show it.
+    fn shop_apply(&mut self, mode: usize, buying: bool) {
+        use crate::tnmconsole::{push_effect, Effect};
+        let Some(shop) = self.shop.as_ref() else { return };
+        let cost = shop
+            .d
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("itemCost") && p.index as usize == mode)
+            .and_then(|p| match p.value {
+                Value::Int(n) => Some(n as i64),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let mut l = crate::tnmlook::current();
+        let flag = |n: &str, v: bool| push_effect(Effect::Flag(n.to_string(), v));
+        let coat_ids = ["", "PDX", "WC", "Goat", "Llama", "ShortBlack", "ShortTrest", "DXI", "Gold", "GS", "Bum"];
+        match mode {
+            0 => {
+                l.vest_id = 0;
+                l.coat = false;
+                flag("TNMPACS_Coat", false);
+            }
+            1 | 5..=14 => {
+                l.coat_id = if mode == 1 { 0 } else { (mode - 4) as u8 };
+                l.coat = true;
+                if mode != 1 {
+                    flag(&format!("ABI_BoughtCoat{}", coat_ids[mode - 4]), true);
+                }
+                flag("ABI_BoughtCoat", true);
+                flag("TNMPACS_Coat", true);
+            }
+            2 => {
+                l.eye_id = 0;
+                l.eye_stage = 0;
+                for n in ["TNMPACS_Eyewear", "TNMPACS_Glasses", "TNMPACS_Visor"] {
+                    flag(n, false);
+                }
+            }
+            3 | 17 | 18 => {
+                l.eye_id = match mode {
+                    17 => 1,
+                    18 => 3,
+                    _ => 0,
+                };
+                l.eye_stage = 2;
+                flag(["ABI_BoughtGlasses", "ABI_BoughtSunglasses", "ABI_BoughtAviators"][match mode {
+                    17 => 1,
+                    18 => 2,
+                    _ => 0,
+                }], true);
+                flag("TNMPACS_Eyewear", true);
+                flag("TNMPACS_Glasses", true);
+                flag("TNMPACS_Visor", false);
+            }
+            4 | 19 => {
+                l.eye_id = if mode == 19 { 2 } else { 0 };
+                l.eye_stage = 1;
+                flag(if mode == 19 { "ABI_BoughtVaporwave" } else { "ABI_BoughtVisor" }, true);
+                flag("TNMPACS_Eyewear", true);
+                flag("TNMPACS_Visor", true);
+                flag("TNMPACS_Glasses", false);
+            }
+            15 => {
+                l.vest_id = 1;
+                flag("ABI_BoughtVestMJ12", true);
+            }
+            16 => {
+                l.vest_id = 2;
+                flag("ABI_BoughtVestJC", true);
+            }
+            _ => return,
+        }
+        if buying && cost > 0 {
+            push_effect(Effect::Credits(-cost));
+        }
+        push_effect(Effect::Look(l));
+        crate::sound::play_player("DeusExSounds.UserInterface.Menu_Activate", 0.5, 0.0);
+        // The flags reach the page's GetBool a frame or two later.
+        self.reload_in = 3;
     }
 
     fn back(&mut self) {
@@ -757,11 +1191,68 @@ impl Browser {
             let ty = vy + ((VIEW.3 - th) as i64 * self.scroll as i64 / max as i64) as i32;
             u.c.fill(bx + 2, ty, bw - 4, th, Style::Normal, crate::menuui::m_col(3));
         }
+        // The shop's message box.
+        if let Some((title, text, yes_no, _, _)) = self.shop.as_ref().and_then(|s| s.boxed.clone()) {
+            let (bx, by) = box_place();
+            let (bx, by) = (x + bx, y + by);
+            u.c.fill(bx, by, 280, 100, Style::Normal, [16, 16, 20]);
+            u.c.fill(bx, by, 280, 14, Style::Normal, crate::menuui::m_col(3));
+            if let Some(f) = cached_font(&mut self.fonts, u.assets, "FontMenuSmall") {
+                u.c.text(&f, bx + 6, by + 2, 268, f.height, HAlign::Left, VAlign::Top, white, &title);
+                for (k, l) in crate::uicanvas::wrap(&f, &text, 264).iter().take(5).enumerate() {
+                    u.c.text(&f, bx + 8, by + 20 + k as i32 * f.height, 264, f.height, HAlign::Left, VAlign::Top, white, l);
+                }
+                let mut btn = |x0: i32, label: &str| {
+                    u.c.fill(x0, by + 74, 70, 16, Style::Normal, [48, 48, 56]);
+                    u.c.text(&f, x0, by + 74, 70, 16, HAlign::Center, VAlign::Center, white, label);
+                };
+                if yes_no {
+                    btn(bx + 60, "Yes");
+                    btn(bx + 150, "No");
+                } else {
+                    btn(bx + 105, "OK");
+                }
+            }
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+
+    pub(crate) fn test_assets() -> Option<RuntimeAssets> {
+        let root = std::path::PathBuf::from(std::env::var("TNM_ROOT").ok()?);
+        let tnm = std::env::var("TNM_DIR").map(std::path::PathBuf::from).ok().or_else(|| unreal_pkg::tnm::find(&root))?;
+        unreal_pkg::paths::set(&root, unreal_pkg::tnm::overlays(&tnm));
+        unreal_pkg::classes::set_extra_packages(unreal_pkg::tnm::PACKAGES);
+        unreal_pkg::tnm::set_active(Some(tnm));
+        Some(RuntimeAssets {
+            classes: unreal_pkg::classes::ClassDb::open(&root.join("System")),
+            lib: dx_level::TexLib::new(&root),
+            images: Default::default(),
+            materials: Default::default(),
+            fire: Vec::new(),
+            sprites: Default::default(),
+            shared_parts: Default::default(),
+        })
+    }
+
+    /// The quiz runs from its own defaults and the TNMText questions: thirty answers end the game.
+    #[test]
+    fn trivia_plays_to_the_end() {
+        let Some(mut assets) = test_assets() else { return };
+        let mut b = Browser::new(&mut assets, Some("TriviahtmlPageWindow"));
+        assert!(b.trivia.is_some());
+        let first = b.trivia.as_ref().unwrap().question.clone();
+        assert!(!first.is_empty(), "a question");
+        for _ in 0..30 {
+            let n = b.trivia.as_ref().unwrap().correct[b.trivia.as_ref().unwrap().current];
+            b.answer(&mut assets, n.max(1));
+        }
+        let t = b.trivia.as_ref().unwrap();
+        println!("trivia: {} / {} over {}", t.score, t.count, t.over);
+        assert!(t.over && t.count == 30 && t.score == 30);
+    }
     use super::*;
 
     /// With the game and the mod at hand (TNM_ROOT=<Deus Ex folder>, TNM_DIR=<the mod's folder>): every page class

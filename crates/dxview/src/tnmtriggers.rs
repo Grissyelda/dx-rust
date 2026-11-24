@@ -390,7 +390,105 @@ pub fn take_touches() -> Vec<String> {
 }
 
 /// A new map: nothing carried over.
+/// Advanced TrackMovers and TriggerLoop: events, arrivals, the loop's labels.
+fn adv_tracks(tracks: &mut [AdvTrack], inbox: &[(String, bool)], lvl: &dx_level::Level, movers: &mut crate::movers::Movers, dt: f64) {
+    for t in tracks.iter_mut() {
+        let info = &lvl.movers[t.mover];
+        if movers.rt[t.mover].destroyed {
+            continue;
+        }
+        // TriggerLoop.Trigger / UnTrigger.
+        if t.looping {
+            let tag = t.tag.clone();
+            for (_, on) in inbox.iter().filter(|(n, _)| !tag.is_empty() && n.eq_ignore_ascii_case(&tag)) {
+                if *on {
+                    t.events += 1;
+                    t.saved = true;
+                    t.phase = Loop::Delay;
+                    t.wait = t.delay;
+                } else {
+                    t.events -= 1;
+                    if t.events <= 0 {
+                        t.events = 0;
+                        t.saved = false;
+                        t.phase = Loop::Closing;
+                        let k = movers.rt[t.mover].key_num.saturating_sub(1);
+                        let secs = t.time(k as usize, info);
+                        t.go(info, &mut movers.rt[t.mover], k, secs);
+                    }
+                }
+            }
+        }
+        let rt = &mut movers.rt[t.mover];
+        // An advanced mover set going by its own state (a toggle, a door): this key's MoveTime, and the chain is ours.
+        if t.advanced && rt.interpolating && t.from.is_none() {
+            let k = rt.prev_key_num;
+            rt.rate = 1.0 / t.time(k as usize, info).max(0.005);
+            rt.held = true;
+            t.from = Some(k);
+        }
+        // Arrived: the advanced chain goes on; FinishInterpolation waits for all of it.
+        let moving = if !rt.interpolating && t.from.is_some() { t.arrived(info, rt) } else { rt.interpolating };
+        if moving {
+            continue;
+        }
+        // A plain TrackMover's Tick at rest on key 0 triggers it (in TriggerLoop: it starts itself).
+        if !t.advanced && t.looping && t.phase == Loop::Idle && rt.key_num == 0 {
+            t.events += 1;
+            t.saved = true;
+            t.phase = Loop::Delay;
+            t.wait = t.delay;
+        }
+        match t.phase {
+            Loop::Idle => {}
+            Loop::Delay => {
+                t.wait -= dt;
+                if t.wait <= 0.0 {
+                    // DoOpen at MoveTimes[0].
+                    let secs = t.time(0, info);
+                    t.go(info, rt, 1.min(info.num_keys.saturating_sub(1)), secs);
+                    t.phase = Loop::Out;
+                }
+            }
+            Loop::Out => {
+                // Back to key 0 at MoveTimes[last].
+                let secs = t.time(info.num_keys.saturating_sub(1) as usize, info);
+                t.go(info, rt, 0, secs);
+                t.phase = Loop::Back;
+            }
+            Loop::Back => {
+                t.phase = Loop::Rest;
+                t.wait = t.other;
+            }
+            Loop::Rest => {
+                t.wait -= dt;
+                if t.wait <= 0.0 {
+                    t.phase = Loop::Delay;
+                    t.wait = t.delay;
+                }
+            }
+            Loop::Closing => {
+                t.phase = Loop::Stay;
+                t.wait = t.stay;
+            }
+            Loop::Stay => {
+                t.wait -= dt;
+                if t.wait <= 0.0 {
+                    t.phase = if t.once { Loop::Idle } else if t.saved { Loop::Delay } else { Loop::Idle };
+                    if t.once {
+                        t.looping = false;
+                    }
+                    t.wait = t.delay;
+                }
+            }
+        }
+    }
+}
+
 pub fn reset_level() {
+    if let Ok(mut v) = SCRIPTED.lock() {
+        v.clear();
+    }
     for q in [&CE_REQS] {
         if let Ok(mut q) = q.lock() {
             q.clear();
@@ -845,8 +943,93 @@ pub struct TnmMovers {
     dispatchers: Vec<Dispatch>,
     /// TrackMovers (not the advanced kind): (mover, resetChance, randomized base and added move time).
     tracks: Vec<(usize, i32, Option<(i32, i32)>)>,
+    /// Advanced TrackMovers (MoveTimes per key) and TrackMovers in the TriggerLoop state.
+    adv: Vec<AdvTrack>,
     seed: u64,
     inertial: Vec<Inertial>,
+}
+
+/// An advanced TrackMover (bAdvancedTrackMover: each key's own MoveTimes) and / or one in state TriggerLoop.
+// uc: TrackMover.InterpolateEnd, TrackMover.BeginPlay, TrackMover.TriggerLoop.Trigger, TrackMover.TriggerLoop.UnTrigger
+struct AdvTrack {
+    mover: usize,
+    tag: String,
+    advanced: bool,
+    times: [f64; 8],
+    looping: bool,
+    /// The move under way: the key it left (InterpolateEnd's PrevKeyNum).
+    from: Option<u8>,
+    /// TriggerLoop: trigger count, the label it runs, and its sleep.
+    events: i32,
+    phase: Loop,
+    wait: f64,
+    delay: f64,
+    other: f64,
+    stay: f64,
+    once: bool,
+    saved: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Loop {
+    Idle,
+    /// Open: DelayTime, then out (DoOpen and its chain), then back to key 0, then OtherTime, again.
+    Delay,
+    Out,
+    Back,
+    Rest,
+    /// Close: DoClose, then StayOpenTime; Open again while still triggered.
+    Closing,
+    Stay,
+}
+
+static SCRIPTED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// The mover's Trigger is handled here (a TrackMover in TriggerLoop), not by movers::trigger.
+pub fn scripted_track(actor: usize) -> bool {
+    SCRIPTED.lock().map(|v| v.contains(&actor)).unwrap_or(false)
+}
+
+impl AdvTrack {
+    fn time(&self, key: usize, info: &dx_level::movers::MoverInfo) -> f64 {
+        if self.advanced {
+            self.times[key.min(7)].max(0.0) + 0.001
+        } else {
+            info.move_time as f64 + 0.001
+        }
+    }
+    fn go(&mut self, info: &dx_level::movers::MoverInfo, rt: &mut crate::movers::MoverRt, key: u8, secs: f64) {
+        self.from = Some(rt.key_num);
+        crate::movers::move_to(info, rt, key, secs);
+    }
+    /// InterpolateEnd (advanced): on through the keys the way it was going, each at its own time.
+    fn arrived(&mut self, info: &dx_level::movers::MoverInfo, rt: &mut crate::movers::MoverRt) -> bool {
+        let Some(old) = self.from.take() else { return false };
+        if !self.advanced {
+            // A plain TrackMover in TriggerLoop: Mover.InterpolateEnd chains at MoveTime.
+            let k = rt.key_num;
+            if k > 0 && k < old {
+                self.go(info, rt, k - 1, info.move_time as f64 + 0.001);
+                return true;
+            } else if k + 1 < info.num_keys && k > old {
+                self.go(info, rt, k + 1, info.move_time as f64 + 0.001);
+                return true;
+            }
+            return false;
+        }
+        let k = rt.key_num;
+        if k > 0 && k < old {
+            let t = self.time(k as usize, info);
+            self.go(info, rt, k - 1, t);
+            true
+        } else if k + 1 < info.num_keys && k > old {
+            let t = self.time(k as usize, info);
+            self.go(info, rt, k + 1, t);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// InertialMover: a fan that spins up and down and blows the air of its zone about.
@@ -945,7 +1128,46 @@ fn build(lvl: &dx_level::Level, st: &mut TnmMovers) {
             });
             println!("TNM fan {} on {on} zone '{}'", a.name, s(p, "FanZoneName"));
         }
-        if a.class.eq_ignore_ascii_case("TrackMover") && !b(&a.props, "bAdvancedTrackMover", false) {
+        let advanced = b(&a.props, "bAdvancedTrackMover", false);
+        let looping = lvl.movers[mi].initial_state.eq_ignore_ascii_case("TriggerLoop");
+        if a.class.eq_ignore_ascii_case("TrackMover") && (advanced || looping) {
+            let p = &a.props;
+            let mut times = [0.0f64; 8];
+            for q in p.iter().filter(|q| q.name.eq_ignore_ascii_case("MoveTimes")) {
+                if let (Some(t), Value::Int(v)) = (times.get_mut(q.index as usize), &q.value) {
+                    *t = *v as f64;
+                }
+            }
+            let f = |n: &str, d: f64| match unreal_pkg::props::find(p, n) {
+                Some(Value::Float(v)) => *v as f64,
+                Some(Value::Int(v)) => *v as f64,
+                _ => d,
+            };
+            let info = &lvl.movers[mi];
+            st.adv.push(AdvTrack {
+                mover: mi,
+                tag: info.tag.clone(),
+                advanced,
+                times,
+                looping,
+                from: None,
+                events: 0,
+                phase: Loop::Idle,
+                wait: 0.0,
+                delay: info.delay_time as f64,
+                other: f("OtherTime", 0.0),
+                stay: info.stay_open_time as f64,
+                once: b(p, "bTriggerOnceOnly", false),
+                saved: false,
+            });
+            if looping {
+                if let Ok(mut v) = SCRIPTED.lock() {
+                    v.push(info.actor);
+                }
+            }
+            println!("TNM track mover {} advanced {advanced} loop {looping}", a.name);
+        }
+        if a.class.eq_ignore_ascii_case("TrackMover") && !advanced && !looping {
             let p = &a.props;
             st.tracks.push((
                 mi,
@@ -1133,8 +1355,10 @@ pub fn tnm_system(
             ce.set_seq(n, key);
         }
     }
+    let inbox = INBOX.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    adv_tracks(&mut st.adv, &inbox, lvl, &mut movers, time.delta_secs_f64());
     // Events: dispatchers start, door buttons (an event with an elevator's tag) open or shut its doors.
-    for (name, on) in INBOX.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+    for (name, on) in inbox {
         if !on {
             continue;
         }

@@ -2274,3 +2274,10 @@ pub fn mission_fx_system(
         );
     }
 }
+
+/// Spawn a pawn of this class (with property overrides) by the next mission frame (a TNM console's summons).
+pub fn queue_pawn(class: &str, at: bevy::math::DVec3, yaw: i32, props: Vec<unreal_pkg::props::Property>) {
+    if let Ok(mut q) = tnm::PAWNS.lock() {
+        q.push((class.to_string(), at, yaw, props));
+    }
+}

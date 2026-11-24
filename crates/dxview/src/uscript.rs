@@ -105,6 +105,10 @@ enum Expr {
     Not(Box<Expr>),
     Neg(Box<Expr>),
     Bin(&'static str, Box<Expr>, Box<Expr>),
+    /// `recv.field[i]`: read through Host::field as "field[i]".
+    FieldIndex(Box<Expr>, String, Box<Expr>),
+    /// `n++` / `n--` inside an expression: the old value, then the variable moved by the step.
+    PostInc(String, i64),
     Unknown,
 }
 
@@ -529,6 +533,10 @@ impl Parser<'_> {
                             // A method call on a value (the host's, with `objects`; else nothing).
                             let a = self.args();
                             e = Expr::Method(Box::new(e), f.to_ascii_lowercase(), a);
+                        } else if self.eat("[") {
+                            let ix = self.expr();
+                            self.eat("]");
+                            e = Expr::FieldIndex(Box::new(e), f.to_ascii_lowercase(), Box::new(ix));
                         } else {
                             e = Expr::Field(Box::new(e), f.to_ascii_lowercase());
                         }
@@ -630,6 +638,12 @@ impl Parser<'_> {
                     let ix = self.expr();
                     self.eat("]");
                     return Expr::Index(l, Box::new(ix));
+                }
+                if self.eat("++") {
+                    return Expr::PostInc(l, 1);
+                }
+                if self.eat("--") {
+                    return Expr::PostInc(l, -1);
                 }
                 Expr::Ident(l)
             }
@@ -901,6 +915,22 @@ impl Script {
                     None => host.get(n),
                 },
             },
+            Expr::PostInc(n, d) => {
+                let old = match locals.get(n) {
+                    Some(v) => v.clone(),
+                    None => host.get(n),
+                };
+                let new = V::Int(old.int() + d);
+                if locals.contains_key(n) {
+                    locals.insert(n.clone(), new);
+                } else {
+                    host.set(n, &new);
+                    if !self.objects {
+                        locals.insert(n.clone(), new);
+                    }
+                }
+                old
+            }
             Expr::Index(n, ix) => {
                 let i = self.eval(host, ix, locals).int();
                 match locals.get(&format!("{n}[{i}]")) {
@@ -929,6 +959,14 @@ impl Script {
                 _ if self.fields_by_name => host.get(f),
                 _ => V::None,
             },
+            Expr::FieldIndex(base, f, ix) => {
+                if !self.objects {
+                    return V::None;
+                }
+                let v = self.eval(host, base, locals);
+                let i = self.eval(host, ix, locals).int();
+                host.field(&v, &format!("{f}[{i}]"))
+            }
             Expr::Method(recv, n, args) => {
                 if !self.objects {
                     return V::None;
@@ -963,6 +1001,14 @@ impl Script {
                 self.call_below(host, n, &vals, Some(level))
             }
             Expr::Call(n, args) => {
+                // ArrayCount(member): the host is asked by the array's name.
+                if n == "arraycount" {
+                    if let Some(Some(Expr::Ident(a))) = args.first() {
+                        if let Some(v) = host.call("arraycount", &[V::Str(a.clone())]) {
+                            return v;
+                        }
+                    }
+                }
                 let vals: Vec<V> = args.iter().map(|a| a.as_ref().map(|a| self.eval(host, a, locals)).unwrap_or(V::None)).collect();
                 self.call(host, n, &vals)
             }

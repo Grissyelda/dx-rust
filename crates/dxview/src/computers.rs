@@ -881,7 +881,8 @@ const TNM_GAME_ACTIONS: [&str; 14] =
 
 /// The games of ours (the rest of the mod's computer games aren't ported yet: their buttons stay greyed).
 fn tnm_game_ported(action: &str) -> bool {
-    matches!(action, "LIGHTSOUT" | "PONG" | "TETRIS" | "BREAKOUT" | "RUSHHOUR" | "TEXTGAME" | "HTML" | "WHOIS")
+    matches!(action, "LIGHTSOUT" | "PONG" | "TETRIS" | "BREAKOUT" | "RUSHHOUR" | "TEXTGAME" | "HTML" | "WHOIS" | "IDLE")
+        || crate::tnmconsole::is_console(action)
 }
 
 /// tnmComputers: the games[] it offers (none unless bHasGames).
@@ -1259,6 +1260,7 @@ impl Term {
             (_, "BREAKOUT") => Some(Which::Game("BREAKOUT")),
             (_, "RUSHHOUR") => Some(Which::Game("RUSHHOUR")),
             (_, "TEXTGAME") => Some(Which::Game("TEXTGAME")),
+            (_, a) if tnm_game_ported(a) => TNM_GAME_ACTIONS.iter().find(|x| **x == a).map(|x| Which::Game(x)),
             _ => None,
         };
         if let Some(w) = next {
@@ -1374,7 +1376,19 @@ impl Term {
                     _ => None,
                 });
                 crate::tnmweb::set_home(home);
-                match crate::tnmpc::Game::new(a, wx.assets, seed) {
+                let g = if crate::tnmconsole::is_console(a) {
+                    let cx = crate::tnmconsole::Ctx {
+                        user: self.user.clone(),
+                        flags: wx.flags,
+                        level: wx.lvl.name.trim_end_matches(".dx").to_string(),
+                        terminal: wx.lvl.actors.get(self.actor).map(|x| x.name.clone()).unwrap_or_default(),
+                    };
+                    crate::tnmconsole::note_world(wx.flags, wx.lvl);
+                    crate::tnmconsole::Console::new(a, wx.assets, seed, &cx).map(|c| crate::tnmpc::Game::Console(Box::new(c)))
+                } else {
+                    crate::tnmpc::Game::new(a, wx.assets, seed)
+                };
+                match g {
                     Some(g) => Screen::Game(Box::new(g)),
                     None => return,
                 }
@@ -1888,6 +1902,8 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
             g.buttons = if gm.is_packets() {
                 let live = !gm.packets_solved();
                 vec![(Btn::Reset, true, live), (Btn::Exit, true, live), (Btn::Switch, false, true)]
+            } else if gm.busy() {
+                Vec::new()
             } else {
                 vec![(Btn::Logout, true, true), (Btn::Return, true, true)]
             };
@@ -3275,6 +3291,38 @@ pub fn computer_system(
         println!("VENDING dispensed {class}");
         throws.0.push((class, at, vel, None, Vec::new()));
     }
+    crate::tnmconsole::note_credits(inv.0.credits as i64);
+    // What the TNM consoles asked for (tnmconsole.rs).
+    for e in crate::tnmconsole::take_effects() {
+        use crate::tnmconsole::Effect;
+        println!("CONSOLE {e:?}");
+        match e {
+            Effect::Flag(n, v) => flags.0.set(&n, imsim_core::flags::FlagValue::Bool(v), 0),
+            Effect::NameFlag(n, v) => flags.0.set(&n, imsim_core::flags::FlagValue::Name(v), 0),
+            Effect::Event(t) => events.0.push((t, true)),
+            Effect::Achievement(a) => crate::tnmach::unlock(&a),
+            Effect::Credits(n) => inv.0.credits = (inv.0.credits as i64 + n).clamp(0, u32::MAX as i64) as u32,
+            Effect::Look(l) => crate::tnmlook::restore(l),
+            Effect::Summon { class, at_tag, legendary } => {
+                let Some(a) = lvl.actors.iter().find(|a| matches!(unreal_pkg::props::find(&a.props, "Tag"), Some(Value::Name(n)) if n.eq_ignore_ascii_case(&at_tag))) else { continue };
+                let l = a.location();
+                let at = bevy::math::DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
+                if assets.classes.ancestry(&class).iter().any(|c| c.eq_ignore_ascii_case("ScriptedPawn")) {
+                    // SetupSummonee: it stands.
+                    let yaw = match unreal_pkg::props::find(&a.props, "Rotation") {
+                        Some(Value::Rotator(r)) => r[1],
+                        _ => 0,
+                    };
+                    crate::missions::queue_pawn(&class, at, yaw, vec![unreal_pkg::props::Property { name: "Orders".into(), index: 0, value: Value::Name("Standing".into()) }]);
+                } else {
+                    if legendary {
+                        crate::legendary::preroll(&mut assets.classes, &class, crate::legendary::mission(), 1.5);
+                    }
+                    throws.0.push((class, at, bevy::math::DVec3::ZERO, None, Vec::new()));
+                }
+            }
+        }
+    }
     let mut cx = CompCx {
         window: *window,
         cursor_opts: cursor_opts.reborrow(),
@@ -3589,6 +3637,16 @@ fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWh
                 wheel: wheel_lines,
             };
             gm.tick_web(wx.assets, &binds.keys, ptr);
+            if matches!(**gm, crate::tnmpc::Game::Console(_)) {
+                crate::tnmconsole::note_world(wx.flags, wx.lvl);
+                let cx = crate::tnmconsole::Ctx {
+                    user: t.user.clone(),
+                    flags: wx.flags,
+                    level: wx.lvl.name.trim_end_matches(".dx").to_string(),
+                    terminal: wx.lvl.actors.get(t.actor).map(|x| x.name.clone()).unwrap_or_default(),
+                };
+                gm.tick_console(dt, &binds.keys, &chars, ptr, &cx);
+            }
             gm.tick(dt, &binds.keys, &chars, ptr) == crate::tnmpc::Outcome::Finished
         } else {
             false

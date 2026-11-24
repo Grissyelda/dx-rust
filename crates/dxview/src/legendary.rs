@@ -171,6 +171,30 @@ pub fn mask_of(class: &str) -> u64 {
     OWNED.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&class.to_ascii_lowercase()).copied())).unwrap_or(0)
 }
 
+/// Rolls made before the weapon is picked up (dxegInterface.SummonActor: legendaryChance 1.5), by class.
+static PREROLLED: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
+/// Roll this class now with another legendaryChance; the next copy the player takes carries it.
+pub fn preroll(classes: &mut unreal_pkg::classes::ClassDb, class: &str, mission: i32, chance: f32) {
+    if !on() {
+        return;
+    }
+    let mut d = classes.defaults(class).to_vec();
+    d.retain(|p| !p.name.eq_ignore_ascii_case("legendaryChance"));
+    d.push(Property { name: "legendaryChance".into(), index: 0, value: Value::Float(chance) });
+    let mask = roll(&d, mission);
+    if let Ok(mut q) = PREROLLED.lock() {
+        q.retain(|x| !x.0.eq_ignore_ascii_case(class));
+        q.push((class.to_string(), mask));
+    }
+    // The copy that comes out replaces what this class rolled before.
+    if let Ok(mut g) = OWNED.lock() {
+        if let Some(m) = g.as_mut() {
+            m.remove(&class.to_ascii_lowercase());
+        }
+    }
+}
+
 /// The player has this weapon class now: its roll, once. `from` = the attributes the copy came with (a pawn's
 /// weapon taken from its body); a rolled weapon keeps what it has.
 pub fn acquire(classes: &mut unreal_pkg::classes::ClassDb, class: &str, mission: i32, from: Option<u64>) {
@@ -178,6 +202,11 @@ pub fn acquire(classes: &mut unreal_pkg::classes::ClassDb, class: &str, mission:
         return;
     }
     let key = class.to_ascii_lowercase();
+    let pre = PREROLLED.lock().ok().and_then(|mut q| q.iter().position(|x| x.0.eq_ignore_ascii_case(class)).map(|i| q.remove(i).1));
+    let from = match pre {
+        Some(m) if from.is_none_or(|f| f == 0) => Some(m),
+        _ => from,
+    };
     let Ok(mut g) = OWNED.lock() else { return };
     let m = g.get_or_insert_with(HashMap::new);
     if m.get(&key).is_some_and(|v| *v != 0) {
@@ -212,13 +241,15 @@ pub fn names(classes: &mut unreal_pkg::classes::ClassDb, mask: u64) -> Vec<Strin
         .collect()
 }
 
-pub fn descriptions(classes: &mut unreal_pkg::classes::ClassDb, mask: u64) -> Vec<String> {
+/// The attributes' lines (UpdateInfo; Faithful's carries the weapon's level).
+pub fn descriptions(classes: &mut unreal_pkg::classes::ClassDb, mask: u64, class: &str) -> Vec<String> {
     let d = classes.defaults("TNMWeapon");
+    let level = faith_level(class).to_string();
     (1..59u8)
         .filter(|a| has(mask, *a))
         .filter_map(|a| {
             d.iter().find(|p| p.name.eq_ignore_ascii_case("AttributeDesc") && p.index == a as u32).and_then(|p| match &p.value {
-                Value::Str(s) if !s.is_empty() => Some(s.clone()),
+                Value::Str(s) if !s.is_empty() => Some(if a == att::FAITHFUL { crate::tnmpc::fmtn(s, &[&level]) } else { s.clone() }),
                 _ => None,
             })
         })
@@ -457,11 +488,134 @@ pub fn pinpoint(mask: u64) -> bool {
 
 /// Explosive rounds: a blast where the slug lands (damage x5, radius min(dmg, 25 x mult) x 1.75).
 pub fn blast(mask: u64, at: bevy::math::DVec3, dmg: f32, mult: f32) {
-    if has(mask, att::EXPLOSIVE) && !has(mask, att::INCENDIARY) {
+    // Incendiary first (TNMWeapon.ProcessTraceHit's chain): a fire left burning where the shot lands.
+    if has(mask, att::INCENDIARY) {
+        ground_fire(at);
+        return;
+    }
+    if has(mask, att::EXPLOSIVE) {
         let r = (dmg * 1.75).min(25.0 * mult * 1.75) as f64;
         if let Ok(mut q) = BLASTS.lock() {
             q.push((at, dmg * 5.0, r));
         }
+    }
+}
+
+/// Clouds to leave behind: (class, where, DrawScale, LifeSpan). projectiles::launch_system makes them.
+static CLOUDS: Mutex<Vec<(&'static str, bevy::math::DVec3, f32, f32)>> = Mutex::new(Vec::new());
+
+pub fn take_clouds() -> Vec<(&'static str, bevy::math::DVec3, f32, f32)> {
+    CLOUDS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
+}
+
+/// Incendiary: an incinerator (a burning cloud) at the hit, DrawScale 2-2.5, 30-40 s, floating.
+// uc: TNMWeapon.ProcessTraceHit, TNMProjectile.SpawnEffects, incinerator.DoZoneCheck
+pub fn ground_fire(at: bevy::math::DVec3) {
+    if let Ok(mut q) = CLOUDS.lock() {
+        q.push(("incinerator", at, frand() * 0.5 + 2.0, frand() * 10.0 + 30.0));
+    }
+}
+
+/// An exploding projectile's Irritating (tear gas) or Gaseous (poison gas) clouds: blastRadius / 36 tries over the
+/// blast, nine in ten made, scattered over a square of the radius and 32 up.
+// uc: TNMProjectile.Explode, TNMProjectile.SpawnTearGas, TNMProjectile.SpawnPoisonGas
+pub fn blast_gas(mask: u64, at: bevy::math::DVec3, radius: f64) {
+    let class = if has(mask, att::IRRITATING) {
+        "TearGas"
+    } else if has(mask, att::GASEOUS) {
+        "PoisonGas"
+    } else {
+        return;
+    };
+    let n = (radius / 36.0) as usize;
+    let Ok(mut q) = CLOUDS.lock() else { return };
+    for _ in 0..n {
+        if frand() < 0.9 {
+            let p = at + bevy::math::DVec3::new(frand() as f64 * radius - radius * 0.5, frand() as f64 * radius - radius * 0.5, 32.0);
+            q.push((class, p, frand() * 0.5 + 2.0, frand() * 10.0 + 30.0));
+        }
+    }
+}
+
+/// Messy: a pawn this weapon kills is left at Health -200 (gibbed). Pawns hit lately by a messy weapon.
+static MESSY: Mutex<Vec<(usize, std::time::Instant)>> = Mutex::new(Vec::new());
+static MESSY_AREAS: Mutex<Vec<(bevy::math::DVec3, f64, std::time::Instant)>> = Mutex::new(Vec::new());
+
+pub fn messy_hit(mask: u64, blocker: usize) {
+    if has(mask, att::MESSY) {
+        if let Ok(mut q) = MESSY.lock() {
+            q.retain(|x| x.1.elapsed().as_secs_f32() < 1.0 && x.0 != blocker);
+            q.push((blocker, std::time::Instant::now()));
+        }
+    }
+}
+pub fn messy_blast(mask: u64, at: bevy::math::DVec3, radius: f64) {
+    if has(mask, att::MESSY) {
+        if let Ok(mut q) = MESSY_AREAS.lock() {
+            q.retain(|x| x.2.elapsed().as_secs_f32() < 1.0);
+            q.push((at, radius, std::time::Instant::now()));
+        }
+    }
+}
+/// The pawn dying now was hit by a messy weapon (or stood in its blast) a moment ago: it's gibbed.
+pub fn messy_kill(blocker: usize, center: bevy::math::DVec3) -> bool {
+    let hit = MESSY.lock().map(|q| q.iter().any(|x| x.0 == blocker && x.1.elapsed().as_secs_f32() < 0.5)).unwrap_or(false);
+    hit || MESSY_AREAS.lock().map(|q| q.iter().any(|x| x.2.elapsed().as_secs_f32() < 0.5 && (x.0 - center).length() <= x.1 + 40.0)).unwrap_or(false)
+}
+
+/// Faithful: kills with the weapon, and its level (every tenth kill up to fifty; at five it hits like a cone).
+static FAITH: Mutex<Option<HashMap<String, (u32, u32)>>> = Mutex::new(None);
+
+/// The player killed a pawn with this weapon class (TNMWeapon.ProcessTraceHit's numKills++).
+// uc: TNMWeapon.ProcessTraceHit, TNMWeapon.UpdateInfo
+pub fn note_kill(class: &str) {
+    let mask = mask_of(class);
+    let Ok(mut g) = FAITH.lock() else { return };
+    let m = g.get_or_insert_with(HashMap::new);
+    let e = m.entry(class.to_ascii_lowercase()).or_insert((0, 0));
+    e.0 += 1;
+    if has(mask, att::FAITHFUL) && e.0 <= 50 && e.0 % 10 == 0 {
+        e.1 += 1;
+        crate::classic_hud::client_message("Weapon level increased!");
+        crate::sound::play_player("TNM.Weapons.FirestaffReload", 1.0, 0.0);
+    }
+}
+
+static HELD_CLASS: Mutex<String> = Mutex::new(String::new());
+
+/// The player's weapon in hand (the one credited with a kill).
+pub fn set_held_class(class: &str) {
+    if let Ok(mut g) = HELD_CLASS.lock() {
+        if *g != class {
+            *g = class.to_string();
+        }
+    }
+}
+pub fn held_class() -> String {
+    HELD_CLASS.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// katanaLevel of the weapon class.
+pub fn faith_level(class: &str) -> u32 {
+    FAITH.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&class.to_ascii_lowercase()).map(|e| e.1))).unwrap_or(0)
+}
+
+/// Shrunken: one column narrower in the inventory (and the small icon when it's one wide).
+// uc: TNMWeapon.ApplyAttribute
+pub fn shrink(class: &str, size: &mut (u32, u32), large_icon: &mut Option<String>, large_w: &mut u32, icon: Option<&str>, default_w: u32) {
+    if !on() || !has(mask_of(class), att::SHRUNKEN) {
+        return;
+    }
+    if size.0 > 1 {
+        size.0 = default_w.max(2) - 1;
+    }
+    if let (1, Some(icon)) = (size.0, icon) {
+        *large_icon = Some(icon.to_string());
+        let c = crate::tnmweapon::canon(class);
+        *large_w = match c {
+            "WeaponBlowPipe" => 52,
+            _ => 42,
+        };
     }
 }
 
@@ -549,8 +703,24 @@ pub fn restore(v: &[(String, u64)]) {
     }
 }
 
+/// Faithful kills and levels by weapon class (saved with Trestkon).
+pub fn save_faith() -> Vec<(String, u32, u32)> {
+    let mut v: Vec<(String, u32, u32)> = FAITH.lock().ok().and_then(|g| g.as_ref().map(|m| m.iter().map(|(k, e)| (k.clone(), e.0, e.1)).collect())).unwrap_or_default();
+    v.sort();
+    v
+}
+
+pub fn restore_faith(v: &[(String, u32, u32)]) {
+    if let Ok(mut g) = FAITH.lock() {
+        *g = Some(v.iter().map(|(k, a, b)| (k.clone(), (*a, *b))).collect());
+    }
+}
+
 pub fn new_game() {
     if let Ok(mut g) = OWNED.lock() {
+        *g = None;
+    }
+    if let Ok(mut g) = FAITH.lock() {
         *g = None;
     }
     HELD.store(0, Ordering::Relaxed);
