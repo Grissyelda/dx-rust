@@ -2815,6 +2815,9 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
     }
 }
 
+/// How dark the backing under a window drawn over another one is (draw_win `over`).
+const OVER_BACKING: f32 = 1.0;
+
 #[allow(clippy::too_many_arguments)]
 /// MenuScreenAdjustColorsExample.DrawWindow (207 x 135): background and borders in the HUD theme's colours and
 /// translucency, then the title / header / normal text and the two button labels.
@@ -2841,7 +2844,9 @@ fn draw_colors_example(u: &mut Ui<W>, x: i32, y: i32) {
     }
 }
 
-fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waiting_keys: bool) {
+/// `over`: the window is drawn on top of another window (message boxes); with translucent menus its client gets a
+/// dark backing (ours) so the window below doesn't show through its text.
+fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waiting_keys: bool, over: bool) {
     let f = win.f.clone();
     let (so, _) = f.shadow.unwrap_or(((0, 0), (0, 0)));
     let (ox, oy) = (so.0, so.1);
@@ -2907,6 +2912,10 @@ fn draw_win(u: &mut Ui<W>, win: &mut Win, fonts: &Fonts, help_text: &str, waitin
     let (cx, cy) = (ox + TITLE_LEFT_BOTTOM.0, oy + TITLE_H);
     u.c.set_clip(Some((cx, cy, f.cw, f.ch)));
     let style = if translucent { Style::Translucent } else { Style::Masked };
+    if over && translucent {
+        let bar = if f.bar { BAR_H } else { 0 };
+        u.c.shade(cx, cy, f.cw, f.ch + bar, OVER_BACKING);
+    }
     for (by, bh, shift) in art_bands(&f) {
         u.c.set_clip(Some((cx, cy + by, f.cw, bh)));
         for (i, t) in f.textures.iter().enumerate() {
@@ -5525,7 +5534,7 @@ fn draw_windows(
             hover: w_hover,
             focus,
         };
-        draw_win(&mut ui, &mut st.stack[wi], fonts, w_help, waiting);
+        draw_win(&mut ui, &mut st.stack[wi], fonts, w_help, waiting, wi > first);
         let Ui { c, .. } = ui;
         place(&mut st.win_layers[li], &c, pos, d, sf, images, layers, nodes);
         if let Some(dr) = st.drawn.get_mut(li) {
@@ -6274,7 +6283,7 @@ fn mp_window(assets: &mut RuntimeAssets, class: &str) -> (Frame, Body) {
             const CUT: (i32, i32) = (224, 0);
             // Without Augmentique (Modern deathmatch's characters) the well opens Classic's Player Setup instead.
             let dm = if crate::dmchar::blocked().is_none() {
-                b("Deathmatch Character", 229, 1, "MenuScreenDmCharacter")
+                b("DM Character", 229, 1, "MenuScreenDmCharacter")
             } else {
                 b("Player Setup", 229, 1, "MenuScreenPlayerSetup")
             };
@@ -8404,7 +8413,8 @@ mod tests {
             _ => help_text(win, assets),
         };
         let mut ui = Ui { c: Canvas::new(ww, wh, 1), hud, assets, f: fonts, o: pos, hits: &mut hits, pressed: None, hover: None, focus: win.focus };
-        draw_win(&mut ui, win, fonts, &help, false);
+        let over = !win.hides_below;
+        draw_win(&mut ui, win, fonts, &help, false, over);
         let Ui { c, .. } = ui;
         for y in 0..c.h {
             for x in 0..c.w {

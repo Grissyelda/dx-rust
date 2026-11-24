@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Menus (November 24)
+- Message boxes drawn over another menu (Multiplayer's "could not reach online services", confirmations) get a
+  solid dark backing when menus are translucent, so the menu below no longer shows through their text.
+- The Multiplayer screen's "Deathmatch Character" button is now "DM Character" (the long label ran past the button).
+
 ### Multiplayer: Modern mechanics (November 24)
 Five new switches on Match Settings > Mechanics... for Modern rooms (all on but Killphrases):
 - Uniforms: Use on a knocked-out guard takes his uniform. The level's staff take you for one of them and rivals see
