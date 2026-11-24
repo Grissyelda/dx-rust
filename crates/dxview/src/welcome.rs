@@ -2,7 +2,7 @@
 //! look out for, and the state of Modern's performance. Shown at start until "Don't Show Again" (setting
 //! WelcomeSeen = VERSION; raise VERSION when the text gains something worth showing again).
 
-pub const VERSION: f32 = 1.3;
+pub const VERSION: f32 = 1.4;
 
 pub fn due() -> bool {
     setting!("WelcomeSeen") < VERSION
@@ -35,7 +35,7 @@ cover.
 - Full controller support with button prompts, an aug wheel, and DualSense light bar, triggers and haptics.
 - A Field of View slider and a frame rate cap (Settings > Enhancements > Display).
 - Mods: Lay D Denton, HDTP, New Vision, Helios, GMDX's perks and fixes, Augmentique outfits and Visible \
-Attachments, all from the launcher's Mods page.
+Attachments, installed from their downloads in Settings > Mods or on the launcher's Mods page.
 
 MULTIPLAYER
 Multiplayer on this menu: host a room and share its code, or join one. In co-op the host plays the story and \
@@ -44,7 +44,17 @@ Ready before the host starts. Press Y to chat. Classic rooms are played without 
 host's. The long room code works even when the online services are down (see the README). Hold Tab for the \
 scoreboard.
 
-CLASSIC DEATHMATCH (NEW)
+THE NAMELESS MOD (NEW)
+With The Nameless Mod installed, pick it on the launcher's Game row (or Settings > Mods) and play the whole mod: \
+its story, music, terminal games and menus. Your Deus Ex saves stay apart from its own.
+
+MODERN DEATHMATCH (NEW)
+Modern deathmatch rooms now have a living level - guards who grow suspicious, cameras and turrets - with loadouts, \
+downed players who can be revived or questioned, and five switches in Match Settings > Mechanics: steal a \
+knocked-out guard's uniform, sit at the overwatch console, lock sectors down, frame rivals with their own weapons, \
+and killphrases.
+
+CLASSIC DEATHMATCH
 Pick Classic in the Host Room and play the original multiplayer game: Deathmatch, Basic, Advanced or Custom Team \
 Deathmatch on the five original maps, with its own rules and screens and no mods needed. Press B to buy skills \
 with the number keys, and L on the death screen for your killer's details. Choose who you play in Player Setup. \

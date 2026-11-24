@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## v0.14.0
+
+The highlights since v0.13.1 (the detailed notes for each day follow):
+- **The Nameless Mod**: play the whole mod in DX RUST from your own install (the launcher's Game row, or Settings >
+  Mods). Its missions, conversations and ogg soundtrack, Trestkon's fists and augmentations, legendary weapons,
+  difficulty levels with Nightmare respawns, the terminal games (Pong, Breakout, Tetris, the packet puzzle, text
+  adventures, the idle clicker, IRC and the in-game web), its own menus, cheats, music player, notes screens and
+  achievements.
+- **Modern multiplayer mechanics** (deathmatch): a living level with guards and heat, loadouts and progression,
+  downed / revive / interrogation, light and sound as cover, name-tag colours and calling cards, and five new room
+  switches: uniforms, the overwatch seat, sector lockdowns, framing and killphrases.
+- **Mod manager**: install mods straight from their downloads (zip, 7z and installer programs) in Settings > Mods
+  or the launcher.
+- **Android**: Snapdragon phones get Modern mode, every enhancement and mods; Mali phones take a simpler drawing
+  path. **Arm Linux** builds for boards and handhelds.
+- **Diegetic terminals** sit exactly on the personal computer's own middle panel.
+- Ragdolls with muscle tone, riding movers, swimming fixes, steadier frame times and a much faster Classic / Modern
+  switch, controllers through SDL3, RecompLauncher support, run logs and a portable mode.
 
 ### Diegetic terminals fitted to the model (November 24)
 - The live terminal and the standby screen now sit exactly on the personal computer's own middle panel. The
