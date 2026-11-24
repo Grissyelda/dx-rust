@@ -813,6 +813,17 @@ fn frob_item(cx: &mut FrobCx, e: Entity, items: &FrobItems, net_items: &Query<&c
         }
     }
     let (class, props) = (it.class.clone(), it.props.clone());
+    // The Nameless Mod's item refusal (Trestkon.HandleItemPickup).
+    if crate::tnmmode::active() {
+        let name = match find(&cx.assets.classes.defaults(&class), "ItemName") {
+            Some(Value::Str(n)) => n.clone(),
+            _ => class.clone(),
+        };
+        if let Some(msg) = crate::tnmmode::refuse_pickup(e, &class, &name) {
+            crate::classic_hud::client_message(&msg);
+            return;
+        }
+    }
     if take_pickup(&mut cx.inv, &mut cx.hud, &mut cx.assets, &mut cx.weapons.floor_use, &class, &props) {
         commands.entity(e).despawn();
         if let Some(id) = net {
@@ -1058,6 +1069,10 @@ fn give_loot(
                 crate::classic_hud::client_message(&m);
             }
             let owned = inv.0.items.iter().any(|x| x.def.class == class);
+            if crate::legendary::on() {
+                let from = crate::legendary::pawn_weapon(owner_class, &class);
+                crate::legendary::acquire(&mut assets.classes, &class, crate::legendary::mission(), from);
+            }
             if let Some(m) = give_weapon(&mut inv.0, &class, &d, rounds, assets) {
                 msgs.push(m);
             }
@@ -1327,6 +1342,21 @@ fn frob_device(
         crate::scriptworld::push(crate::scriptworld::ActorReq::Destroy(crate::scriptworld::ActorSel::tag(&format!(
             "#actor{actor}"
         ))));
+        return;
+    }
+    // The Nameless Mod's accessory boxes and coat bags: the look is unlocked for the new-game screen, for good.
+    if crate::tnmlook::is_accessory(&a.class) {
+        let kind = match find(&a.props, "AccessoryType") {
+            Some(Value::Byte(k)) => *k,
+            _ => 0,
+        };
+        crate::tnmlook::unlock_accessory(&a.class, kind);
+        if let Some(Value::Str(m)) = a.props.iter().find(|p| p.name.eq_ignore_ascii_case("aquisitionmsg") && p.index == kind as u32).map(|p| &p.value) {
+            crate::classic_hud::client_message(m);
+        }
+        let actor = blockers.list[b].actor;
+        crate::scriptworld::mark_hidden(actor, true);
+        crate::scriptworld::push(crate::scriptworld::ActorReq::Destroy(crate::scriptworld::ActorSel::tag(&format!("#actor{actor}"))));
         return;
     }
     // The Nameless Mod's powerups (QuadDamage / RingofShadows.Frob).
@@ -1652,6 +1682,7 @@ pub fn device_like(a: &dx_level::actors::ActorInfo) -> bool {
             || crate::fixtures::is_fixture(&a.class)
             || crate::augmentique::is_spawner(&a.class)
             || crate::tnmpower::is_powerup(&a.class)
+            || crate::tnmlook::is_accessory(&a.class)
             || a.class.eq_ignore_ascii_case("ammocrate")
             || crate::computers::is_terminal(&a.class)
             || !crate::devices::name_prop(p, "Event").is_empty()

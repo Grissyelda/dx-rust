@@ -36,6 +36,39 @@ pub struct SkyRoot {
 #[derive(Component)]
 pub struct SkyCopy(pub Entity);
 
+/// Which of the level's sky rooms a sky face belongs to (Level::sky_rooms).
+#[derive(Component)]
+pub struct SkyRoom(pub u8);
+
+/// Maps with several sky rooms (The Nameless Mod's MultiSkyZoneInfo): only the room the eye's zone looks into is
+/// drawn.
+// uc: MultiSkyZoneInfo.LinkToSkybox
+pub fn room_system(
+    level: Res<crate::LevelRes>,
+    cam: Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
+    mut faces: Query<(&SkyRoom, &mut Visibility), With<SkyBatch>>,
+    mut last: Local<Option<u8>>,
+) {
+    let lvl = &level.0;
+    if lvl.sky_rooms.len() < 2 {
+        *last = None;
+        return;
+    }
+    let Ok(ct) = cam.single() else { return };
+    let u = dx_level::bevy_to_ue(ct.translation.to_array());
+    let z = lvl.collision.zone_at(bevy::math::DVec3::new(u[0] as f64, u[1] as f64, u[2] as f64)).max(0) as usize;
+    // Zone 0 (between zones) keeps the room already shown.
+    let room = if z == 0 { last.unwrap_or(0) } else { lvl.zone_sky_room.get(z).copied().unwrap_or(0) };
+    if *last != Some(room) {
+        println!("SKY room {room} (zone {z})");
+    }
+    *last = Some(room);
+    for (r, mut v) in &mut faces {
+        let want = if r.0 == room { Visibility::Inherited } else { Visibility::Hidden };
+        v.set_if_neq(want);
+    }
+}
+
 pub fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| !env_on!("DXVIEW_SKYCAM"))
@@ -43,10 +76,11 @@ pub fn enabled() -> bool {
 
 /// The scale and reach for a level: the nearest sky face ends up past the map, the skyline ring and the clouds.
 fn scale_for(level: &dx_level::Level) -> Option<(f32, f32)> {
-    let off = Vec3::from(level.sky_origin?);
+    let first = Vec3::from(level.sky_origin?);
     let mut near = f32::MAX;
     let mut far = 0.0f32;
     for b in level.batches.iter().filter(|b| b.sky) {
+        let off = level.sky_rooms.get(b.sky_room as usize).map_or(first, |o| Vec3::from(*o));
         for t in b.indices.chunks_exact(3) {
             let p = |i: u32| Vec3::from(b.positions[i as usize]) - off;
             let (a, bb, c) = (p(t[0]), p(t[1]), p(t[2]));

@@ -189,10 +189,13 @@ pub fn female_skins() -> [String; 8] {
 }
 
 /// JC's third-person mesh: GM_Trench, or GFM_Trench for Lay D Denton.
+/// Trestkon's body mesh for the look in play (set whenever his defaults are dressed).
+static TNM_MESH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 pub fn jc_mesh() -> String {
     // Asked every frame (mirror / first-person bodies): worked out again only when what it depends on changes.
     static CACHE: std::sync::Mutex<Option<((u64, bool, u64), String)>> = std::sync::Mutex::new(None);
-    let key = (crate::augmentique::generation(), female(), unreal_pkg::classes::override_generation());
+    let key = (crate::augmentique::generation() ^ (crate::tnmlook::generation() << 32), female(), unreal_pkg::classes::override_generation());
     if let Ok(g) = CACHE.lock() {
         if let Some((k, m)) = g.as_ref() {
             if *k == key {
@@ -212,7 +215,7 @@ pub fn jc_mesh() -> String {
 pub fn jc_base_mesh() -> String {
     // The Nameless Mod: Trestkon's own body.
     if crate::tnmmode::active() {
-        return "TNM.GM_Trestkon_Jumpsuit".into();
+        return TNM_MESH.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "TNM.GM_Trestkon_Jumpsuit".into());
     }
     if female() {
         return "DeusExCharacters.GFM_Trench".into();
@@ -352,6 +355,13 @@ pub fn jc_base_defaults(classes: &mut unreal_pkg::classes::ClassDb) -> Vec<unrea
     use unreal_pkg::props::{Property, Value};
     let mut d = classes.defaults(crate::tnmmode::player_class()).to_vec();
     if crate::tnmmode::active() {
+        // The look chosen on the mod's new-game screen (tnmlook.rs).
+        crate::tnmlook::dress(classes, &mut d);
+        if let Some(Value::Path(m)) = unreal_pkg::props::find(&d, "Mesh") {
+            if let Ok(mut g) = TNM_MESH.lock() {
+                *g = Some(m.clone());
+            }
+        }
         return d;
     }
     if female() {

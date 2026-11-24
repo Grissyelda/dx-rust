@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use unreal_pkg::props::{find, Property, Value};
 
 /// The trigger classes this module answers for (only while The Nameless Mod is played).
-pub const CLASSES: [&str; 32] = [
+pub const CLASSES: [&str; 33] = [
     "CESequenceTrigger",
     "TNMBindNameTrigger",
     "GoalAddTrigger",
@@ -51,6 +51,7 @@ pub const CLASSES: [&str; 32] = [
     "WeaponSenseTrigger",
     "TurretDisableTurretTrigger",
     "TurretDisableStaringTrigger",
+    "gravtrigger",
 ];
 
 pub fn is_class(class: &str) -> bool {
@@ -101,6 +102,8 @@ pub enum TnmKind {
     WeaponSense { failed: String, in_hand: bool, cause: u8 },
     /// BSPTurretTriggers: the StaringMovers tagged Event stop firing (true) or stop following (false).
     TurretOff(bool),
+    /// gravtrigger: its gravcommands (zone name, gravity number) as saved; triggered only.
+    Grav(Vec<Vec<u8>>),
 }
 
 /// What a TNM trigger asks triggers.rs to do after it ran.
@@ -242,6 +245,15 @@ pub fn kind_for(class: &str, p: &[Property]) -> TnmKind {
             in_hand: b(p, "binhand", false),
             cause: i(p, "TriggerCause", 0).clamp(0, 3) as u8,
         },
+        "gravtrigger" => TnmKind::Grav(
+            p.iter()
+                .filter(|x| x.name.eq_ignore_ascii_case("gravcommands"))
+                .filter_map(|x| match &x.value {
+                    Value::Struct(_, b) => Some(b.clone()),
+                    _ => None,
+                })
+                .collect(),
+        ),
         "turretdisableturrettrigger" => TnmKind::TurretOff(true),
         "turretdisablestaringtrigger" => TnmKind::TurretOff(false),
         _ => TnmKind::Inert,
@@ -329,6 +341,9 @@ fn work(w: Work, tag: &str) {
 pub fn event(name: &str, on: bool) {
     if !crate::tnmmode::active() {
         return;
+    }
+    if on {
+        crate::texctl::event(name);
     }
     if let Ok(mut q) = INBOX.lock() {
         q.push((name.to_string(), on));
@@ -562,7 +577,7 @@ pub fn on_touch(k: &mut TnmKind, event: &str, once: bool, by_player: bool, relev
         TnmKind::Oxygen { .. } => {}
         TnmKind::BindName { .. } | TnmKind::Limited(_) | TnmKind::Autosave => act.base = relevant,
         // Trigger only.
-        TnmKind::LoudNoise { .. } | TnmKind::CutSound { .. } | TnmKind::CutShake { .. } => {}
+        TnmKind::LoudNoise { .. } | TnmKind::CutSound { .. } | TnmKind::CutShake { .. } | TnmKind::Grav(_) => {}
         TnmKind::NoteAdd { tag, package } => {
             act.base = relevant;
             if relevant && by_player {
@@ -728,6 +743,11 @@ pub fn on_trigger(k: &mut TnmKind, event: &str, once: bool, on: bool, flags: &mu
             act.destroy = once;
         }
         TnmKind::WeaponSense { .. } => act.base = true,
+        TnmKind::Grav(cmds) => {
+            if let Ok(mut q) = GRAV.lock() {
+                q.extend(cmds.iter().cloned());
+            }
+        }
         TnmKind::TurretOff(turret) => {
             crate::staring::disable(event, *turret);
             act.base = true;
@@ -826,6 +846,42 @@ pub struct TnmMovers {
     /// TrackMovers (not the advanced kind): (mover, resetChance, randomized base and added move time).
     tracks: Vec<(usize, i32, Option<(i32, i32)>)>,
     seed: u64,
+    inertial: Vec<Inertial>,
+}
+
+/// InertialMover: a fan that spins up and down and blows the air of its zone about.
+struct Inertial {
+    mover: usize,
+    tag: String,
+    on: bool,
+    rate_on: [f64; 3],
+    rate_off: [f64; 3],
+    up: f64,
+    down: f64,
+    zone: String,
+    /// RotationRate as the map saved it, taken up on the first tick.
+    start: Option<[f64; 3]>,
+    /// zoneGravity On / Off: change per tick, min, max.
+    grav: [[DVec3; 3]; 2],
+    kill: bool,
+}
+
+/// Movers the player's footing matters to: weakmovers (they break under him) and killing fans.
+static FOOTING: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static STOOD: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// lib.rs, once a frame while walking: the player stands on one of the movers that care (returns true when a fan
+/// at speed kills him).
+pub fn player_footing(level: &dx_level::Level, movers: &crate::movers::Movers, loc: DVec3, radius: f64, height: f64) {
+    let Ok(list) = FOOTING.lock() else { return };
+    if list.is_empty() {
+        return;
+    }
+    if let Some(i) = crate::movers::standing_on(level, movers, loc, radius, height, &list) {
+        if let Ok(mut q) = STOOD.lock() {
+            q.push(i);
+        }
+    }
 }
 
 fn name_arr<const N: usize>(p: &[Property], n: &str) -> [String; N] {
@@ -844,9 +900,51 @@ fn build(lvl: &dx_level::Level, st: &mut TnmMovers) {
     st.ces.clear();
     st.dispatchers.clear();
     st.tracks.clear();
+    st.inertial.clear();
     st.seed = 0x7472_6163_6B6D_6F76;
+    let mut footing = Vec::new();
     for (mi, m) in lvl.movers.iter().enumerate() {
         let a = &lvl.actors[m.actor];
+        if a.class.eq_ignore_ascii_case("weakmover") {
+            footing.push(mi);
+        }
+        if a.class.eq_ignore_ascii_case("InertialMover") {
+            let p = &a.props;
+            let rot = |n: &str| match find(p, n) {
+                Some(Value::Rotator(r)) => [r[0] as f64, r[1] as f64, r[2] as f64],
+                _ => [0.0; 3],
+            };
+            let v = |n: &str| match find(p, n) {
+                Some(Value::Vector(v)) => DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64),
+                _ => DVec3::ZERO,
+            };
+            let fl = |n: &str| match find(p, n) {
+                Some(Value::Float(v)) => *v as f64,
+                _ => 0.0,
+            };
+            let on = b(p, "bOn", false);
+            let kill = b(p, "bKillSupportee", false);
+            if kill {
+                footing.push(mi);
+            }
+            st.inertial.push(Inertial {
+                mover: mi,
+                tag: m.tag.clone(),
+                on,
+                rate_on: rot("DesiredRotationRateOn"),
+                rate_off: rot("DesiredRotationRateOff"),
+                up: fl("RotationSpeedUpRate"),
+                down: fl("RotationSlowDownRate"),
+                zone: s(p, "FanZoneName"),
+                start: Some(rot("RotationRate")),
+                grav: [
+                    [v("zoneGravityOnChange"), v("zoneGravityOnMin"), v("zoneGravityOnMax")],
+                    [v("zoneGravityOffChange"), v("zoneGravityOffMin"), v("zoneGravityOffMax")],
+                ],
+                kill,
+            });
+            println!("TNM fan {} on {on} zone '{}'", a.name, s(p, "FanZoneName"));
+        }
         if a.class.eq_ignore_ascii_case("TrackMover") && !b(&a.props, "bAdvancedTrackMover", false) {
             let p = &a.props;
             st.tracks.push((
@@ -917,6 +1015,9 @@ fn build(lvl: &dx_level::Level, st: &mut TnmMovers) {
         // at 0 after a set one still runs, as the original's loop does for any value other than -1.
         let steps = (0..8).filter(|&k| seqs[k] >= 0 && seqs[k] < 8).map(|k| (delays[k], seqs[k] as u8)).collect();
         st.dispatchers.push(Dispatch { tag: s(p, "Tag"), event: s(p, "Event"), steps, run: None });
+    }
+    if let Ok(mut f) = FOOTING.lock() {
+        *f = footing;
     }
     st.built = true;
 }
@@ -1011,6 +1112,15 @@ pub fn tnm_system(
     let lvl = &level.0;
     if !st.built {
         build(lvl, &mut st);
+        crate::zones::live_init(lvl);
+    }
+    for b in GRAV.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
+        let mut r = unreal_pkg::Reader::new(&b, 0);
+        let zone = r.compact_index().ok().and_then(|i| lvl.names.get(i as usize).cloned()).unwrap_or_default();
+        let num = r.i32().unwrap_or(0);
+        if !zone.is_empty() && !zone.eq_ignore_ascii_case("None") {
+            crate::zones::change_grav(lvl, &zone, Some(num), 0);
+        }
     }
     hear_ai_events();
     let dt = time.delta_secs().min(0.1);
@@ -1027,6 +1137,10 @@ pub fn tnm_system(
     for (name, on) in INBOX.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default() {
         if !on {
             continue;
+        }
+        // uc: InertialMover.Trigger
+        for f in st.inertial.iter_mut().filter(|f| !f.tag.is_empty() && f.tag.eq_ignore_ascii_case(&name)) {
+            f.on = !f.on;
         }
         for d in st.dispatchers.iter_mut().filter(|d| d.tag.eq_ignore_ascii_case(&name)) {
             if d.run.is_none() {
@@ -1156,6 +1270,42 @@ pub fn tnm_system(
             }
         }
     }
+    // InertialMover.Tick: the spin eases toward the on / off rate (the original adds its rates once a tick; at its
+    // usual 60 a second here), and the fan's zone gains or loses its wind.
+    // uc: InertialMover.Tick, InertialMover.SupportActor, weakmover.SupportActor
+    let stood = STOOD.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    let ticks = dt as f64 * 60.0;
+    for f in st.inertial.iter_mut() {
+        let rt = &mut movers.rt[f.mover];
+        let dead = rt.destroyed;
+        if let Some(r) = f.start.take() {
+            rt.spin = r;
+        }
+        if !dead {
+            let want = if f.on { f.rate_on } else { f.rate_off };
+            for k in 0..3 {
+                if rt.spin[k] < want[k] {
+                    rt.spin[k] = (rt.spin[k] + f.up * ticks).min(want[k]);
+                } else if rt.spin[k] > want[k] {
+                    rt.spin[k] = (rt.spin[k] - f.down * ticks).max(want[k]);
+                }
+            }
+        } else {
+            rt.spin = [0.0; 3];
+        }
+        if !f.zone.is_empty() {
+            let g = &f.grav[if !dead && f.on { 0 } else { 1 }];
+            crate::zones::push_gravity(lvl, &f.zone, g[0] * ticks, g[1], g[2]);
+        }
+        if f.kill && !dead && stood.contains(&f.mover) && rt.spin.iter().map(|v| v.abs()).sum::<f64>() > 20000.0 && !ph.dead {
+            crate::missions::player_req(crate::missions::PlayerReq::Kill("Exploded"));
+        }
+    }
+    for &mi in &stood {
+        if lvl.actors[lvl.movers[mi].actor].class.eq_ignore_ascii_case("weakmover") && !movers.rt[mi].destroyed {
+            crate::movers::damage_mover(mi, 100000.0, "Exploded");
+        }
+    }
     // TrackMover.Tick: at rest on its last key it jumps back to the first (one chance in resetChance a tick, with a
     // new random MoveTime when asked); at rest on the first it sets off again.
     // uc: TrackMover.Tick
@@ -1242,6 +1392,8 @@ pub fn tnm_system(
 }
 
 static FIRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// gravtrigger commands waiting for the level (the zone name is an index into the map's names).
+static GRAV: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
 /// An event fired by code that doesn't hold the GameEvents (a knock on a KnockableMover).
 pub fn fire_event(name: &str) {

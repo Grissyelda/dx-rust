@@ -507,8 +507,7 @@ fn fire_spot(
         track: if sp.homing { tgt.and_then(|t| t.2) } else { None },
         track_at: None,
         speed: Some(speed),
-        ownerless: true,
-    });
+        ownerless: true, legendary: 0 });
     if let Some(snd) = &sp.sound {
         crate::sound::play(snd, sp.pos, sp.volume, sp.radius, 1.0);
     }

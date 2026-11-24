@@ -194,6 +194,13 @@ pub enum Fx {
 
 static FX: Mutex<Vec<Fx>> = Mutex::new(Vec::new());
 
+/// An effect from outside the mission scripts.
+pub fn fx(f: Fx) {
+    if let Ok(mut q) = FX.lock() {
+        q.push(f);
+    }
+}
+
 
 /// Rockets the helicopter fires (Mission06 FireMissilesAt): (from, direction, tracking target).
 static ROCKETS: Mutex<Vec<(DVec3, DVec3, Option<DVec3>, &'static str)>> = Mutex::new(Vec::new());
@@ -2212,8 +2219,7 @@ pub fn mission_fx_system(
             track: None,
             track_at: at,
             speed: None,
-            ownerless: true,
-        });
+            ownerless: true, legendary: 0 });
     }
     for f in take(&FX) {
         match f {

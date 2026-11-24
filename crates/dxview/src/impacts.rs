@@ -296,8 +296,7 @@ pub fn impacts_system(
             track: None,
             track_at: None,
             speed: None,
-            ownerless: false,
-        });
+            ownerless: false, legendary: 0 });
     }
 
     let spark_at = |commands: &mut Commands,

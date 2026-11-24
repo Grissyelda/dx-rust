@@ -128,6 +128,10 @@ fn next_autosave() -> PathBuf {
 
 /// Autosave as soon as it's safe (not on the menu maps, not dead, no conversation, the level restored).
 pub fn autosave(reason: &str) {
+    // The Nameless Mod's Auto-saving option.
+    if crate::tnmmode::active() && !crate::tnmmode::option("bUseAutosave") {
+        return;
+    }
     if let Ok(mut p) = AUTO_PENDING.lock() {
         *p = Some(reason.to_string());
     }

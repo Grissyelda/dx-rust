@@ -312,7 +312,12 @@ pub fn spawn_system(
 /// ScriptedPawns. Up to MaxCount alive from the pool while the player is within ActiveArea, one try every 0.25 s
 /// at a hidden floor spot within Radius; transient pawns out of the area and out of sight go back to the pool.
 struct GroundGen {
-    class: &'static str,
+    /// The classes it makes (one picked per pawn).
+    classes: Vec<String>,
+    /// The Nameless Mod's BoardGuestGenerator: RandomWandering handed to each pawn, which is BoardGuestA or B.
+    board_guest: Option<f32>,
+    orders: String,
+    alliance: String,
     pos: DVec3,
     active_area: f64,
     radius: f64,
@@ -354,11 +359,28 @@ impl Generators {
     }
 }
 
-fn ground_class(generator: &str) -> Option<&'static str> {
+fn ground_class(generator: &str) -> Option<Vec<String>> {
     match generator {
-        "RatGenerator" => Some("Rat"),
+        "RatGenerator" => Some(vec!["Rat".into()]),
+        // The Nameless Mod: its PawnClasses are the two forum-guest civilians.
+        g if g.eq_ignore_ascii_case("BoardGuestGenerator") && crate::tnmmode::active() => {
+            Some(vec!["BoardGuest1".into(), "BoardGuest2".into()])
+        }
         _ => None,
     }
+}
+
+/// Every PawnClasses slot's Count added up (slots with a class).
+fn pool_all(p: &[Property]) -> usize {
+    p.iter()
+        .filter(|x| x.name.eq_ignore_ascii_case("PawnClasses"))
+        .filter_map(|x| match &x.value {
+            Value::Struct(_, b) if b.len() >= 9 && b[8..].iter().any(|v| *v != 0) => {
+                Some(i32::from_le_bytes([b[0], b[1], b[2], b[3]]).max(0) as usize)
+            }
+            _ => None,
+        })
+        .sum()
 }
 
 /// Generator pawns spawned this frame, tagged with their generator (filled in by spawn_system).
@@ -384,17 +406,25 @@ pub fn generator_system(
         st.init = true;
         st.seed = 0xBADC_0FFE;
         for a in &lvl.actors {
-            let Some(class) = ground_class(&a.class) else {
+            let Some(classes) = ground_class(&a.class) else {
                 continue;
+            };
+            let board_guest = a.class.eq_ignore_ascii_case("BoardGuestGenerator").then(|| fv(&a.props, "RandomWandering", 0.0) as f32);
+            let nm = |k: &str| match find(&a.props, k) {
+                Some(Value::Name(t)) if t != "None" => t.clone(),
+                _ => String::new(),
             };
             let Some(Value::Vector(l)) = find(&a.props, "Location") else {
                 continue;
             };
             let pos = DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
-            let pool = crate::critters::pool_count(&a.props);
+            let pool = if board_guest.is_some() { pool_all(&a.props) } else { crate::critters::pool_count(&a.props) };
             let max = fv(&a.props, "MaxCount", 0.0) as usize;
             st.gens.push(GroundGen {
-                class,
+                classes,
+                board_guest,
+                orders: if board_guest.is_some() { nm("Orders") } else { String::new() },
+                alliance: if board_guest.is_some() { nm("Alliance") } else { String::new() },
                 pos,
                 active_area: fv(&a.props, "ActiveArea", 2000.0),
                 radius: fv(&a.props, "Radius", 600.0),
@@ -497,9 +527,27 @@ pub fn generator_system(
         {
             continue;
         }
-        let class = g.class;
+        let (n, guest, orders, alliance) = (g.classes.len(), g.board_guest, g.orders.clone(), g.alliance.clone());
+        let pick = ((st.rand() * n as f64) as usize).min(n - 1);
+        let class = st.gens[gi].classes[pick].clone();
+        let class = class.as_str();
         let h = fv(&assets.classes.defaults(class), "CollisionHeight", 4.0);
         let yaw = (st.rand() * 65536.0) as i32;
+        let mut props = Vec::new();
+        if let Some(wander) = guest {
+            // uc: BoardGuestGenerator.SetPawnHome
+            let bind = if st.rand() < 0.5 { "BoardGuestA" } else { "BoardGuestB" };
+            let mk = |name: &str, value: Value| Property { name: name.into(), index: 0, value };
+            props.push(mk("BindName", Value::Str(bind.into())));
+            props.push(mk("BarkBindName", Value::Str(bind.into())));
+            props.push(mk("RandomWandering", Value::Float(wander)));
+            if !orders.is_empty() {
+                props.push(mk("Orders", Value::Name(orders)));
+            }
+            if !alliance.is_empty() {
+                props.push(mk("Alliance", Value::Name(alliance)));
+            }
+        }
         st.gens[gi].pool -= 1;
         st.gens[gi].pending += 1;
         request(SpawnReq {
@@ -507,7 +555,7 @@ pub fn generator_system(
             pos: floor + DVec3::new(0.0, 0.0, h + 1.0),
             yaw,
             transient: true,
-            props: Vec::new(),
+            props,
             generator: Some(gi),
             net_player: None,
         });

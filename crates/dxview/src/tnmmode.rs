@@ -343,3 +343,166 @@ pub fn load_texts(classes: &mut unreal_pkg::classes::ClassDb) {
         }
     }
 }
+
+/// tnmMenuTNMOptions' settings: (Trestkon variable, label, description, the class default), read once from the
+/// player's TNMGUI.u / TNM.u.
+static OPTIONS: Mutex<Vec<(String, String, String, bool)>> = Mutex::new(Vec::new());
+
+pub fn load_options(classes: &mut unreal_pkg::classes::ClassDb) {
+    if OPTIONS.lock().is_ok_and(|o| !o.is_empty()) {
+        return;
+    }
+    let d = classes.defaults("tnmMenuTNMOptions");
+    let t = classes.defaults("Trestkon");
+    let text = |name: &str, i: u32| {
+        d.iter().find(|p| p.name.eq_ignore_ascii_case(name) && p.index == i).and_then(|p| match &p.value {
+            unreal_pkg::props::Value::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+    };
+    let mut out = Vec::new();
+    for i in 0..64u32 {
+        let (Some(label), Some(var)) = (text("strSetting", i), text("varSetting", i)) else { continue };
+        if label.is_empty() || var.is_empty() {
+            continue;
+        }
+        let dflt = matches!(unreal_pkg::props::find(&t, &var), Some(unreal_pkg::props::Value::Bool(true)));
+        out.push((var, label, text("strDescription", i).unwrap_or_default(), dflt));
+    }
+    if let Ok(mut o) = OPTIONS.lock() {
+        *o = out;
+    }
+}
+
+/// The settings key a TNM option is kept under.
+pub fn option_key(var: &str) -> String {
+    if var.eq_ignore_ascii_case("bAchievementNotifications") {
+        "TnmAchNotify".into()
+    } else {
+        format!("Tnm.{var}")
+    }
+}
+
+pub fn options() -> Vec<(String, String, String, bool)> {
+    OPTIONS.lock().map(|o| o.clone()).unwrap_or_default()
+}
+
+/// One of Trestkon's option flags (TNM Settings): the player's choice, else the mod's default.
+pub fn option(var: &str) -> bool {
+    if !active() {
+        return false;
+    }
+    let key = option_key(var);
+    if crate::settings::has(&key) {
+        return crate::settings::get(&key) > 0.5;
+    }
+    OPTIONS.lock().is_ok_and(|o| o.iter().any(|x| x.0.eq_ignore_ascii_case(var) && x.3))
+}
+
+/// TNMMenuScreenItemRefusal's list: (Trestkon variable "bRefuse...", type label, item label), and Trestkon's
+/// ItemRefusedString.
+static REFUSALS: Mutex<(Vec<(String, String, String)>, String)> = Mutex::new((Vec::new(), String::new()));
+/// Pickups refused once already (their bItemRefusalOverride): the next frob takes them.
+static REFUSED_ONCE: Mutex<Vec<bevy::prelude::Entity>> = Mutex::new(Vec::new());
+
+pub fn load_refusals(classes: &mut unreal_pkg::classes::ClassDb) {
+    if REFUSALS.lock().is_ok_and(|r| !r.0.is_empty()) {
+        return;
+    }
+    let d = classes.defaults("TNMMenuScreenItemRefusal");
+    let text = |name: &str, i: u32| {
+        d.iter().find(|p| p.name.eq_ignore_ascii_case(name) && p.index == i).and_then(|p| match &p.value {
+            unreal_pkg::props::Value::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+    };
+    let mut out = Vec::new();
+    // PopulateItemList's order: the eight item types, each with its own pair of arrays.
+    for (k, group) in ["Rifle", "Pistol", "Heavy", "Demo", "LowTech", "Enviro", "Tools", "Consumables"].iter().enumerate() {
+        let ty = text("strItemType", k as u32 + 1).unwrap_or_default();
+        for i in 0..32u32 {
+            let (Some(label), Some(var)) = (text(&format!("strItems{group}"), i), text(&format!("varItems{group}"), i)) else { continue };
+            if !label.is_empty() && !var.is_empty() {
+                out.push((var, ty.clone(), label));
+            }
+        }
+    }
+    let msg = match unreal_pkg::props::find(&classes.defaults("Trestkon"), "ItemRefusedString") {
+        Some(unreal_pkg::props::Value::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    if let Ok(mut r) = REFUSALS.lock() {
+        *r = (out, msg);
+    }
+}
+
+pub fn refusals() -> Vec<(String, String, String)> {
+    REFUSALS.lock().map(|r| r.0.clone()).unwrap_or_default()
+}
+
+/// Trestkon.GetItemRefusalName: the name a class's refusal flag is filed under.
+// uc: Trestkon.GetItemRefusalName, Trestkon.GetItemRefusalSetting
+fn refusal_name(class: &str) -> String {
+    if crate::classtree::is_a(class, "WeaponMod") {
+        "WeaponMod".into()
+    } else if crate::classtree::is_a(class, "WeaponFireExting") {
+        "FireExtinguisher".into()
+    } else if crate::classtree::is_a(class, "TNMVialCrack") {
+        "Melk".into()
+    } else if crate::classtree::is_a(class, "WeaponUniqueKylie") {
+        "WeaponAssaultGun".into()
+    } else if crate::classtree::is_a(class, "DeusExWeapon") {
+        crate::tnmweapon::canon(class).to_string()
+    } else {
+        crate::tnmitems::canon(class).to_string()
+    }
+}
+
+/// Frobbing a pickup the player's item-refusal settings rule out: the first time it is left where it is with the
+/// mod's message (returned); after that it can be taken.
+pub fn refuse_pickup(e: bevy::prelude::Entity, class: &str, item_name: &str) -> Option<String> {
+    if !active() {
+        return None;
+    }
+    let var = format!("bRefuse{}", refusal_name(class));
+    let known = REFUSALS.lock().ok()?;
+    if !known.0.iter().any(|r| r.0.eq_ignore_ascii_case(&var)) || crate::settings::get(&format!("Tnm.{var}")) < 0.5 {
+        return None;
+    }
+    let mut once = REFUSED_ONCE.lock().ok()?;
+    if once.contains(&e) {
+        return None;
+    }
+    if once.len() > 512 {
+        once.clear();
+    }
+    once.push(e);
+    Some(known.1.replacen("%s", item_name, 1))
+}
+
+/// The map in play as the mod's screens ask about it: (DeusExLevelInfo.missionNumber, MissionLocation), and the
+/// game's flags that are true (set each frame by legendary_system; the web pages' loader reads them).
+static PLACE: Mutex<(i32, String)> = Mutex::new((20, String::new()));
+static TRUE_FLAGS: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+pub fn set_level_place(mission: i32, location: &str) {
+    if let Ok(mut p) = PLACE.lock() {
+        if p.0 != mission || p.1 != location {
+            *p = (mission, location.to_string());
+        }
+    }
+}
+
+pub fn level_place() -> (i32, String) {
+    PLACE.lock().map(|p| p.clone()).unwrap_or((20, String::new()))
+}
+
+pub fn set_true_flags(names: std::collections::HashSet<String>) {
+    if let Ok(mut f) = TRUE_FLAGS.lock() {
+        *f = Some(names);
+    }
+}
+
+pub fn flag_true(name: &str) -> bool {
+    TRUE_FLAGS.lock().is_ok_and(|f| f.as_ref().is_some_and(|s| s.contains(&name.to_ascii_lowercase())))
+}

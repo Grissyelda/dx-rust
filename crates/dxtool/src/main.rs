@@ -123,6 +123,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             _ => String::new(),
                         };
                         println!("{:<28} {:<22} {:<26} tag={tag} event={event} props={}", class, e.name, loc, ps.len());
+                        if std::env::var_os("DXTOOL_PROPS").is_some() {
+                            for p in &ps {
+                                if !matches!(p.name.as_str(), "Level" | "Region" | "Brush" | "Location" | "Tag" | "Event" | "OldLocation") {
+                                    println!("    {}[{}] = {:?}", p.name, p.index, p.value);
+                                }
+                            }
+                        }
                         shown += 1;
                     }
                     Err(_) => failed += 1,

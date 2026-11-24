@@ -42,7 +42,11 @@ mod tnmaugs;
 mod breath;
 mod tnmgames;
 mod tnmpc;
+mod legendary;
 mod scripted_tv;
+mod tnmlook;
+mod tnmweb;
+mod texctl;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1205,6 +1209,9 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, fade::fade_system.after(ai::npc_system).run_if(tnmmode::active))
         .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system).run_if(tnmmode::active))
         .add_systems(Update, scripted_tv::tv_system.run_if(tnmmode::active))
+        .add_systems(Update, texctl::texctl_system.run_if(tnmmode::active))
+        .add_systems(Update, legendary::legendary_system.run_if(tnmmode::active))
+        .add_systems(Update, (tnmpawn::aug_system, tnmpawn::respawn_system).run_if(tnmmode::active).after(ai::npc_system))
         .add_systems(Update, breath::breath_system.before(particles::particle_system).run_if(tnmmode::active))
         .add_systems(Update, radish::silhouette_system.after(skeletal::mirror_skel_system))
         .add_systems(Update, tnmaugs::tnm_aug_system.before(weapons::weapon_system).before(ai::npc_system))
@@ -1257,6 +1264,7 @@ fn add_render_systems(app: &mut App) {
         // the reflection was made from the eyes while the view was from the orbit: it dragged across the water).
         .add_systems(PostUpdate, mirror::mirror_system.after(diegetic::place_system).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
         .add_systems(Update, skyfollow::init_system)
+        .add_systems(PostUpdate, skyfollow::room_system.before(skyfollow::follow_system))
         .add_systems(Update, gpudrive::gpu_cull_system)
         .add_systems(PostUpdate, weapons::view_glass_system.after(scope::scope_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, scope::scope_system.after(mirror::mirror_system).before(gpudrive::refile_system).before(bevy::transform::TransformSystems::Propagate))
@@ -1894,8 +1902,8 @@ fn spawn_batch(
         e.insert(water::EdgeWall);
     }
     if b.sky {
-        let off = Vec3::from(level.sky_origin.unwrap_or([0.0; 3]));
-        e.insert((Transform::from_translation(-off), RenderLayers::layer(1), skyfollow::SkyBatch));
+        let off = Vec3::from(level.sky_rooms.get(b.sky_room as usize).copied().or(level.sky_origin).unwrap_or([0.0; 3]));
+        e.insert((Transform::from_translation(-off), RenderLayers::layer(1), skyfollow::SkyBatch, skyfollow::SkyRoom(b.sky_room)));
         if b.class == SurfaceClass::Masked {
             e.insert(skyline::SkyPanel);
         }
@@ -2916,6 +2924,9 @@ fn walk_move(
     let params = move_params(cx, &w, player, carried_mass, leg_speed);
     // Standing on a mover that moved this frame: ride it (movers::carry_player; the Island forklift, #73).
     if !player.noclip && player.body.physics == Physics::Walking {
+        if tnmmode::active() {
+            tnmtriggers::player_footing(cx.level, cx.movers, player.body.location, params.radius, params.height);
+        }
         let was = player.body.location;
         let turn = movers::carry_player(cx.level, cx.movers, &mut player.body.location, params.radius, params.height);
         if env_on!("DXVIEW_CARRYLOG") && was != player.body.location {
@@ -3449,6 +3460,22 @@ fn move_params(cx: &FlyCx, w: &Walk, player: &Player, carried_mass: f64, leg_spe
     if crate::tnmitems::skating() {
         params.ground_speed = player.params.ground_speed * 17.0;
     }
+    // A zone with its own gravity (The Nameless Mod's gravity zones and fan shafts; altergravzone.ActorEntered:
+    // AirControl x4 there).
+    if crate::tnmmode::active() {
+        // Legendary weapons in hand: Fleeting is a fifth faster on foot, Quaking steers four times better in the air.
+        let held = crate::legendary::held();
+        if crate::legendary::has(held, crate::legendary::att::FLEETING) {
+            params.ground_speed *= 1.2;
+        }
+        if crate::legendary::has(held, crate::legendary::att::QUAKING) {
+            params.air_control *= 4.0;
+        }
+        if let Some(g) = crate::zones::gravity_at(cx.level, player.body.location) {
+            params.gravity = g;
+            params.air_control *= 4.0;
+        }
+    }
     // Radish Adventure: jumpz 600 and full air control.
     if crate::radish::active() {
         params.jump_z = 600.0;
@@ -3672,7 +3699,9 @@ fn jump_and_land(
         if vz < -700.0 && !player.noclip {
             // AugSpeed takes 15 x (level + 1) off each hit.
             let aug_reduce = crate::abilities::aug_level("AugSpeed")
-                .map_or(0.0, |l| 15.0 * (l as f64 + 1.0));
+                .map_or(0.0, |l| 15.0 * (l as f64 + 1.0))
+                // The Nameless Mod's Legendary mode: a Quaking weapon in hand takes 45 more off.
+                + if crate::legendary::has(crate::legendary::held(), crate::legendary::att::QUAKING) { 45.0 } else { 0.0 };
             let leg = (-0.16 * (vz + 700.0) - aug_reduce).max(0.0) as f32;
             let torso = (-0.06 * (vz + 700.0) - aug_reduce).max(0.0) as f32;
             ph.damage(leg, "fell", DVec3::new(0.0, -1.0, -1.0));

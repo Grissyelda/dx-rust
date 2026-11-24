@@ -881,7 +881,7 @@ const TNM_GAME_ACTIONS: [&str; 14] =
 
 /// The games of ours (the rest of the mod's computer games aren't ported yet: their buttons stay greyed).
 fn tnm_game_ported(action: &str) -> bool {
-    matches!(action, "LIGHTSOUT" | "PONG" | "TETRIS" | "BREAKOUT" | "RUSHHOUR" | "TEXTGAME")
+    matches!(action, "LIGHTSOUT" | "PONG" | "TETRIS" | "BREAKOUT" | "RUSHHOUR" | "TEXTGAME" | "HTML" | "WHOIS")
 }
 
 /// tnmComputers: the games[] it offers (none unless bHasGames).
@@ -1118,6 +1118,9 @@ struct Term {
     win_pos: Option<(i32, i32)>,
     /// The Nameless Mod: the games this computer offers (tnmComputers.games, when bHasGames).
     games: Vec<u8>,
+    /// The Nameless Mod's password cracker (tnmComputerScreenPasswordCracker): each account's password as far as
+    /// the ICE breaker shows it, and the one last shown.
+    crack: Option<([String; 8], String)>,
     drag: Option<(i32, i32)>,
     pressed: Option<Wid>,
     pressed_right: Option<Wid>,
@@ -1365,6 +1368,12 @@ impl Term {
             }
             Which::Game(a) => {
                 let seed = (wx.now * 1000.0) as u64 ^ (self.actor as u64).wrapping_mul(0x9E37_79B9);
+                // tnmComputers.defaultWebPage: the page this machine's browser opens on.
+                let home = wx.lvl.actors.get(self.actor).and_then(|a| match unreal_pkg::props::find(&a.props, "defaultWebPage") {
+                    Some(Value::Path(p)) => Some(p.rsplit('.').next().unwrap_or(p).to_string()),
+                    _ => None,
+                });
+                crate::tnmweb::set_home(home);
                 match crate::tnmpc::Game::new(a, wx.assets, seed) {
                     Some(g) => Screen::Game(Box::new(g)),
                     None => return,
@@ -1481,6 +1490,14 @@ impl Term {
             self.user_idx = i as i32;
             if self.skill < access {
                 self.skill = access;
+            }
+            // The password cracker's login: the hack is over (ProcessLogin: bHacking / bHacked cleared).
+            if self.crack.take().is_some() {
+                if let Some(h) = self.hack.as_mut() {
+                    h.hacking = false;
+                    h.ticking = false;
+                }
+                self.hacked = false;
             }
             self.close_screen("LOGIN", wx);
         } else {
@@ -1798,6 +1815,10 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
             g.textures = vec!["ComputerLogonBackground_1", "ComputerLogonBackground_2"];
             g.status = Some((131, 10, 21));
             g.buttons = vec![(Btn::Cancel, true, true), (Btn::Login, true, !user.text.is_empty() && !pass.text.is_empty())];
+            // The Nameless Mod's password cracker: room under the login for the accounts and the cracked password.
+            if t.crack.is_some() {
+                g.ch += 24 + 20 * d.users.len().min(8).div_ceil(2) as i32;
+            }
         }
         Some(Screen::Email(m)) | Some(Screen::Bulletins(m)) => {
             let email = matches!(t.screen, Some(Screen::Email(_)));
@@ -2248,6 +2269,21 @@ fn draw_screen(u: &mut Ui<Wid>, t: &mut Term, wx: &Dv, g: &Geo, dx: i32, dy: i32
                     u.text(&fsm, dx + 105, y, 160, 12, HAlign::Left, VAlign::Center, m_col(8), "Tab: log in from notes");
                 }
             }
+            // tnmComputerScreenPasswordCracker: a button for every account, and what the cracker has of its
+            // password ("Crack" label and the starred text).
+            if let Some((_, last)) = t.crack.as_ref() {
+                let names: Vec<String> = wx.data.get(&actor).map(|d| d.users.iter().take(8).map(|x| x.name.clone()).collect()).unwrap_or_default();
+                let rows = names.len().div_ceil(2) as i32;
+                let top = dy + g.ch - (24 + 20 * rows);
+                u.c.fill(dx, top, g.cw, 24 + 20 * rows, Style::Normal, [0, 0, 0]);
+                let cl = txt(u.hud, u.assets, "tnmComputerScreenPasswordCracker", "CrackLabel", "Crack");
+                u.text(&ft, dx + 10, top + 4, 90, ft.height, HAlign::Left, VAlign::Top, m_col(8), &cl);
+                u.text(&ft, dx + 105, top + 4, 230, ft.height, HAlign::Left, VAlign::Top, m_col(3), last);
+                for (k, n) in names.iter().enumerate() {
+                    let (col, row) = ((k % 2) as i32, (k / 2) as i32);
+                    action_button(u, Wid::Light(k), dx + 10 + col * 165, top + 22 + row * 20, 160, n, true);
+                }
+            }
         }
         Some(Screen::Atm { acct, pin, err }) => {
             let al = txt(u.hud, u.assets, g.class, "AccountLabel", "Account #:");
@@ -2579,6 +2615,7 @@ fn draw_accounts(u: &mut Ui<Wid>, a: &mut Accounts, users: &[String], current: &
 fn tick_hack(t: &mut Term, wx: &mut Wx, dt: f32, fill: &str) {
     let last = wx.data.get(&t.actor).map_or(-9999.0, |d| d.last_hack_time);
     let hacked = t.hacked;
+    let cracking = t.crack.is_some();
     let Some(h) = t.hack.as_mut() else { return };
     if !h.hacking && !hacked {
         let diff = (wx.now - last) as f32;
@@ -2628,7 +2665,8 @@ fn tick_hack(t: &mut Term, wx: &mut Wx, dt: f32, fill: &str) {
         }
         if h.hack_t < 0.0 {
             h.hacking = false;
-            finish = true;
+            // With the password cracker up the ICE breaker gets no further: the password has to be typed in.
+            finish = !cracking;
         }
     }
     if h.detected {
@@ -2743,6 +2781,50 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
                 }
             }
         }
+        Wid::Light(i) if t.crack.is_some() => {
+            // tnmComputerScreenPasswordCracker.UpdatePassword: the account's name goes in, and its password shows
+            // with part of it starred out - less the better the hacker (a third at Advanced, a quarter at Master,
+            // half below).
+            // uc: tnmComputerScreenPasswordCracker.UpdatePassword, tnmComputerScreenPasswordCracker.CensorCode
+            sound("Menu_Press");
+            let (name, pass) = wx.data.get(&t.actor).and_then(|d| d.users.get(i).map(|u| (u.name.clone(), u.password.clone()))).unwrap_or_default();
+            let level = match t.skill {
+                2 | 3 => t.skill as usize + 1,
+                _ => 2,
+            };
+            let mut seed = ((wx.now * 1000.0) as u64 ^ (t.actor as u64 + 1).wrapping_mul(0x9E37_79B9)) | 1;
+            if let Some((shown, last)) = t.crack.as_mut() {
+                if let Some(slot) = shown.get_mut(i) {
+                    if slot.is_empty() {
+                        let mut chars: Vec<char> = pass.chars().collect();
+                        let mut left = (chars.len() / level).min(chars.len());
+                        let mut guard = 0;
+                        while left > 0 && guard < 64 {
+                            guard += 1;
+                            for c in chars.iter_mut() {
+                                if *c != '*' && left > 0 {
+                                    seed ^= seed << 13;
+                                    seed ^= seed >> 7;
+                                    seed ^= seed << 17;
+                                    if seed & 1 == 0 {
+                                        *c = '*';
+                                        left -= 1;
+                                    }
+                                }
+                            }
+                        }
+                        *slot = chars.into_iter().collect();
+                    }
+                    *last = slot.clone();
+                }
+            }
+            if let Some(Screen::Login { user, .. }) = t.screen.as_mut() {
+                user.text = name.chars().collect();
+                user.cur = user.text.len();
+                user.anchor = user.cur;
+            }
+            t.focus = Some(Wid::Edit(1));
+        }
         Wid::Light(i) => {
             sound("Menu_Press");
             let won = if let Some(Screen::LightsOut(on)) = t.screen.as_mut() {
@@ -2771,6 +2853,16 @@ fn activate(t: &mut Term, w: Wid, right: bool, wx: &mut Wx) {
             if done {
                 t.computer_hacked(wx);
             } else if let Some(h) = t.hack.as_mut() {
+                // The Nameless Mod (tnmComputerScreenHack): with password cracking on - or on the two Greasel
+                // Pit machines always - the hack only opens the cracker on the login screen.
+                // uc: tnmComputerScreenHack.ButtonActivated
+                if crate::tnmmode::active() && matches!(t.screen, Some(Screen::Login { .. })) {
+                    let first = wx.data.get(&t.actor).and_then(|d| d.users.first().map(|u| u.password.clone())).unwrap_or_default();
+                    let always = first.eq_ignore_ascii_case("GreaselPleasureDome") || first.eq_ignore_ascii_case("GreenGreasyGreasels");
+                    if always || crate::tnmmode::option("bPasswordCracking") {
+                        t.crack = Some((Default::default(), String::new()));
+                    }
+                }
                 // StartHack.
                 h.hacking = true;
                 h.ticking = true;
@@ -3371,6 +3463,7 @@ fn open_frobbed(cx: &mut CompCx) {
                     user_idx: 0,
                     win_pos: None,
                     games: Vec::new(),
+                    crack: None,
                     drag: None,
                     pressed: None,
                     pressed_right: None,
@@ -3482,7 +3575,7 @@ fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWh
         // ---- input (hits from the last frame)
         let hover = t.hits.iter().rev().find(|(_, r, _)| crate::inventory_screen::inside(fr.mouse, *r)).map(|(w, _, e)| (*w, *e));
         term_mouse(t, &mut wx, binds, fr, hover, dt);
-        term_wheel(t, wheel, hover.map(|h| h.0));
+        let wheel_lines = term_wheel(t, wheel, hover.map(|h| h.0));
         term_keys(t, &mut wx, binds);
         // ---- ticking
         tick_hack(t, &mut wx, dt, &fr.fill);
@@ -3493,7 +3586,9 @@ fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWh
                 pos: Some((fr.mouse.0 - origin.0, fr.mouse.1 - origin.1)),
                 down: binds.buttons.pressed(MouseButton::Left),
                 pressed: binds.buttons.just_pressed(MouseButton::Left),
+                wheel: wheel_lines,
             };
+            gm.tick_web(wx.assets, &binds.keys, ptr);
             gm.tick(dt, &binds.keys, &chars, ptr) == crate::tnmpc::Outcome::Finished
         } else {
             false
@@ -3718,7 +3813,7 @@ fn term_mouse(t: &mut Term, wx: &mut Wx, binds: &Bindings, fr: &CompFrame, hover
 }
 
 /// Wheel: scroll what's under the mouse.
-fn term_wheel(t: &mut Term, wheel: &mut MessageReader<MouseWheel>, hover_w: Option<Wid>) {
+fn term_wheel(t: &mut Term, wheel: &mut MessageReader<MouseWheel>, hover_w: Option<Wid>) -> f32 {
     // Wheel: scroll what's under the mouse.
     let lines: f32 = wheel
         .read()
@@ -3736,6 +3831,7 @@ fn term_wheel(t: &mut Term, wheel: &mut MessageReader<MouseWheel>, hover_w: Opti
             add_scroll(t, id, px);
         }
     }
+    lines
 }
 
 /// Typed keys (VirtualKeyPressed): Escape, Return logs in / withdraws, Tab fills from notes or swaps fields, the
@@ -4450,6 +4546,7 @@ mod tests {
                 comp_rect: (0, 0, 0, 0),
                 game_origin: (0, 0),
                 games: Vec::new(),
+                crack: None,
             };
             {
                 let flags = imsim_core::flags::FlagBase::default();

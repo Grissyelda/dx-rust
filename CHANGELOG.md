@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### The Nameless Mod: the rest of the port (November 23)
+- Legendary mode: weapons roll for attributes the first time they are met (the class's own chance and list, read
+  from the mod), enemies' weapons too - a pawn with a legendary weapon aims steadier and takes less, and its
+  weapon keeps its attributes when you take it from the body. The attributes change the weapon's numbers (rapid,
+  long, precise, enlarged clip, lubricated, docile, wild, silenced, zoomed, directed, tracking, lightened,
+  environmental, panicked), its hits (lucky, desperate, armour-piercing, puncturing, the sworn-enemy doubles,
+  blinding, paralyzing, embiggening, venomous, frying, crazed, immolative, pinpoint, leeching, energized,
+  explosive, dismantling, assassin's, valiant, ruthless, focused), its projectiles (swift, intense, penetrative,
+  double-barreled), and you (fleeting, quaking, luminous, resourceful). The inventory shows the weapon's title and
+  what each attribute does.
+- One-off weapons: the Moonlight Blade's bolts (Change Ammo; a bio cell a swing), both pistols at once, laser
+  beams, the Gibinator's blast in front of the muzzle, and mines, trip bombs and the black box only ever go on a
+  wall.
+- Enemies' augmentations: cloak (always, when hurt, or in a fight), healing when hurt, speed and combat strength.
+  Nightmare mode: enemies that leave a body get up again 25 seconds later unless it was blown apart or carried off.
+- World: zones with their own gravity and the triggers that change it, water that can be switched on and off,
+  fans that spin up and down and blow the air of their shaft about (and kill at speed), floors that break under
+  you, screens that swap or cycle pictures, two computers playing Pong on a wall screen, moth swarms, forum guests
+  wandering in, and maps with several skies (each zone shows its own).
+- The in-game web: all 146 pages load - each page's own layout code is read from the mod and run once as a data
+  loader, so text, pictures and links sit where the mod puts them; back and forward, scrolling, and each
+  terminal's own start page. The user database (WHOIS) is in too.
+- The password cracker: with password cracking on (and always on the two Greasel Pit machines) a hack only shows
+  each account's password with part of it starred out - less the better your hacking - and you type the rest.
+- New game: the mod's portraits and its Coat, Eyewear, Vest and Boots buttons; the accessory boxes and coat bags
+  hidden in the maps unlock more for good. What a look means in meshes and textures is read from the mod.
+- The mod's settings (auto-saving, paranoid reload, password and keycode managers, epilepsy reduction and the
+  rest) and its item refusal list are in Settings > Enhancements under "The Nameless Mod" and "Item Refusal".
+- Not yet: IRC, the clicker, the three file-system console games; buying on the accessory shop page and the
+  trivia page's answers; a few Legendary attributes (gaseous, irritating, messy, faithful, incendiary fire on the
+  ground, shrunken); advanced track movers (no map uses them).
+
 ### The Nameless Mod: weapons, items, creatures and world (November 23)
 - Its weapons and items behave as theirs: the mod's own copies of Deus Ex weapons and consumables answer to the
   original rules, plus the mod's differences - taser slugs, sabot slugs fire one projectile, weapons that need air,
@@ -22,8 +54,6 @@
   false), cycling replies play in order, a finished conversation fires its "_Stopped" triggers, goals can be
   updated, the player's credits show while choosing, infolinks use the mod's own speakers and portraits.
 - Terminals with a printer attached can print an email (it goes to the DataVault).
-- Not yet: Legendary mode's weapon attributes, the in-game web pages, IRC and the larger terminal games, the mod's
-  own new-game character screen, several one-off weapons.
 
 ### Ragdolls, mods, menu (November 22)
 - Ragdolls fall like people instead of loose capsules (ideas from Euphoria-style active ragdolls): every joint has

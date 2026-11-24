@@ -982,6 +982,7 @@ impl Enhance {
         Self::controller_items(&mut items);
         Self::toggle_items(&mut items);
         Self::mod_items(&mut items);
+        Self::tnm_items(&mut items);
         Self::option_items(&mut items);
         Self::performance_items(&mut items);
         Self::hud_items(&mut items);
@@ -1118,6 +1119,34 @@ impl Enhance {
             c.value = crate::settings::get(key);
             c.saved = c.value;
             items.push(tag(c, group));
+        }
+    }
+    /// The Nameless Mod's own settings screen (tnmMenuTNMOptions): Trestkon's option flags, with the mod's labels.
+    fn tnm_items(items: &mut Vec<Choice>) {
+        if !crate::tnmmode::active() {
+            return;
+        }
+        for (var, lbl, help, dflt) in crate::tnmmode::options() {
+            let key = crate::tnmmode::option_key(&var);
+            let mut c = debug_mode_choice();
+            c.value = if crate::settings::has(&key) { crate::settings::get(&key) } else { f32::from(u8::from(dflt)) };
+            c.saved = c.value;
+            c.key = key;
+            c.label = lbl;
+            c.help = help;
+            items.push(tag(c, "The Nameless Mod"));
+        }
+        // TNMMenuScreenItemRefusal: kinds of items never to pick up (the first frob refuses, the second takes).
+        for (var, ty, lbl) in crate::tnmmode::refusals() {
+            let key = format!("Tnm.{var}");
+            let mut c = debug_mode_choice();
+            c.kind = ChoiceKind::Enum(vec!["Allowed".into(), "Refused".into()]);
+            c.value = crate::settings::get(&key);
+            c.saved = c.value;
+            c.key = key;
+            c.label = format!("{ty}: {lbl}");
+            c.help = "Item Refusal: a refused kind of item is left lying the first time you try to pick one up; try again to take it anyway.".into();
+            items.push(tag(c, "Item Refusal"));
         }
     }
     /// Mod switches (while the mod is on in the launcher), Augmentique's people / outfits, the Precipitation rain.
@@ -1534,7 +1563,9 @@ struct KeypadWin {
 
 /// Ours: a code or password appears in one of the player's notes as a whole word.
 pub(crate) fn in_notes(code: &str) -> bool {
-    if code.is_empty() || setting!("NotesAutofill") < 0.5 {
+    // (The Nameless Mod's Password Manager / Keycode Manager options do the same.)
+    let tnm = crate::tnmmode::option("bKeycodeManager") || crate::tnmmode::option("bPasswordManager");
+    if code.is_empty() || (setting!("NotesAutofill") < 0.5 && !tnm) {
         return false;
     }
     let Some(st) = crate::consys::lock().as_ref().map(|s| s.notes.clone()) else { return false };
@@ -1711,6 +1742,7 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             let skills = fresh_skills();
             let mut order: Vec<usize> = (0..skills.list.len()).collect();
             order.sort_by_key(|&i| skills.list[i].def.name.to_lowercase());
+            crate::tnmlook::reset_pending();
             let mut name = Edit::new(32);
             name.text = crate::tnmmode::default_name().chars().collect();
             name.cur = name.text.len();
@@ -2415,6 +2447,9 @@ fn win_key(win: &Win, h: &mut impl Hasher) {
         Body::NewGame(NewGame { name, portrait, retro_morpheus, male_interactions, skills, order, sel, difficulty, desc_scroll, multiplayer }) => {
             edit_key(name, h);
             (portrait, retro_morpheus, male_interactions, order, sel, difficulty.to_bits(), desc_scroll, multiplayer).hash(h);
+            if crate::tnmmode::active() {
+                crate::tnmlook::pending().hash(h);
+            }
             hash_debug(h, skills);
             crate::travel::lddp().hash(h);
         }
@@ -2816,7 +2851,8 @@ fn draw_new_game(u: &mut Ui<W>, ng: &mut NewGame, focus: Option<W>, fonts: &Font
     let ft = fonts.title.clone();
     let fs = fonts.small.clone();
     let fh = fonts.headers.clone();
-    let d = u.assets.classes.defaults("MenuScreenNewGame");
+    let tnm = crate::tnmmode::active();
+    let d = u.assets.classes.defaults(if tnm { "tnmMenuScreenNewGame" } else { "MenuScreenNewGame" });
     let l = |k: &str| pstr(&d, k);
     u.text(&ft, cx + 21, cy + 17, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderCodeNameLabel"));
     u.text(&ft, cx + 21, cy + 73, 120, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderNameLabel"));
@@ -2827,11 +2863,27 @@ fn draw_new_game(u: &mut Ui<W>, ng: &mut NewGame, focus: Option<W>, fonts: &Font
     u.text(&ft, cx + 409, cy + 344, 80, ft.height, HAlign::Left, VAlign::Top, m_col(8), &l("HeaderSkillPointsLabel"));
     // Code name (fixed) and real name.
     let mut code = Edit::new(32);
-    code.text = "JC Denton".chars().collect();
+    code.text = if tnm { crate::tnmmode::default_name() } else { "JC Denton" }.chars().collect();
     menu_edit(u, W::Edit(9), cx + 18, cy + 36, 113, &mut code, false, false);
     menu_edit(u, W::Edit(0), cx + 18, cy + 92, 113, &mut ng.name, focus == Some(W::Edit(0)), true);
     // Portrait and arrows.
-    if crate::travel::lddp() {
+    if tnm {
+        // The Nameless Mod: texPortraits[face + eyewear + coat], and the look's buttons under it.
+        let look = crate::tnmlook::pending();
+        let path = d.iter().find(|p| p.name.eq_ignore_ascii_case("texPortraits") && p.index == look.portrait() as u32).and_then(|p| match &p.value {
+            Value::Path(t) => Some(t.clone()),
+            _ => None,
+        });
+        if let Some(t) = path.and_then(|p| u.hud.tex(u.assets, &p)) {
+            u.c.texture(cx + 18, cy + 152, 114, 161, 0, 0, &t, Style::Masked, WHITE);
+        }
+        action_button(u, W::Header(30), cx + 15, cy + 333, 70, &label(&l("strCoat")), true);
+        action_button(u, W::Header(31), cx + 15, cy + 350, 70, &label(&l("strEyewear")), true);
+        action_button(u, W::Header(33), cx + 85, cy + 333, 70, &label(&l("strBoots")), true);
+        if crate::tnmlook::vest_offered() {
+            action_button(u, W::Header(32), cx + 85, cy + 350, 70, &label(&l("strVest")), true);
+        }
+    } else if crate::travel::lddp() {
         let sex = if ng.portrait % 2 == 1 { "Female" } else { "Male" };
         if let Some(t) = u.hud.tex(u.assets, &format!("FemJC.MenuPlayerSetupJCDenton{sex}_{}", ng.portrait / 2 + 1)) {
             u.c.texture(cx + 18, cy + 152, 114, 161, 0, 0, &t, Style::Masked, WHITE);
@@ -3427,6 +3479,8 @@ fn tnm_menu(class: &str) -> &str {
     }
     match class {
         "MenuSelectDifficulty" => "tnmMenuSelectDifficulty",
+        // The mod's settings list lives in our Enhancements list (group "The Nameless Mod").
+        "tnmMenuTNMOptions" => "MenuScreenEnhancements",
         _ => class,
     }
 }
@@ -5375,12 +5429,17 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                         } else if let Some(who) = taken.filter(|_| key == "START") {
                             acts.push(Act::Msg("Name Taken".into(), name_taken_text(&who), false, MsgPurpose::MpResult));
                         } else if key == "START" {
+                            // The Nameless Mod: the look chosen is worn (PlayerSkin = its portrait).
+                            let tnm_skin = crate::tnmmode::active().then(|| {
+                                crate::tnmlook::commit();
+                                crate::tnmlook::current().portrait() as u8
+                            });
                             let lddp = crate::travel::lddp();
                             let female = lddp && ng.portrait % 2 == 1;
                             let name_for_id = name.clone();
                             let new_game = crate::travel::NewGame {
                                 name,
-                                skin: if lddp { (ng.portrait / 2) as u8 } else { ng.portrait as u8 },
+                                skin: tnm_skin.unwrap_or(if lddp { (ng.portrait / 2) as u8 } else { ng.portrait as u8 }),
                                 female,
                                 retro_morpheus: lddp && ng.retro_morpheus,
                                 male_interactions: female && ng.male_interactions,
@@ -5519,6 +5578,24 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                     ng.skills.downgrade(&c, true);
                 }
             }
+        }
+        (W::Header(k @ 30..=33), Body::NewGame(_)) if crate::tnmmode::active() => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            let d = assets.classes.defaults("tnmMenuScreenNewGame");
+            match k {
+                30 => crate::tnmlook::toggle_coat(&d),
+                31 => crate::tnmlook::toggle_eyewear(&d),
+                32 => crate::tnmlook::toggle_vest(&d),
+                _ => crate::tnmlook::toggle_boots(&d),
+            }
+        }
+        (W::PortraitPrev, Body::NewGame(_)) if crate::tnmmode::active() => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            crate::tnmlook::step_face(-1);
+        }
+        (W::PortraitNext | W::Portrait, Body::NewGame(_)) if crate::tnmmode::active() => {
+            crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);
+            crate::tnmlook::step_face(1);
         }
         (W::PortraitPrev, Body::NewGame(ng)) => {
             crate::sound::play_player("DeusExSounds.UserInterface.Menu_Press", 0.25, 0.0);

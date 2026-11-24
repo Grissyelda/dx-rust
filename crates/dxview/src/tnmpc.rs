@@ -2054,6 +2054,8 @@ pub struct Pointer {
     pub pos: Option<(i32, i32)>,
     pub down: bool,
     pub pressed: bool,
+    /// Mouse wheel this frame (lines, up positive).
+    pub wheel: f32,
 }
 
 #[derive(Clone)]
@@ -2872,6 +2874,10 @@ pub enum Game {
     Tetris(Box<Tetris>),
     Packets(Box<Packets>),
     Text(Box<TextGame>),
+    /// The web browser (htmlWindow; tnmweb.rs).
+    Web(Box<crate::tnmweb::Browser>),
+    /// The user database (whoisWindow; tnmweb.rs).
+    Whois(Box<crate::tnmweb::Whois>),
 }
 
 /// What a game's tick asks of its terminal.
@@ -2891,6 +2897,8 @@ impl Game {
             "TETRIS" => Some(Game::Tetris(Box::new(Tetris::new(assets, seed)))),
             "RUSHHOUR" => Some(Game::Packets(Box::new(Packets::new(assets, seed)))),
             "TEXTGAME" => Some(Game::Text(Box::new(TextGame::new(assets, seed)))),
+            "HTML" => Some(Game::Web(Box::new(crate::tnmweb::Browser::new(assets, None)))),
+            "WHOIS" => Some(Game::Whois(Box::new(crate::tnmweb::Whois::new(assets, seed)))),
             _ => None,
         }
     }
@@ -2901,6 +2909,8 @@ impl Game {
             Game::Tetris(_) => "TetrisWindow",
             Game::Packets(_) => "AIPuzzleWindowDebug",
             Game::Text(_) => "tnmTextGameWindow",
+            Game::Web(_) => "htmlWindow",
+            Game::Whois(_) => "whoisWindow",
         }
     }
     /// The client area (board plus scoreboard).
@@ -2911,6 +2921,8 @@ impl Game {
             Game::Tetris(t) => (t.client.0 + t.sb.0 as i32 + t.sb.2 as i32, t.client.1),
             Game::Packets(p) => p.client,
             Game::Text(t) => t.client,
+            Game::Web(w) => w.client,
+            Game::Whois(w) => w.client,
         }
     }
     /// Has a Start button (T presses it).
@@ -2938,18 +2950,27 @@ impl Game {
         match self {
             Game::Pong(p) => p.start(),
             Game::Tetris(t) => t.started = !t.started,
-            Game::Breakout(_) | Game::Packets(_) | Game::Text(_) => {}
+            Game::Breakout(_) | Game::Packets(_) | Game::Text(_) | Game::Web(_) | Game::Whois(_) => {}
         }
     }
     pub fn title_suffix(&self) -> String {
         match self {
             Game::Tetris(t) => t.title_suffix(),
+            Game::Web(w) => w.title_suffix(),
             _ => String::new(),
         }
     }
     /// The game takes typed keys (the terminal's own keys - Tab, Escape's Return - stay the terminal's).
     pub fn types(&self) -> bool {
         matches!(self, Game::Text(_) | Game::Breakout(_))
+    }
+    /// The browser's own tick (it loads pages, so it needs the game's packages).
+    pub fn tick_web(&mut self, assets: &mut RuntimeAssets, keys: &ButtonInput<KeyCode>, ptr: Pointer) {
+        match self {
+            Game::Web(w) => w.tick(assets, keys, ptr),
+            Game::Whois(w) => w.tick(keys, ptr),
+            _ => {}
+        }
     }
     pub fn tick(&mut self, dt: f32, keys: &ButtonInput<KeyCode>, typed: &[char], ptr: Pointer) -> Outcome {
         if self.has_start() && keys.just_pressed(KeyCode::KeyT) && !keys.pressed(KeyCode::AltLeft) {
@@ -2971,6 +2992,7 @@ impl Game {
                 }
             }
             Game::Text(t) => t.tick(dt, keys, typed),
+            Game::Web(_) | Game::Whois(_) => {}
         }
         Outcome::Stay
     }
@@ -2981,6 +3003,8 @@ impl Game {
             Game::Tetris(t) => t.draw(u, x, y),
             Game::Packets(p) => p.draw(u, x, y),
             Game::Text(t) => t.draw(u, x, y),
+            Game::Web(w) => w.draw(u, x, y),
+            Game::Whois(w) => w.draw(u, x, y),
         }
     }
 }

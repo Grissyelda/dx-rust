@@ -169,7 +169,7 @@ pub fn explosion(pos: DVec3, size: f32, hue: u8, saturation: u8) {
 /// A light that shines this frame. `flicker` 0..1 dims it at random (fire).
 pub fn hold(key: u64, pos: DVec3, spec: Spec, flicker: f32) {
     // GMDX Lighting Accessibility (setting NoStrobeLights): no flickering lights.
-    let flicker = if setting!("NoStrobeLights") > 0.5 { 0.0 } else { flicker };
+    let flicker = if setting!("NoStrobeLights") > 0.5 || crate::tnmmode::option("bEpilepsyReduction") { 0.0 } else { flicker };
     if let Ok(mut h) = HELD.lock() {
         h.push((key, pos, spec, flicker));
     }

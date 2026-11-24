@@ -380,7 +380,7 @@ fn sound_and_blink(alarms: &Alarms, now: f64) {
             1.0,
         );
         // The light blinks twice a second.
-        if now % 0.5 > 0.25 || setting!("NoStrobeLights") > 0.5 {
+        if now % 0.5 > 0.25 || setting!("NoStrobeLights") > 0.5 || crate::tnmmode::option("bEpilepsyReduction") {
             let (h, s, b, r) = u.light;
             crate::dynlight::hold(
                 0xA_0000_0000 | i as u64,

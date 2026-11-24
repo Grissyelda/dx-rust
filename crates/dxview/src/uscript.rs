@@ -19,6 +19,8 @@ pub enum V {
     Float(f64),
     Bool(bool),
     Str(String),
+    /// An object the host handed out (scripts with `objects` on: windows and the like).
+    Obj(u32),
 }
 
 impl V {
@@ -29,6 +31,7 @@ impl V {
             V::Float(f) => *f != 0.0,
             V::Bool(b) => *b,
             V::Str(s) => !s.is_empty(),
+            V::Obj(_) => true,
         }
     }
     pub fn int(&self) -> i64 {
@@ -37,6 +40,7 @@ impl V {
             V::Float(f) => *f as i64,
             V::Bool(b) => *b as i64,
             V::Str(s) => s.trim().parse().unwrap_or(0),
+            V::Obj(o) => *o as i64 + 1,
             V::None => 0,
         }
     }
@@ -46,6 +50,7 @@ impl V {
             V::Int(i) => *i as f64,
             V::Bool(b) => *b as i64 as f64,
             V::Str(s) => s.trim().parse().unwrap_or(0.0),
+            V::Obj(o) => *o as f64 + 1.0,
             V::None => 0.0,
         }
     }
@@ -55,6 +60,7 @@ impl V {
             V::Int(i) => i.to_string(),
             V::Float(f) => format!("{f:.6}"),
             V::Bool(b) => if *b { "True".into() } else { "False".into() },
+            V::Obj(o) => format!("object{o}"),
             V::None => String::new(),
         }
     }
@@ -74,6 +80,15 @@ pub trait Host {
     /// An assignment the script makes outside its locals, as a lowercase path: `level_count`, `level_order[3]`,
     /// `levels[0].blocks[12].col.r` (data loaders read their results from these; others ignore them).
     fn set(&mut self, _path: &str, _v: &V) {}
+    /// With `Script::objects`: a method called on a value (`win.SetPos(1, 2)`, `gc.GetTextExtent(0, w, h, s)`):
+    /// its result, and the values of any out parameters as (argument index, value).
+    fn method(&mut self, _recv: &V, _name: &str, _args: &[V]) -> (V, Vec<(usize, V)>) {
+        (V::None, Vec::new())
+    }
+    /// With `Script::objects`: a field read off a value (`win.width`).
+    fn field(&mut self, _recv: &V, _name: &str) -> V {
+        V::None
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +98,10 @@ enum Expr {
     Index(String, Box<Expr>),
     Field(Box<Expr>, String),
     Call(String, Vec<Option<Expr>>),
+    /// `recv.Name(args)`.
+    Method(Box<Expr>, String, Vec<Option<Expr>>),
+    /// `Super.Name(args)`: the definition one class up from the function running.
+    Super(String, Vec<Option<Expr>>),
     Not(Box<Expr>),
     Neg(Box<Expr>),
     Bin(&'static str, Box<Expr>, Box<Expr>),
@@ -118,6 +137,14 @@ pub struct Script {
     funcs: HashMap<String, Func>,
     /// `const NAME = literal;` at class level.
     consts: HashMap<String, V>,
+    /// Read `X(...).Field` / `obj.Field` as the host's member `field` (data loaders whose script reaches its values
+    /// through another object, such as Trestkon(Player).CoatType); off, such reads are None.
+    pub fields_by_name: bool,
+    /// Methods and fields of values go to the host (Host::method / Host::field); off, a method call on a value
+    /// does nothing and is None.
+    pub objects: bool,
+    /// With `add_class`: every class's own definitions, base class first (Super calls and overriding).
+    chain: Vec<HashMap<String, Func>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -499,9 +526,9 @@ impl Parser<'_> {
                     Some(Tok::Id(f)) => {
                         self.i += 1;
                         if self.is("(") {
-                            // A method call on an object: evaluate nothing, skip the arguments.
-                            self.args();
-                            e = Expr::Unknown;
+                            // A method call on a value (the host's, with `objects`; else nothing).
+                            let a = self.args();
+                            e = Expr::Method(Box::new(e), f.to_ascii_lowercase(), a);
                         } else {
                             e = Expr::Field(Box::new(e), f.to_ascii_lowercase());
                         }
@@ -579,10 +606,13 @@ impl Parser<'_> {
                             self.args();
                         }
                         if self.eat(".") {
-                            if l == "static" || l == "default" {
-                                return self.unary_rest();
+                            let rest = self.unary_rest();
+                            if l == "super" {
+                                if let Expr::Call(n, a) = rest {
+                                    return Expr::Super(n, a);
+                                }
                             }
-                            return self.unary_rest();
+                            return rest;
                         }
                         return Expr::Unknown;
                     }
@@ -700,14 +730,50 @@ impl Script {
         }
     }
 
+    /// Add one class's script as its own level (call from the base class to the most derived): its functions
+    /// override the ones before, which stay reachable through Super.
+    pub fn add_class(&mut self, src: &str) {
+        let before = std::mem::take(&mut self.funcs);
+        self.add_source(src);
+        let own = std::mem::replace(&mut self.funcs, before);
+        for (k, v) in &own {
+            self.funcs.insert(k.clone(), Func { params: v.params.clone(), body: v.body.clone() });
+        }
+        self.chain.push(own);
+    }
+
+    /// The functions the script defines (lower case).
+    pub fn names(&self) -> Vec<String> {
+        self.funcs.keys().cloned().collect()
+    }
+
+    /// The definition of `name` below class level `below` (None = the most derived), with its level.
+    fn lookup(&self, name: &str, below: Option<usize>) -> Option<(&Func, usize)> {
+        if self.chain.is_empty() {
+            return if below.is_some() { None } else { self.funcs.get(name).map(|f| (f, 0)) };
+        }
+        let top = below.unwrap_or(self.chain.len());
+        (0..top).rev().find_map(|l| self.chain[l].get(name).map(|f| (f, l)))
+    }
+
     /// Call a function: the host's native, else the script's own (unknown ones do nothing).
     pub fn call(&self, host: &mut dyn Host, name: &str, args: &[V]) -> V {
+        self.call_below(host, name, args, None)
+    }
+
+    fn call_below(&self, host: &mut dyn Host, name: &str, args: &[V], below: Option<usize>) -> V {
         let l = name.to_ascii_lowercase();
-        if let Some(v) = host.call(&l, args) {
-            return v;
+        if below.is_none() {
+            if let Some(v) = host.call(&l, args) {
+                return v;
+            }
         }
-        let Some(f) = self.funcs.get(&l) else { return V::None };
+        let Some((f, level)) = self.lookup(&l, below) else {
+            // Super of a function no class of ours defines: the engine's own - the host's, if it has one.
+            return if below.is_some() { host.call(&l, args).unwrap_or(V::None) } else { V::None };
+        };
         let mut locals: HashMap<String, V> = HashMap::new();
+        locals.insert("\u{0}level".into(), V::Int(level as i64));
         for (i, p) in f.params.iter().enumerate() {
             locals.insert(p.clone(), args.get(i).cloned().unwrap_or(V::None));
         }
@@ -734,8 +800,17 @@ impl Script {
                         Some(ix) => format!("{name}[{}]", self.eval(host, ix, locals).int()),
                         None => name.clone(),
                     };
-                    host.set(&key, &v);
-                    locals.insert(key, v);
+                    if self.objects {
+                        // Members live with the host; only declared locals and parameters stay here.
+                        if locals.contains_key(name) || locals.contains_key(&key) {
+                            locals.insert(key, v);
+                        } else {
+                            host.set(&key, &v);
+                        }
+                    } else {
+                        host.set(&key, &v);
+                        locals.insert(key, v);
+                    }
                 }
                 Stmt::SetPath(root, index, segs, e) => {
                     let v = self.eval(host, e, locals);
@@ -837,10 +912,56 @@ impl Script {
             Expr::Field(base, f) => match &**base {
                 Expr::Index(n, ix) => {
                     let i = self.eval(host, ix, locals).int();
-                    host.get_index(n, i, Some(f))
+                    if self.objects {
+                        let v = match locals.get(&format!("{n}[{i}]")) {
+                            Some(v) => v.clone(),
+                            None => host.get_index(n, i, None),
+                        };
+                        host.field(&v, f)
+                    } else {
+                        host.get_index(n, i, Some(f))
+                    }
                 }
+                _ if self.objects => {
+                    let v = self.eval(host, base, locals);
+                    host.field(&v, f)
+                }
+                _ if self.fields_by_name => host.get(f),
                 _ => V::None,
             },
+            Expr::Method(recv, n, args) => {
+                if !self.objects {
+                    return V::None;
+                }
+                let r = self.eval(host, recv, locals);
+                let vals: Vec<V> = args.iter().map(|a| a.as_ref().map(|a| self.eval(host, a, locals)).unwrap_or(V::None)).collect();
+                let (v, outs) = host.method(&r, n, &vals);
+                for (i, o) in outs {
+                    match args.get(i).and_then(|a| a.as_ref()) {
+                        Some(Expr::Ident(name)) => {
+                            if !locals.contains_key(name) {
+                                host.set(name, &o);
+                            }
+                            locals.insert(name.clone(), o);
+                        }
+                        Some(Expr::Index(name, ix)) => {
+                            let k = format!("{name}[{}]", self.eval(host, ix, locals).int());
+                            host.set(&k, &o);
+                            locals.insert(k, o);
+                        }
+                        _ => {}
+                    }
+                }
+                v
+            }
+            Expr::Super(n, args) => {
+                let vals: Vec<V> = args.iter().map(|a| a.as_ref().map(|a| self.eval(host, a, locals)).unwrap_or(V::None)).collect();
+                if self.chain.is_empty() {
+                    return V::None;
+                }
+                let level = locals.get("\u{0}level").map_or(0, |v| v.int() as usize);
+                self.call_below(host, n, &vals, Some(level))
+            }
             Expr::Call(n, args) => {
                 let vals: Vec<V> = args.iter().map(|a| a.as_ref().map(|a| self.eval(host, a, locals)).unwrap_or(V::None)).collect();
                 self.call(host, n, &vals)

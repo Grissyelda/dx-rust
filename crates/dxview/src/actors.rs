@@ -203,12 +203,13 @@ impl CollisionWorld for SwimWorld<'_> {
 
 /// The fluid friction of the water zone at `p`, if it is one.
 pub fn water_at(level: &Level, p: DVec3) -> Option<f64> {
-    level
-        .zone_water
-        .get(level.collision.zone_at(p).max(0) as usize)
-        .copied()
-        .flatten()
-        .map(|f| f as f64)
+    let z = level.collision.zone_at(p).max(0) as usize;
+    // (The Nameless Mod's WaterToggleZone floods and drains its zone.)
+    match crate::zones::water_override(level, z) {
+        Some(false) => None,
+        Some(true) => Some(level.zone_water.get(z).copied().flatten().unwrap_or(1.2) as f64),
+        None => level.zone_water.get(z).copied().flatten().map(|f| f as f64),
+    }
 }
 
 /// Enhancement Smooth Animation (setting SmoothAnimation, ours): longer, eased blends between sequences for the

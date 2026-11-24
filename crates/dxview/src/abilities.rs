@@ -77,6 +77,11 @@ pub fn aug_level(class: &str) -> Option<usize> {
     lock().as_ref().and_then(|a| a.augs.class_level(class))
 }
 
+/// AugmentationSystem.NumAugsActive.
+pub fn augs_active_count() -> u32 {
+    lock().as_ref().map_or(0, |a| a.augs.list.iter().filter(|x| x.active).count() as u32)
+}
+
 pub fn aug_active(class: &str) -> bool {
     aug(class).is_some()
 }

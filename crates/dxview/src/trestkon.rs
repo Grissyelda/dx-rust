@@ -44,6 +44,12 @@ pub struct TrestkonSave {
     /// The difficulty chosen in the mod's menus (tnmmode::Difficulty).
     #[serde(default)]
     pub difficulty: Option<crate::tnmmode::Difficulty>,
+    /// The look chosen on the new-game screen (tnmlook.rs).
+    #[serde(default)]
+    pub look: crate::tnmlook::Look,
+    /// Legendary mode: the player's weapons' attributes by class (legendary.rs).
+    #[serde(default)]
+    pub legendary: Vec<(String, u64)>,
 }
 
 struct State {
@@ -313,6 +319,8 @@ pub fn new_game(training: bool) {
     g.credits_prev = None;
     drop(g);
     crate::radish::new_game();
+    crate::legendary::new_game();
+    crate::tnmweapon::new_game();
     crate::tnmmode::start_difficulty();
     KIT_PENDING.store(active() && !training, Ordering::Relaxed);
 }
@@ -320,7 +328,7 @@ pub fn new_game(training: bool) {
 pub fn save() -> TrestkonSave {
     let g = lock();
     let (lives, radish_health, radishes) = crate::radish::save();
-    TrestkonSave { fists: g.fists, credits_earned: g.credits_earned, lives, radish_health, radishes, difficulty: crate::tnmmode::difficulty() }
+    TrestkonSave { fists: g.fists, credits_earned: g.credits_earned, lives, radish_health, radishes, difficulty: crate::tnmmode::difficulty(), legendary: crate::legendary::save(), look: crate::tnmlook::current() }
 }
 
 pub fn restore(s: &TrestkonSave) {
@@ -332,6 +340,8 @@ pub fn restore(s: &TrestkonSave) {
     drop(g);
     crate::radish::restore(s.lives, s.radish_health, s.radishes);
     crate::tnmmode::restore_difficulty(s.difficulty);
+    crate::legendary::restore(&s.legendary);
+    crate::tnmlook::restore(s.look);
     REBUILD.store(true, Ordering::Relaxed);
 }
 
@@ -346,6 +356,9 @@ pub fn kit_system(
     }
     crate::tnmach::load(&mut assets.classes);
     crate::tnmpawn::load(&mut assets.classes);
+    crate::tnmweapon::load(&mut assets.classes);
+    crate::tnmmode::load_options(&mut assets.classes);
+    crate::tnmmode::load_refusals(&mut assets.classes);
     crate::tnmmode::load_texts(&mut assets.classes);
     // TrestkonTick: credits_diff = Credits - CreditsPrev, counted when it rose.
     {
