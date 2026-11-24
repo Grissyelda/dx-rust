@@ -355,6 +355,30 @@ fn do_close(info: &MoverInfo, rt: &mut MoverRt) {
     interpolate_to(info, rt, k, info.move_time as f64);
 }
 
+/// A lockdown (lockdown.rs) seals a door: shut if it's open or opening, and locked.
+pub fn seal(info: &MoverInfo, rt: &mut MoverRt) {
+    if rt.destroyed {
+        return;
+    }
+    if rt.key_num != 0 && !(rt.interpolating && !rt.opening) {
+        if rt.interpolating {
+            // Opening: turn back from where it is.
+            rt.interpolating = false;
+        }
+        do_close(info, rt);
+    }
+    rt.close_timer = None;
+    rt.locked = true;
+}
+
+/// A lockdown's door forced open (a multitool, lockdown.rs): unlocked and opening.
+pub fn force_open(info: &MoverInfo, rt: &mut MoverRt) {
+    rt.locked = false;
+    if !rt.destroyed && rt.key_num == 0 && !rt.interpolating {
+        do_open(info, rt);
+    }
+}
+
 /// InterpolateTo(key, seconds) for a script that times the move itself (The Nameless Mod's CaroneElevator).
 pub fn move_to(info: &MoverInfo, rt: &mut MoverRt, key: u8, seconds: f64) {
     if rt.destroyed {

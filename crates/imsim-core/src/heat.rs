@@ -62,6 +62,11 @@ pub struct HeatTuning {
     pub restricted_rate: f32,
     /// Seen hacking or picking a lock.
     pub tampering_rate: f32,
+    /// A player's registered weapon found lying about by staff (framing).
+    pub weapon_found: f32,
+    /// A disguised player's cover slipping, per second (seen running, armed close by, in a restricted room): the
+    /// heat a blown uniform starts from is built up by this.
+    pub disguise_rate: f32,
 }
 
 impl Default for HeatTuning {
@@ -77,6 +82,8 @@ impl Default for HeatTuning {
             weapon_seen_rate: 40.0,
             restricted_rate: 70.0,
             tampering_rate: 90.0,
+            weapon_found: 35.0,
+            disguise_rate: 25.0,
         }
     }
 }
@@ -90,6 +97,14 @@ pub enum HeatCause {
     Tampering,
     /// Hurt staff, a camera or a turret: wanted at once.
     AttackedStaff,
+    /// Staff found a body and blame him (its killer, or the owner of a weapon left beside it): wanted at once.
+    BodyFound,
+    /// Staff found his registered weapon lying about.
+    WeaponFound,
+    /// The Overwatch seat sent the guards after him: wanted at once.
+    Dispatched,
+    /// Disguised in a uniform, he gave himself away for `secs`.
+    Disguise,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,7 +165,9 @@ impl Heat {
             HeatCause::WeaponSeen => t.weapon_seen_rate * secs,
             HeatCause::Restricted => t.restricted_rate * secs,
             HeatCause::Tampering => t.tampering_rate * secs,
-            HeatCause::AttackedStaff => t.wanted,
+            HeatCause::AttackedStaff | HeatCause::BodyFound | HeatCause::Dispatched => t.wanted,
+            HeatCause::WeaponFound => t.weapon_found,
+            HeatCause::Disguise => t.disguise_rate * secs,
         };
         self.add(id, cause, amount)
     }

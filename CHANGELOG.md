@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Multiplayer: Modern mechanics (November 24)
+Five new switches on Match Settings > Mechanics... for Modern rooms (all on but Killphrases):
+- Uniforms: Use on a knocked-out guard takes his uniform. The level's staff take you for one of them and rivals see
+  a guard. Running, showing a weapon near guards, or a restricted room makes them suspicious, then blows the
+  cover. A rival who looks straight at you from close in, or has Vision running, sees who you are. Lasts two and a
+  half minutes, four for the Infiltrator.
+- Overwatch: every security computer is a seat. Its console shows every camera of the level live (switch them on as
+  yours), the turrets, the doors nearby (lock or unlock), and the rivals the cameras see right now: send the guards
+  after one. Your body stays in the room: a hit throws you out, and a rival's multitool or an EMP blast cuts the
+  seat's power.
+- Lockdowns: from a seat, seal a sector. Its doors shut and lock and its gas, steam, fire or electrified water runs
+  for half a minute, then a cooldown. A multitool forces a sealed door; a hazmat suit takes most of the hazard.
+- Framing: weapons are registered to their owners and a dying player drops his. Guards who find a body blame the
+  owner of a gun lying beside it, else whoever did it; a gun lying about on its own makes its owner suspicious.
+- Killphrases: every player has a three-word phrase, new each life. Its words hide in datacubes, intercepted
+  messages at the security computers and interrogations. Know all three and say them to his face: he dies.
+- Silent takedowns: a guard taken down at once, with no other guard or camera watching, raises no alarm.
+- Restricted rooms on all five maps (the security rooms): the HUD says when you're in one.
+- The counter table: every power has an answer (Vision and goggles see cloaked rivals, an EMP shuts down a hacked
+  turret for 20 seconds, and the rest above), kept in the data file.
+
 ### The Nameless Mod: its own menus, music player, notes and HUD details (November 24)
 - Menus: the mod's main menu (its title, buttons and version line; in a game the first button goes back to the
   title screen), its Settings menu and the screens behind it - Options (with IRC Settings), Display, Sound and

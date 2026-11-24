@@ -34,13 +34,24 @@ pub fn on() -> bool {
 
 /// Can this player make out the rival from `eye`?
 pub fn made_out(r: &Rival, eye: DVec3) -> bool {
+    made_out_with(r, eye, crate::abilities::aug_active("AugVision"), crate::charged::goggles_on())
+}
+
+/// made_out with this player's own Vision augmentation and tech goggles (the counter table's answers to cloak).
+pub fn made_out_with(r: &Rival, eye: DVec3, vision: bool, goggles: bool) -> bool {
     if !r.rival {
         return true;
     }
-    if r.camo {
-        return false;
-    }
     let dist = (r.pos - eye).length();
+    let cloaked = r.camo || r.augs.iter().any(|a| a == "AugCloak");
+    if cloaked {
+        // Counters: Vision and thermal goggles see a cloaked rival within their reach.
+        let reach = |answer: &str, dflt: f32| crate::counters::value("AugCloak", answer, "reveal_range", dflt) as f64;
+        let seen = (vision && dist <= reach("AugVision", 1200.0)) || (goggles && dist <= reach("TechGoggles", 640.0));
+        if !seen {
+            return false;
+        }
+    }
     if dist < NEAR {
         return true;
     }
@@ -153,9 +164,9 @@ pub fn cover_system(
     let e = bevy_to_ue(gt.translation().to_array());
     let eye = DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64);
     let rivals = crate::netplay::rivals();
-    // Who can't be made out.
+    // Who can't be made out (or passes as a guard: uniforms.rs).
     let (mut ids, mut names) = (Vec::new(), Vec::new());
-    for r in rivals.iter().filter(|r| !made_out(r, eye)) {
+    for r in rivals.iter().filter(|r| !made_out(r, eye) || crate::uniforms::passes(r.id)) {
         ids.push(r.id);
         names.push(r.name.clone());
     }
@@ -301,7 +312,7 @@ mod tests {
     use super::*;
 
     fn rival(light: f32, at: DVec3) -> Rival {
-        Rival { id: 1, name: "R".into(), pos: at, vel: DVec3::ZERO, crouch: false, swim: false, shots: 0, weapon: String::new(), quiet: false, light, camo: false, down: false, rival: true }
+        Rival { id: 1, name: "R".into(), pos: at, vel: DVec3::ZERO, crouch: false, swim: false, shots: 0, weapon: String::new(), quiet: false, light, camo: false, down: false, rival: true, uniform: false, augs: Vec::new() }
     }
 
     #[test]
@@ -312,7 +323,12 @@ mod tests {
         assert!(made_out(&rival(0.0, DVec3::new(200.0, 0.0, 0.0)), eye), "brushing past");
         let mut r = rival(0.5, DVec3::new(600.0, 0.0, 0.0));
         r.camo = true;
-        assert!(!made_out(&r, eye));
+        assert!(!made_out_with(&r, eye, false, false));
+        // Counters: Vision sees through the cloak within its reach, goggles closer in.
+        assert!(made_out_with(&r, eye, true, false));
+        assert!(made_out_with(&r, eye, false, true));
+        r.pos = DVec3::new(900.0, 0.0, 0.0);
+        assert!(!made_out_with(&r, eye, false, true));
         r.camo = false;
         r.rival = false;
         r.light = 0.0;

@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The game messages' version (Hello / Welcome).
-pub const PROTO: u32 = 6;
+pub const PROTO: u32 = 7;
 /// Seconds before a dead player gets up again near the host (Easy / Medium).
 pub const RESPAWN_SECS: f32 = 4.0;
 /// Hard and Realistic co-op: the wait is longer, and if every player is down at once the level restarts for all.
@@ -97,6 +97,9 @@ pub struct Look {
     /// His loadout's class has quiet feet (Infiltrator): rivals' sound radar doesn't hear his steps.
     #[serde(default)]
     pub quiet: bool,
+    /// Modern: the guard's uniform he wears (uniforms.rs; the guard's class): his body is dressed as that guard.
+    #[serde(default)]
+    pub uniform: Option<String>,
 }
 
 /// One player's body, 30 times a second.
@@ -314,6 +317,8 @@ enum Msg {
     Revive { to: u8, by: String },
     /// A line for one player only (routed by the host).
     Tell { to: u8, text: String },
+    /// Modern Phase 3 mechanics (mech.rs): uniforms, Overwatch, lockdowns, killphrases.
+    Mech(crate::mech::MechMsg),
 }
 
 /// A grenade the host runs, as it comes into the world.
@@ -616,6 +621,7 @@ fn my_look() -> Look {
         tag: if dm && !crate::deathmatch::classic() { crate::dmchar::current().map(|c| crate::cards::tag_rgb(&c)) } else { None },
         card: if dm && !crate::deathmatch::classic() { crate::dmchar::current().map(|c| crate::cards::card_id(&c)).unwrap_or_default() } else { String::new() },
         quiet: dm && crate::dmchar::class_perk() == "infiltrator",
+        uniform: if dm { crate::uniforms::worn_class() } else { None },
     }
 }
 
@@ -1588,8 +1594,8 @@ pub fn net_in_system(
                 n.look = look;
                 send_roster(n);
             }
-        } else if n.role == Role::Client && crate::deathmatch::classic() {
-            // Classic: his class follows his team (and his Player Setup pick).
+        } else if n.role == Role::Client && crate::deathmatch::versus() {
+            // Classic: his class follows his team (and his Player Setup pick); Modern: his uniform.
             let look = my_look();
             if look != n.look {
                 n.look = look.clone();
@@ -2249,6 +2255,14 @@ fn spawn_body(id: u8, look: &Look, st: &PState) {
             props.push(Property { name: "MultiSkins".into(), index: i as u32, value: Value::Path(s.clone()) });
         }
     }
+    // Modern: a guard's uniform (uniforms.rs) - he looks like that guard.
+    if let Some(class) = look.uniform.as_deref() {
+        let dress = crate::deathmatch::class_dress(class);
+        if !dress.is_empty() {
+            props.retain(|p| !matches!(p.name.as_str(), "Mesh" | "MultiSkins" | "Texture" | "Skin"));
+            props.extend(dress);
+        }
+    }
     // Classic: the original's multiplayer classes (Human subclasses on MPCharacters.mp_jumpsuit).
     if let Some(class) = look.mp_class.as_deref() {
         let dress = crate::deathmatch::class_dress(class);
@@ -2496,6 +2510,8 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
                 send_to(n, to, &Msg::Tell { to, text }, true);
             }
         }
+        (Role::Host, Msg::Mech(m)) => crate::mech::incoming(peer, m),
+        (Role::Client, Msg::Mech(m)) => crate::mech::incoming(0, m),
         (Role::Client, Msg::Revive { by, .. }) => crate::downed::revive(&by),
         (Role::Client, Msg::Tell { text, .. }) => crate::classic_hud::client_message(&text),
         (Role::Host, Msg::DecoMove(_, d)) => sync(|s| s.deco_moves.push(d)),
@@ -3005,7 +3021,7 @@ pub fn dev_system(mut stage: Local<u8>, mut wait: Local<f32>, time: Res<Time>) {
                 }
                 // DXVIEW_MP_DM=1: the room is a deathmatch (leave-to-title tests).
                 if env_on!("DXVIEW_MP_DM") {
-                    crate::deathmatch::set_rules(Some(crate::deathmatch::DmRules { mode: crate::deathmatch::Mode::Deathmatch, ..Default::default() }));
+                    crate::deathmatch::set_rules(Some(crate::deathmatch::test_rules().unwrap_or(crate::deathmatch::DmRules { mode: crate::deathmatch::Mode::Deathmatch, ..Default::default() })));
                 }
                 *stage = 9;
                 return;
@@ -3321,6 +3337,27 @@ pub fn tell(to: u8, text: &str) {
     });
 }
 
+/// A Phase 3 message (mech.rs): a joiner's to the host (`to` None), or the host's to one player.
+pub fn mech_out(to: Option<u8>, m: crate::mech::MechMsg) {
+    with(|n| {
+        let m = Msg::Mech(m);
+        match (n.role, to) {
+            (Role::Client, _) if n.welcomed => send_host(n, &m, true),
+            (Role::Host, Some(id)) => send_to(n, id, &m, true),
+            _ => {}
+        }
+    });
+}
+
+/// Host: a Phase 3 message to every joiner.
+pub fn mech_out_all(m: crate::mech::MechMsg) {
+    with(|n| {
+        if n.role == Role::Host {
+            send_all(n, &Msg::Mech(m), true, None);
+        }
+    });
+}
+
 /// Revive downed teammate `to` (one of our medkits, used up by the caller).
 pub fn revive_player(to: u8) {
     if crate::deathmatch::versus() {
@@ -3340,6 +3377,10 @@ pub fn revive_player(to: u8) {
 /// The frob label over another player: his name, and what Use would do with the medkits we carry.
 pub fn mate_label(id: u8, medkits: u32) -> String {
     let Some((name, health, dead)) = mate(id) else { return "Player".into() };
+    // Killphrases (killphrase.rs): a rival whose whole phrase we know.
+    if !dead && crate::killphrase::can_speak(id) && mate_down(id).is_none_or(|(_, ours)| !ours) {
+        return format!("{name}\nUse to say his killphrase");
+    }
     if let Some((true, ours)) = mate_down(id) {
         return if ours {
             if medkits == 0 { format!("{name}\nDown (no medkit to revive)") } else { format!("{name}\nDown: Use to revive") }
@@ -4758,7 +4799,7 @@ pub fn tag_targets() -> Vec<(String, DVec3, bool, Option<[u8; 3]>)> {
         let coop = n.rules.coop;
         n.remotes
             .iter()
-            .filter(|r| r.at.is_some() && r.body.is_some() && !r.st.dead && !r.st.camo)
+            .filter(|r| r.at.is_some() && r.body.is_some() && !r.st.dead && (!r.st.camo || crate::cover::on()))
             .map(|r| (r.look.name.clone(), d3(r.st.pos) + DVec3::Z * 50.0, coop, r.look.tag))
             .collect()
     })
@@ -4782,6 +4823,10 @@ pub struct Rival {
     pub down: bool,
     /// On the other side (not a teammate, not co-op).
     pub rival: bool,
+    /// In a guard's uniform (uniforms.rs).
+    pub uniform: bool,
+    /// Augmentations running.
+    pub augs: Vec<String>,
 }
 
 /// Every other living player on this map with a body.
@@ -4806,10 +4851,17 @@ pub fn rivals() -> Vec<Rival> {
                 camo: r.st.camo,
                 down: r.st.down,
                 rival: !coop && !crate::deathmatch::allied(me, r.id),
+                uniform: r.look.uniform.is_some(),
+                augs: r.st.augs.clone(),
             })
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// The uniform another player wears (uniforms.rs: the guard's class).
+pub fn uniform_of(id: u8) -> Option<String> {
+    with(|n| n.remotes.iter().find(|r| r.id == id).and_then(|r| r.look.uniform.clone())).flatten()
 }
 
 /// The mods showing on a player's weapon (attach.rs bits; 0 for anyone else).

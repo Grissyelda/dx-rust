@@ -113,14 +113,28 @@ pub struct Inventory {
     pub big_belt: bool,
 }
 
-/// A belt saved with any number of slots up to 12.
+/// A belt saved with any number of slots up to 12. Arrays are written as tuples (RON "( .. )"), so it is read as a
+/// tuple that may hold fewer (saves from before the 12-slot belt have 10).
 fn belt_from_any<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[Option<usize>; 12], D::Error> {
-    let v: Vec<Option<usize>> = serde::Deserialize::deserialize(d)?;
-    let mut out = [None; 12];
-    for (i, x) in v.into_iter().take(12).enumerate() {
-        out[i] = x;
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = [Option<usize>; 12];
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("up to 12 belt slots")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = [None; 12];
+            let mut i = 0;
+            while let Some(x) = seq.next_element::<Option<usize>>()? {
+                if i < 12 {
+                    out[i] = x;
+                }
+                i += 1;
+            }
+            Ok(out)
+        }
     }
-    Ok(out)
+    d.deserialize_tuple(12, V)
 }
 
 impl Inventory {

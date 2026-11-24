@@ -214,6 +214,76 @@
             (id: "orbital", name: "Orbital", title: "ORBITAL", pattern: "rings", emblem: "orbit", accent: (200, 200, 220), need: Some((what: "wins", n: 25))),
         ],
     ),
+    // Modern, Phase 3 (mech.rs and the modules it names). Uniforms: how long one passes, longer for the Infiltrator;
+    // a rival is unmasked after looking at him from within close_look for close_look_secs; staff see through it when
+    // the wearer runs (faster than run_speed), shows a weapon within armed_near of them, or stands in a restricted
+    // room. Framing: staff look body_sight for bodies and weapon_sight for dropped weapons; a weapon within
+    // plant_radius of a body is blamed for it. Overwatch: dispatch_cooldown between sending guards; a cut takes
+    // sabotage_secs with a multitool (or an EMP blast within the counter table's radius). Lockdowns: default
+    // secs / cooldown, the hazards' damage per second. Killphrases: kp_cubes datacubes on each map; spoken within
+    // kp_reach; the words a phrase is drawn from.
+    mechanics: (
+        uniform_secs: 150, uniform_secs_infiltrator: 240, close_look: 420, close_look_secs: 1.25,
+        run_speed: 230, armed_near: 320, witness_secs: 0.4,
+        body_sight: 1200, weapon_sight: 700, plant_radius: 200,
+        dispatch_cooldown: 30, sabotage_secs: 3.5,
+        lockdown_secs: 30, lockdown_cooldown: 90,
+        hazard_dps: { "gas": 7, "steam": 10, "shock": 18, "fire": 9 },
+        kp_cubes: 6, kp_reach: 220,
+        kp_words: [
+            "amber", "anchor", "apex", "arbor", "ash", "atlas", "basalt", "beacon", "birch", "bramble", "cinder",
+            "citadel", "cobalt", "comet", "copper", "coral", "crane", "delta", "drift", "ember", "falcon", "fathom",
+            "fern", "flint", "frost", "garnet", "glacier", "granite", "harbor", "hazel", "heron", "indigo", "iris",
+            "jasper", "juniper", "kestrel", "lantern", "linden", "lumen", "marrow", "meridian", "mica", "nectar",
+            "nimbus", "obsidian", "onyx", "orchid", "osprey", "pewter", "pillar", "quarry", "quartz", "raven",
+            "ridge", "saffron", "sable", "sorrel", "spire", "tallow", "thistle", "tundra", "umber", "vessel",
+            "willow", "zenith",
+        ],
+    ),
+    // Modern: every power has an answer (counters.rs reads these; the game's rules use `value`). power / answer
+    // are names the code knows (counters::POWERS / ANSWERS); `rule` says what the answer does.
+    counters: [
+        (power: "AugCloak", answer: "AugVision", rule: "reveal_range", value: 1200,
+         note: "Vision sees a cloaked rival within this range: name tag and red crosshair."),
+        (power: "AugCloak", answer: "TechGoggles", rule: "reveal_range", value: 640,
+         note: "Thermal goggles show a cloaked rival closer in."),
+        (power: "AugCloak", answer: "Noise", rule: "radar", value: 1,
+         note: "Cloak hides the body, not the noise: running steps and shots still show on the sound radar."),
+        (power: "AugRadarTrans", answer: "Eyes", rule: "seen_by_eyes", value: 1,
+         note: "Radar transparency blinds cameras and turrets only: guards and players still see him."),
+        (power: "HackedTurret", answer: "EMP", rule: "disable_secs", value: 20,
+         note: "An EMP blast shuts a turret down for this long, hacked or not."),
+        (power: "HackedTurret", answer: "Hack", rule: "take_back", value: 1,
+         note: "Another player can hack it back at a security computer."),
+        (power: "Uniform", answer: "CloseLook", rule: "unmask_secs", value: 1.25,
+         note: "Looking straight at a disguised rival from close in for this long unmasks him."),
+        (power: "Uniform", answer: "AugVision", rule: "unmask", value: 1,
+         note: "Vision sees the face under the cap: disguised rivals in sight are unmasked at once."),
+        (power: "Uniform", answer: "Behaviour", rule: "staff_suspicion", value: 1,
+         note: "Running, a drawn weapon near guards or a restricted room makes staff suspicious, then blows the cover."),
+        (power: "Overwatch", answer: "PowerCut", rule: "out_secs", value: 45,
+         note: "A multitool on an occupied seat's computer cuts its power for this long and throws the operator out."),
+        (power: "Overwatch", answer: "EMP", rule: "cut_radius", value: 320,
+         note: "An EMP blast this close to a seat cuts its power too."),
+        (power: "Overwatch", answer: "Exposure", rule: "kick_on_hit", value: 1,
+         note: "The operator's body stays in the room: any hit throws him out of the seat."),
+        (power: "Lockdown", answer: "Multitool", rule: "override_secs", value: 5,
+         note: "A multitool on a sealed door opens it after this many seconds."),
+        (power: "Lockdown", answer: "HazMatSuit", rule: "hazard_mult", value: 0.25,
+         note: "A hazmat suit takes the lockdown's gas, steam and shock down to this."),
+        (power: "Framing", answer: "Evidence", rule: "pickup_clears", value: 1,
+         note: "Pick the planted weapon up before staff see it and nobody is blamed but the killer."),
+        (power: "Framing", answer: "HideBody", rule: "carried_unseen", value: 1,
+         note: "A body that is carried or hidden out of staff sight is never found."),
+        (power: "Killphrase", answer: "Death", rule: "new_phrase", value: 1,
+         note: "Every life gets a new phrase: fragments of the old one are worthless."),
+        (power: "Killphrase", answer: "Distance", rule: "reach", value: 220,
+         note: "It has to be said to his face: keep rivals who know your words at arm's length."),
+        (power: "Downed", answer: "Teammate", rule: "revive", value: 1,
+         note: "A teammate's medkit gets a downed player up before he is finished or interrogated."),
+        (power: "AugBallistic", answer: "Melee", rule: "bypass", value: 1,
+         note: "Ballistic protection stops bullets, not blades and batons."),
+    ],
     maps: [
         // DXMP_Area51Bunker: 67 kept, starts 24, value near starts min 14 max 44 mean 32.3; quadrants [14, 39, 37, 38]
         // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 8, Lockpick 9, MedKit 6, Multitool 10, AssaultGun 2, AssaultShotgun 3, CombatKnife 2, EMPGrenade 2, Flamethrower 1, GEPGun 1, GasGrenade 2, LAM 2, LAW 1, MiniCrossbow 2, NanoSword 1, Pistol 3, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 2, StealthPistol 2
@@ -231,7 +301,17 @@
             "WeaponPlasmaRifle6", "WeaponRifle0", "WeaponSawedOffShotgun0", "WeaponSawedOffShotgun1",
             "WeaponSawedOffShotgun5", "WeaponShuriken0", "WeaponShuriken7", "WeaponStealthPistol2",
             "WeaponStealthPistol6",
-        ]),
+        ],
+          restricted: [
+            (name: "Hangar Security", at: (1107, -2562, -449), radius: 320),
+            (name: "Comm Security", at: (1232, 2717, -432), radius: 200),
+            (name: "Tower Security", at: (-1625, 3286, 451), radius: 380),
+          ],
+          lockdowns: [
+            (name: "Hangar", terminals: ["ComputerSecurity1"], doors: ["hangardoor", "hangarsidedoor", "fandoorthing"], hazard: "gas"),
+            (name: "Bunker Core", terminals: ["ComputerSecurity4"], doors: ["blast_door", "lg_door1", "robutdoormomma"], hazard: "steam"),
+            (name: "Tower", terminals: ["ComputerSecurity3"], doors: ["towertunnel", "helipaddoor", "smallbunkerdoor"], hazard: "gas"),
+          ]),
         // DXMP_CMD: 55 kept, starts 31, value near starts min 23 max 92 mean 60.2; quadrants [28, 67, 23, 4]
         // Ammo20mm 2, BioelectricCell 4, Lockpick 5, MedKit 2, Multitool 6, AssaultGun 3, AssaultShotgun 3, CombatKnife 3, EMPGrenade 3, Flamethrower 1, GEPGun 1, GasGrenade 1, LAM 2, LAW 1, MiniCrossbow 3, NanoSword 1, Pistol 3, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 3, StealthPistol 3
         (file: "DXMP_CMD", title: "Vandenberg Command", keep: [
@@ -246,7 +326,18 @@
             "WeaponPistol4", "WeaponPistol5", "WeaponPlasmaRifle1", "WeaponRifle1", "WeaponSawedOffShotgun0",
             "WeaponSawedOffShotgun2", "WeaponSawedOffShotgun4", "WeaponShuriken0", "WeaponShuriken2",
             "WeaponShuriken4", "WeaponStealthPistol0", "WeaponStealthPistol2", "WeaponStealthPistol4",
-        ]),
+        ],
+          restricted: [
+            (name: "Command Deck", at: (1253, 1334, -1156), radius: 420),
+            (name: "Lobby Security", at: (59, 1758, -1992), radius: 300),
+            (name: "Tower Control", at: (1701, 3763, -1089), radius: 400),
+          ],
+          lockdowns: [
+            (name: "Lobby", terminals: ["ComputerSecurity2"], doors: ["front_door1", "front_door2", "bot4_door"], hazard: "gas"),
+            (name: "Reservoir", terminals: ["ComputerSecurity2", "ComputerSecurity0"], doors: ["sm_door1"], hazard: "shock", spots: [(-58, 3693, -2304)]),
+            (name: "Command", terminals: ["ComputerSecurity1"], doors: ["bot3_door", "bot1_door"], hazard: "gas"),
+            (name: "Tower", terminals: ["ComputerSecurity0"], doors: ["bot2_door"], hazard: "steam"),
+          ]),
         // DXMP_Cathedral: 51 kept, starts 22, value near starts min 7 max 65 mean 50.0; quadrants [43, 11, 0, 59]
         // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 2, Lockpick 6, MedKit 6, Multitool 5, AssaultGun 3, AssaultShotgun 3, CombatKnife 2, EMPGrenade 2, Flamethrower 1, GEPGun 1, LAM 1, MiniCrossbow 2, NanoSword 1, Pistol 2, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 3, StealthPistol 3
         (file: "DXMP_Cathedral", title: "Cathedral", keep: [
@@ -260,7 +351,18 @@
             "WeaponPlasmaRifle0", "WeaponRifle5", "WeaponSawedOffShotgun0", "WeaponSawedOffShotgun2",
             "WeaponSawedOffShotgun4", "WeaponShuriken1", "WeaponShuriken2", "WeaponShuriken9", "WeaponStealthPistol1",
             "WeaponStealthPistol2", "WeaponStealthPistol7",
-        ]),
+        ],
+          restricted: [
+            (name: "Base Security", at: (3478, -157, -371), radius: 200),
+            (name: "Tower Office", at: (2590, -1672, -363), radius: 210),
+            (name: "Chapel Entrance", at: (1988, -1887, -286), radius: 380),
+            (name: "North Tower", at: (2501, -720, -347), radius: 230),
+          ],
+          lockdowns: [
+            (name: "Chapel", terminals: ["ComputerSecurity3"], doors: ["chapeldoors", "bot3_door", "HEBOX"], hazard: "gas"),
+            (name: "Cathedral Base", terminals: ["ComputerSecurity4", "ComputerSecurity2"], doors: ["cath_maindoorsback", "Rbot10", "bot12_door"], hazard: "steam"),
+            (name: "Towers", terminals: ["ComputerSecurity1"], doors: ["bot15_door", "bot32_door"], hazard: "gas"),
+          ]),
         // DXMP_Silo: 68 kept, starts 54, value near starts min 16 max 77 mean 39.4; quadrants [42, 35, 18, 60]
         // Ammo20mm 2, AmmoRocketWP 1, BioelectricCell 9, Lockpick 4, MedKit 2, Multitool 4, AssaultGun 4, AssaultShotgun 4, CombatKnife 4, EMPGrenade 2, Flamethrower 1, GEPGun 1, GasGrenade 1, LAM 3, LAW 1, MiniCrossbow 5, NanoSword 1, Pistol 5, PlasmaRifle 1, Rifle 1, SawedOffShotgun 4, Shuriken 4, StealthPistol 4
         (file: "DXMP_Silo", title: "Missile Silo", keep: [
@@ -278,7 +380,14 @@
             "WeaponSawedOffShotgun5", "WeaponSawedOffShotgun7", "WeaponSawedOffShotgun8", "WeaponShuriken10",
             "WeaponShuriken11", "WeaponShuriken6", "WeaponShuriken7", "WeaponStealthPistol2", "WeaponStealthPistol5",
             "WeaponStealthPistol6", "WeaponStealthPistol8",
-        ]),
+        ],
+          restricted: [
+            (name: "Silo Control", at: (-443, -4134, 1494), radius: 310),
+          ],
+          lockdowns: [
+            (name: "Silo Control", terminals: ["ComputerSecurity0"], doors: ["sm_door1", "bot1_door", "sm_door6", "metaldoor1"], hazard: "gas"),
+            (name: "Entrance", terminals: ["ComputerSecurity0"], doors: ["lg_door1", "bot2_door", "sm_door7", "bot3_door"], hazard: "steam"),
+          ]),
         // DXMP_Smuggler: 47 kept, starts 14, value near starts min 16 max 42 mean 29.1; quadrants [28, 16, 30, 36]
         // Ammo20mm 1, AmmoRocketWP 1, BioelectricCell 5, Lockpick 3, MedKit 2, Multitool 4, AssaultGun 3, AssaultShotgun 3, CombatKnife 3, EMPGrenade 3, Flamethrower 1, GEPGun 1, GasGrenade 1, LAM 2, MiniCrossbow 2, NanoSword 1, Pistol 2, PlasmaRifle 1, Rifle 1, SawedOffShotgun 3, Shuriken 2, StealthPistol 2
         (file: "DXMP_Smuggler", title: "Smuggler's Lair", keep: [
@@ -292,6 +401,13 @@
             "WeaponPistol4", "WeaponPistol8", "WeaponPlasmaRifle3", "WeaponRifle1", "WeaponSawedOffShotgun0",
             "WeaponSawedOffShotgun2", "WeaponSawedOffShotgun3", "WeaponShuriken5", "WeaponShuriken8",
             "WeaponStealthPistol2", "WeaponStealthPistol4",
-        ]),
+        ],
+          restricted: [
+            (name: "Smuggler's Office", at: (560, -324, 45), radius: 300),
+          ],
+          lockdowns: [
+            (name: "Smuggler's Place", terminals: ["ComputerSecurity0"], doors: ["mirrordoor", "bot3_door3", "bot3_door"], hazard: "fire"),
+            (name: "Back Alley", terminals: ["ComputerSecurity0"], doors: ["bot3_door2", "sm_door1"], hazard: "gas"),
+          ]),
     ],
 )

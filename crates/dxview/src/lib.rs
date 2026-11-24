@@ -212,6 +212,13 @@ mod healui;
 mod optfixes;
 mod alertui;
 mod living;
+mod mech;
+mod uniforms;
+mod framing;
+mod overwatch;
+mod lockdown;
+mod killphrase;
+mod counters;
 mod fps;
 mod hudfade;
 mod upscale;
@@ -1265,6 +1272,15 @@ fn add_render_systems(app: &mut App) {
         .add_systems(Update, (atmosphere::fog_system, atmosphere::halo_system.after(fly), skyline::skyline_system, clouds::clouds_system, clouds::lightning_sky_system.after(clouds::clouds_system), wisp::wisp_system.after(fly)))
         .add_systems(Update, alertui::alert_ui_system.after(ai::npc_system))
         .add_systems(Update, living::living_hud_system.after(ai::npc_system))
+        // Modern Phase 3 (mech.rs): uniforms, framing, the Overwatch seat, lockdowns, killphrases.
+        .add_systems(First, mech::mech_system.after(loader::loader_system))
+        .add_systems(
+            Update,
+            (uniforms::uniform_system, framing::framing_system, overwatch::overwatch_system, lockdown::lockdown_system, killphrase::killphrase_system)
+                .after(ai::npc_system)
+                .after(security::security_system)
+                .run_if(living::modern_match),
+        )
         .add_systems(Update, hudfade::hud_fade_system)
         .add_plugins(upscale::UpscalePlugin)
         .add_plugins(lmlights::LmLightsPlugin)

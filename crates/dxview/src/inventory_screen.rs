@@ -1449,7 +1449,7 @@ pub fn inventory_screen_system(
         return;
     }
     let st = &mut *cx.st;
-    cx.binds.capture = st.open || crate::computers::open() || crate::menus::open() || crate::credits::open();
+    cx.binds.capture = st.open || crate::computers::open() || crate::menus::open() || crate::credits::open() || crate::overwatch::open();
     SCREEN_OPEN.store(st.open, Ordering::Relaxed);
     let (canvas_img, canvas_e, _) = st.canvas.clone().unwrap();
     let (cursor_img, cursor_e, _) = st.cursor.clone().unwrap();
@@ -2915,6 +2915,8 @@ fn drop_item(
     );
     let mut pickup_ammo = Some(0);
     if inv.0.items[idx].def.kind == ItemKind::Weapon {
+        // Framing (framing.rs): the weapon stays registered to whoever it belongs to.
+        extra.extend(crate::framing::drop_props(class));
         if grenade {
             // Grenades take all their ammo with them (the TestBox hack in Weapon.DropFrom).
             if let Some(a) = class_p(&d, "AmmoName") {

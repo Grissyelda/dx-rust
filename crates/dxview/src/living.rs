@@ -180,6 +180,37 @@ impl Audience {
     }
 }
 
+/// A body of the level's staff (dead or knocked out), for framing and uniforms.
+#[derive(Clone, Debug)]
+pub struct StaffBody {
+    pub blocker: usize,
+    pub pos: DVec3,
+    pub knocked_out: bool,
+    /// Who took him down (None: the level, or nobody known).
+    pub killer: Option<u8>,
+    /// Carried, hidden or gone: nobody can find it.
+    pub hidden: bool,
+}
+
+/// A restricted room: centre, BSP zone (-1: any), radius, seen from the centre only, name.
+#[derive(Clone, Debug)]
+struct Room {
+    at: DVec3,
+    zone: i32,
+    r: f64,
+    los: bool,
+    name: String,
+}
+
+/// A hit on staff waiting to be judged: whether the victim stays up or anyone saw it decides the heat.
+#[derive(Clone, Debug)]
+struct PendingHit {
+    who: u8,
+    at: DVec3,
+    victim: usize,
+    left: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Ping {
     pub at: DVec3,
@@ -197,9 +228,11 @@ struct State {
     /// (id, alliance, wanted) of every player in the match, for the staff's tables.
     players: Vec<(u8, String, bool)>,
     pings: Vec<Ping>,
-    /// The restricted areas (centre, zone or -1 for a data area, radius).
-    restricted: Vec<(DVec3, i32, f64)>,
+    /// The restricted rooms of this map.
+    restricted: Vec<Room>,
     map_gen: u64,
+    /// Hits on staff to judge (silent takedowns raise nothing).
+    pending: Vec<PendingHit>,
     sight_t: f32,
     send_t: f32,
     sent: Vec<(u8, u8)>,
@@ -222,6 +255,7 @@ pub fn reset_level() {
         s.pings.clear();
         s.out_pings.clear();
         s.restricted.clear();
+        s.pending.clear();
         s.sent.clear();
         s.map_gen = 0;
     });
@@ -249,6 +283,11 @@ pub fn raise(id: u8, cause: HeatCause, secs: f32, at: Option<DVec3>) {
     if !host_active() || id == LEVEL {
         return;
     }
+    // In a uniform (uniforms.rs) staff take him for one of their own: a weapon, a tool or a restricted room only
+    // make them wonder (the cover's own heat, Disguise), and only where they can tell (observe / camera_sight).
+    if disguised(id) && matches!(cause, HeatCause::WeaponSeen | HeatCause::Restricted | HeatCause::Tampering) {
+        return;
+    }
     let became = with(|s| s.heat.raise(id, cause, secs));
     if became {
         let why = match cause {
@@ -257,7 +296,15 @@ pub fn raise(id: u8, cause: HeatCause, secs: f32, at: Option<DVec3>) {
             HeatCause::WeaponSeen => "was seen armed",
             HeatCause::Restricted => "was seen in a restricted area",
             HeatCause::Tampering => "was seen tampering",
+            HeatCause::BodyFound => "is blamed for a body",
+            HeatCause::WeaponFound => "left a weapon lying about",
+            HeatCause::Dispatched => "was reported by Overwatch",
+            HeatCause::Disguise => "was seen through his uniform",
         };
+        // Wanted in a uniform: the cover is blown.
+        if disguised(id) {
+            crate::uniforms::host_blown(id);
+        }
         let line = format!("ALARM: {} {why}.", name_of(id));
         crate::netplay::host_news(&line);
         if !crate::netplay::is_host() {
@@ -275,6 +322,15 @@ pub fn raise(id: u8, cause: HeatCause, secs: f32, at: Option<DVec3>) {
 pub fn staff_hurt(target: crate::ai::Target, at: Option<DVec3>) {
     if let Some(id) = id_of(target) {
         raise(id, HeatCause::AttackedStaff, 0.0, at);
+    }
+}
+
+/// A player is in a uniform (uniforms.rs): his own, or another's as his look says.
+pub fn disguised(id: u8) -> bool {
+    if id == crate::deathmatch::my_id() {
+        crate::uniforms::worn_class().is_some()
+    } else {
+        crate::netplay::uniform_of(id).is_some()
     }
 }
 
@@ -347,17 +403,62 @@ pub fn take_out(dt: f32) -> (Option<Vec<(u8, u8)>>, Vec<Ping>) {
     })
 }
 
-/// A point is in a restricted room: inside one of the map's restricted areas (data), or (auto_restricted) near a
-/// security computer, in its zone and in sight of it.
-pub fn restricted(lvl: &dx_level::Level, at: DVec3) -> bool {
-    let rooms = with(|s| s.restricted.clone());
-    if rooms.is_empty() {
-        return false;
+/// The map's restricted rooms, read once per map: the data's areas (in sight of their centre unless the data says
+/// otherwise), or (auto_restricted) the rooms of its security computers.
+fn refresh_rooms(lvl: &dx_level::Level) {
+    let gen = crate::loader::generation();
+    if with(|s| s.map_gen == gen) {
+        return;
     }
-    let zone = lvl.collision.zone_at(at);
-    rooms.iter().any(|(p, z, r)| {
-        p.distance(at) <= *r && (*z < 0 || *z == zone) && (*z < 0 || lvl.collision.trace(*p, at, DVec3::ZERO).fraction >= 0.999)
-    })
+    let t = tuning();
+    let mut rooms: Vec<Room> = crate::deathmatch::map_entry(&lvl.name)
+        .map(|m| {
+            m.restricted
+                .iter()
+                .map(|a| Room { at: DVec3::new(a.at.0 as f64, a.at.1 as f64, a.at.2 as f64), zone: -1, r: a.radius as f64, los: a.in_sight, name: a.name.clone() })
+                .collect()
+        })
+        .unwrap_or_default();
+    if rooms.is_empty() && t.auto_restricted {
+        rooms = lvl
+            .actors
+            .iter()
+            .filter(|a| a.class.eq_ignore_ascii_case("ComputerSecurity"))
+            .map(|a| {
+                let l = a.location();
+                let p = DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
+                Room { at: p, zone: lvl.collision.zone_at(p), r: t.restricted_radius as f64, los: true, name: "Security".into() }
+            })
+            .collect();
+    }
+    with(|s| {
+        s.map_gen = gen;
+        s.restricted = rooms;
+    });
+}
+
+/// The restricted room a point is in (its name).
+pub fn room_at(lvl: &dx_level::Level, at: DVec3) -> Option<String> {
+    if !modern_match() {
+        return None;
+    }
+    refresh_rooms(lvl);
+    let rooms = with(|s| s.restricted.clone());
+    let zone = if rooms.iter().any(|r| r.zone >= 0) { lvl.collision.zone_at(at) } else { -1 };
+    // (From the centre a little up: the eye of whoever stands there.)
+    rooms
+        .iter()
+        .find(|r| {
+            r.at.distance(at) <= r.r
+                && (r.zone < 0 || r.zone == zone)
+                && (!r.los || lvl.collision.trace(r.at + DVec3::Z * 24.0, at, DVec3::ZERO).fraction >= 0.999)
+        })
+        .map(|r| r.name.clone())
+}
+
+/// A point is in a restricted room.
+pub fn restricted(lvl: &dx_level::Level, at: DVec3) -> bool {
+    room_at(lvl, at).is_some()
 }
 
 /// The class in this machine's player's hands (living_hud_system keeps it).
@@ -390,7 +491,12 @@ pub fn camera_sight(lvl: &dx_level::Level, id: u8, at: DVec3, secs: f32) -> bool
         return false;
     }
     with(|s| s.heat.seen(id));
-    if restricted(lvl, at) {
+    if disguised(id) {
+        // Staff carry weapons: only a restricted room or a tool at work looks wrong on camera.
+        if restricted(lvl, at) || tampering(id) {
+            raise(id, HeatCause::Disguise, secs, Some(at));
+        }
+    } else if restricted(lvl, at) {
         raise(id, HeatCause::Restricted, secs, Some(at));
     } else if tampering(id) {
         raise(id, HeatCause::Tampering, secs, Some(at));
@@ -400,41 +506,47 @@ pub fn camera_sight(lvl: &dx_level::Level, id: u8, at: DVec3, secs: f32) -> bool
     with(|s| s.heat.wanted(id))
 }
 
-/// Host, from npc_system once a frame: shots the staff heard, staff the players hurt, and what the guards see.
+/// Does a guard of the level see this point (his view, his sight radius, light enough beyond dark_reach)?
+pub fn eye_sees(lvl: &dx_level::Level, s: &StaffEye, at: DVec3, lit: &mut Option<bool>) -> bool {
+    let to = at - s.eye;
+    let d = to.length();
+    if d > s.sight || d < 1.0 {
+        return false;
+    }
+    // ScriptedPawn's 160 degree view.
+    let facing = DVec3::new(s.yaw.cos(), s.yaw.sin(), 0.0);
+    if to.truncate().normalize_or_zero().dot(facing.truncate()) < 0.17 {
+        return false;
+    }
+    let t = tuning();
+    if d > t.dark_reach as f64 && !*lit.get_or_insert_with(|| crate::stealth::light_at(lvl, at) >= t.dark) {
+        return false;
+    }
+    lvl.collision.trace(s.eye, at, DVec3::ZERO).fraction >= 0.999
+}
+
+/// Any of the level's staff (but `except`) or its cameras sees this point.
+pub fn witnessed(lvl: &dx_level::Level, staff: &[StaffEye], at: DVec3, except: Option<usize>) -> bool {
+    let mut lit = None;
+    staff.iter().filter(|s| Some(s.blocker) != except).any(|s| eye_sees(lvl, s, at, &mut lit)) || crate::security::level_camera_near(at, 640.0)
+}
+
+/// Host, from npc_system once a frame: shots the staff heard, staff the players hurt, what the guards see; the bodies
+/// lying about go to framing.rs.
+#[allow(clippy::too_many_arguments)]
 pub fn observe(
     lvl: &dx_level::Level,
     dt: f32,
     heard: &[crate::stealth::Noise],
     hits: &std::collections::HashMap<usize, Vec<crate::damage::PawnHit>>,
     staff: &[StaffEye],
-    players: &[(u8, DVec3)],
+    players: &[(u8, DVec3, DVec3)],
+    bodies: &[StaffBody],
 ) {
     if !host_active() {
         return;
     }
-    let gen = crate::loader::generation();
-    if with(|s| s.map_gen != gen) {
-        let t = tuning();
-        let mut rooms: Vec<(DVec3, i32, f64)> = crate::deathmatch::map_entry(&lvl.name)
-            .map(|m| m.restricted.iter().map(|a| (DVec3::new(a.at.0 as f64, a.at.1 as f64, a.at.2 as f64), -1, a.radius as f64)).collect())
-            .unwrap_or_default();
-        if rooms.is_empty() && t.auto_restricted {
-            rooms = lvl
-                .actors
-                .iter()
-                .filter(|a| a.class.eq_ignore_ascii_case("ComputerSecurity"))
-                .map(|a| {
-                    let l = a.location();
-                    let p = DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64);
-                    (p, lvl.collision.zone_at(p), t.restricted_radius as f64)
-                })
-                .collect();
-        }
-        with(|s| {
-            s.map_gen = gen;
-            s.restricted = rooms;
-        });
-    }
+    refresh_rooms(lvl);
     // Unsilenced shots heard by a guard (within the noise's reach) or near a camera of the level.
     for n in heard.iter().filter(|n| n.kind == crate::stealth::NoiseKind::WeaponFire) {
         let Some(id) = n.maker.and_then(id_of) else { continue };
@@ -444,7 +556,9 @@ pub fn observe(
             raise(id, HeatCause::ShotHeard, 0.0, Some(n.pos));
         }
     }
-    // Staff hurt by a player.
+    // Staff hurt by a player: judged a moment later. A guard who stays on his feet knows who hit him; one taken down
+    // at once tells nobody, unless another guard or a camera saw it (a silent takedown).
+    let wait = crate::mech::tuning().witness_secs;
     for s in staff {
         if let Some(list) = hits.get(&s.blocker) {
             for h in list.iter().filter(|h| !h.world) {
@@ -452,8 +566,30 @@ pub fn observe(
                     None => crate::ai::Target::Player,
                     Some(b) => crate::ai::Target::Pawn(b),
                 };
-                staff_hurt(t, Some(h.attacker_pos));
+                if let Some(who) = id_of(t) {
+                    with(|st| {
+                        if !st.pending.iter().any(|p| p.who == who && p.victim == s.blocker) {
+                            st.pending.push(PendingHit { who, at: h.attacker_pos, victim: s.blocker, left: wait });
+                        }
+                    });
+                }
             }
+        }
+    }
+    let due: Vec<PendingHit> = with(|st| {
+        for p in &mut st.pending {
+            p.left -= dt;
+        }
+        let (due, keep): (Vec<PendingHit>, Vec<PendingHit>) = st.pending.drain(..).partition(|p| p.left <= 0.0);
+        st.pending = keep;
+        due
+    });
+    for p in due {
+        let standing = staff.iter().any(|s| s.blocker == p.victim);
+        if standing || witnessed(lvl, staff, p.at, Some(p.victim)) {
+            raise(p.who, HeatCause::AttackedStaff, 0.0, Some(p.at));
+        } else if env_on!("DXVIEW_LIVINGLOG") {
+            println!("LIVING silent takedown by {}", name_of(p.who));
         }
     }
     // What the guards see, a few times a second.
@@ -467,35 +603,31 @@ pub fn observe(
         }
     });
     if sight {
-        let t = tuning();
-        for &(id, at) in players {
+        let mt = crate::mech::tuning();
+        for &(id, at, vel) in players {
             let mut lit: Option<bool> = None;
-            let seen = staff.iter().any(|s| {
-                let to = at - s.eye;
-                let d = to.length();
-                if d > s.sight || d < 1.0 {
-                    return false;
+            let seeing: Vec<&StaffEye> = staff.iter().filter(|s| eye_sees(lvl, s, at, &mut lit)).collect();
+            if seeing.is_empty() {
+                continue;
+            }
+            with(|s| s.heat.seen(id));
+            let room = restricted(lvl, at);
+            if disguised(id) {
+                // A guard among guards - until he acts unlike one where they can see.
+                let running = vel.truncate().length() > mt.run_speed as f64;
+                let armed_close = armed(id) && seeing.iter().any(|s| s.eye.distance(at) <= mt.armed_near as f64);
+                if running || armed_close || room || tampering(id) {
+                    raise(id, HeatCause::Disguise, 0.25, Some(at));
                 }
-                // ScriptedPawn's 160 degree view.
-                let facing = DVec3::new(s.yaw.cos(), s.yaw.sin(), 0.0);
-                if to.truncate().normalize_or_zero().dot(facing.truncate()) < 0.17 {
-                    return false;
-                }
-                if d > t.dark_reach as f64 && !*lit.get_or_insert_with(|| crate::stealth::light_at(lvl, at) >= t.dark) {
-                    return false;
-                }
-                lvl.collision.trace(s.eye, at, DVec3::ZERO).fraction >= 0.999
-            });
-            if seen {
-                with(|s| s.heat.seen(id));
-                if restricted(lvl, at) {
-                    raise(id, HeatCause::Restricted, 0.25, Some(at));
-                } else if tampering(id) {
-                    raise(id, HeatCause::Tampering, 0.25, Some(at));
-                }
+            } else if room {
+                raise(id, HeatCause::Restricted, 0.25, Some(at));
+            } else if tampering(id) {
+                raise(id, HeatCause::Tampering, 0.25, Some(at));
             }
         }
     }
+    // Bodies and dropped weapons the staff come across (framing.rs).
+    crate::framing::host_observe(lvl, dt, staff, bodies);
     // Time passes; the levels and the staff's view of each player follow.
     let me = crate::deathmatch::my_id();
     let mut ids: Vec<u8> = players.iter().map(|p| p.0).collect();
@@ -594,7 +726,12 @@ fn guard_extras(map: &str, _actors: &[dx_level::actors::ActorInfo], patrols: &[d
 
 /// At start-up: the guards are added as maps are read.
 pub fn install() {
-    dx_level::actors::set_level_extras(Some(Box::new(guard_extras)));
+    dx_level::actors::set_level_extras(Some(Box::new(|map: &str, actors: &[dx_level::actors::ActorInfo], patrols: &[dx_level::actors::PatrolInfo]| {
+        let mut v = guard_extras(map, actors, patrols);
+        // Killphrase datacubes (killphrase.rs).
+        v.extend(crate::killphrase::cube_extras(map, actors));
+        v
+    })));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -629,6 +766,7 @@ pub fn living_hud_system(
     mut marks: Query<(&mut Node, &mut Visibility), (With<PingMark>, Without<HeatNode>)>,
     cam: Query<(&Camera, &GlobalTransform), With<crate::FlyCam>>,
     weapons: Res<crate::weapons::Weapons>,
+    (level, player): (Res<crate::LevelRes>, Res<crate::Player>),
     mut st: Local<HudState>,
 ) {
     let dt = time.delta_secs();
@@ -679,31 +817,47 @@ pub fn living_hud_system(
     let s = crate::hud::ui_scale(win).max(1.0) as i32;
     let k = s as f32 / win.scale_factor();
 
-    // ---- own heat
+    // ---- own heat, the restricted room he stands in, his uniform (a small panel under the compass)
     let lvl = if on { level_of(me) } else { HeatLevel::Calm };
-    if lvl == HeatLevel::Calm {
+    let mut lines: Vec<(String, [u8; 3])> = Vec::new();
+    let blink = (time.elapsed_secs() * 2.0).fract() < 0.5;
+    match lvl {
+        HeatLevel::Wanted => lines.push(("SECURITY: WANTED".into(), if blink { [255, 64, 48] } else { [200, 40, 32] })),
+        HeatLevel::Suspicious => lines.push(("SECURITY: SUSPICIOUS".into(), [255, 196, 64])),
+        _ => {}
+    }
+    if on {
+        if let Some(room) = room_at(&level.0, player.body.location) {
+            lines.push((format!("RESTRICTED: {}", room.to_uppercase()), [255, 150, 60]));
+        }
+        if let Some((name, left)) = crate::uniforms::worn_status() {
+            let m = left.max(0.0) as i32;
+            lines.push((format!("UNIFORM: {} {}:{:02}", name.to_uppercase(), m / 60, m % 60), [90, 220, 200]));
+        }
+        lines.extend(crate::killphrase::hud_lines());
+        lines.extend(crate::lockdown::hud_lines());
+    }
+    if lines.is_empty() {
         crate::prompts::present::<HeatNode, _>(&mut commands, &mut images, &mut layers, &mut node, &mut st.img, None, (1, 1), s, Vec2::ZERO, k);
         st.key = 0;
     } else if let Some(font) = hud.font(&mut assets, "FontMenuSmall_DS") {
-        let blink = lvl == HeatLevel::Wanted && (time.elapsed_secs() * 2.0).fract() < 0.5;
-        let (text, col) = match lvl {
-            HeatLevel::Wanted => ("SECURITY: WANTED", if blink { [255, 64, 48] } else { [200, 40, 32] }),
-            _ => ("SECURITY: SUSPICIOUS", [255, 196, 64]),
-        };
-        let w = font.width(text) + 12;
-        let h = 15;
+        let w = lines.iter().map(|l| font.width(&l.0)).max().unwrap_or(0) + 12;
+        let h = 15 * lines.len() as i32;
         // Under the compass (the HUD's top-left column), at the HUD's own scale.
         let (pos, s, k) = match crate::touch::hud_window("Compass") {
             Some((r, unit)) => (Vec2::new(r.min.x + 2.0 * unit, r.max.y + 3.0 * unit), (unit * win.scale_factor()).ceil().max(1.0) as i32, unit),
             None => (Vec2::new(14.0 * k, 104.0 * k), s, k),
         };
-        let key = crate::util::fnv1a(&format!("{text}{col:?}{s}{pos:?}"));
+        let key = crate::util::fnv1a(&format!("{lines:?}{s}{pos:?}"));
         if key != st.key || node.is_empty() {
             st.key = key;
             let mut c = crate::uicanvas::Canvas::new(w, h, s);
             c.fill(0, 0, w, h, crate::uicanvas::Style::Normal, [8, 6, 6]);
-            c.fill(0, 0, 2, h, crate::uicanvas::Style::Normal, col);
-            c.text(&font, 6, 0, w - 6, h, crate::uicanvas::HAlign::Left, crate::uicanvas::VAlign::Center, col, text);
+            for (i, (text, col)) in lines.iter().enumerate() {
+                let y = 15 * i as i32;
+                c.fill(0, y, 2, 15, crate::uicanvas::Style::Normal, *col);
+                c.text(&font, 6, y, w - 6, 15, crate::uicanvas::HAlign::Left, crate::uicanvas::VAlign::Center, *col, text);
+            }
             crate::prompts::present::<HeatNode, _>(&mut commands, &mut images, &mut layers, &mut node, &mut st.img, Some(&c), (w, h), s, pos, k);
         }
     }

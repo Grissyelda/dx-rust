@@ -1282,6 +1282,8 @@ fn apply_blasts(st: &mut Security, blasts: &[(DVec3, f64, f32, &'static str)]) {
     for (c, r, dmg, ty) in blasts {
         if *ty == "EMP" {
             let extra = (*dmg - 15.0).max(0.0) / 5.0;
+            // Modern (counters.rs): an EMP blast near an Overwatch seat cuts its power.
+            crate::overwatch::emp(*c, *r);
             for cm in st.cams.iter_mut().filter(|x| !x.gone && x.pos.distance(*c) < *r) {
                 cm.confusion_dur += extra;
                 cm.confusion_t = 0.0;
@@ -1292,6 +1294,10 @@ fn apply_blasts(st: &mut Security, blasts: &[(DVec3, f64, f32, &'static str)]) {
             }
             for t in st.turrets.iter_mut().filter(|x| !x.gone && x.gun_pos.distance(*c) < *r) {
                 t.confusion_dur = (t.confusion_dur + extra).clamp(10.0, 30.0);
+                // Modern (counters.rs): the answer to a hacked turret is an EMP, for at least this long.
+                if crate::living::modern_match() {
+                    t.confusion_dur = t.confusion_dur.max(crate::counters::value("HackedTurret", "EMP", "disable_secs", 20.0));
+                }
                 t.confusion_t = 0.0;
                 if !t.confused {
                     t.confused = true;
@@ -3005,6 +3011,51 @@ fn mp_turret_setup(t: &mut Turret, class: &str) {
 /// What a security computer shows and controls (ComputerSecurityCameraWindow / ComputerScreenSecurity).
 pub mod control {
     use super::*;
+
+    /// A camera as the Overwatch console shows it.
+    #[derive(Clone, Debug)]
+    pub struct CamView {
+        pub tag: String,
+        pub name: String,
+        pub pos: DVec3,
+        pub pitch: f64,
+        pub yaw: f64,
+        pub active: bool,
+        pub owner: Option<u8>,
+    }
+
+    /// Every camera still there.
+    pub fn cameras(st: &Security, lvl: &dx_level::Level) -> Vec<CamView> {
+        st.cams
+            .iter()
+            .filter(|c| !c.gone)
+            .map(|c| CamView {
+                tag: c.tag.clone(),
+                name: lvl.actors.get(c.actor).map(|a| a.name.clone()).unwrap_or_default(),
+                pos: c.pos,
+                pitch: c.rot.0,
+                yaw: c.rot.1,
+                active: c.active,
+                owner: c.mp_safe,
+            })
+            .collect()
+    }
+
+    /// A turret as the Overwatch console shows it: tag, where, on (not disabled), whose.
+    pub fn turrets(st: &Security) -> Vec<(String, DVec3, bool, Option<u8>)> {
+        st.turrets.iter().filter(|t| !t.gone).map(|t| (t.tag.clone(), t.gun_pos, !t.disabled && t.active, t.mp_safe)).collect()
+    }
+
+    /// Host: the switched-on cameras of the level (or of `owner`) that see this point - its eye, range and cone.
+    pub fn cameras_see(st: &Security, lvl: &dx_level::Level, at: DVec3, owner: u8) -> bool {
+        st.cams.iter().filter(|c| !c.gone && c.active && !c.confused && c.mp_safe.is_none_or(|o| o == owner)).any(|c| {
+            if at.distance(c.pos) > crate::smartai::camera_range(c.range) {
+                return false;
+            }
+            let (rp, ry) = rotator(at - c.pos);
+            wrap(c.rot.1 - ry).abs() < c.fov && wrap(c.rot.0 - rp).abs() < c.fov && lvl.collision.trace(c.pos, at, DVec3::ZERO).fraction >= 0.999
+        })
+    }
 
     /// A camera's state by tag: (exists, active).
     pub fn camera(st: &Security, tag: &str) -> Option<bool> {

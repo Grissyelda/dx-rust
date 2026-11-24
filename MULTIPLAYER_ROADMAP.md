@@ -17,7 +17,7 @@ The general project roadmap is [ROADMAP.md](ROADMAP.md).
 | 0 | Groundwork | Done |
 | 1 | Classic deathmatch | Built; needs playtests against the original |
 | 2 | Modern foundations | In progress: living level and progression built |
-| 3 | Modern mechanics | Not started |
+| 3 | Modern mechanics | Built; needs playtests |
 | 4 | Modern modes | Not started |
 | 5 | Maps | Not started |
 | 6 | Bots, balance and release | Not started |
@@ -109,7 +109,8 @@ mode builds on it.
 ### The living level
 - [x] **Neutral security.** Guards, cameras and turrets belong to the level, neutral to all players until provoked
   (unsilenced fire, being seen in restricted rooms, attacking staff, a camera spotting a drawn weapon).
-  (`living.rs`. Restricted areas are per-map data; none are set on the five maps yet.)
+  (`living.rs`. Restricted areas are per-map data: the security rooms of all five maps, in sight of their centre.
+  A guard taken down at once with no other guard or camera watching raises no alarm.)
 - [x] **Heat per player.** Each player has their own alert level; guards hunt whoever caused it, not everyone.
   (`imsim_core::heat`: suspicious, then wanted; the heat drains out of sight. Becoming wanted raises an alarm:
   everyone's news, and a ping on everyone's screen.)
@@ -128,7 +129,7 @@ mode builds on it.
 
 | Class | Plays as | Signature perk |
 |---|---|---|
-| Infiltrator | cloak, silent movement, lockpicks | quiet feet now; uniforms last longer with Phase 3 |
+| Infiltrator | cloak, silent movement, lockpicks | quiet feet; uniforms last longer |
 | Netrunner | hacking, turret and camera control | remote hacking range |
 | Enforcer | heavy weapons, ballistic protection | melee bash |
 | Medic | revives, healing others | extra medkits, heals teammates twice as much |
@@ -164,23 +165,25 @@ one before.
   (`downed.rs`: down 30 s, a teammate's medkit revives, any hit finishes; Match Settings Downed State. Still to
   come: carrying and hiding a downed player.)
 - [x] **Interrogation.** A multitool on a downed rival for about four seconds reveals rival positions, his objective
-  progress, or one killphrase fragment. (Rival positions now; objective progress and killphrase fragments come with
-  Phase 4 modes and killphrases.)
-- [ ] **Uniforms.** Wear a knocked-out guard's uniform and the level treats you as staff. Running, a drawn weapon
+  progress, or one killphrase fragment. (Rival positions and, with killphrases on, his next word; objective progress
+  comes with Phase 4 modes.)
+- [x] **Uniforms.** Wear a knocked-out guard's uniform and the level treats you as staff. Running, a drawn weapon
   near guards or a restricted room gives you away (guards grow suspicious first). Rival players see a guard until
-  they look closely or use the Vision augmentation.
-- [ ] **Overwatch seat.** The security room's computer shows every camera live and can lock doors, flip turrets and
-  send guards after a rival. The seated player's body stays in the world, exposed.
-- [ ] **Sector lockdowns.** Terminals seal blast doors and switch on the level's hazards (gas, steam, electrified
-  water, fans) for a while, with a cooldown.
-- [ ] **Framing.** Guards who find a body or a dropped weapon blame its owner: plant a rival's gun beside your
-  victim and the level hunts him.
-- [ ] **Killphrases.** Each player gets a three-word phrase per match. Fragments hide in datacubes, emails and
-  interrogations; saying all three to a rival's face kills him at once. Works as an option in any Modern mode and
-  as its own mode.
-- [ ] **Counter table.** Every power has an answer (cloak against Vision and thermal, radar transparency against
+  they look closely or use the Vision augmentation. (`uniforms.rs`; 150 s, 240 for the Infiltrator.)
+- [x] **Overwatch seat.** The security room's computer shows every camera live and can lock doors, flip turrets and
+  send guards after a rival. The seated player's body stays in the world, exposed. (`overwatch.rs`: every security
+  computer is a seat; a hit throws the operator out; a multitool or EMP cuts its power.)
+- [x] **Sector lockdowns.** Terminals seal blast doors and switch on the level's hazards (gas, steam, electrified
+  water, fire) for a while, with a cooldown. (`lockdown.rs`; sectors per map in the data, sealed from a seat.)
+- [x] **Framing.** Guards who find a body or a dropped weapon blame its owner: plant a rival's gun beside your
+  victim and the level hunts him. (`framing.rs`: weapons registered to their owners, the dead drop theirs.)
+- [x] **Killphrases.** Each player gets a three-word phrase. Fragments hide in datacubes, emails and
+  interrogations; saying all three to a rival's face kills him at once. Works as an option in any Modern mode.
+  (`killphrase.rs`: a new phrase each life; the "emails" are intercepted messages at the security computers.
+  Its own standalone mode comes with Phase 4.)
+- [x] **Counter table.** Every power has an answer (cloak against Vision and thermal, radar transparency against
   eyes, hacked turrets against EMP, uniforms against a close look, Overwatch against cutting the room's power),
-  kept in data and tested in playtests.
+  kept in data. (`counters.rs` + data `counters`; still to be tuned in playtests.)
 
 ## Phase 4: Modern modes
 

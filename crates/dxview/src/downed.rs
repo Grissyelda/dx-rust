@@ -236,6 +236,8 @@ pub fn downed_system(
         crate::living::add_ping(r.pos + DVec3::Z * 40.0, r.id, PING_SECS, crate::living::Audience::Player(me_id).code());
     }
     let name = target.map(|r| r.name).unwrap_or_default();
+    // Killphrases (killphrase.rs): he gives up a word of his phrase too.
+    crate::killphrase::learn_next(id);
     crate::netplay::tell(id, &format!("{} interrogated you.", crate::travel::player_name()));
     hud.text = if others.is_empty() { format!("{name} gave nothing away: nobody else is out there.") } else { format!("{name} talked: {} rival{} marked.", others.len(), if others.len() == 1 { "" } else { "s" }) };
     hud.time_left = 4.0;

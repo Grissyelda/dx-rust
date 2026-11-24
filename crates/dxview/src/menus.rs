@@ -2039,10 +2039,26 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             f = frame(assets, "MenuScreenDisplay");
             f.class = class.to_string();
             f.title = "Match Settings".into();
-            let choices = match crate::deathmatch::rules().filter(|r| r.classic()) {
+            let classic = crate::deathmatch::rules().filter(|r| r.classic());
+            let choices = match &classic {
                 Some(r) => classic_match_choices(r.classic.game),
                 None => match_choices(),
             };
+            if classic.is_none() {
+                // Modern: the Phase 3 mechanics have a page of their own (Mechanics..., left of the bar's right side).
+                let at = f.actions.iter().rposition(|a| a.0 != 2).map_or(0, |i| i + 1);
+                f.actions.insert(at, (0, ACT_DISPLAY_ADVANCED, "Mechanics...".into(), "MenuScreenMechanics".into()));
+            }
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, choices.len(), slots);
+            Body::Choices { choices }
+        }
+        "MenuScreenMechanics" => {
+            // Ours: Modern multiplayer's Phase 3 mechanics, each the host's switch (deathmatch::rules_from_settings).
+            f = frame(assets, "MenuScreenDisplay");
+            f.class = class.to_string();
+            f.title = "Mechanics".into();
+            let choices = mechanics_choices();
             let slots = art_rows(&f);
             cut_empty_rows(&mut f, choices.len(), slots);
             Body::Choices { choices }
@@ -2392,6 +2408,58 @@ fn match_choices() -> Vec<Choice> {
             "|&Sound Radar",
             "On: rivals' footsteps and gunfire show as marks round your crosshair, pointing where the sound came from. Crouching, walking slowly and silenced weapons stay off it. Off: you listen for yourself.",
             ["Off", "On"].iter().map(|s| s.to_string()).collect(),
+        ),
+    ]
+}
+
+/// Modern Match Settings > Mechanics: the Phase 3 switches (uniforms, Overwatch, lockdowns, framing, killphrases).
+fn mechanics_choices() -> Vec<Choice> {
+    let e = |key: &str, label: &str, help: &str, on_by_default: bool| {
+        let v = if crate::settings::has(key) { crate::settings::get(key) } else if on_by_default { 1.0 } else { 0.0 };
+        Choice {
+            key: key.into(),
+            label: label.into(),
+            help: help.into(),
+            kind: ChoiceKind::Enum(vec!["Off".into(), "On".into()]),
+            value: v,
+            saved: v,
+            info_w: 140,
+            info_x: 270,
+            control_x: 270,
+            voff: 0,
+            dropdown: false,
+        }
+    };
+    vec![
+        e(
+            "DmUniforms",
+            "|&Uniforms",
+            "Use on a knocked-out guard takes his uniform: staff take you for one of them, rivals see a guard. Running, a weapon near guards or a restricted room makes staff suspicious, then blows the cover. A rival who looks at you closely, or has Vision running, sees who you are.",
+            true,
+        ),
+        e(
+            "DmOverwatch",
+            "|&Overwatch",
+            "Security computers are Overwatch seats: every camera live, the turrets, the doors nearby, and the guards sent after a rival the cameras see. Your body stays in the room - a hit throws you out, and a multitool or an EMP blast cuts the seat's power.",
+            true,
+        ),
+        e(
+            "DmLockdowns",
+            "|&Lockdowns",
+            "From an Overwatch seat, seal a sector: its doors shut and lock and its gas, steam, fire or current runs for half a minute, then a cooldown. A multitool forces a sealed door; a hazmat suit takes most of the hazard.",
+            true,
+        ),
+        e(
+            "DmFraming",
+            "|&Framing",
+            "Weapons are registered to their owners and a dying player drops his. Guards who find a body blame the owner of a gun lying beside it, else whoever did it; a gun lying about on its own makes its owner suspicious.",
+            true,
+        ),
+        e(
+            "DmKillphrases",
+            "|&Killphrases",
+            "Every player has a three-word phrase, new each life. Its words hide in datacubes, intercepted messages at the security computers and interrogations. Know all three and say them to his face (Use on him): he dies at once.",
+            false,
         ),
     ]
 }
@@ -5751,6 +5819,9 @@ fn activate(st: &mut Menus, top: usize, w: W, right: bool, hud: &mut ClassicHud,
                         crate::deathmatch::reapply_settings();
                         crate::deathmatch::room_go();
                     }
+                    if win.f.class == "MenuScreenMechanics" {
+                        crate::deathmatch::reapply_settings();
+                    }
                     crate::sound::play_player("DeusExSounds.UserInterface.Menu_OK", 0.25, 0.0);
                     acts.push(Act::Pop);
                 }
@@ -8291,6 +8362,7 @@ mod tests {
             "MenuScreenLoadout",
             "MenuScreenMods",
             "MenuScreenMatchSettings",
+            "MenuScreenMechanics",
             "KEYPAD",
             "MSG",
         ] {

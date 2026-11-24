@@ -835,11 +835,11 @@ mod tests {
             b.outputs(Input::Key(KeyCode::Escape)),
             vec![Input::Key(KeyCode::Escape)]
         );
-        // A mouse button can drive a keyboard action.
+        // A mouse button can drive a keyboard action (one no action has by default: Middle drops the item in hand).
         let reload = ACTIONS.iter().position(|a| a.0 == "Reload").unwrap();
-        b.map[reload] = Input::Mouse(MouseButton::Middle);
+        b.map[reload] = Input::Mouse(MouseButton::Back);
         assert_eq!(
-            b.outputs(Input::Mouse(MouseButton::Middle)),
+            b.outputs(Input::Mouse(MouseButton::Back)),
             vec![Input::Key(KeyCode::KeyR)]
         );
     }

@@ -214,6 +214,7 @@ pub fn charged_system(
 
     // Tech goggles: the light-amplification box covers the middle half of the screen.
     // AugVision (Vision Enhancement) draws the same light-amplification box (DrawVisionAugmentation, level 0).
+    GOGGLES_ON.store(active.has("TechGoggles") && !ph.dead, std::sync::atomic::Ordering::Relaxed);
     let goggles =
         (active.has("TechGoggles") || crate::abilities::aug_active("AugVision")) && !ph.dead && !crate::vision::active();
     **frame = if goggles {
@@ -240,4 +241,11 @@ pub fn charged_system(
             tf.scale = Vec3::new(h * aspect * 0.5, h * 0.5, 1.0);
         }
     }
+}
+
+static GOGGLES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tech goggles are on (counters.rs: they show a cloaked rival close in).
+pub fn goggles_on() -> bool {
+    GOGGLES_ON.load(std::sync::atomic::Ordering::Relaxed)
 }

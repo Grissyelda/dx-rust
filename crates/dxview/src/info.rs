@@ -259,6 +259,16 @@ impl InfoDisplay {
 }
 
 impl InfoDisplay {
+    /// A text of ours in the reading window (killphrase.rs datacubes), or closed if it's showing.
+    pub fn show_text(&mut self, blocker: usize, text: &str) -> Frobbed {
+        if self.open.as_ref().is_some_and(|o| o.blocker == blocker) {
+            self.open = None;
+            return Frobbed::Closed;
+        }
+        self.open = Some(Open { paras: vec![Para { text: text.to_string(), align: 0, color: INFO_TEXT, bold: false }], blocker, footer: None });
+        Frobbed::Opened(None)
+    }
+
     fn text(&mut self, system: &std::path::Path, package: &str, tag: &str) -> Option<String> {
         if tag.is_empty() {
             return None;

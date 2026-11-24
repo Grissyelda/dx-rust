@@ -209,6 +209,25 @@ pub struct DmRules {
     pub radar: bool,
     /// Modern: non-lethal takedowns leave a player down instead of dead (downed.rs).
     pub downed: bool,
+    /// Modern (Phase 3): a knocked-out guard's uniform passes its wearer off as staff (uniforms.rs).
+    #[serde(default = "yes")]
+    pub uniforms: bool,
+    /// Modern: security computers are Overwatch seats (overwatch.rs).
+    #[serde(default = "yes")]
+    pub overwatch: bool,
+    /// Modern: security computers seal sectors and set off their hazards (lockdown.rs).
+    #[serde(default = "yes")]
+    pub lockdowns: bool,
+    /// Modern: guards who find a body or a dropped weapon blame its owner (framing.rs).
+    #[serde(default = "yes")]
+    pub framing: bool,
+    /// Modern: every player has a three-word killphrase (killphrase.rs).
+    #[serde(default)]
+    pub killphrases: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for DmRules {
@@ -227,6 +246,11 @@ impl Default for DmRules {
             full_loadouts: false,
             radar: false,
             downed: true,
+            uniforms: true,
+            overwatch: true,
+            lockdowns: true,
+            framing: true,
+            killphrases: false,
         }
     }
 }
@@ -282,7 +306,17 @@ pub fn rules_from_settings(mode: Mode, friendly_fire: bool) -> DmRules {
         full_loadouts: crate::settings::get("DmLoadouts") > 0.5,
         radar: crate::settings::get("DmRadar") > 0.5,
         downed: !crate::settings::has("DmDowned") || crate::settings::get("DmDowned") > 0.5,
+        uniforms: on_unless_off("DmUniforms"),
+        overwatch: on_unless_off("DmOverwatch"),
+        lockdowns: on_unless_off("DmLockdowns"),
+        framing: on_unless_off("DmFraming"),
+        killphrases: crate::settings::get("DmKillphrases") > 0.5,
     }
+}
+
+/// A Match Settings switch that is on until the host turns it off.
+fn on_unless_off(key: &str) -> bool {
+    !crate::settings::has(key) || crate::settings::get(key) > 0.5
 }
 
 /// The host's Classic rules for a game type, from his Classic Match Settings (settings Cmp*; the game types that
@@ -340,6 +374,11 @@ pub fn classic_rules_from_settings(game: ClassicGame) -> DmRules {
         full_loadouts: false,
         radar: false,
         downed: false,
+        uniforms: false,
+        overwatch: false,
+        lockdowns: false,
+        framing: false,
+        killphrases: false,
     }
 }
 
@@ -351,8 +390,9 @@ pub fn rules() -> Option<DmRules> {
     g.clone().or_else(env_rules)
 }
 
-/// DXVIEW_DM=dm|tdm|cdm|cbasic|cadv|ctdm[,map][,frags][,minutes][,off|light|full][,radar][,nodown]: deathmatch rules without
-/// the menus (test runs; the c* ones are Classic game types; then Modern's level activity, sound radar, no downed state).
+/// DXVIEW_DM=dm|tdm|cdm|cbasic|cadv|ctdm[,map][,frags][,minutes][,off|light|full][,radar][,nodown][,kp][,nouniform]
+/// [,nooverwatch][,nolockdown][,noframing]: deathmatch rules without the menus (test runs; the c* ones are Classic game
+/// types; then Modern's level activity, sound radar and the Phase 3 mechanics).
 fn env_rules() -> Option<DmRules> {
     let v = env_val!("DXVIEW_DM")?;
     let mut it = v.split(',');
@@ -390,6 +430,11 @@ fn env_rules() -> Option<DmRules> {
         match extra {
             "radar" => r.radar = true,
             "nodown" => r.downed = false,
+            "kp" => r.killphrases = true,
+            "nouniform" => r.uniforms = false,
+            "nooverwatch" => r.overwatch = false,
+            "nolockdown" => r.lockdowns = false,
+            "noframing" => r.framing = false,
             _ => {}
         }
     }
@@ -397,6 +442,11 @@ fn env_rules() -> Option<DmRules> {
         r.activity = Activity::Off;
     }
     Some(r)
+}
+
+/// DXVIEW_DM's rules (test runs: the offline test host's room plays them).
+pub fn test_rules() -> Option<DmRules> {
+    env_rules()
 }
 
 /// The room's rules changed (the host's Host Room, or the host's Rules for a joiner). Co-op clears them.
@@ -483,6 +533,9 @@ pub struct MapEntry {
     /// Modern: restricted areas (living.rs): being seen in one by the level's staff raises heat.
     #[serde(default)]
     pub restricted: Vec<RestrictedArea>,
+    /// Modern: lockdown sectors (lockdown.rs).
+    #[serde(default)]
+    pub lockdowns: Vec<LockdownSpec>,
 }
 
 /// A position in map units.
@@ -494,6 +547,32 @@ pub struct RestrictedArea {
     pub name: String,
     pub at: Pos,
     pub radius: f32,
+    /// Only where the centre can be seen from (the room, not the corridor behind its wall).
+    #[serde(default = "yes")]
+    pub in_sight: bool,
+}
+
+/// A lockdown sector (lockdown.rs): a security computer seals its doors and sets off its hazard for `secs`, then
+/// the sector can't be locked down again for `cooldown`.
+#[derive(Deserialize, Clone, Debug)]
+pub struct LockdownSpec {
+    pub name: String,
+    /// The security computers (actor names) that control it.
+    pub terminals: Vec<String>,
+    /// Doors sealed (mover Tags): closed and locked while it runs.
+    pub doors: Vec<String>,
+    /// "gas", "steam", "shock" or "fire" (lockdown.rs; damage per second in the data's `mechanics.hazard_dps`).
+    pub hazard: String,
+    /// Where the hazard is: points; empty = beside each sealed door. "shock" electrifies water zones instead: those
+    /// tagged `zone`, and those the points are in.
+    #[serde(default)]
+    pub spots: Vec<Pos>,
+    #[serde(default)]
+    pub zone: String,
+    #[serde(default)]
+    pub secs: Option<f32>,
+    #[serde(default)]
+    pub cooldown: Option<f32>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -711,6 +790,12 @@ pub struct Data {
     /// Modern: name-tag colours and calling cards (cards.rs).
     #[serde(default)]
     pub cosmetics: crate::cards::Cosmetics,
+    /// Modern (Phase 3): uniforms, Overwatch, lockdowns, framing, killphrases (mech.rs).
+    #[serde(default)]
+    pub mechanics: crate::mech::MechTuning,
+    /// Modern: every power and its answer (counters.rs).
+    #[serde(default)]
+    pub counters: Vec<crate::counters::Counter>,
 }
 
 /// Modern loadouts (data `loadouts`).
@@ -1350,6 +1435,8 @@ pub fn method(weapon: &str, kind: &str) -> String {
     match kind {
         "Poison" | "PoisonEffect" => return " with deadly poison!".into(),
         "Burned" | "Flamed" => return " with excessive burning!".into(),
+        // Modern (killphrase.rs): three words said to his face.
+        "Killphrase" => return " with his own killphrase!".into(),
         _ => {}
     }
     if weapon.is_empty() {
@@ -1387,8 +1474,9 @@ fn class_defaults(class: &str) -> Vec<unreal_pkg::props::Property> {
 /// the victory check). `method`: method() for the line.
 pub fn host_died(victim: u8, killer: Option<u8>, weapon: &str, method: &str) -> KillNews {
     let mut news = KillNews::default();
-    // A new life starts with no heat (living.rs).
+    // A new life starts with no heat (living.rs), and a new killphrase (killphrase.rs).
     crate::living::died(victim);
+    crate::killphrase::host_died(victim);
     let r = rules().unwrap_or_default();
     let mut g = HOST.lock().unwrap_or_else(|e| e.into_inner());
     let Some(h) = g.as_mut() else { return news };
@@ -1952,6 +2040,8 @@ pub fn respawn_here(
     let (at, yaw) = spawn_point(lvl, team_of(my_id()), &others())?;
     *ph = crate::ai::PlayerHealth::default();
     crate::downed::reset();
+    // Phase 3: no uniform, no seat, nothing registered from the last life (mech.rs).
+    crate::mech::new_life();
     player.body = imsim_core::movement::Character::new(at);
     player.body.physics = imsim_core::movement::Physics::Falling;
     player.noclip = false;
@@ -2185,6 +2275,31 @@ mod tests {
             let named = m.keep.iter().chain(m.loot.iter().flat_map(|t| t.actors.iter())).chain(m.codes.iter().flat_map(|c| c.devices.iter()));
             for a in named {
                 assert!(have.contains(&a.to_ascii_lowercase()), "{}: no actor {a}", m.file);
+            }
+            // Phase 3: lockdown terminals are security computers of the map, their doors movers' Tags, their
+            // hazards known; restricted rooms are inside the level.
+            let Ok(lvl) = dx_level::load_level(std::path::Path::new(root), &format!("{}.dx", m.file)) else { continue };
+            for l in &m.lockdowns {
+                assert!(matches!(l.hazard.as_str(), "gas" | "steam" | "shock" | "fire"), "{}: {} hazard {}", m.file, l.name, l.hazard);
+                for t in &l.terminals {
+                    assert!(lvl.actors.iter().any(|a| a.name.eq_ignore_ascii_case(t) && a.class == "ComputerSecurity"), "{}: {} terminal {t}", m.file, l.name);
+                }
+                for d in &l.doors {
+                    assert!(lvl.movers.iter().any(|mv| mv.tag.eq_ignore_ascii_case(d)), "{}: {} door {d}", m.file, l.name);
+                }
+                if l.hazard == "shock" {
+                    let by_tag = !l.zone.is_empty() && lvl.zone_rules.iter().any(|z| z.tag.eq_ignore_ascii_case(&l.zone));
+                    let by_spot = l.spots.iter().any(|p| {
+                        let z = lvl.collision.zone_at(glam::DVec3::new(p.0 as f64, p.1 as f64, p.2 as f64));
+                        z > 0 && lvl.zone_rules.get(z as usize).is_some_and(|r| r.class.to_ascii_lowercase().contains("water"))
+                    });
+                    assert!(by_tag || by_spot, "{}: {} has no water to electrify", m.file, l.name);
+                }
+            }
+            for r in &m.restricted {
+                let p = glam::DVec3::new(r.at.0 as f64, r.at.1 as f64, r.at.2 as f64);
+                assert!(lvl.collision.zone_at(p) > 0, "{}: {} centre outside the level", m.file, r.name);
+                assert!((150.0..=500.0).contains(&r.radius), "{}: {} radius", m.file, r.name);
             }
         }
     }

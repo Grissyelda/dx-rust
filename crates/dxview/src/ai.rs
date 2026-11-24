@@ -3655,11 +3655,28 @@ pub fn npc_system(
                 (c.radius > 0.0).then(|| crate::living::StaffEye { blocker: n.blocker, eye: eye_of(c), yaw: n.yaw, sight: n.sight_radius })
             })
             .collect();
-        let mut players: Vec<(u8, DVec3)> = pawns.iter().filter(|p| !p.dead).filter_map(|p| p.net_player.map(|id| (id, p.pos))).collect();
+        let mut players: Vec<(u8, DVec3, DVec3)> = pawns.iter().filter(|p| !p.dead).filter_map(|p| p.net_player.map(|id| (id, p.pos, p.vel))).collect();
         if !ph.dead {
-            players.push((crate::deathmatch::my_id(), player_center));
+            players.push((crate::deathmatch::my_id(), player_center, player.body.velocity));
         }
-        crate::living::observe(lvl, dt, &heard, &hits_by, &staff, &players);
+        // The staff's bodies lying about (framing.rs looks for them; uniforms.rs strips them).
+        let me_id = crate::deathmatch::my_id();
+        let bodies: Vec<crate::living::StaffBody> = q
+            .iter()
+            .filter(|(n, ..)| n.net.is_none() && n.net_player.is_none() && !n.animal && n.state == NpcState::Dead && !n.hp_body.robot)
+            .map(|(n, d, ..)| crate::living::StaffBody {
+                blocker: n.blocker,
+                pos: d.body.location,
+                knocked_out: n.knocked_out,
+                killer: if n.killer_bind.eq_ignore_ascii_case("JCDenton") {
+                    Some(me_id)
+                } else {
+                    n.killer_bind.strip_prefix("NetPlayer").and_then(|x| x.parse::<u8>().ok())
+                },
+                hidden: n.carried || crate::scriptworld::is_hidden(n.actor),
+            })
+            .collect();
+        crate::living::observe(lvl, dt, &heard, &hits_by, &staff, &players, &bodies);
     }
 
     let ai_log = walk_test.is_some() || env_on!("DXVIEW_AILOG");

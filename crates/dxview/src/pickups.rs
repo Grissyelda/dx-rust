@@ -279,6 +279,11 @@ struct FrobCx<'a> {
 fn frob_mate(cx: &mut FrobCx, id: u8) {
     let Some((name, health, dead)) = crate::netplay::mate(id) else { return };
     let has = cx.inv.0.items.iter().any(|i| i.def.class == "MedKit");
+    // Modern (killphrase.rs): his whole phrase known, Use says it to his face.
+    if crate::killphrase::can_speak(id) && crate::netplay::mate_down(id).is_none_or(|(_, ours)| !ours) {
+        crate::killphrase::speak(id);
+        return;
+    }
     // Downed (downed.rs): a teammate's medkit revives; a rival's multitool interrogates.
     if let Some((true, ours)) = crate::netplay::mate_down(id) {
         let msg = if ours {
@@ -689,6 +694,10 @@ fn frob_mover(cx: &mut FrobCx, idx: usize, picking: &mut ResMut<movers::Picking>
         "FROB mover {} ({})",
         level.movers[idx].name, level.movers[idx].tag
     );
+    // Modern (lockdown.rs): a multitool forces a door a lockdown sealed.
+    if crate::lockdown::try_override(idx, weapons.held.as_ref().is_some_and(|h| h.stats.class == "Multitool"), hud) {
+        return;
+    }
     // DeusExMover.Frob with the NanoKey ring in hand: a door that takes a key it has toggles its lock (and
     // every mover with the same Tag).
     // ParseRightClick is DoFrob(Self, None): only a left click works the door with what's in hand.
@@ -849,6 +858,8 @@ fn take_pickup(
     class: &str,
     props: &[Property],
 ) -> bool {
+    // Framing (framing.rs): a weapon stays registered to its owner.
+    crate::framing::picked_up(class, props);
     // AugmentationCannister: what it holds (AddAugs) is kept with it for the medical bot.
     if class == "AugmentationCannister" {
         let aug = |k: u32| {
@@ -968,6 +979,10 @@ fn frob_body(
         ((*seed >> 33) as u32) % 4
     };
     let mut msgs: Vec<String> = Vec::new();
+    // Modern (uniforms.rs): Use on a knocked-out guard takes his uniform first.
+    if crate::uniforms::try_take(npc.actor, &level.actors[npc.actor].class, npc.knocked_out, hud) {
+        return;
+    }
     // Multiplayer: bodies are everyone's - a joiner's search is the host's to resolve (net_give_system shows what
     // he found); nobody else finds it again.
     if npc.net.is_some() && crate::netplay::is_client() {
@@ -1403,6 +1418,11 @@ fn frob_device(
         crate::sound::play("DeusExSounds.Generic.WeaponPickup", at, 0.5 + crate::sound::frand() * 0.25, 256.0, 0.95 + crate::sound::frand() * 0.1);
         return;
     }
+    // Modern (overwatch.rs): a security computer is an Overwatch seat.
+    let multitool = cx.weapons.held.as_ref().is_some_and(|h| h.stats.class == "Multitool");
+    if crate::overwatch::intercept(blockers.list[b].actor, &a.class, multitool, &mut cx.hud) {
+        return;
+    }
     // Computers and ATMs log you in (Computers.Frob / ATM.Frob).
     if crate::computers::is_terminal(&a.class) {
         crate::computers::frob(blockers.list[b].actor);
@@ -1417,6 +1437,11 @@ fn frob_device(
     if crate::classtree::is_a(&a.class, "InformationDevices") || find(&a.props, "textTag").is_some() {
         let assets = &mut cx.assets;
         let tag = crate::devices::name_prop(&a.props, "textTag");
+        // Modern (killphrase.rs): the match's own datacubes.
+        if let Some(text) = crate::killphrase::cube_text(&tag) {
+            info.show_text(b, &text);
+            return;
+        }
         let str_p = |k: &str, d: &str| match find(&a.props, k) {
             Some(unreal_pkg::props::Value::Str(v)) => v.clone(),
             _ => d.to_string(),

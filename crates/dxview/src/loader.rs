@@ -511,6 +511,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::mech::reset_level();
     crate::reskin::reset_level();
     crate::tnmpuzzle::reset_level();
     crate::tnmcheats::reset_level();
@@ -867,6 +868,31 @@ fn dev_goto(world: &mut World) {
             world.resource_mut::<crate::pickups::FrobRequest>().0 = true;
             return;
         }
+        // "secs;<ActorName>;knockout": that pawn is knocked out (uniform tests); "secs;<ActorName>;strip": the player
+        // takes his uniform, as Use on the body would (uniforms.rs); "secs;<n>;lockdown": seal sector n (lockdown.rs).
+        Some("knockout") => {
+            crate::ai::world_req(crate::ai::WorldReq::KnockOut(crate::ai::Sel::Pick { class: None, tag: Some(map.to_string()), bind: None }));
+            println!("GOTO knockout {map}");
+            return;
+        }
+        Some("strip") => {
+            let lvl = &world.resource::<crate::LevelRes>().0;
+            let target = lvl.actors.iter().position(|a| a.name.eq_ignore_ascii_case(map)).map(|i| (i, lvl.actors[i].class.clone()));
+            if let Some((i, class)) = target {
+                let ko = world.query::<&crate::ai::Npc>().iter(world).find(|n| n.actor == i).map(|n| n.knocked_out && n.state == crate::ai::NpcState::Dead);
+                let mut hud = world.resource_mut::<crate::movers::HudMessage>();
+                let took = crate::uniforms::try_take(i, &class, ko.unwrap_or(false), &mut hud);
+                println!("GOTO strip {map}: knocked out {ko:?}, took {took}");
+            }
+            return;
+        }
+        Some("lockdown") => {
+            if let Ok(i) = map.parse::<u8>() {
+                crate::lockdown::ask(i);
+                println!("GOTO lockdown {i}");
+            }
+            return;
+        }
         // "secs;;gunshot": a pistol shot's noise from the player (AI fight tests: wakes the guards that hear it).
         Some("gunshot") => {
             let at = world.resource::<crate::Player>().body.location;
@@ -927,10 +953,18 @@ fn dev_goto(world: &mut World) {
             let lvl = &world.resource::<crate::LevelRes>().0;
             if let Some(i) = lvl.actors.iter().position(|a| a.name.eq_ignore_ascii_case(map)) {
                 let class = lvl.actors[i].class.clone();
+                let lvl_props = lvl.actors[i].props.clone();
                 let ev = crate::devices::name_prop(&lvl.actors[i].props, "Event");
                 let code = Some(crate::devices::code_of(&lvl.actors[i].props)).filter(|c| !c.is_empty()).unwrap_or_else(|| "1234".to_string());
-                if crate::computers::is_terminal(&class) {
+                let seat = crate::overwatch::enabled() && crate::overwatch::is_seat(&class);
+                if crate::computers::is_terminal(&class) && !seat {
                     crate::computers::frob(i);
+                } else if seat {
+                    // An Overwatch seat: through the player's Use (pickups.rs), as at the computer.
+                    if let Some(b) = world.resource::<crate::actors::Blockers>().list.iter().position(|c| c.actor == i) {
+                        *crate::pickups::FORCE_DEVICE.lock().unwrap() = Some(b);
+                        world.resource_mut::<crate::pickups::FrobRequest>().0 = true;
+                    }
                 } else if class.starts_with("Keypad") {
                     let b = world.resource::<crate::actors::Blockers>().list.iter().position(|c| c.actor == i);
                     if let Some(b) = b {
@@ -943,6 +977,7 @@ fn dev_goto(world: &mut World) {
                         if crate::fixtures::is_fixture(&class) {
                             crate::fixtures::frob(b);
                         } else if crate::classtree::is_a(&class, "InformationDevices")
+                            || !crate::devices::name_prop(&lvl_props, "textTag").is_empty()
                             || crate::classtree::is_a(&class, "TNMInformationDevices")
                             || crate::devices::is_reader(&class)
                         {
