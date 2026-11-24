@@ -1136,14 +1136,14 @@ impl Enhance {
         if crate::touch::enabled() {
             Self::touch_items(&mut items);
         }
-        // Android is Classic only: no Modern feature to turn on one by one, no mods.
-        if crate::platform::android() {
+        // Classic-only phones (gpuinit::modern_capable): no Modern feature to turn on one by one, no mods.
+        if crate::platform::classic_only() {
             items.retain(|c| !crate::remaster::modern_only(&c.key));
         }
         Enhance {
             items,
             search: Edit::new(40),
-            sel: Some(if crate::platform::android() { Row::Group(0) } else { Row::Master }),
+            sel: Some(if crate::platform::classic_only() { Row::Group(0) } else { Row::Master }),
             scroll: 0,
             open: Default::default(),
             modern: crate::remaster::is_modern(),
@@ -1570,8 +1570,8 @@ impl Enhance {
                 .map(Row::Item)
                 .collect();
         }
-        // (Android is Classic only: no master switch.)
-        let mut rows = if crate::platform::android() { Vec::new() } else { vec![Row::Master] };
+        // (Classic-only phones: no master switch.)
+        let mut rows = if crate::platform::classic_only() { Vec::new() } else { vec![Row::Master] };
         for (gi, g) in self.groups().iter().enumerate() {
             rows.push(Row::Group(gi));
             if self.open.contains(g) {
@@ -1863,8 +1863,8 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                     at,
                     MenuBtn { label: "Enhancements".into(), y, action: 1, invoke: "MenuScreenEnhancements".into(), key: String::new(), enabled: true },
                 );
-                // Ours: Mods (the mod manager; not on Android, which plays without mods).
-                if !crate::platform::android() {
+                // Ours: Mods (the mod manager; not on Classic-only phones, which play without mods).
+                if !crate::platform::classic_only() {
                     // The art has no well for it: the Enhancements well is drawn twice (as the main menu's
                     // Achievements) and Previous Menu moves down a row.
                     f.dups.push((y - 9, 36));
@@ -6450,8 +6450,8 @@ fn mp_host_choices() -> Vec<Choice> {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
     let modern = crate::remaster::is_modern();
     vec![
-        if crate::platform::android() {
-            mp_choice("MpLook", "|&Look", "Android plays Classic: the original game for everyone in the room.", s(&["Classic"]), 0)
+        if crate::platform::classic_only() {
+            mp_choice("MpLook", "|&Look", "This phone plays Classic: the original game for everyone in the room.", s(&["Classic"]), 0)
         } else {
             mp_choice("MpLook", "|&Look", &mp_look_help(!modern), s(&["Classic", "Modern"]), if modern { 1 } else { 0 })
         },
@@ -6478,7 +6478,7 @@ fn mp_host_choices() -> Vec<Choice> {
 /// Game Mode's values for the look: Classic offers the original's four game types (menuchoice_gametype), Modern
 /// ours. Android hosts co-op only.
 fn mp_mode_values(classic: bool) -> Vec<String> {
-    let v: &[&str] = if crate::platform::android() {
+    let v: &[&str] = if crate::platform::classic_only() {
         &["Co-op"]
     } else if classic {
         &["Co-op", "Deathmatch", "Basic Team DM", "Advanced Team DM", "Custom Team DM"]

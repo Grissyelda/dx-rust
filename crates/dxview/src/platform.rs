@@ -26,9 +26,27 @@ pub fn clipboard_set(text: &str) -> Result<(), String> {
     }
 }
 
-/// Running on Android (phones and tablets): Classic only, touch controls, the game folder found on the device.
+/// Running on Android (phones and tablets): touch controls, the game folder found on the device.
 pub const fn android() -> bool {
     cfg!(target_os = "android")
+}
+
+/// The Classic game only, without mods: Android phones whose GPU isn't a Snapdragon (Adreno) one - Mali and the
+/// rest (gpuinit::modern_capable).
+pub fn classic_only() -> bool {
+    android() && !crate::gpuinit::modern_capable()
+}
+
+/// Open a web page in the system's browser.
+pub fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android::open_url(url)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        modkit::catalog::open_page(url)
+    }
 }
 
 static BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

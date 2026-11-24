@@ -111,9 +111,19 @@ fn mesh_screen(ma: &dx_level::actors::MeshActor, scale: f64, def: &ScreenDef) ->
     if tris.is_empty() {
         return None;
     }
-    // Connected panels (shared corners, to 0.05 units).
+    // Panels: triangles sharing a corner (to 0.05 units) AND lying in one plane. (The original monitor's three
+    // panels - the middle one and the two wings angled toward the viewer - share their corners: joined on corners
+    // alone they were squared into one wide rectangle in the middle's plane, which cut through both wings.)
     let key = |p: DVec3| ((p.x * 20.0).round() as i64, (p.y * 20.0).round() as i64, (p.z * 20.0).round() as i64);
-    let mut owner: std::collections::HashMap<(i64, i64, i64), usize> = Default::default();
+    let plane = |t: &[DVec3; 3]| {
+        let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+        (n, n.dot(t[0]))
+    };
+    let coplanar = |a: &[DVec3; 3], b: &[DVec3; 3]| {
+        let ((na, _), (nb, db)) = (plane(a), plane(b));
+        na.dot(nb).abs() > 0.995 && a.iter().all(|p| (nb.dot(*p) - db).abs() < 0.3)
+    };
+    let mut at_corner: std::collections::HashMap<(i64, i64, i64), Vec<usize>> = Default::default();
     let mut parent: Vec<usize> = (0..tris.len()).collect();
     fn root(p: &mut [usize], mut i: usize) -> usize {
         while p[i] != i {
@@ -124,15 +134,14 @@ fn mesh_screen(ma: &dx_level::actors::MeshActor, scale: f64, def: &ScreenDef) ->
     }
     for (ti, t) in tris.iter().enumerate() {
         for c in t {
-            match owner.get(&key(*c)) {
-                Some(&o) => {
+            let list = at_corner.entry(key(*c)).or_default();
+            for &o in list.iter() {
+                if coplanar(t, &tris[o]) {
                     let (ra, rb) = (root(&mut parent, ti), root(&mut parent, o));
                     parent[ra] = rb;
                 }
-                None => {
-                    owner.insert(key(*c), ti);
-                }
             }
+            list.push(ti);
         }
     }
     let mut groups: std::collections::HashMap<usize, Vec<usize>> = Default::default();
@@ -450,7 +459,11 @@ pub fn hide_glass_system(
     let want = SESSION
         .lock()
         .ok()
-        .and_then(|s| s.as_ref().filter(|s| s.kind == Kind::Computer && s.phase != Phase::Closing).and_then(|s| s.mesh_actor));
+        .and_then(|s| s.as_ref().filter(|s| s.kind == Kind::Computer && s.phase != Phase::Closing).and_then(|s| s.mesh_actor.map(|m| (m, s.rect, s.off))));
+    let (want, rect, off) = match want {
+        Some((m, r, o)) => (Some(m), Some(r), o),
+        None => (None, None, DVec3::ZERO),
+    };
     if want.is_none() {
         for e in hidden.drain(..) {
             if let Ok((_, mut v)) = parts.get_mut(e) {
@@ -471,12 +484,33 @@ pub fn hide_glass_system(
         for c in kids.iter() {
             let Ok((m3, mut v)) = parts.get_mut(c) else { continue };
             let Some(pi) = a.parts.iter().find(|(h, _)| *h == m3.0).map(|(_, i)| *i) else { continue };
-            if ma.parts.get(pi).is_some_and(|p| matches!(p.class, dx_level::SurfaceClass::Translucent | dx_level::SurfaceClass::Modulated)) {
+            let Some(part) = ma.parts.get(pi) else { continue };
+            if !matches!(part.class, dx_level::SurfaceClass::Translucent | dx_level::SurfaceClass::Modulated) {
+                continue;
+            }
+            // Only glass in front of the live picture goes (the original monitor's angled wings stay lit beside it:
+            // the working terminal is the model's own middle panel).
+            if rect.is_some_and(|r| glass_in_front(ma, part, &r, off)) {
                 v.set_if_neq(Visibility::Hidden);
                 hidden.push(c);
             }
         }
     }
+}
+
+/// Whether a see-through part has a triangle in front of the screen (toward the viewer, past the lifted picture)
+/// over the screen's own area: drawn there it would wash the picture out.
+fn glass_in_front(ma: &dx_level::actors::MeshActor, part: &dx_level::actors::MeshPart, r: &Rect3, off: DVec3) -> bool {
+    let local = |q: [f32; 3]| [q[0] as f64, q[1] as f64, q[2] as f64];
+    part.indices.chunks_exact(3).any(|t| {
+        let ps: Vec<DVec3> = t.iter().map(|&i| to_world(ma, 1.0, local(part.positions[i as usize])) + off).collect();
+        let mid = (ps[0] + ps[1] + ps[2]) / 3.0;
+        ps.iter().chain(std::iter::once(&mid)).any(|p| {
+            let q = *p - r.bl;
+            let (x, y, d) = (q.dot(r.right), q.dot(r.up), q.dot(r.n));
+            d > 0.6 && x > 0.5 && x < r.w - 0.5 && y > 0.5 && y < r.h - 0.5
+        })
+    })
 }
 
 /// A transform putting a quad (facing +Z, X right, Y up) on a rectangle, `lift` units out of it.

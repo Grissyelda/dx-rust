@@ -7,14 +7,22 @@
 #   DXR_TARGET=<dir>                   build folder (default ~/.dxrust-build: keep it off /mnt/c, it's much faster)
 #   DXR_ROOT=<dir>                     the project folder (default: two folders up from the script)
 #   DXR_FAST=1                         thin LTO (a quicker, slightly slower-running build)
+#   DXR_ARCH=aarch64                   an Arm64 build (Arm Linux boards / handhelds; run it on an Arm64 machine such as
+#                                      GitHub's ubuntu-22.04-arm runner): <out>/dxrust-linux-arm64.tar.gz
 set -euo pipefail
 # DXR_ROOT = the project folder (needed when the script comes in on stdin, as the builder runs it).
 cd "${DXR_ROOT:-$(dirname "$0")/../..}"
 ROOT="$PWD"
 OUT="${1:-$ROOT/dist}"
 TD="${DXR_TARGET:-$HOME/.dxrust-build}"
-TRIPLE=x86_64-unknown-linux-gnu
+ARCH="${DXR_ARCH:-x86_64}"
+TRIPLE=$ARCH-unknown-linux-gnu
 GLIBC=2.35
+case "$ARCH" in
+  x86_64) PKG=dxrust-linux-x64.tar.gz ;;
+  aarch64) PKG=dxrust-linux-arm64.tar.gz ;;
+  *) echo "DXR_ARCH must be x86_64 or aarch64"; exit 1 ;;
+esac
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 command -v cargo-zigbuild >/dev/null || { echo "cargo-zigbuild is missing: run setup_linux.sh first"; exit 1; }
 mkdir -p "$OUT" "$TD"
@@ -24,7 +32,7 @@ mkdir -p "$OUT" "$TD"
 INC="$TD/include"
 mkdir -p "$INC"
 cp /usr/include/libudev.h "$INC/"
-export CFLAGS_x86_64_unknown_linux_gnu="-I$INC"
+export "CFLAGS_${ARCH}_unknown_linux_gnu=-I$INC"
 # The system's own .so files (ALSA, udev, GTK) may name newer glibc versions than 2.35; the Deck brings its own.
 export RUSTFLAGS="-C link-arg=-Wl,--allow-shlib-undefined"
 if [ "${DXR_FAST:-0}" = 1 ]; then
@@ -46,6 +54,6 @@ cp LICENSE "$STAGE/dxrust/LICENSE.txt"
 cp README.md THIRD_PARTY.md recomplauncher.json "$STAGE/dxrust/"
 sed -i 's/\r$//' "$STAGE/dxrust/dxrust.sh"
 chmod +x "$STAGE/dxrust/dxview" "$STAGE/dxrust/dxlauncher" "$STAGE/dxrust/dxrust.sh"
-rm -f "$OUT/dxrust-linux-x64.tar.gz"
-tar -C "$STAGE" -czf "$OUT/dxrust-linux-x64.tar.gz" dxrust
-echo "Built $OUT/dxrust-linux-x64.tar.gz ($(du -h "$OUT/dxrust-linux-x64.tar.gz" | cut -f1))"
+rm -f "$OUT/$PKG"
+tar -C "$STAGE" -czf "$OUT/$PKG" dxrust
+echo "Built $OUT/$PKG ($(du -h "$OUT/$PKG" | cut -f1))"

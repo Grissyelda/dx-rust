@@ -218,7 +218,7 @@ impl ModsView {
 
     pub fn page(&self) -> Option<String> {
         let e = self.entry()?;
-        modkit::catalog::open_page(e.page).err()
+        crate::platform::open_url(e.page).err()
     }
 }
 

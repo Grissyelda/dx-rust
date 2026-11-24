@@ -31,6 +31,10 @@ pub fn download_dirs() -> Vec<PathBuf> {
             v.push(PathBuf::from(h).join("Downloads"));
         }
     }
+    // Android: the phone's shared Download folder (the game has All Files Access to find Deus Ex).
+    if cfg!(target_os = "android") {
+        v.push(PathBuf::from("/storage/emulated/0/Download"));
+    }
     let data = unreal_pkg::paths::data_dir();
     v.push(data.join("Downloads"));
     if let Some(a) = unreal_pkg::mods::find_assets_near(&data) {

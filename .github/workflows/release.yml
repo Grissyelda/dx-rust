@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: "Which releases: any of macos, linux, android (comma-separated)"
+        description: "Which releases: any of macos, linux, arm64, android (comma-separated; arm64 = Arm Linux)"
         required: true
         default: "macos,linux"
         type: string
@@ -75,6 +75,36 @@ jobs:
         with:
           name: dxrust-steamdeck
           path: dist/dxrust-linux-x64.tar.gz
+          if-no-files-found: error
+
+  # Arm Linux (boards and handhelds, e.g. with Mali GPUs on Panfrost / Panthor): built natively on GitHub's Arm runner.
+  linux-arm64:
+    if: contains(inputs.platforms, 'arm64')
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-arm64
+      - name: System packages
+        run: sudo bash tools/release/setup_linux.sh root
+      - name: zig
+        run: python3 -m pip install --user ziglang
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Build
+        env:
+          DXR_ARCH: aarch64
+          DXR_TARGET: ${{ github.workspace }}/target/linux-arm64
+          DXR_FAST: ${{ inputs.fast == 'true' && '1' || '0' }}
+        run: bash tools/release/build_linux.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxrust-linux-arm64
+          path: dist/dxrust-linux-arm64.tar.gz
           if-no-files-found: error
 
   android:

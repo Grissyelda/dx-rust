@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Diegetic terminals fitted to the model (November 24)
+- The live terminal and the standby screen now sit exactly on the personal computer's own middle panel. The
+  model's three panels share their corners, and were joined into one wide flat screen that cut through the two
+  angled side panels; they are now told apart by plane. The original holographic side panels stay lit beside the
+  working screen, and only glass that would be in front of the picture is hidden while it's in use.
+
+### Android and Arm (November 24)
+- Snapdragon (Adreno) phones now get Modern mode, every enhancement and mods (Settings > Mods, the Tab switch,
+  Modern multiplayer rooms). Mod downloads are found in the phone's Download folder, and Get It opens the browser.
+  Other phones keep the Classic game.
+- The GPU is checked before anything else starts, so the look and the mods are decided from it.
+- Mali: Immortalis GPUs (Mali's newer name) now take the simple drawing path too, and so do Mali GPUs on Arm Linux
+  boards and handhelds (Panfrost / Panthor drivers).
+- Arm Linux builds: `DXR_ARCH=aarch64 tools/release/build_linux.sh` makes `dxrust-linux-arm64.tar.gz`, built on
+  GitHub's Arm runner by the release workflow (`arm64`) and the Release Builder's new Arm Linux row.
+- README: the Classic / Modern switch in motion.
+
 ### Menus (November 24)
 - Message boxes drawn over another menu (Multiplayer's "could not reach online services", confirmations) get a
   solid dark backing when menus are translucent, so the menu below no longer shows through their text.

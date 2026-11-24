@@ -33,6 +33,9 @@ underneath.
   - room codes, a public lobby browser, and direct codes that work without any server.
 - **Classic / Modern in one key.** Press **Tab** and the screen wipes between the game as it shipped and a modern
   look with every enhancement on, each individually toggleable (your own mix is remembered).
+
+  ![Pressing Tab on the Liberty Island dock: the screen wipes from Classic to Modern](docs/modern-switch.gif)
+
 - **A modern look**: remastered per-pixel lighting with relief maps, real-time shadows, ambient occlusion, bloom;
   rain and lightning storms, volumetric clouds, fog and light shafts; waves with reflections, an open sea, frosted
   glass, mirrors; grass and grown trees; a dynamic 3D skyline.
@@ -87,8 +90,11 @@ Settings and saves are in `~/Library/Application Support/DX RUST`. Resolutions a
 the pixels each way), so pick a smaller one for Modern if the frame rate is low. Turn on *Use F1, F2, etc. keys as
 standard function keys* for the aug keys.
 
-### Android (Classic)
-For 64-bit phones and tablets on Android 10 or newer with Vulkan, in Classic (no mods or Modern features).
+### Android
+For 64-bit phones and tablets on Android 10 or newer with Vulkan. Snapdragon (Adreno) phones get the whole game:
+Classic and Modern, and mods (*Settings > Mods*; downloads are found in the phone's `Download` folder). Phones with
+other GPUs (Arm Mali and the rest) play Classic without mods; Mali GPUs take a simpler drawing path that keeps them
+stable.
 1. Copy your whole *Deus Ex* folder (with `System`, `Maps`, `Textures`, `Sounds`) to the phone or SD card.
 2. Install `dxrust-android-arm64.apk`, start it and allow *All files access*: it searches the phone and starts the game.
 
@@ -96,8 +102,8 @@ For 64-bit phones and tablets on Android 10 or newer with Vulkan, in Classic (no
 firing. Use, Jump, Duck, Reload and Zoom sit above the belt, Lean on the left edge. Tap the HUD: belt slots, aug
 icons, the health figure (Health), the compass (Goals), the ammo display (change ammo). In menus a finger is the
 mouse (long press = right click, two fingers scroll). *Settings > Enhancements > Touch* has look speed, button size,
-opacity and optional gyro aim. Bluetooth and USB controllers work as on the PC, and Android joins and hosts Classic
-co-op. Saves are in `Android/data/com.dxrust.game/files`.
+opacity and optional gyro aim. Bluetooth and USB controllers work as on the PC. Snapdragon phones join any room;
+the others join and host Classic co-op. Saves are in `Android/data/com.dxrust.game/files`.
 
 ### Multiplayer
 Choose **Multiplayer** on the main menu.
@@ -182,11 +188,13 @@ Then:
 
 - **macOS app:** `./BUILD_MAC.sh` makes `dist/DX RUST.app` and `dist/dxrust-macos-arm64.zip` (the first build takes
   10-30 minutes).
-- **Linux / Steam Deck archive:** `tools/release/build_linux.sh` (cargo-zigbuild, glibc 2.35).
+- **Linux / Steam Deck archive:** `tools/release/build_linux.sh` (cargo-zigbuild, glibc 2.35). On an Arm64 machine,
+  `DXR_ARCH=aarch64 tools/release/build_linux.sh` makes `dxrust-linux-arm64.tar.gz` for Arm Linux boards and
+  handhelds (Mali GPUs there take the same simpler drawing path as Mali phones).
 - **Android APK:** `tools/release/build_android.sh` (Android SDK + NDK and `cargo-apk`).
 - **All releases from Windows:** `BUILD_BUILDER.bat` builds and opens `DXBuilder.exe`, the Release Builder. It
   makes the Windows zip on your PC, the Linux archive in WSL (its Setup tab installs WSL and the tools) or on
-  GitHub, and the macOS and Android builds on GitHub (`.github/workflows/release.yml`, from the code on GitHub, so
+  GitHub, and the macOS, Android and Arm Linux builds on GitHub (`.github/workflows/release.yml`, from the code on GitHub, so
   push first). It can then upload them to a draft GitHub release with the changelog's notes. Without the repository
   secrets `ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD`, every APK gets a new key, so installing a newer one
   means uninstalling the old one first.

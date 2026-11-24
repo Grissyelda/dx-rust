@@ -181,6 +181,20 @@ pub fn request_storage_access() {
     });
 }
 
+/// Open a web page in the browser (Intent.ACTION_VIEW): the mod manager's Get It.
+pub fn open_url(url: &str) -> Result<(), String> {
+    let ok = with_env(|env, act| {
+        let s = env.new_string(url)?;
+        let uri = env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&s)])?.l()?;
+        let action = env.new_string("android.intent.action.VIEW")?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;Landroid/net/Uri;)V", &[JValue::Object(&action), JValue::Object(&uri)])?;
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x1000_0000)])?;
+        env.call_method(act, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+        Ok(())
+    });
+    ok.ok_or_else(|| format!("couldn't open a browser: {url}"))
+}
+
 /// Start the app again from scratch (after the setup screen found the game): the launch intent in a fresh task,
 /// then this process ends and Android starts a new one for it.
 pub fn relaunch() -> ! {

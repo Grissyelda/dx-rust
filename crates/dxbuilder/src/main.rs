@@ -1,7 +1,8 @@
 //! DX RUST Release Builder: one window that builds the three releases into the project's dist\ folder.
 //! - Windows: here, with Rust (what BUILD_RELEASE.bat did): dxrust-windows-x64.zip.
 //! - Linux / Steam Deck: in WSL on this PC (tools/release/build_linux.sh), or on GitHub: dxrust-linux-x64.tar.gz.
-//! - Android (Classic): on GitHub (tools/release/build_android.sh): dxrust-android-arm64.apk.
+//! - Android: on GitHub (tools/release/build_android.sh): dxrust-android-arm64.apk.
+//! - Arm Linux (boards, handhelds): on GitHub's Arm runner (build_linux.sh, DXR_ARCH=aarch64): dxrust-linux-arm64.tar.gz.
 //! - macOS: on GitHub's Mac runners (.github/workflows/release.yml, through the GitHub CLI): dxrust-macos-arm64.zip.
 //! Settings are kept in builder.txt beside the exe.
 
@@ -26,6 +27,7 @@ enum Tab {
     Linux,
     Mac,
     Android,
+    Arm,
     GitHub,
     Setup,
 }
@@ -40,8 +42,10 @@ struct Cfg {
     win: bool,
     linux: bool,
     mac: bool,
-    /// Android (Classic): on GitHub.
+    /// Android: on GitHub.
     android: bool,
+    /// Arm Linux: on GitHub's Arm runner.
+    arm: bool,
     /// Linux / Steam Deck on GitHub instead of in WSL.
     linux_github: bool,
     fast: bool,
@@ -59,6 +63,7 @@ impl Default for Cfg {
             linux: true,
             mac: true,
             android: true,
+            arm: false,
             linux_github: false,
             fast: false,
         }
@@ -108,6 +113,7 @@ impl Cfg {
                 "Linux" => c.linux = b,
                 "Mac" => c.mac = b,
                 "Android" => c.android = b,
+                "ArmLinux" => c.arm = b,
                 "LinuxOnGitHub" => c.linux_github = b,
                 "Fast" => c.fast = b,
                 _ => {}
@@ -118,7 +124,7 @@ impl Cfg {
     fn save(&self) {
         let b = |x: bool| if x { "1" } else { "0" };
         let text = format!(
-            "Root={}\nVersion={}\nRepo={}\nBranch={}\nDistro={}\nWindows={}\nLinux={}\nMac={}\nAndroid={}\nLinuxOnGitHub={}\nFast={}\n",
+            "Root={}\nVersion={}\nRepo={}\nBranch={}\nDistro={}\nWindows={}\nLinux={}\nMac={}\nAndroid={}\nArmLinux={}\nLinuxOnGitHub={}\nFast={}\n",
             self.root,
             self.version,
             self.repo,
@@ -128,6 +134,7 @@ impl Cfg {
             b(self.linux),
             b(self.mac),
             b(self.android),
+            b(self.arm),
             b(self.linux_github),
             b(self.fast)
         );
@@ -279,13 +286,14 @@ struct Jobs {
     linux: Shared,
     mac: Shared,
     android: Shared,
+    arm: Shared,
     github: Shared,
     setup: Shared,
 }
 
 impl Jobs {
-    fn all(&self) -> [&Shared; 6] {
-        [&self.win, &self.linux, &self.mac, &self.android, &self.github, &self.setup]
+    fn all(&self) -> [&Shared; 7] {
+        [&self.win, &self.linux, &self.mac, &self.android, &self.arm, &self.github, &self.setup]
     }
     fn busy(&self) -> bool {
         self.all().iter().any(|j| lock(j).status.busy())
@@ -452,7 +460,7 @@ fn gh_json(gh: &str, args: &[&str]) -> Option<serde_json::Value> {
 /// One workflow run on GitHub for the macOS and / or Linux release: start it, follow its jobs, download what they
 /// made into dist\.
 #[allow(clippy::too_many_arguments)]
-fn github_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, gh: String, mac: bool, linux: bool, android: bool) {
+fn github_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, gh: String, mac: bool, linux: bool, android: bool, arm: bool) {
     std::thread::spawn(move || {
         let dist = cfg.dist();
         let _ = std::fs::create_dir_all(&dist);
@@ -467,6 +475,9 @@ fn github_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, g
         }
         if android {
             targets.push(("android", &jobs.android, "dxrust-android", "dxrust-android-arm64.apk"));
+        }
+        if arm {
+            targets.push(("arm64", &jobs.arm, "dxrust-linux-arm64", "dxrust-linux-arm64.tar.gz"));
         }
         for (_, j, _, _) in &targets {
             let mut j = lock(j);
@@ -672,7 +683,7 @@ fn release_thread(jobs: Arc<Jobs>, ctl: Arc<Ctl>, ctx: egui::Context, cfg: Cfg, 
         lock(g).begin(Some(dist.join("release_github.log")));
         lock(g).set(Status::Running("making the draft release".into()));
         let tag = format!("v{}", cfg.version());
-        let files: Vec<PathBuf> = ["dxrust-windows-x64.zip", "dxrust-linux-x64.tar.gz", "dxrust-macos-arm64.zip", "dxrust-android-arm64.apk"]
+        let files: Vec<PathBuf> = ["dxrust-windows-x64.zip", "dxrust-linux-x64.tar.gz", "dxrust-linux-arm64.tar.gz", "dxrust-macos-arm64.zip", "dxrust-android-arm64.apk"]
             .iter()
             .map(|f| dist.join(f))
             .filter(|p| p.is_file())
@@ -785,6 +796,7 @@ impl App {
             linux: Default::default(),
             mac: Default::default(),
             android: Default::default(),
+            arm: Default::default(),
             github: Default::default(),
             setup: Default::default(),
         };
@@ -830,18 +842,19 @@ impl App {
         let ctl = self.fresh_ctl();
         let gh_mac = cfg.mac;
         let gh_android = cfg.android;
+        let gh_arm = cfg.arm;
         let gh_linux = cfg.linux && cfg.linux_github;
         let local_linux = cfg.linux && !cfg.linux_github;
-        for (on, j) in [(cfg.win, &self.jobs.win), (cfg.linux, &self.jobs.linux), (cfg.mac, &self.jobs.mac), (cfg.android, &self.jobs.android)] {
+        for (on, j) in [(cfg.win, &self.jobs.win), (cfg.linux, &self.jobs.linux), (cfg.mac, &self.jobs.mac), (cfg.android, &self.jobs.android), (cfg.arm, &self.jobs.arm)] {
             if on {
                 lock(j).set(Status::Queued);
             }
         }
-        if gh_mac || gh_linux || gh_android {
+        if gh_mac || gh_linux || gh_android || gh_arm {
             match p.gh.clone() {
                 Some(gh) if p.gh_user.is_some() => {
                     lock(&self.jobs.github).set(Status::Queued);
-                    github_thread(self.jobs.clone(), ctl.clone(), ctx.clone(), cfg.clone(), gh, gh_mac, gh_linux, gh_android);
+                    github_thread(self.jobs.clone(), ctl.clone(), ctx.clone(), cfg.clone(), gh, gh_mac, gh_linux, gh_android, gh_arm);
                 }
                 _ => {
                     let why = "the GitHub CLI isn't installed or logged in (Setup tab)";
@@ -853,6 +866,9 @@ impl App {
                     }
                     if gh_android {
                         lock(&self.jobs.android).set(Status::Failed(why.into()));
+                    }
+                    if gh_arm {
+                        lock(&self.jobs.arm).set(Status::Failed(why.into()));
                     }
                 }
             }
@@ -988,7 +1004,7 @@ impl eframe::App for App {
                 // Android
                 ui.checkbox(&mut self.cfg.android, RichText::new("Android").strong());
                 ui.horizontal(|ui| {
-                    ui.label("Classic, an APK, on GitHub");
+                    ui.label("an APK, on GitHub");
                     match (&p.gh, &p.gh_user) {
                         (_, Some(_)) => ok(ui, "ready"),
                         (None, _) if p.running => warn(ui, "checking..."),
@@ -999,8 +1015,22 @@ impl eframe::App for App {
                 let (s, c) = status_line(&self.jobs.android);
                 ui.label(RichText::new(s).color(c));
                 ui.end_row();
+                // Arm Linux
+                ui.checkbox(&mut self.cfg.arm, RichText::new("Arm Linux").strong());
+                ui.horizontal(|ui| {
+                    ui.label("boards and handhelds, on GitHub's Arm runner");
+                    match (&p.gh, &p.gh_user) {
+                        (_, Some(_)) => ok(ui, "ready"),
+                        (None, _) if p.running => warn(ui, "checking..."),
+                        (None, _) => warn(ui, "GitHub CLI not installed (Setup tab)"),
+                        (Some(_), None) => warn(ui, "not logged in to GitHub (Setup tab)"),
+                    }
+                });
+                let (s, c) = status_line(&self.jobs.arm);
+                ui.label(RichText::new(s).color(c));
+                ui.end_row();
             });
-            if (self.cfg.mac || self.cfg.android || (self.cfg.linux && self.cfg.linux_github)) && p.gh_user.is_some() {
+            if (self.cfg.mac || self.cfg.android || self.cfg.arm || (self.cfg.linux && self.cfg.linux_github)) && p.gh_user.is_some() {
                 let what = p.commit.clone().unwrap_or_else(|| "?".into());
                 ui.label(
                     RichText::new(format!(
@@ -1015,7 +1045,7 @@ impl eframe::App for App {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let any = self.cfg.win || self.cfg.linux || self.cfg.mac || self.cfg.android;
+                let any = self.cfg.win || self.cfg.linux || self.cfg.mac || self.cfg.android || self.cfg.arm;
                 let go = ui.add_enabled(
                     !busy && root_ok && any,
                     egui::Button::new(RichText::new("  Build selected  ").strong()).min_size([150.0, 28.0].into()),
@@ -1058,6 +1088,7 @@ impl eframe::App for App {
                     (Tab::Linux, "Linux", &self.jobs.linux),
                     (Tab::Mac, "macOS", &self.jobs.mac),
                     (Tab::Android, "Android", &self.jobs.android),
+                    (Tab::Arm, "Arm Linux", &self.jobs.arm),
                     (Tab::GitHub, "GitHub", &self.jobs.github),
                     (Tab::Setup, "Setup", &self.jobs.setup),
                 ] {
@@ -1083,6 +1114,7 @@ impl eframe::App for App {
                 Tab::Linux => &self.jobs.linux,
                 Tab::Mac => &self.jobs.mac,
                 Tab::Android => &self.jobs.android,
+                Tab::Arm => &self.jobs.arm,
                 Tab::GitHub => &self.jobs.github,
                 Tab::Setup => &self.jobs.setup,
             };

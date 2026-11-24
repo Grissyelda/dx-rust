@@ -686,8 +686,8 @@ fn setup_mods(root: &String) {
     unreal_pkg::mods::add_assets(&launcher_lines, &mut mod_settings);
     let mut enabled = unreal_pkg::mods::enabled(&mod_settings);
     // DXVIEW_NO_MODS=1: the launcher's mods are left out (profile runs of the plain game).
-    // Android plays Classic, without mods.
-    if env_on!("DXVIEW_NO_MODS") || platform::android() {
+    // Android phones other than Snapdragon ones play Classic, without mods.
+    if env_on!("DXVIEW_NO_MODS") || platform::classic_only() {
         enabled.clear();
     }
     // DXVIEW_MODS="id=folder;id=folder": mods for test runs.
@@ -713,7 +713,7 @@ fn setup_mods(root: &String) {
     }
     // DDS override packs (Helios) installed the way kentie's renderer reads them, in the game's own Textures
     // folder: used without setting anything up in the launcher.
-    if !platform::android() && !enabled.iter().any(|(m, _)| m.id == "helios") {
+    if !platform::classic_only() && !enabled.iter().any(|(m, _)| m.id == "helios") {
         if let Some(m) = unreal_pkg::mods::def("helios") {
             if let Some(p) = unreal_pkg::mods::locate(m, &PathBuf::from(root).join("Textures")) {
                 enabled.push((m, p));
@@ -872,6 +872,8 @@ pub fn run() {
         std::process::exit(recomp::EXIT_NO_GAME);
     }
     prof::mem_mark("start");
+    // Android: which GPU this phone has decides the look and the mods (gpuinit::modern_capable), before either.
+    gpuinit::probe();
     match &tnm {
         Some(t) => tnmmode::setup(std::path::Path::new(&root), t),
         None => setup_mods(&root),
@@ -879,7 +881,7 @@ pub fn run() {
     // Modern deathmatch: the living level's guards are added to maps as they are read.
     living::install();
     prof::mem_mark("mods set up");
-    if platform::android() {
+    if platform::classic_only() {
         remaster::force_classic();
     } else {
         remaster::fill_new_modern_keys();

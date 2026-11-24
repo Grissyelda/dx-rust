@@ -870,7 +870,7 @@ pub fn host_registered(token: &str) {
 /// A Classic room is played on the plain game: the player's mods are switched off while he's in it (back on when
 /// he leaves); a map already up is rebuilt in place when that or the look's visual mod settings change.
 /// Android joins Classic rooms only (no Modern features, no mods there).
-const ANDROID_CLASSIC_ONLY: &str = "This room plays Modern. DX RUST on Android joins Classic rooms only.";
+const ANDROID_CLASSIC_ONLY: &str = "This room plays Modern. This phone's GPU joins Classic rooms only.";
 
 fn force_look(r: &Rules) {
     let modern = !r.classic;
@@ -1185,8 +1185,8 @@ pub fn health_scale() -> f32 {
 
 /// The Classic / Modern switch is the room's.
 pub fn look_locked() -> bool {
-    // (Android is Classic only.)
-    active() || crate::platform::android()
+    // (Classic-only phones keep Classic.)
+    active() || crate::platform::classic_only()
 }
 
 /// Seconds until this dead player gets up again (None = not waiting).
@@ -2534,11 +2534,11 @@ fn on_msg(n: &mut Net, role: Role, peer: u8, m: Msg, _lvl: &dx_level::Level) {
         (Role::Host, Msg::HackSet(a, v)) => sync(|s| s.hacks_in.push((a, v))),
         (Role::Host, Msg::HackAct(a, k)) => sync(|s| s.hack_acts_in.push((a, k))),
         // Joiner side.
-        (Role::Client, Msg::Welcome { you, map, rules }) if crate::platform::android() && !rules.classic => {
+        (Role::Client, Msg::Welcome { you, map, rules }) if crate::platform::classic_only() && !rules.classic => {
             let _ = (you, map);
             n.lost = Some(ANDROID_CLASSIC_ONLY.into());
         }
-        (Role::Client, Msg::Rules(r)) if crate::platform::android() && !r.classic => {
+        (Role::Client, Msg::Rules(r)) if crate::platform::classic_only() && !r.classic => {
             n.lost = Some(ANDROID_CLASSIC_ONLY.into());
         }
         (Role::Client, Msg::Welcome { you, map, rules }) => {
