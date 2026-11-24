@@ -7,8 +7,8 @@
 //! (side-job outcomes, the snow wolves, the mirror-Trestkon fight), the map's script functions and who noticed the
 //! player (the "not seen" flags), the ABI game's item construction.
 //!
-//! Left out: the cinematic Cerberus guns and SAM site (their aiming movers and projectile points), the warp-zone
-//! maze, the reversed music, snow following the intro camera.
+//! Also: the cinematic Cerberus guns and SAM site, the warp-zone maze, the reversed music; the snow (weather.rs's
+//! PrecipitationZones) follows the intro's camera.
 
 use super::*;
 
@@ -507,8 +507,24 @@ pub(super) fn pawn_killed(c: &mut Ctx, class: &str, knocked_out: bool) {
     }
 }
 
+/// The underground music runs backwards (ReverseMusic) until UnReverseMusic: the manager's bReversed.
+static REVERSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A new map has its own music manager (not reversed).
+pub(crate) fn reset_level() {
+    REVERSED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
     match f {
+        // uc: tnmMission23.ReverseMusic, tnmMission23.UnReverseMusic
+        // The file names come from the player's own script (the manager's OggFile fields each one sets).
+        "ReverseMusic" | "UnReverseMusic" => {
+            let rev = f == "ReverseMusic";
+            if REVERSED.swap(rev, std::sync::atomic::Ordering::Relaxed) != rev {
+                crate::tnmmode::retrack(script_music(f));
+            }
+        }
         "LandedChopperAppear" => {
             c.vehicle(ActorSel::tag("ROFLCopterLanding"), false);
             c.vehicle(ActorSel::tag("IntroChopper1PilotScene3"), false);

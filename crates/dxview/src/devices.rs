@@ -465,6 +465,8 @@ pub fn device_system(
         crate::projgen::event(&name, on);
         if on {
             crate::destruct::trigger_event(&name);
+            crate::tnmpuzzle::trigger_event(lvl, &name);
+            crate::tnminvasion::event(&name);
         }
         crate::security::event(&name, on);
         crate::cinematic::event(&name, on);

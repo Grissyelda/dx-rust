@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### The Nameless Mod: story leftovers, puzzle machines, invasions (November 24)
+- Weather: the mod's maps now rain and snow where they say - each PrecipitationZone's own rate, radius, wind
+  and sound, snowflakes drifting in its snow zones (with crunching footsteps), and rain or snow seen past the
+  windows of sheltered rooms along the map's node lines. In a cut scene it falls round the camera, so the
+  arrival at the ABI complex snows. A sky box set to turn (the space station's) turns.
+- Day two: AJ changes his clothes when he takes Kevo's body (and keeps them), Sol's bar is burnt out, the other
+  bank customers have been paid, and the Citadel's maze picks its exits and shakes once the lava rises -
+  breaking loose wall segments, swinging what hangs, knocking barrels and dropping rock and lava from above.
+- Day three: the underground music runs backwards when the story says so.
+- Day four: the station's TVs show a live census, the solar fins tilt back and forth, Trestkon is set alight for
+  his cut scene, the welcome voice plays, the Narcissus error box ends the game, and New Game Plus starts over
+  keeping the ABI shop's vouchers and accessories.
+- Puzzle machines: the generator control panel (flip generators until all five run, then Solve - three presses
+  is the perfect solve) and the AI packet consoles in the Citadel and on the station (their own layout, the
+  ICE Breaker from Advanced hacking on, static as the console shuts down, its screen changing once solved).
+  They stay solved in saves.
+- Invasions: once an ending has been reached, and with the Invasions option on, the maps' invasion triggers may
+  summon a hostile rogue that shadows you with a random loadout and look; the warning names it, and taking it
+  down is worth 50 skill points.
+- Inventory: the fists and accessories windows - pick a glove kind you have the skill for, and see the passes,
+  disk, ID card, USB stick, vouchers, binoculars and poster tube you carry.
+- Notes: a search box over the notes list; the Black ICE goal is hidden in DXI.
+- Keypads: Shift+3 / Shift+8 (and ' and the keypad's *) press # and *, Backspace takes a digit back, the
+  Alternative Keypad option lays the digits out like a calculator, the Keycode Manager types a code it finds in
+  your notes, and the pad closes when you die or leave the map.
+- Music: the second ambient track once a map's story flag is set, and the alternative soundtrack option.
+- The compass points at the space station's north marker.
+- Fix: the compass kept the first map's north on later maps.
+
 ### The Nameless Mod: the rest of the port (November 23)
 - Legendary mode: weapons roll for attributes the first time they are met (the class's own chance and list, read
   from the mod), enemies' weapons too - a pawn with a legendary weapon aims steadier and takes less, and its

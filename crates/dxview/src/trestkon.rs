@@ -105,6 +105,21 @@ pub fn can_select(ft: u8) -> bool {
     }
 }
 
+/// He has this glove kind (bare hands always).
+pub fn has_fist(ft: u8) -> bool {
+    ft == 0 || lock().fists.has.get(ft as usize).copied().unwrap_or(false)
+}
+
+/// Trestkon.SetFistType from the inventory screen: worn if he has it and may use it.
+pub fn set_fist(ft: u8) -> bool {
+    if !has_fist(ft) || !can_select(ft) {
+        return false;
+    }
+    lock().fists.current = ft;
+    REBUILD.store(true, Ordering::Relaxed);
+    true
+}
+
 /// WeaponFists.givefisttype (a glove pickup used): that kind is his for good.
 pub fn give_fist(ft: u8) {
     if (1..=4).contains(&ft) {

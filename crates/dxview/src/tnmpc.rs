@@ -2134,9 +2134,37 @@ pub struct Packets {
     defs: Vec<(String, Piece)>,
     kinds: Vec<String>,
     src: String,
+    /// A story console (tnmAIPuzzle): its own layout, no Switch, and once solved two seconds of static and the
+    /// screen folding shut (tnmNetworkTerminalAIPuzzle.ShowStatic) before it's done.
+    pub story: bool,
+    static_t: f32,
+    pub hacked: bool,
 }
 
 impl Packets {
+    /// A story console's puzzle: this layout (tnmAIPuzzle.LayoutSelected).
+    pub fn story(assets: &mut RuntimeAssets, layout: i64, seed: u64) -> Packets {
+        let mut p = Packets::new(assets, seed);
+        p.story = true;
+        p.number = layout.clamp(0, (p.count - 1).max(0));
+        p.reset();
+        p
+    }
+
+    /// How many layouts the script has.
+    pub fn layouts(&self) -> i64 {
+        self.count
+    }
+
+    /// AIPuzzleWindow.PuzzleHacked: CheckForVictory(true) - the console counts as solved.
+    pub fn hack_solve(&mut self) {
+        if !self.done {
+            self.hacked = true;
+            self.done = true;
+            self.win_t = 0.0;
+        }
+    }
+
     fn new(assets: &mut RuntimeAssets, seed: u64) -> Packets {
         let wd = assets.classes.defaults("AIPuzzleWindow");
         let gd = assets.classes.defaults("AIPuzzleGrid");
@@ -2195,6 +2223,9 @@ impl Packets {
             defs,
             kinds,
             src,
+            story: false,
+            static_t: 0.0,
+            hacked: false,
         };
         p.reset();
         p
@@ -2283,7 +2314,13 @@ impl Packets {
                 self.finished = true;
                 sound("TNMGUI.AIPuzzle_WinGame");
                 crate::tnmach::unlock("achAIPuzzle");
-                return true;
+                if !self.story {
+                    return true;
+                }
+            } else if self.story {
+                // ShowStatic: 2 s of static, then 0.5 s of it folding shut.
+                self.static_t += dt;
+                return self.static_t >= 2.5;
             }
             return false;
         }
@@ -2339,6 +2376,24 @@ impl Packets {
     }
 
     fn draw<W: KitWid>(&mut self, u: &mut Ui<W>, x: i32, y: i32) {
+        if self.story && self.finished {
+            // tnmStaticWindow over the whole client, shrinking to a line in its last half second.
+            let (w, h) = self.client;
+            let k = ((2.5 - self.static_t) / 0.5).clamp(0.0, 1.0);
+            let sh = if self.static_t < 2.0 { h } else { (h as f32 * k) as i32 };
+            let top = y + (h - sh) / 2;
+            let mut s = (self.static_t * 1000.0) as u32 | 1;
+            for by in (0..sh).step_by(4) {
+                for bx in (0..w).step_by(4) {
+                    s ^= s << 13;
+                    s ^= s >> 17;
+                    s ^= s << 5;
+                    let v = (s & 0xff) as u8;
+                    u.c.fill(x + bx, top + by, 4, 4, Style::Normal, [v, v, v]);
+                }
+            }
+            return;
+        }
         let mut tx = x;
         let mut ty = y;
         let mut row_h = 0;
@@ -2882,6 +2937,8 @@ pub enum Game {
     Console(Box<crate::tnmconsole::Console>),
     /// The idle game (clickerWindow; tnmclicker.rs).
     Idle(Box<crate::tnmclicker::Clicker>),
+    /// The generator control panel (APGPuzzleWindow; tnmpuzzle.rs).
+    Apg(Box<crate::tnmpuzzle::Apg>),
 }
 
 /// What a game's tick asks of its terminal.
@@ -2912,12 +2969,14 @@ impl Game {
             Game::Pong(_) => "PongWindow",
             Game::Breakout(_) => "BreakoutWindow",
             Game::Tetris(_) => "TetrisWindow",
+            Game::Packets(p) if p.story => "AIPuzzleWindow",
             Game::Packets(_) => "AIPuzzleWindowDebug",
             Game::Text(_) => "tnmTextGameWindow",
             Game::Web(_) => "htmlWindow",
             Game::Whois(_) => "whoisWindow",
             Game::Console(c) => c.class(),
             Game::Idle(_) => "clickerWindow",
+            Game::Apg(_) => "APGPuzzleWindow",
         }
     }
     /// The client area (board plus scoreboard).
@@ -2932,6 +2991,7 @@ impl Game {
             Game::Whois(w) => w.client,
             Game::Console(c) => c.client,
             Game::Idle(c) => c.client,
+            Game::Apg(a) => a.client,
         }
     }
     /// Has a Start button (T presses it).
@@ -2941,6 +3001,10 @@ impl Game {
     /// The packet puzzle's buttons (Reset Packets, Switch) instead of Return.
     pub fn is_packets(&self) -> bool {
         matches!(self, Game::Packets(_))
+    }
+    /// A story packet console (no Switch).
+    pub fn is_story(&self) -> bool {
+        matches!(self, Game::Packets(p) if p.story)
     }
     pub fn packets_solved(&self) -> bool {
         matches!(self, Game::Packets(p) if p.done)
@@ -2959,7 +3023,7 @@ impl Game {
         match self {
             Game::Pong(p) => p.start(),
             Game::Tetris(t) => t.started = !t.started,
-            Game::Breakout(_) | Game::Packets(_) | Game::Text(_) | Game::Web(_) | Game::Whois(_) | Game::Console(_) | Game::Idle(_) => {}
+            Game::Breakout(_) | Game::Packets(_) | Game::Text(_) | Game::Web(_) | Game::Whois(_) | Game::Console(_) | Game::Idle(_) | Game::Apg(_) => {}
         }
     }
     pub fn title_suffix(&self) -> String {
@@ -3012,6 +3076,7 @@ impl Game {
             }
             Game::Text(t) => t.tick(dt, keys, typed),
             Game::Idle(c) => c.tick(dt, keys, ptr),
+            Game::Apg(a) => return a.tick(dt, ptr),
             Game::Web(_) | Game::Whois(_) | Game::Console(_) => {}
         }
         Outcome::Stay
@@ -3027,6 +3092,7 @@ impl Game {
             Game::Whois(w) => w.draw(u, x, y),
             Game::Console(c) => c.draw(u, x, y),
             Game::Idle(c) => c.draw(u, x, y),
+            Game::Apg(a) => a.draw(u, x, y),
         }
     }
 }

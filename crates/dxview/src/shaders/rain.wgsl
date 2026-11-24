@@ -54,6 +54,33 @@ fn vertex(v: Vertex) -> Out {
     var tail: vec3<f32>;
     var g: f32;
     var half: f32;
+    if (params.x > 1.5) {
+        // A snowflake (The Nameless Mod's snow zones): a camera-facing sprite drifting down its line, wandering a
+        // little (Snowflake.Timer's random push), growing to its size over its first moments; c.x = half size.
+        if (t < 0.0 || now >= b.w || c.y <= 0.0) {
+            return hidden();
+        }
+        let k = f32(q) * 0.618;
+        let wander = vec3<f32>(sin(t * 1.3 + k * 7.0), 0.0, cos(t * 1.1 + k * 5.0)) * (14.0 / UU);
+        let head = a.xyz + b.xyz * t + wander;
+        let under = clamp((c.z - head.y) * UU / 300.0, 0.0, 1.0);
+        let size = c.x * min(t * 3.0, 1.0);
+        let right = normalize(view.world_from_view[0].xyz) * size;
+        let up = normalize(view.world_from_view[1].xyz) * size;
+        var p = head - right - up;
+        if (corner == 1u) {
+            p = head + right - up;
+        } else if (corner == 2u) {
+            p = head + right + up;
+        } else if (corner == 3u) {
+            p = head - right + up;
+        }
+        var o: Out;
+        o.uv = v.uv;
+        o.g = c.y * under;
+        o.clip = position_world_to_clip(p);
+        return o;
+    }
     if (params.x < 0.5) {
         // A drop: straight down its line until it ends (lands, falls into water, or its life runs out).
         if (t < 0.0 || now >= b.w || c.y <= 0.0) {

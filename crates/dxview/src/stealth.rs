@@ -181,7 +181,13 @@ pub fn footstep_system(
     } else {
         lvl.floor_group(b.location.to_array(), player.params.height * 2.0)
     };
-    let (snd, mult) = crate::sound::footstep_sound(group, water);
+    let (mut snd, mult) = crate::sound::footstep_sound(group, water);
+    // The Nameless Mod's snow zones: SnowZone.SnowStep's crunch instead (not on ladders or in water).
+    if !water && group != Some("Ladder") {
+        if let Some(s) = crate::weather::snow_step() {
+            snd = s;
+        }
+    }
     // Out in the rain (Precipitation's RainStep): a splash on top, the step itself a little softer on carpet / grass.
     let volume = if water { volume } else { volume * crate::weather::rain_step(group, volume, range, pitch) };
     crate::dualsense::event(crate::dualsense::Haptic::Step(if water { Some("Water".into()) } else { group.map(|g| g.to_string()) }));

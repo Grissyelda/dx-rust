@@ -48,6 +48,11 @@ fn spawn_trestkon(c: &Ctx, at: &str, tag: &str, bind: &str, orders: (&str, &str)
 }
 
 pub(super) fn first(c: &mut Ctx, map: &str) {
+    // uc: tnmMission25.FirstFrame
+    // Reaching an ending unlocks the invasions (Trestkon.bUnlockedSword, saved with the player's settings).
+    if map.starts_with("TNMENDGAME") {
+        crate::tnminvasion::unlock();
+    }
     for a in ["AugLight", "AugCombat", "AugMuscle", "AugTarget", "AugVision", "AugCloak", "AugRadarTrans"] {
         crate::abilities::deactivate_aug(a);
     }

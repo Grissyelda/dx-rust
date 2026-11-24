@@ -657,6 +657,16 @@ fn pad_map_box(hud: &mut ClassicHud, assets: &mut RuntimeAssets) -> Option<Win> 
 
 /// root.MessageBox(title, text, MB_YesNo) for another screen; its answer comes back through `take_box_answer`.
 static EXTERNAL_BOX: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+/// A box whose title and lines are a window class's own localized strings: (class, title key, line keys).
+static CLASS_BOX: std::sync::Mutex<Option<(String, String, Vec<String>)>> = std::sync::Mutex::new(None);
+
+/// An OK box built from a window class's defaults (a mod's ToolWindow with a title and labels, e.g. The Nameless
+/// Mod's NarcissusWindow): the lines are joined, a blank line before the last. Its OK answers take_box_answer.
+pub fn open_class_box(class: &str, title: &str, lines: &[&str]) {
+    if let Ok(mut b) = CLASS_BOX.lock() {
+        *b = Some((class.to_string(), title.to_string(), lines.iter().map(|l| l.to_string()).collect()));
+    }
+}
 static EXTERNAL_ANSWER: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
 
 pub fn open_yes_no(title: &str, text: &str) {
@@ -1619,6 +1629,17 @@ pub fn keypad_press_index(i: usize) {
 /// Codes entered: (keypad blocker, right?), for devices.rs to run the keypad's events.
 pub fn take_keypad_results() -> Vec<(usize, bool)> {
     KEYPAD_RESULTS.lock().map(|mut r| std::mem::take(&mut *r)).unwrap_or_default()
+}
+
+// uc: tnmHUDKeypadWindow.CreateKeypadButtons
+/// Where button i (0..8 = 1..9, 9 = *, 10 = 0, 11 = #) sits on the pad (x + 3 y). The Nameless Mod's Alternative
+/// Keypad option (bAltKeypad) lays the digits out like a calculator: 7 8 9 on top, 1 2 3 above * 0 #.
+fn keypad_slot(i: usize) -> usize {
+    if crate::tnmmode::option("bAltKeypad") && i < 9 {
+        (2 - i / 3) * 3 + i % 3
+    } else {
+        i
+    }
 }
 
 /// HUDKeypadWindow.IndexToString.
@@ -3223,7 +3244,8 @@ fn draw_keypad(u: &mut Ui<W>, k: &KeypadWin, fonts: &Fonts) {
     }
     let big = u.hud.font(u.assets, "FontMenuExtraLarge").unwrap_or_else(|| fonts.title.clone());
     for i in 0..12 {
-        let (x, y) = ((i % 3) as i32 * 26 + 16, (i / 3) as i32 * 28 + 35);
+        let p = keypad_slot(i);
+        let (x, y) = ((p % 3) as i32 * 26 + 16, (p / 3) as i32 * 28 + 35);
         let w = W::MenuBtn(i as u8);
         let down = u.pressed == Some(w) && u.hover == Some(w);
         let tex = if down { "HUDKeypadButton_Pressed" } else { "HUDKeypadButton_Normal" };
@@ -3726,7 +3748,7 @@ pub fn menu_system(
     // The Escape that closed another screen doesn't also open the menu.
     let others_before = std::mem::replace(&mut st.others_last, others);
     open_from_game(st, &binds, &ph, dt, others || others_before, &mut hud, &mut assets);
-    keypad_tick(st, dt);
+    keypad_tick(st, dt, ph.dead);
     quick_save_load(st, &binds, &ph, others || others_before, &mut hud, &mut assets);
     mp_tick(st, dt, &mut hud, &mut assets);
     mods_tick(st, &mut hud, &mut assets);
@@ -4000,11 +4022,21 @@ fn open_from_game(
         let w = msg_box(hud, assets, &title, &text, true, MsgPurpose::External);
         st.push(w);
     }
+    if let Some((class, tkey, keys)) = CLASS_BOX.lock().ok().and_then(|mut b| b.take()) {
+        let d = assets.classes.defaults(&class);
+        let mut lines: Vec<String> = keys.iter().map(|k| pstr(&d, k)).collect();
+        if lines.len() > 1 {
+            let last = lines.len() - 1;
+            lines.insert(last, String::new());
+        }
+        let w = msg_box(hud, assets, &pstr(&d, &tkey), &lines.join("\n"), false, MsgPurpose::External);
+        st.push(w);
+    }
 }
 
 /// HUDKeypadWindow: open one asked for, the pad's notes code, buttons pressed in the world, the result delay, and
 /// what diegetic.rs reads of it.
-fn keypad_tick(st: &mut Menus, dt: f32) {
+fn keypad_tick(st: &mut Menus, dt: f32, dead: bool) {
     if let Some((blocker, valid, instant)) = KEYPAD_OPEN.lock().ok().and_then(|mut k| k.take()) {
         let f = Frame { class: "HUDKeypadWindow".into(), cw: 103, ch: 162, ..default() };
         let noted = in_notes(&valid);
@@ -4020,6 +4052,33 @@ fn keypad_tick(st: &mut Menus, dt: f32) {
         if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
             if k.noted && k.wait.is_none() {
                 keypad_from_notes(k);
+            }
+        }
+    }
+    // uc: tnmHUDKeypadWindow.CheckForCode, tnmHUDKeypadWindow.CheckForDeath, tnmHUDKeypadWindow.PreTravel
+    // The Nameless Mod: its Keycode Manager option types a code it finds in the notes by itself, a digit every
+    // 0.1 s; the pad closes when the player dies or the map changes.
+    {
+        static AUTO_T: std::sync::Mutex<(f32, u64)> = std::sync::Mutex::new((0.0, 0));
+        let mut g = AUTO_T.lock().unwrap_or_else(|e| e.into_inner());
+        let gen = crate::loader::generation();
+        let stale = g.1 != gen;
+        g.1 = gen;
+        if let Some(Body::Keypad(k)) = st.stack.last_mut().map(|w| &mut w.body) {
+            if crate::tnmmode::active() && (stale || dead) {
+                st.stack.pop();
+            } else if crate::tnmmode::option("bKeycodeManager") && k.noted && !k.instant && k.wait.is_none() && k.input.len() < k.valid.len() {
+                g.0 += dt;
+                if g.0 >= 0.1 {
+                    g.0 = 0.0;
+                    // Left(validCode, Len + 1): what's typed so far is replaced by the code's start.
+                    let n = k.input.chars().count() + 1;
+                    let want: String = k.valid.chars().take(n).collect();
+                    k.input = want.chars().take(n - 1).collect();
+                    if let Some(i) = want.chars().last().and_then(|ch| (0..12).find(|&i| key_char(i) == ch)) {
+                        keypad_press(k, i);
+                    }
+                }
             }
         }
     }
@@ -4510,6 +4569,20 @@ fn screen_typing(cx: &mut InCx, k: &KeyCode, text: &Option<String>) -> bool {
             KeyCode::Digit9 | KeyCode::Numpad9 => Some(8),
             _ => None,
         };
+        // The Nameless Mod (tnmHUDKeypadWindow.VirtualKeyPressed): Shift+3 and Shift+8 press # and *, so do ' and
+        // the keypad's *, and Backspace / Delete take the last digit back.
+        let tnm = crate::tnmmode::active();
+        let idx = match k {
+            KeyCode::Digit3 if tnm && shift => Some(11),
+            KeyCode::Digit8 if tnm && shift => Some(9),
+            KeyCode::NumpadMultiply if tnm => Some(9),
+            KeyCode::Quote if tnm => Some(11),
+            _ => idx,
+        };
+        if tnm && matches!(k, KeyCode::Backspace | KeyCode::Delete) && kp.wait.is_none() {
+            kp.input.pop();
+            return true;
+        }
         if let Some(i) = idx {
             keypad_press(kp, i);
             return true;

@@ -37,9 +37,18 @@ pub enum Effect {
     Credits(i64),
     /// What Trestkon wears now (the ABI shop: RefreshPlayerModel).
     Look(crate::tnmlook::Look),
+    /// An Int flag (a puzzle console's LayoutStoreFlag).
+    Int(String, i32),
+    /// A flag of any kind (the generator panel's).
+    SetFlag(String, imsim_core::flags::FlagValue),
 }
 
 static FX: Mutex<Vec<Effect>> = Mutex::new(Vec::new());
+
+/// Queue an effect for computers.rs to apply (other terminal programs use it too).
+pub(crate) fn push(e: Effect) {
+    fx(e);
+}
 
 fn fx(e: Effect) {
     if let Ok(mut q) = FX.lock() {

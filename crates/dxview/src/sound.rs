@@ -1153,6 +1153,14 @@ pub fn sound_system(
     if st.other_song.is_some() {
         return;
     }
+    // A mission script renamed the manager's files (tnmMission23 ReverseMusic / UnReverseMusic): SetCurrentOgg
+    // with MTRAN_FastFade on the new ambient track.
+    if let Some(f) = crate::tnmmode::take_retrack() {
+        if let Some(ogg) = st.ogg.as_mut() {
+            ogg.retrack(&f);
+            st.ogg_want = Some((crate::tnmmode::Track::Ambient, Transition::FastFade));
+        }
+    }
     // Music: UpdateDynamicMusic (The Nameless Mod: TNMOggMusicManager's Ogg tracks, started once decoded).
     if let (Some((tr, t)), Some(ogg)) = (st.ogg_want, st.ogg.as_mut()) {
         if let Some((intro, main)) = ogg.ready(tr) {

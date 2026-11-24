@@ -2021,6 +2021,8 @@ pub enum WorldReq {
     KnockOut(Sel),
     /// bInvincible on / off.
     Invincible(Sel, bool),
+    /// The Nameless Mod's invaders (Orders 'Shadowing'): an idle pawn goes looking where the player is.
+    Hunt(Sel, DVec3),
     /// MinHealth (when it flees).
     MinHealth(Sel, f32),
     /// SetHomeBase(Location, Rotation): home where it stands now.
@@ -2249,6 +2251,12 @@ pub fn world_system(
                                 orders_tag: String::new(),
                             });
                         }
+                    }
+                }
+                WorldReq::Hunt(sel, at) if sel_matches_tag(sel, class, &npc.bind_name, &tag) && !dead && out.is_none() => {
+                    if npc.state == NpcState::Idle {
+                        npc.set_seek_location(*at, SeekKind::Guess, false);
+                        npc.enter_seeking();
                     }
                 }
                 WorldReq::Invincible(sel, on) if sel_matches_tag(sel, class, &npc.bind_name, &tag) => {

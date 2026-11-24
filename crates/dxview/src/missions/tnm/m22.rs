@@ -8,8 +8,8 @@
 //! four phases, the counter puzzle), the UC constructions (registration room items, the quad rocket launcher) and
 //! who notices the player (PlayerDetected).
 //!
-//! Left out: Augmentique-style skin swaps (AJ's change of clothes), the burnt seats in Sol's bar, extra ATM balances,
-//! the Citadel's random warp-zone exits (no warp zones yet), the Citadel's falling rock effects.
+//! Also: AJ's change of clothes (reskin.rs), Sol's bar burnt out (tnmmode's level fixup), the other ATM account
+//! holders paid on the second day, the Citadel's random warp-zone exits and its falling rock and lava effects.
 
 use super::*;
 
@@ -160,8 +160,22 @@ impl Ctx<'_> {
 // ------------------------------------------------------------------------------------------------ FirstFrame
 
 pub(super) fn first(c: &mut Ctx, map: &str) {
+    // AJ keeps the clothes he changed into (the original's saved MultiSkins; ours are put back on arrival).
+    if c.b("MS_AJChangedClothes") {
+        crate::reskin::request_tag("AJ", script_skins("AJChangeClothes"));
+    }
     if map.starts_with("22_FCSLUMS") {
         slums_first(c);
+    }
+    // uc: tnmMission22.CitadelRandomize
+    // The Citadel (inside the apartment map) picks its maze's exits once before the lava rises and again after.
+    if map == "22_PHASAPARTMENT" {
+        let lava = c.b("Citadel_LavaRaised");
+        let first = if lava { "Citadel_SecondRandomize" } else { "Citadel_FirstRandomize" };
+        if !c.b(first) {
+            citadel_randomize(c, lava);
+            c.set(first, true, 24);
+        }
     }
     match map {
         "22_FCDOWNTOWN" => {
@@ -338,6 +352,32 @@ pub(super) fn first(c: &mut Ctx, map: &str) {
     }
 }
 
+/// Each Citadel warp zone (by ThisTag) leads to one of its lettered exits: rooms 1 and 5 share a pick of two,
+/// rooms 2 and 3 a pick of four (a new one once the lava has risen), room 4 almost always its first.
+fn citadel_randomize(c: &mut Ctx, lava: bool) {
+    let letter = |n: u8| char::from(b'A' + n);
+    let ab = letter((c.rand() * 2.0) as u8 % 2);
+    for t in ["Citadel1", "Citadel5"] {
+        crate::warpzone::relink(t, &format!("{t}{ab}"));
+    }
+    let mut k = 65 + (c.rand() * 4.0) as i32 % 4;
+    if !lava {
+        c.set_int("CitadelRandomization", k, 23);
+    } else {
+        let mut tries = 0;
+        while k == c.int("CitadelRandomization") && tries < 64 {
+            k = 65 + (c.rand() * 4.0) as i32 % 4;
+            tries += 1;
+        }
+    }
+    let ch = letter((k - 65) as u8);
+    for t in ["Citadel2", "Citadel3"] {
+        crate::warpzone::relink(t, &format!("{t}{ch}"));
+    }
+    let four = if c.rand() >= 0.95 { 'B' } else { 'A' };
+    crate::warpzone::relink("Citadel4", &format!("Citadel4{four}"));
+}
+
 fn slums_first(c: &mut Ctx) {
     c.set_environment();
     let carrying = crate::carry::carried_bind();
@@ -373,6 +413,10 @@ fn slums_first(c: &mut Ctx) {
             }
         }
         c.set("MS_SlumEnemiesSpawned", true, 23);
+        // The other account holders have been paid since the first day: each shared ATM account gains up to the
+        // amount FirstFrame gives it.
+        let adds: Vec<(usize, i32)> = script_atm("FirstFrame").into_iter().map(|(i, n)| (i, (n * c.rand()) as i32)).collect();
+        crate::computers::tnm_accounts_add(&adds);
     }
     if c.b("QC_SUB_Bugging") && !c.down("PJ") && !c.b("MS_BuggingUpdated") {
         c.add_goal("Bugging", "strBuggedGoal", false, false);
@@ -652,18 +696,8 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
             }
         }
         "22_CITADEL" => {
-            if c.b("Citadel_LavaRaised") && c.rand() < 0.33 {
-                // The lava rising keeps shaking the halls.
-                let size = c.rand() as f32;
-                c.shake(0.5 + size, 512.0 + 1024.0 * size, 8.0 + 16.0 * size);
-                let snd = match (size * 5.0) as i32 {
-                    0 => "SmallExplosion1",
-                    1 => "MediumExplosion1",
-                    2 => "MediumExplosion2",
-                    3 => "LargeExplosion1",
-                    _ => "LargeExplosion2",
-                };
-                c.sound(snd);
+            if c.b("Citadel_LavaRaised") {
+                citadel_explosions(c);
             }
         }
         "22_FCREGISTRATION" => registration_timer(c),
@@ -679,6 +713,74 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
             }
         }
         _ => {}
+    }
+}
+
+// uc: tnmMission22.CitadelExplosionEffects
+/// The lava rising keeps shaking the Citadel: a third of the seconds a blast breaks loose segments of the walls
+/// near the player, shakes and pushes him, swings what hangs, knocks explosive barrels near (but not in) their
+/// blast range, and drops rock chips and lava bubbles from the ceiling round him.
+fn citadel_explosions(c: &mut Ctx) {
+    if c.rand() >= 0.33 {
+        return;
+    }
+    let me = c.player_pos;
+    for i in c.mover_ids("BreakableSegment") {
+        let Some(m) = c.lvl.movers.get(i) else { continue };
+        let p = DVec3::new(m.base_pos[0] as f64, m.base_pos[1] as f64, m.base_pos[2] as f64);
+        if p.distance(me) <= 768.0 && c.rand() < 0.8 {
+            c.movers.rt[i].breakable = Some(true);
+            crate::movers::damage_mover(i, 100000.0, "Exploded");
+        }
+    }
+    let size = c.rand() as f32;
+    c.shake(0.5 + size, 512.0 + 1024.0 * size, 8.0 + 16.0 * size);
+    c.sound(if size < 0.2 {
+        "SmallExplosion1"
+    } else if size < 0.4 {
+        "MediumExplosion1"
+    } else if size < 0.6 {
+        "MediumExplosion2"
+    } else if size < 0.8 {
+        "LargeExplosion1"
+    } else {
+        "LargeExplosion2"
+    });
+    let v = c.vrand();
+    let bobble = DVec3::new(300.0, 300.0, 200.0) + v * (500.0 * size as f64);
+    // Only while walking and not reading something (the original checks the HUD's info window).
+    if !crate::info::reading() {
+        player_req(PlayerReq::Push(bobble));
+    }
+    crate::hanging::ship_shake(bobble, size as f64);
+    for (actor, class, _, pos) in c.decos.clone() {
+        if !crate::classtree::is_a(&class, "Barrel1") {
+            continue;
+        }
+        let Some(a) = c.lvl.actors.get(actor) else { continue };
+        if !matches!(unreal_pkg::props::find(&a.props, "bExplosive"), Some(Value::Bool(true))) {
+            continue;
+        }
+        let r = match unreal_pkg::props::find(&a.props, "explosionRadius") {
+            Some(Value::Float(f)) => *f as f64,
+            _ => 160.0,
+        };
+        let d = pos.distance(me);
+        if d > r && d < r * 2.0 {
+            crate::destruct::hit_actor(actor, 2.0, "Shot");
+        }
+    }
+    for _ in 0..(size * 20.0) as i32 {
+        let v = c.vrand();
+        let mut loc = me + v * 256.0;
+        loc.z = me.z;
+        let (hit, _) = c.ceiling(loc);
+        let scale = (0.5 + 2.0 * c.rand()) as f32;
+        c.fx(Fx::Debris(hit, "Rockchip", scale));
+        if c.rand() < 0.25 {
+            let dir = c.vrand();
+            crate::missions::launch("LavaBubble", hit, dir);
+        }
     }
 }
 
@@ -1254,7 +1356,10 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
             }
         }
         // AJ takes Kevo's body off the player and lays it on the slab.
+        // uc: tnmMission22.AJChangeClothes
         "AJChangeClothes" => {
+            crate::reskin::request_tag("AJ", script_skins("AJChangeClothes"));
+            c.set("MS_AJChangedClothes", true, 0);
             if crate::carry::carried_bind().eq_ignore_ascii_case("Kevo") {
                 crate::carry::discard_body();
             }

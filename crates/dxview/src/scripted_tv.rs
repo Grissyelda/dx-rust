@@ -17,6 +17,15 @@ use crate::uicanvas::{Canvas, HAlign, Style, UiTex, VAlign};
 /// The level's texture images by name (lowercase), registered as the map is set up.
 static LEVEL_TEX: Mutex<Option<HashMap<String, (Handle<Image>, u32, u32, Vec<u8>)>>> = Mutex::new(None);
 
+/// A mission script's text for every TV's TextSmall[i] (tnmMission24's live census): (i, text).
+static SMALL: Mutex<Option<(usize, String)>> = Mutex::new(None);
+
+pub fn set_small(i: usize, text: String) {
+    if let Ok(mut g) = SMALL.lock() {
+        *g = Some((i, text));
+    }
+}
+
 /// Every level texture's handle and first-mip RGBA (only ScriptedTextures are kept).
 pub fn note(name: &str, handle: &Handle<Image>, t: &dx_level::TextureImage) {
     if t.bc1 || t.bc3 || t.mips.len() != 1 {
@@ -36,6 +45,9 @@ pub fn level_texture(name: &str) -> Option<(Handle<Image>, u32, u32)> {
 }
 
 pub fn reset_level() {
+    if let Ok(mut g) = SMALL.lock() {
+        *g = None;
+    }
     if let Ok(mut g) = LEVEL_TEX.lock() {
         *g = None;
     }
@@ -144,9 +156,16 @@ pub fn tv_system(
     let nsec = (time.elapsed_secs() as i64) % 4;
     let st = &mut *st;
     let (Some(big), Some(small)) = st.fonts.as_ref().map(|f| (f.0.as_ref(), f.1.as_ref())).unwrap_or((None, None)) else { return };
+    let script_small = SMALL.lock().ok().and_then(|g| g.clone());
     for tv in st.tvs.iter_mut() {
         if let Some(r) = &records {
             tv.small[0] = r.clone();
+        }
+        if let Some((i, t)) = &script_small {
+            if tv.small.len() <= *i {
+                tv.small.resize(*i + 1, String::new());
+            }
+            tv.small[*i] = t.clone();
         }
         // RenderTexture: once every four seconds, the next non-empty text.
         if nsec == 1 && !tv.replaced {

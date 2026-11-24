@@ -116,7 +116,42 @@ pub fn before_load() {
         Vec::new()
     });
     let radish = active() || env_on!("DXVIEW_RADISH");
-    dx_level::actors::set_level_fixups(radish.then(|| Box::new(crate::radish::level_fixup) as dx_level::actors::LevelFixups));
+    dx_level::actors::set_level_fixups(radish.then(|| Box::new(level_fixup) as dx_level::actors::LevelFixups));
+}
+
+/// What the mod's mission scripts change on a map's actors in their first frame, before anything is drawn: the
+/// bonus maps' hovering weapons (radish.rs), and Sol's bar burnt out on the second day.
+fn level_fixup(classes: &mut unreal_pkg::classes::ClassDb, actors: &mut Vec<dx_level::actors::ActorInfo>) {
+    crate::radish::level_fixup(classes, actors);
+    let map = actors
+        .iter()
+        .find(|a| a.class.eq_ignore_ascii_case("DeusExLevelInfo") || classes.ancestry(&a.class).iter().any(|c| c == "deusexlevelinfo"))
+        .and_then(|a| match unreal_pkg::props::find(&a.props, "MapName") {
+            Some(unreal_pkg::props::Value::Str(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    // uc: tnmMission22.FirstFrame
+    // 22_SOLSBAR: every BarChair and CouchLeatherBlue takes its burnt SkinColor (the second entry of each class's
+    // own SkinColor enum; the class's SetSkin picks the scorched texture, read by dx_level::skincolor).
+    if map.eq_ignore_ascii_case("22_SolsBar") {
+        for a in actors.iter_mut() {
+            let anc = classes.ancestry(&a.class);
+            if anc.iter().any(|c| c == "barchair" || c == "couchleatherblue") {
+                a.props.retain(|p| !p.name.eq_ignore_ascii_case("SkinColor"));
+                a.props.push(unreal_pkg::props::Property {
+                    name: "SkinColor".into(),
+                    index: 0,
+                    value: unreal_pkg::props::Value::Byte(1),
+                });
+            }
+        }
+    }
+}
+
+/// Where a new game of The Nameless Mod starts (Trestkon's strStartMap).
+pub fn start_map() -> &'static str {
+    "20_PhasApartment"
 }
 
 /// The player's class: Trestkon, or JC.
@@ -178,6 +213,19 @@ pub fn decode_ogg_file(name: &str) -> Option<Decoded> {
     Some(slot)
 }
 
+/// New file names for the map's music manager, from a mission script; the ambient track restarts with a fast fade.
+static RETRACK: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
+pub fn retrack(fields: Vec<(String, String)>) {
+    if let Ok(mut g) = RETRACK.lock() {
+        *g = Some(fields);
+    }
+}
+
+pub fn take_retrack() -> Option<Vec<(String, String)>> {
+    RETRACK.lock().ok().and_then(|mut g| g.take())
+}
+
 /// A map's TNMOggMusicManager (or DXOggMusicManager): its track files, decoded in the background as needed.
 pub struct OggMusic {
     dir: PathBuf,
@@ -217,6 +265,38 @@ impl OggMusic {
             m.ready(t);
         }
         Some(m)
+    }
+
+    /// A script set the manager's file names (tnmMission23.ReverseMusic: OggFile fields by name).
+    pub fn retrack(&mut self, fields: &[(String, String)]) {
+        for (field, file) in fields {
+            let f = field.to_ascii_lowercase();
+            let (track, intro) = match f.as_str() {
+                "ambientintrooggfile" | "ambient1introoggfile" => (Track::Ambient, true),
+                "ambientoggfile" | "ambient1oggfile" => (Track::Ambient, false),
+                "combatintrooggfile" => (Track::Combat, true),
+                "combatoggfile" => (Track::Combat, false),
+                "conversationintrooggfile" => (Track::Conversation, true),
+                "conversationoggfile" => (Track::Conversation, false),
+                "deathoggfile" => (Track::Death, false),
+                _ => continue,
+            };
+            let i = match self.files.iter().position(|x| x.0 == track) {
+                Some(i) => i,
+                None => {
+                    self.files.push((track, String::new(), String::new()));
+                    self.files.len() - 1
+                }
+            };
+            if intro {
+                self.files[i].1 = file.clone();
+            } else {
+                self.files[i].2 = file.clone();
+            }
+        }
+        for t in [Track::Ambient, Track::Combat] {
+            self.ready(t);
+        }
     }
 
     pub fn has(&self, t: Track) -> bool {

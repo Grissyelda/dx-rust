@@ -84,6 +84,16 @@ pub struct Burst {
 
 static BURSTS: std::sync::Mutex<Vec<Burst>> = std::sync::Mutex::new(Vec::new());
 
+/// Damage a script deals a decoration by its placed actor index: (actor, damage, damage type).
+static ACTOR_HITS: std::sync::Mutex<Vec<(usize, f32, &'static str)>> = std::sync::Mutex::new(Vec::new());
+
+/// TakeDamage on the decoration placed as this actor (a mission script's blast).
+pub fn hit_actor(actor: usize, damage: f32, damage_type: &'static str) {
+    if let Ok(mut q) = ACTOR_HITS.lock() {
+        q.push((actor, damage, damage_type));
+    }
+}
+
 pub fn burst(b: Burst) {
     if let Ok(mut q) = BURSTS.lock() {
         q.push(b);
@@ -254,6 +264,18 @@ pub fn deco_damage_system(
         *seed = 0x51_7CC1_B727_220A;
     }
     let lvl = &level.0;
+    let by_actor = ACTOR_HITS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    if !by_actor.is_empty() {
+        for d in decos.iter() {
+            let Some(b) = d.blocker else { continue };
+            let Some(ma) = lvl.mesh_actors.get(d.mesh_actor) else { continue };
+            for &(a, dmg, ty) in &by_actor {
+                if ma.actor == a {
+                    hits.0.push(DecoHit { blocker: b, damage: dmg, damage_type: ty });
+                }
+            }
+        }
+    }
     // Fragment bursts (DeusExMover.BlowItUp): FragmentSpread x VRand() apart, each flying off at
     // Fragment.CalcVelocity (spread + 100..250); the last one just drops.
     for bu in BURSTS

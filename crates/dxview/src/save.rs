@@ -322,6 +322,9 @@ pub struct LevelSave {
     /// Warp zones relinked by triggers and scripts (ThisTag, OtherSideURL).
     #[serde(default)]
     pub warps: Vec<(String, String)>,
+    /// The Nameless Mod's puzzle machines (tnmpuzzle.rs): switched on, solved, layout.
+    #[serde(default)]
+    pub tnm_puzzles: Vec<(usize, crate::tnmpuzzle::Dev)>,
     /// DamageTriggers' (index, bIsOn, bInitiallyActive).
     #[serde(default)]
     pub damage_triggers: Vec<(usize, bool, bool)>,
@@ -1020,6 +1023,7 @@ fn capture_inner(world: &mut World, description: &str, count_it: bool) -> SaveGa
     l.lamps = crate::dynlight::toggled();
     l.pain_zones = crate::zones::toggled();
     l.warps = crate::warpzone::save();
+    l.tnm_puzzles = crate::tnmpuzzle::save();
     l.damage_triggers = crate::logic::damage_state();
     l.keys_carried = crate::keys::carried();
 
@@ -1399,6 +1403,11 @@ fn restore_level_part(world: &mut World, s: &SaveGame, l: &LevelSave) {
     crate::dynlight::set_toggled(&l.lamps);
     crate::zones::set_toggled(&l.pain_zones);
     crate::warpzone::restore(&l.warps);
+    crate::tnmpuzzle::restore(&l.tnm_puzzles);
+    world.resource_scope(|world, mut assets: Mut<crate::weapons::RuntimeAssets>| {
+        let lvl = &world.resource::<crate::LevelRes>().0;
+        crate::tnmpuzzle::reapply_skins(lvl, &mut assets);
+    });
     crate::logic::set_damage_state(&l.damage_triggers);
     {
         let mut hud = world.resource_mut::<crate::movers::HudMessage>();

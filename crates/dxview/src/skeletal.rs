@@ -556,6 +556,14 @@ pub struct SkelBody {
 #[derive(Component)]
 pub struct HiddenPart;
 
+/// Bodies to build again from their vertex parts' textures (reskin.rs changed them).
+static REBUILD: std::sync::Mutex<Vec<Entity>> = std::sync::Mutex::new(Vec::new());
+pub fn rebuild(e: Entity) {
+    if let Ok(mut q) = REBUILD.lock() {
+        q.push(e);
+    }
+}
+
 /// Weapon frame for a pawn with a rebuilt body (pawn-local Unreal space, before DrawScale).
 pub fn weapon_coords(q: &Query<&SkelBody>, e: Entity) -> Option<Option<[[f32; 3]; 4]>> {
     q.get(e).ok().map(|s| s.weapon)
@@ -618,9 +626,11 @@ pub fn spawn_system(
         checked.clear();
     }
     let on = enabled();
-    // Bodies whose pawn changed mesh (a carcass) or with the setting off: back to the vertex mesh.
+    let redo: Vec<Entity> = REBUILD.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    // Bodies whose pawn changed mesh (a carcass) or skins (reskin.rs), or with the setting off: back to the vertex
+    // mesh (rebuilt next frame from the parts' new textures).
     for (e, s, a) in &skels {
-        if !on || (a.mesh_actor != s.mesh_actor && !s.ragdoll) {
+        if !on || (a.mesh_actor != s.mesh_actor && !s.ragdoll) || (redo.contains(&e) && !s.ragdoll) {
             commands.entity(s.root).despawn();
             for m in &s.meshes {
                 commands.entity(*m).despawn();

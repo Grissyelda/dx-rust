@@ -7,8 +7,8 @@
 //! station shaking itself apart once the turbines stop, quest awards, the airlocks, schematics, the robots that die
 //! together, the "not seen" flags.
 //!
-//! Left out: the Narcissus window and New Game Plus, the station TV's live
-//! census text, the turning solar panels and sky box, Trestkon catching fire on cue.
+//! Also: the Narcissus error box and New Game Plus, the station TVs' live census, the turning solar fins (the sky
+//! box turns in skyfollow.rs), Trestkon set alight for a cut scene, the GameSpy welcome voice.
 
 use super::*;
 
@@ -151,7 +151,126 @@ pub(super) fn pre_travel(fl: &mut FlagBase) {
     }
 }
 
+/// Each solar fin's DesiredRotation.Pitch (the script's own per-mover value), by mover index.
+static FINS: std::sync::Mutex<Vec<(usize, i32)>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn reset_level() {
+    crate::effects::player_ablaze(false);
+    if let Ok(mut f) = FINS.lock() {
+        f.clear();
+    }
+}
+
+// uc: tnmMission24.Timer
+/// The solar fins tilt back and forth: each time one reaches its DesiredRotation.Pitch it's sent to the other side
+/// (+-8192; from level, either side at random) at its own RotationRate.
+fn solar_panels(c: &mut Ctx) {
+    const SPAN: i32 = 8192;
+    let mut fins = FINS.lock().unwrap_or_else(|e| e.into_inner());
+    for i in c.mover_ids("SolarPanel") {
+        let Some(info) = c.lvl.movers.get(i) else { continue };
+        let Some(rt) = c.movers.rt.get(i) else { continue };
+        if rt.destroyed || rt.desired_rot.is_some() {
+            continue;
+        }
+        let a = c.lvl.actors.get(info.actor);
+        let rotator = |k: &str| match a.and_then(|a| unreal_pkg::props::find(&a.props, k)) {
+            Some(Value::Rotator(r)) => *r,
+            _ => [0, 0, 0],
+        };
+        // Not sent anywhere yet: it's where it wants to be (a fin saved level starts from 0).
+        let desired = match fins.iter().find(|f| f.0 == i) {
+            Some(f) => f.1,
+            None => rt.rotation[0].rem_euclid(65536),
+        };
+        if rt.rotation[0].rem_euclid(65536) != desired {
+            continue;
+        }
+        let next = if desired == 0 {
+            if c.rand() <= 0.5 { SPAN } else { 65536 - SPAN }
+        } else if desired == SPAN {
+            65536 - SPAN
+        } else {
+            SPAN
+        };
+        fins.retain(|f| f.0 != i);
+        fins.push((i, next));
+        let rate = rotator("RotationRate");
+        let rt = &mut c.movers.rt[i];
+        rt.rot_rate = [rate[0].unsigned_abs().max(1) as i32, rate[1].unsigned_abs() as i32, rate[2].unsigned_abs() as i32];
+        rt.desired_rot = Some([next, rt.rotation[1], rt.rotation[2]]);
+    }
+}
+
+// uc: tnmMission24.Timer
+/// The station's TVs keep a live census: everyone in the world by kind (aliens, phasers, stalkers, irradiators,
+/// other people - the player too while alive) in the script's own lines (its "%d" filled in).
+fn census(c: &mut Ctx) {
+    let (mut alien, mut phaser, mut stalker, mut irr, mut people) = (0, 0, 0, 0, 0);
+    for p in c.pawns.iter().filter(|p| p.in_world && crate::classtree::is_a(&p.class, "TNMPawn")) {
+        let is = |k: &str| crate::classtree::is_a(&p.class, k);
+        if is("Alien") {
+            alien += 1;
+        } else if is("Phaser") {
+            phaser += 1;
+        } else if is("Stalker") {
+            stalker += 1;
+        } else if is("Irradiator") {
+            irr += 1;
+        } else if !is("Robot") {
+            people += 1;
+        }
+    }
+    if !c.player_dead {
+        people += 1;
+    }
+    let f = |key: &str, n: i32| {
+        let t = text(key);
+        match t.find("%d").or_else(|| t.find("%s")) {
+            Some(i) => format!("{}{}{}", &t[..i], n, &t[i + 2..]),
+            None => t,
+        }
+    };
+    let lines = [
+        f("strGeneral", alien),
+        f("strPhaser", phaser),
+        f("strStalker", stalker),
+        f("strIrradiator", irr),
+        f("strPlanetsider", people),
+    ];
+    crate::scripted_tv::set_small(1, lines.join("/n"));
+}
+
+// uc: tnmMission24.Timer
+/// New Game Plus: every flag goes but the ABI shop's vouchers spent and the accessories bought, the goals and the
+/// conversation history are wiped, and Trestkon - with everything he carries - starts over at the first map.
+fn new_game_plus(c: &mut Ctx) {
+    let keep: Vec<(String, imsim_core::flags::FlagValue)> = c
+        .fl
+        .iter()
+        .filter(|(n, _, _)| n.eq_ignore_ascii_case("ABI_VoucherUses") || n.to_ascii_lowercase().starts_with("abi_bought"))
+        .map(|(n, v, _)| (n.to_string(), v.clone()))
+        .collect();
+    c.fl.delete_all();
+    for (n, v) in keep {
+        c.fl.set(&n, v, 0);
+    }
+    if let Some(cs) = crate::consys::lock().as_mut() {
+        cs.goals.clear();
+        cs.history.clear();
+    }
+    crate::classic_hud::clear_log();
+    c.send_player(crate::tnmmode::start_map());
+}
+
+/// The Narcissus box is up: its OK sends the player to the ending.
+static NARCISSUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub(super) fn timer(c: &mut Ctx, map: &str) {
+    if NARCISSUS.load(std::sync::atomic::Ordering::Relaxed) && crate::menus::take_box_answer().is_some() {
+        NARCISSUS.store(false, std::sync::atomic::Ordering::Relaxed);
+        c.send_player("TNMEndgame03");
+    }
     let seen: Vec<usize> = super::super::DETECTED.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
     if !seen.is_empty() {
         if let Some(n) = map.strip_prefix("24_SPACESTATION") {
@@ -160,6 +279,10 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
     }
     match map {
         "24_SPACESTATION01" => {
+            if c.b("MS_StartNewGamePlus") && c.b("Narcissus_Greeting_Played") && !crate::consys::third_person() {
+                new_game_plus(c);
+                return;
+            }
             // Once a door of the decompression hallway is broken: while the hallway is still airless its oxygen
             // trigger runs (every check, as the mod does); with air in it, the hallway's own trigger is spent.
             if c.mover_ids("DecompressionHallwayDoor").len() == 2 && c.movers_left("DecompressionHallwayDoor") != 2 {
@@ -199,8 +322,10 @@ pub(super) fn timer(c: &mut Ctx, map: &str) {
                 c.award(500, "strEffortAward");
                 c.set("MS_KillDD_AwardGiven", true, 25);
             }
+            census(c);
         }
         "24_SPACESTATION03" => {
+            solar_panels(c);
             let show_scara = (c.b("ALLIED_WC") && c.any(&["QC_MAIN_ActivateAPGs", "QC_MAIN_DestroyLEETs"]))
                 || (c.b("ALLIED_PDX") && c.b("QC_MAIN_DisableAnniePlants") && !c.b("QC_MAIN_DestroyLEETs"));
             if !c.b("MS_SpawnedScaraHologram") && show_scara {
@@ -365,7 +490,21 @@ pub(super) fn event(c: &mut Ctx, f: &str) -> bool {
                 ally_with(c, t, "GameSpy", -1.0);
             }
         }
-        "BreakTheGame" | "TrestAblaze" | "TrestPutOut" | "PlayGSSound" => {}
+        // uc: tnmMission24.TrestAblaze, tnmMission24.TrestPutOut
+        "TrestAblaze" => crate::effects::player_ablaze(true),
+        "TrestPutOut" => crate::effects::player_ablaze(false),
+        // uc: tnmMission24.WoundJonasEgo, NarcissusWindow.InitWindow, NarcissusWindow.DestroyWindow
+        // The game "breaks": NarcissusWindow's error box (its own strings), and closing it ends the game.
+        "BreakTheGame" => {
+            crate::menus::open_class_box("NarcissusWindow", "title", &["text1", "text2", "text3"]);
+            crate::sound::play_player("TNMSounds.OneShot.XPCriticalStop", 2.0, 0.0);
+            NARCISSUS.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        // uc: tnmMission24.PlayGSSound
+        "PlayGSSound" => {
+            let s = if c.rand() < 0.5 { "TNMSounds.OneShot.GSWelcomeMale" } else { "TNMSounds.OneShot.GSWelcomeFemale" };
+            crate::sound::play_player(s, 1.0, 0.0);
+        }
         _ => return false,
     }
     true

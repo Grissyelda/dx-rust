@@ -86,6 +86,7 @@ static GAME_EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static KILLS: Mutex<Vec<(String, String, bool)>> = Mutex::new(Vec::new());
 
 pub fn tnm_kill(by_player: bool, class: &str, tag: &str, knocked_out: bool) {
+    crate::tnminvasion::note_kill(class, by_player);
     if by_player && crate::tnmmode::active() {
         if let Ok(mut q) = KILLS.lock() {
             q.push((class.to_string(), tag.to_string(), knocked_out));
@@ -190,6 +191,8 @@ pub enum Fx {
     Sphere(DVec3, f32),
     /// Mission15 UC spawn flash: ExplosionLight, EllipseEffect, SphereEffect size 4 and four 1 s electricity arcs.
     SpawnFlash(DVec3),
+    /// A fragment of another class (Rockchip falling from a cave ceiling): DrawScale.
+    Debris(DVec3, &'static str, f32),
 }
 
 static FX: Mutex<Vec<Fx>> = Mutex::new(Vec::new());
@@ -220,6 +223,8 @@ static ZONE_AMBIENT: Mutex<Option<String>> = Mutex::new(None);
 
 /// A new map: drop what the old one's scripts queued.
 pub fn reset_level() {
+    tnm::m23::reset_level();
+    tnm::m24::reset_level();
     if let Ok(mut z) = ZONE_AMBIENT.lock() {
         *z = None;
     }
@@ -2236,6 +2241,9 @@ pub fn mission_fx_system(
                     scale,
                     skin,
                 });
+            }
+            Fx::Debris(pos, class, scale) => {
+                crate::destruct::burst(crate::destruct::Burst { class: class.into(), pos, count: 1, spread: 256.0, scale, skin: None });
             }
             Fx::Sphere(at, size) => {
                 crate::explosion::spawn_mesh_fx(&mut commands, &mut assets, &mut images, &mut meshes, &mut materials, "SphereEffect", at, [0, 0, 0], size);

@@ -91,7 +91,7 @@ pub fn player_ignored() -> bool {
 }
 
 pub fn is_terminal(class: &str) -> bool {
-    base_class(class).is_some() || is_vending(class)
+    base_class(class).is_some() || is_vending(class) || crate::tnmpuzzle::machine(class).is_some()
 }
 
 /// The Nameless Mod's vending machines (TNMVendingMachine and its drink / food / PS20 kinds).
@@ -153,6 +153,8 @@ enum Kind {
     Atm,
     /// The Nameless Mod's vending machines (TNMVendingMachine: a product list, bought with credits).
     Vending,
+    /// The Nameless Mod's puzzle machines (tnmpuzzle.rs): the terminal opens straight on the puzzle.
+    Puzzle,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -318,8 +320,10 @@ impl CompData {
     fn load(lvl: &dx_level::Level, actor: usize, assets: &mut RuntimeAssets) -> CompData {
         let a = &lvl.actors[actor];
         let p = &a.props;
-        let kind = match base_class(&a.class).unwrap_or(if is_vending(&a.class) { "Vending" } else { "ATM" }) {
+        let puzzle = crate::tnmpuzzle::machine(&a.class).is_some();
+        let kind = match base_class(&a.class).unwrap_or(if is_vending(&a.class) { "Vending" } else if puzzle { "Puzzle" } else { "ATM" }) {
             "Vending" => Kind::Vending,
+            "Puzzle" => Kind::Puzzle,
             "ComputerSecurity" => Kind::Security,
             "ComputerPersonal" => Kind::Personal,
             "ComputerPublic" => Kind::Public,
@@ -548,15 +552,48 @@ fn tnm_starting_accounts(assets: &mut RuntimeAssets, training: bool) -> Vec<Acco
 fn tnm_accounts(assets: &mut RuntimeAssets, map: &str) -> Vec<Account> {
     let mut g = TNM_ACCOUNTS.lock().unwrap_or_else(|e| e.into_inner());
     if g.is_none() {
-        let v = tnm_starting_accounts(assets, map.to_ascii_lowercase().starts_with("25_tnmtraining"));
+        let mut v = tnm_starting_accounts(assets, map.to_ascii_lowercase().starts_with("25_tnmtraining"));
+        if let Ok(mut q) = TNM_ACCOUNT_ADDS.lock() {
+            for (i, n) in q.drain(..) {
+                if let Some(a) = v.get_mut(i) {
+                    a.balance += n;
+                }
+            }
+        }
         println!("TNM ATM accounts: {} (total c{})", v.len(), v.iter().map(|a| a.balance).sum::<i32>());
         *g = Some(v);
     }
     g.clone().unwrap_or_default()
 }
 
+/// Credits added to shared accounts by index (a mission script topping them up before the manager was made in
+/// this session's memory: applied when it is).
+static TNM_ACCOUNT_ADDS: Mutex<Vec<(usize, i32)>> = Mutex::new(Vec::new());
+
+/// UserList[i].balance += n on the game-wide accounts.
+pub fn tnm_accounts_add(adds: &[(usize, i32)]) {
+    let mut g = TNM_ACCOUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    match g.as_mut() {
+        Some(v) => {
+            for &(i, n) in adds {
+                if let Some(a) = v.get_mut(i) {
+                    a.balance += n;
+                }
+            }
+        }
+        None => {
+            if let Ok(mut q) = TNM_ACCOUNT_ADDS.lock() {
+                q.extend_from_slice(adds);
+            }
+        }
+    }
+}
+
 /// A new game (and the intro, where the original destroys the manager): the accounts start over.
 pub fn tnm_accounts_reset() {
+    if let Ok(mut q) = TNM_ACCOUNT_ADDS.lock() {
+        q.clear();
+    }
     if let Ok(mut g) = TNM_ACCOUNTS.lock() {
         *g = None;
     }
@@ -1188,6 +1225,10 @@ impl Term {
 
     /// NetworkTerminal.HackDetected.
     fn hack_detected(&mut self, wx: &mut Wx, damage_only: bool) {
+        // tnmNetworkTerminalAIPuzzle.HackDetected: nothing happens.
+        if self.kind == Kind::Puzzle {
+            return;
+        }
         let now = wx.now;
         let d = self.d(wx);
         d.locked_out = true;
@@ -1202,6 +1243,16 @@ impl Term {
     /// NetworkTerminal.ComputerHacked.
     fn computer_hacked(&mut self, wx: &mut Wx) {
         self.hacked = true;
+        // tnmNetworkTerminalAIPuzzle.ComputerHacked: the puzzle counts as solved and the ICE Breaker goes.
+        if self.kind == Kind::Puzzle {
+            if let Some(Screen::Game(g)) = self.screen.as_mut() {
+                if let crate::tnmpc::Game::Packets(p) = &mut **g {
+                    p.hack_solve();
+                }
+            }
+            self.hack = None;
+            return;
+        }
         self.user_idx = 0;
         if self.kind != Kind::Atm {
             self.user = self.d(wx).user_name(0);
@@ -1233,6 +1284,11 @@ impl Term {
             Kind::Public => Which::Bulletins,
             _ => Which::Login,
         };
+        // The puzzle machines only have their puzzle: leaving it leaves the machine.
+        if self.kind == Kind::Puzzle {
+            self.exit = true;
+            return;
+        }
         let next = match (self.kind, action) {
             (_, "LOGOUT") if self.kind == Kind::Public => {
                 self.exit = true;
@@ -1376,7 +1432,20 @@ impl Term {
                     _ => None,
                 });
                 crate::tnmweb::set_home(home);
-                let g = if crate::tnmconsole::is_console(a) {
+                let g = if a == "APGPUZZLE" {
+                    let before = wx.flags.get_bool("APG_Solved").then(|| match wx.flags.get("APG_ButtonCount") {
+                        Some(imsim_core::flags::FlagValue::Int(n)) => (*n).max(0) as u32,
+                        _ => 0,
+                    });
+                    Some(crate::tnmpc::Game::Apg(Box::new(crate::tnmpuzzle::Apg::new(wx.assets, seed, before))))
+                } else if a == "AIPUZZLE" {
+                    let p = crate::tnmpc::Packets::story(wx.assets, 0, seed);
+                    let (layout, store) = crate::tnmpuzzle::layout(wx.lvl, self.actor, wx.flags, p.layouts(), seed);
+                    if let Some(f) = store {
+                        crate::tnmconsole::push(crate::tnmconsole::Effect::Int(f, layout as i32));
+                    }
+                    Some(crate::tnmpc::Game::Packets(Box::new(crate::tnmpc::Packets::story(wx.assets, layout, seed))))
+                } else if crate::tnmconsole::is_console(a) {
                     let cx = crate::tnmconsole::Ctx {
                         user: self.user.clone(),
                         flags: wx.flags,
@@ -1898,8 +1967,17 @@ fn geo(t: &Term, d: &CompData, hud: &mut ClassicHud, assets: &mut RuntimeAssets)
         Some(Screen::Game(gm)) => {
             g.class = gm.class();
             g.title = txt(hud, assets, g.class, "Title", "") + &gm.title_suffix();
+            // AIPuzzleWindow.CreateTitleWindow: the Citadel's consoles have their own title.
+            if gm.is_story() && crate::tnmpuzzle::alt_title() {
+                g.title = txt(hud, assets, g.class, "AltTitle", &g.title.clone());
+            }
             (g.cw, g.ch) = gm.client_size();
-            g.buttons = if gm.is_packets() {
+            g.buttons = if gm.is_story() {
+                let live = !gm.packets_solved();
+                vec![(Btn::Reset, true, live), (Btn::Exit, true, live)]
+            } else if matches!(**gm, crate::tnmpc::Game::Apg(_)) {
+                vec![(Btn::Exit, true, true)]
+            } else if gm.is_packets() {
                 let live = !gm.packets_solved();
                 vec![(Btn::Reset, true, live), (Btn::Exit, true, live), (Btn::Switch, false, true)]
             } else if gm.busy() {
@@ -3298,6 +3376,8 @@ pub fn computer_system(
         println!("CONSOLE {e:?}");
         match e {
             Effect::Flag(n, v) => flags.0.set(&n, imsim_core::flags::FlagValue::Bool(v), 0),
+            Effect::Int(n, v) => flags.0.set(&n, imsim_core::flags::FlagValue::Int(v), 0),
+            Effect::SetFlag(n, v) => flags.0.set(&n, v, 0),
             Effect::NameFlag(n, v) => flags.0.set(&n, imsim_core::flags::FlagValue::Name(v), 0),
             Effect::Event(t) => events.0.push((t, true)),
             Effect::Achievement(a) => crate::tnmach::unlock(&a),
@@ -3446,8 +3526,11 @@ fn open_frobbed(cx: &mut CompCx) {
         let broken = actor < lvl.actors.len()
             && unreal_pkg::tnm::active().is_some()
             && matches!(find(&lvl.actors[actor].props, "bOutOfOrder"), Some(Value::Bool(true)));
+        let gate = if actor < lvl.actors.len() { crate::tnmpuzzle::frob_gate(lvl, actor, cx.flags, &mut cx.assets) } else { None };
         if broken {
             let msg = pstr(&lvl.actors[actor].props, "outOfOrderMsg", "Out of order.");
+            crate::classic_hud::client_message(&msg);
+        } else if let Some(msg) = gate {
             crate::classic_hud::client_message(&msg);
         } else if cx.st.term.is_none() && !cx.ph.dead && !crate::inventory_screen::screen_open() && actor < lvl.actors.len() {
             first_load(cx.st, lvl, actor, &mut cx.assets);
@@ -3466,7 +3549,14 @@ fn open_frobbed(cx: &mut CompCx) {
             if !d.locked_out {
                 let kind = d.kind;
                 let skill = crate::abilities::skill_level("SkillComputer") as i32;
-                let uses_hack = kind != Kind::Public && kind != Kind::Vending;
+                // AIPuzzleWindow.SetNetworkTerminal: the packet consoles take the ICE Breaker from Advanced on (the
+                // generator panel never).
+                let ai_puzzle = crate::tnmpuzzle::machine(&lvl.actors[actor].class) == Some(crate::tnmpuzzle::Machine::Ai);
+                let uses_hack = match kind {
+                    Kind::Public | Kind::Vending => false,
+                    Kind::Puzzle => ai_puzzle && skill >= 2,
+                    _ => true,
+                };
                 let mut detection = 15.0f32;
                 let mut hack = None;
                 if skill > 0 && uses_hack {
@@ -3530,8 +3620,13 @@ fn open_frobbed(cx: &mut CompCx) {
                     Kind::Vending => Which::Vending,
                     Kind::Atm => Which::Atm,
                     Kind::Public => Which::Bulletins,
+                    Kind::Puzzle => match crate::tnmpuzzle::machine(&lvl.actors[actor].class) {
+                        Some(crate::tnmpuzzle::Machine::Apg) => Which::Game("APGPUZZLE"),
+                        _ => Which::Game("AIPUZZLE"),
+                    },
                     _ => Which::Login,
                 };
+                crate::tnmpuzzle::set_map(&lvl.name);
                 t.show(first, &mut wx);
                 cx.st.term = Some(t);
                 cx.st.grabbed_before = cx.cursor_opts.grab_mode != bevy::window::CursorGrabMode::None;
@@ -3653,8 +3748,33 @@ fn term_frame(cx: &mut CompCx, fr: &CompFrame, wheel: &mut MessageReader<MouseWh
         };
         // AIPuzzleWindow.PuzzleFinished closes to "STATIC", which the Applications terminal has no screen for: back
         // to the list.
-        if finished {
+        if finished && t.kind == Kind::Puzzle {
+            // APGPuzzleWindow.SolvePuzzle / tnmNetworkTerminalAIPuzzle's static: the machine is done.
+            let (pushes, hacked) = match t.screen.as_ref() {
+                Some(Screen::Game(g)) => match &**g {
+                    crate::tnmpc::Game::Apg(a) => (a.pushes_done, false),
+                    crate::tnmpc::Game::Packets(p) => (0, p.hacked),
+                    _ => (0, false),
+                },
+                _ => (0, false),
+            };
+            for e in crate::tnmpuzzle::solved(wx.lvl, t.actor, wx.assets, pushes, hacked) {
+                crate::tnmconsole::push(crate::tnmconsole::Effect::Event(e));
+            }
+            if crate::tnmpuzzle::machine(&wx.lvl.actors[t.actor].class) == Some(crate::tnmpuzzle::Machine::Ai) {
+                crate::tnmach::unlock("achAIPuzzle");
+            }
+            t.exit = true;
+        } else if finished {
             t.close_screen("GAMES", &mut wx);
+        }
+        // The generator panel's flags (APG_Solved, APG_ButtonCount).
+        if let Some(Screen::Game(g)) = t.screen.as_mut() {
+            if let crate::tnmpc::Game::Apg(a) = &mut **g {
+                for (n, v) in a.flags_out.drain(..) {
+                    crate::tnmconsole::push(crate::tnmconsole::Effect::SetFlag(n, v));
+                }
+            }
         }
         let mut go_disabled = false;
         if let Some(Screen::Withdraw { disabled_t: Some(dtl), .. }) = t.screen.as_mut() {

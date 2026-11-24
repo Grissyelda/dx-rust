@@ -11,12 +11,15 @@ use super::*;
 use std::collections::HashMap;
 
 mod m22;
-mod m23;
-mod m24;
+pub(crate) mod m23;
+pub(crate) mod m24;
 mod m25;
 
 /// The mission script's own strings (its localized defaults), by property name.
 static TEXT: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static SKINS: Mutex<Option<HashMap<String, Vec<(u32, String)>>>> = Mutex::new(None);
+static MUSIC: Mutex<Option<HashMap<String, Vec<(String, String)>>>> = Mutex::new(None);
+static ATM_TOPUPS: Mutex<Option<HashMap<String, Vec<(usize, f64)>>>> = Mutex::new(None);
 
 /// Read the strings of the map's mission script class (LevelInfo.Script) from the player's packages.
 pub fn load_text(classes: &mut unreal_pkg::classes::ClassDb, script: &str) {
@@ -37,6 +40,83 @@ pub fn load_text(classes: &mut unreal_pkg::classes::ClassDb, script: &str) {
     if let Ok(mut t) = TEXT.lock() {
         *t = Some(m);
     }
+    // The texture names its functions put on actors (`MultiSkins[i] = Texture(DynamicLoadObject("..."))`), by
+    // function: the clothes AJ changes into are read from the player's script, not written here.
+    let mut skins: HashMap<String, Vec<(u32, String)>> = HashMap::new();
+    let mut atm: HashMap<String, Vec<(usize, f64)>> = HashMap::new();
+    let mut music: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    if let Some(src) = classes.script_text(class) {
+        let mut func = String::new();
+        for line in src.lines() {
+            let l = line.trim();
+            let low = l.to_ascii_lowercase();
+            if let Some(rest) = low.strip_prefix("function ") {
+                func = rest.split('(').next().unwrap_or("").rsplit(' ').next().unwrap_or("").to_string();
+                continue;
+            }
+            // ATMAccountManager.UserList[i].balance += n * FRand(): (function, account, n).
+            if let Some(i) = low.find("userlist[") {
+                let rest = &low[i + 9..];
+                if let (Some((idx, tail)), true) = (rest.split_once(']'), low.contains("frand")) {
+                    if let (Ok(idx), Some(n)) = (
+                        idx.trim().parse::<usize>(),
+                        tail.split_once("+=").and_then(|(_, r)| r.split('*').next()).and_then(|n| n.trim().parse::<f64>().ok()),
+                    ) {
+                        atm.entry(func.clone()).or_default().push((idx, n));
+                    }
+                }
+                continue;
+            }
+            // ogg.<Field>OggFile = "file": the music manager's tracks a function switches to.
+            if let Some(i) = low.find("oggfile") {
+                if let (Some(dot), Some(eq)) = (low[..i].rfind('.'), low[i..].find('=')) {
+                    let field = l[dot + 1..i + 7].trim().to_string();
+                    let file = l[i + eq + 1..].trim().trim_end_matches(';').trim().trim_matches('"').to_string();
+                    if !file.is_empty() && !field.contains(' ') {
+                        music.entry(func.clone()).or_default().push((field, file));
+                    }
+                }
+                continue;
+            }
+            let Some(i) = low.find("multiskins[") else { continue };
+            let after = &l[i + 11..];
+            let Some((slot, rhs)) = after.split_once(']') else { continue };
+            let Ok(slot) = slot.trim().parse::<u32>() else { continue };
+            let Some(q) = rhs.find("DynamicLoadObject(\"") else { continue };
+            let Some(path) = rhs[q + 19..].split('"').next() else { continue };
+            skins.entry(func.clone()).or_default().push((slot, path.to_string()));
+        }
+    }
+    if let Ok(mut t) = SKINS.lock() {
+        *t = Some(skins);
+    }
+    if let Ok(mut t) = ATM_TOPUPS.lock() {
+        *t = Some(atm);
+    }
+    if let Ok(mut t) = MUSIC.lock() {
+        *t = Some(music);
+    }
+}
+
+/// The music-manager file names a script function sets (see load_text).
+fn script_music(func: &str) -> Vec<(String, String)> {
+    MUSIC.lock().ok().and_then(|t| t.as_ref().and_then(|m| m.get(&func.to_ascii_lowercase()).cloned())).unwrap_or_default()
+}
+
+/// The ATM top-ups a script function makes (see load_text): (account, most credits added).
+fn script_atm(func: &str) -> Vec<(usize, f64)> {
+    ATM_TOPUPS.lock().ok().and_then(|t| t.as_ref().and_then(|m| m.get(&func.to_ascii_lowercase()).cloned())).unwrap_or_default()
+}
+
+/// The MultiSkins a script function sets (see load_text), in order; a slot set twice keeps its last texture.
+fn script_skins(func: &str) -> Vec<(u32, String)> {
+    let mut v = SKINS.lock().ok().and_then(|t| t.as_ref().and_then(|m| m.get(&func.to_ascii_lowercase()).cloned())).unwrap_or_default();
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for (s, p) in v.drain(..) {
+        out.retain(|(o, _)| *o != s);
+        out.push((s, p));
+    }
+    out
 }
 
 fn text(key: &str) -> String {
@@ -269,7 +349,48 @@ fn is_m25(c: &Ctx) -> bool {
 }
 
 /// Every TNM mission script on its first tick (after Deus Ex's own MissionScript part in mission.rs).
+// uc: TNMOggMusicManager.init
+/// The map's music manager plays its second ambient track once its FlagName is set, and the alternative soundtrack
+/// (the player's option) where the map has one: the manager's own file names, swapped in on arrival.
+fn music_setup(c: &mut Ctx) {
+    use unreal_pkg::props::find;
+    let Some(a) = c.lvl.actors.iter().find(|a| a.class.eq_ignore_ascii_case("TNMOggMusicManager")) else { return };
+    let s = |k: &str| match find(&a.props, k) {
+        Some(Value::Str(v)) => v.trim().to_string(),
+        _ => String::new(),
+    };
+    let flag = match find(&a.props, "FlagName") {
+        Some(Value::Name(n)) if !n.eq_ignore_ascii_case("None") => n.clone(),
+        _ => String::new(),
+    };
+    let alt = crate::tnmmode::option("bAltSoundtrack");
+    let second = !flag.is_empty() && c.b(&flag);
+    let (n, k) = if second { ("2", "Ambient2") } else { ("1", "Ambient1") };
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let (mut intro, mut main) = (s(&format!("{k}IntroOggFile")), s(&format!("{k}OggFile")));
+    if alt && !s(&format!("AltAmbient{n}OggFile")).is_empty() {
+        intro = s(&format!("AltAmbient{n}IntroOggFile"));
+        main = s(&format!("AltAmbient{n}OggFile"));
+    }
+    if !main.is_empty() && (second || alt) {
+        fields.push(("AmbientIntroOggFile".into(), intro));
+        fields.push(("AmbientOggFile".into(), main));
+    }
+    if alt {
+        for f in ["CombatIntroOggFile", "CombatOggFile", "ConversationIntroOggFile", "ConversationOggFile", "DeathOggFile"] {
+            let v = s(&format!("Alt{f}"));
+            if !v.is_empty() {
+                fields.push((f.into(), v));
+            }
+        }
+    }
+    if !fields.is_empty() {
+        crate::tnmmode::retrack(fields);
+    }
+}
+
 pub fn first_frame(c: &mut Ctx) {
+    music_setup(c);
     // The first count on a map is the number later visits are measured against.
     let start = format!("{}_StartCount", c.map);
     if c.int(&start) == 0 {

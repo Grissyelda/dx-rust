@@ -425,6 +425,10 @@ pub struct ClassicHud {
     /// its portrait on a window of its own the InfoLink is redrawn from a copy of it as its text types.
     infolink_frame: Option<(u64, Canvas)>,
     true_north: Option<i32>,
+    /// The Nameless Mod's NorthMarker (Trestkon.MapTrueNorth): the compass's north is the way to it.
+    north_marker: Option<[f64; 3]>,
+    /// The map the north was read for (a new map reads its own).
+    north_gen: u64,
     defaults: HashMap<String, Vec<unreal_pkg::props::Property>>,
     /// Message log lines (text, age) and seconds since the last one.
     log: Vec<(String, f32)>,
@@ -437,14 +441,29 @@ pub struct ClassicHud {
     received_t: f32,
 }
 
+/// DeusExPlayer.ClearLog asked for (The Nameless Mod's New Game Plus).
+static CLEAR_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn clear_log() {
+    CLEAR_LOG.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl ClassicHud {
     /// HUDLogDisplay.AddLog: a new message (wrapped later to the window width), the oldest lines drop off.
     fn add_log(&mut self, msg: &str) {
+        self.take_clear();
         crate::persona::log_message(msg);
         for line in msg.lines().filter(|l| !l.trim().is_empty()) {
             self.log.push((line.to_string(), 0.0));
         }
         self.since_log = 0.0;
+    }
+
+    /// Drop the log's lines if ClearLog was asked for.
+    fn take_clear(&mut self) {
+        if CLEAR_LOG.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            self.log.clear();
+        }
     }
 
     /// DamageHUDDisplay.AddIcon.
@@ -768,6 +787,9 @@ pub fn classic_hud_system(
     );
     let _to_logical = |v: i32| v as f32 * s as f32 / window.scale_factor();
 
+    if crate::loader::new_map(&mut hud.north_gen) {
+        hud.true_north = None;
+    }
     if hud.true_north.is_none() {
         let n = level.0.level_info()
             .and_then(|a| match find(&a.props, "TrueNorth") {
@@ -775,6 +797,16 @@ pub fn classic_hud_system(
                 _ => None,
             });
         hud.true_north = Some(n.unwrap_or(0));
+        hud.north_marker = level.0.actors.iter().find(|a| crate::classtree::is_a(&a.class, "NorthMarker")).map(|a| {
+            let l = a.location();
+            [l[0] as f64, l[1] as f64, l[2] as f64]
+        });
+    }
+    // uc: tnmHUDCompassDisplay.Tick, Trestkon.MapTrueNorth
+    if let Some(m) = hud.north_marker {
+        let e = dx_level::bevy_to_ue(cam.translation.to_array());
+        let yaw = ((m[1] - e[1] as f64).atan2(m[0] - e[0] as f64) / std::f64::consts::TAU * 65536.0).round() as i32;
+        hud.true_north = Some(yaw & 65535);
     }
     let fwd = cam.forward();
     let yaw = ((fwd.z.atan2(fwd.x) as f64) / std::f64::consts::TAU * 65536.0).round() as i32;
@@ -1002,6 +1034,7 @@ fn take_messages(
     {
         hud.add_log(&m);
     }
+    hud.take_clear();
     hud.since_log += dt;
     hud.log.iter_mut().for_each(|l| l.1 += dt);
     hud.log.retain(|l| l.1 <= log_timeout());
@@ -1430,7 +1463,7 @@ impl HudFrame {
             Win::Radish => (0, 0, ww, wh, crate::radish::active() && !menu),
             // TNMHUD: right edge, above the belt.
             Win::ChallengeTimer => (sw - 100, sh - 108 - Win::Belt.size().1 - 10, 100, 108, crate::tnmbonus::timer().is_some() && !menu),
-            Win::Invader => (0, sh * 15 / 100, sw.max(1), 40, crate::tnmbonus::banner().is_some() && !menu),
+            Win::Invader => (0, sh * 15 / 100, sw.max(1), 40, (crate::tnmbonus::banner().is_some() || crate::tnminvasion::banner(hud_now()).is_some()) && !menu),
             Win::RadishWeapon => (0, sh * 15 / 100, sw.max(1), 80, crate::radish::weapon_shown().is_some() && !menu),
             Win::Msg => (
                 sw / 2 - msg_w / 2,
@@ -1567,7 +1600,7 @@ fn window_key(
             wh,
             s,
         ))),
-        Win::Invader => Some(hkey(&(crate::tnmbonus::banner(), ww, wh, s))),
+        Win::Invader => Some(hkey(&(crate::tnmbonus::banner(), crate::tnminvasion::banner(hud_now()), ww, wh, s))),
         Win::RadishWeapon => Some(hkey(&(crate::radish::weapon_shown(), ww, wh, s))),
         Win::ConCursor => Some(hkey(&(ww, wh, s))),
         // The ammo display changes with the gun, its rounds, the pool and the lock line.
@@ -2617,16 +2650,24 @@ fn draw_challenge_timer(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mu
     }
 }
 
+/// The invader warning's clock.
+fn hud_now() -> f64 {
+    crate::tnminvasion::now()
+}
+
 /// HUDInvaderEnter.ShowWarning: InvaderEnter[n] in red FontMenuExtraLarge, centred.
 fn draw_invader(hud: &mut ClassicHud, assets: &mut RuntimeAssets, c: &mut Canvas) {
-    let Some(n) = crate::tnmbonus::banner() else { return };
+    // An invader arriving (Invader.PostPostBeginPlay: InvaderEnter[0] with its name), or a challenge run's line.
+    let invader = crate::tnminvasion::banner(hud_now());
+    let Some(n) = crate::tnmbonus::banner().or(invader.as_ref().map(|_| 0)) else { return };
+    let who = invader.unwrap_or_default();
     let Some(f) = hud.font(assets, "FontMenuExtraLarge") else { return };
     let t = hud
         .defaults(assets, "HUDInvaderEnter")
         .iter()
         .find(|x| x.index == n as u32 && x.name.eq_ignore_ascii_case("InvaderEnter"))
         .and_then(|x| match &x.value {
-            Value::Str(s) => Some(s.replacen("%s", "", 1)),
+            Value::Str(s) => Some(s.replacen("%s", &who, 1)),
             _ => None,
         })
         .unwrap_or_default();

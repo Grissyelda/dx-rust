@@ -468,6 +468,13 @@ pub struct FireParticle {
     mat: Handle<StandardMaterial>,
 }
 
+/// Flames drawn on the player without any burning (tnmMission24.TrestAblaze's TNMFire, a cut scene's effect).
+static ABLAZE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn player_ablaze(on: bool) {
+    ABLAZE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn burn_fx_system(
     mut commands: Commands,
@@ -500,7 +507,8 @@ pub fn burn_fx_system(
 ) {
     let _prof = crate::prof::scope("effects::burn_fx_system");
     // Nothing alight and no particles left: nothing to do (the common case).
-    if fx.0.is_empty() && ph.on_fire.is_none() && parts.is_empty() && !npcs.iter().any(|n| n.on_fire.is_some()) {
+    let ablaze = ABLAZE.load(std::sync::atomic::Ordering::Relaxed);
+    if fx.0.is_empty() && ph.on_fire.is_none() && !ablaze && parts.is_empty() && !npcs.iter().any(|n| n.on_fire.is_some()) {
         return;
     }
     let dt = time.delta_secs().min(0.1);
@@ -515,7 +523,7 @@ pub fn burn_fx_system(
             (n.blocker, c.center, n.params.radius, n.params.height)
         })
         .collect();
-    if ph.on_fire.is_some() {
+    if ph.on_fire.is_some() || ablaze {
         burning.push((
             usize::MAX,
             player.body.location,

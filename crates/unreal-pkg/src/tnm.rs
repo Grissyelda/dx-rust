@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 /// Its code packages (TNMDefault.ini EditPackages / ServerPackages order, the ones its maps use).
 pub const PACKAGES: &[&str] = &[
     "TNMNative", "MoreTriggers", "EFX", "HTK", "RF", "CaroneElevatorSet", "DXOgg", "TNMItems", "TNMDeco",
-    "TNMCharacters", "TNMDataVault", "TNMGUI", "TNM", "TNMMP",
+    "TNMCharacters", "TNMDataVault", "TNMGUI", "TNM", "TNMMP", "precipitation",
 ];
 
 /// Its conversation packages: two halves of the game, text and speech kept apart.

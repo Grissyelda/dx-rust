@@ -84,8 +84,21 @@ const INFO: (i32, i32, i32, i32) = (CX + 337, CY + 17, 238, 218);
 const INFO_TEXT_Y: i32 = 20;
 const BUTTONS: (i32, i32, i32) = (CX + 9, CY + 339, 267);
 const STATUS: (i32, i32, i32) = (CX + 337, CY + 243, 238);
-const KEYRING: (i32, i32, i32) = (CX + 335, CY + 285, 121);
-const AMMO: (i32, i32, i32) = (CX + 456, CY + 285, 120);
+const KEYRING_DX: (i32, i32, i32) = (CX + 335, CY + 285, 121);
+const AMMO_DX: (i32, i32, i32) = (CX + 456, CY + 285, 120);
+// uc: tnmPersonaScreenInventory.CreateNanoKeyRingWindow, CreateAmmoWindow, CreateFistWindow, CreateAccessoryWindow
+/// The Nameless Mod's row of four icon-only detail windows: key ring, fists, ammo, accessories.
+const KEYRING_TNM: (i32, i32, i32) = (CX + 335, CY + 285, 68);
+const FISTS_TNM: (i32, i32, i32) = (CX + 402, CY + 285, 55);
+const AMMO_TNM: (i32, i32, i32) = (CX + 456, CY + 285, 55);
+const ACCESSORIES_TNM: (i32, i32, i32) = (CX + 511, CY + 285, 66);
+
+fn keyring_r() -> (i32, i32, i32) {
+    if crate::tnmmode::active() { KEYRING_TNM } else { KEYRING_DX }
+}
+fn ammo_r() -> (i32, i32, i32) {
+    if crate::tnmmode::active() { AMMO_TNM } else { AMMO_DX }
+}
 const DETAIL_H: i32 = 55;
 /// The object belt copy (PersonaInventoryObjectBelt 631 x 69 at the bottom right, its belt at +90).
 const BELT: (i32, i32) = (SCREEN_W - 631 + 90, SCREEN_H - 69);
@@ -161,6 +174,9 @@ enum Sel {
     Item(String),
     KeyRing,
     Ammo,
+    /// The Nameless Mod: Trestkon's gloves, and the things he carries that aren't items.
+    Fists,
+    Accessories,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -244,6 +260,9 @@ enum Row {
     Checkbox(String, bool),
     /// Augmentique: "Current Skin: X" with Prev / Next (PersonaInfoWindow.AddSkinsButtons, GMDX).
     Skin(String),
+    /// The Nameless Mod's icon rows (tnmPersonaInventoryInfoWindow.AddNormalFist / AddAccessory): picture, text,
+    /// the glove kind it picks (fists only), and whether it's the one worn.
+    Icon(String, String, Option<u8>, bool),
 }
 
 #[derive(Resource)]
@@ -779,6 +798,128 @@ fn ammo_list(view: &View, show_desc: bool, assets: &mut RuntimeAssets) -> (Strin
     ("Ammunition".into(), rows)
 }
 
+/// The Nameless Mod's string arrays (strFistName[i]...).
+fn str_at(p: &[Property], n: &str, i: u32) -> String {
+    p.iter()
+        .find(|x| x.name.eq_ignore_ascii_case(n) && x.index == i)
+        .and_then(|x| match &x.value {
+            Value::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// A picture a mod's window script names in one of its functions (`SetBackground(texture'Name')`), skipping the
+/// frame textures: its full path, resolved through that class's package.
+fn script_icon(assets: &mut RuntimeAssets, class: &str, func: &str, skip: &str) -> Option<String> {
+    let src = assets.classes.script_text(class)?;
+    let lo = src.to_ascii_lowercase();
+    let at = lo.find(&format!("function {}", func.to_ascii_lowercase()))?;
+    let body = &src[at..];
+    let end = body[1..].find("\nfunction ").map(|e| e + 1).unwrap_or(body.len());
+    for piece in body[..end].split("SetBackground(texture'").skip(1) {
+        let name = piece.split('\'').next().unwrap_or("");
+        if name.is_empty() || name.to_ascii_lowercase().starts_with(&skip.to_ascii_lowercase()) {
+            continue;
+        }
+        return Some(assets.classes.resolve_ref(class, name, "Texture").unwrap_or_else(|| name.to_string()));
+    }
+    None
+}
+
+// uc: tnmPersonaScreenInventory.UpdatefistDisplay, tnmPersonaInventoryInfoWindow.AddFistInfoWindows
+/// The gloves: bare hands always, then each kind he has, each its name and description; the one worn marked.
+fn fists_info(assets: &mut RuntimeAssets) -> (String, Vec<Row>) {
+    let cls = "tnmPersonaInventoryInfoWindow";
+    let d = assets.classes.defaults(cls);
+    let title = str_p(&assets.classes.defaults("tnmPersonaScreenInventory"), "fiststitle");
+    let mut rows = vec![Row::Line];
+    let worn = crate::trestkon::fist_type();
+    for (ft, func) in [(0u8, "AddNormalFist"), (1, "AddSpikeFist"), (2, "AddShockFist"), (3, "AddStunFist"), (4, "AddBanFist")] {
+        if ft > 0 && !crate::trestkon::has_fist(ft) {
+            continue;
+        }
+        let icon = script_icon(assets, cls, func, "FistIconBackground").unwrap_or_default();
+        let text = str_at(&d, "strFistName", ft as u32) + &str_at(&d, "strFistDescription", ft as u32);
+        rows.push(Row::Icon(icon, text, Some(ft), worn == ft));
+        rows.push(Row::Line);
+    }
+    (title, rows)
+}
+
+// uc: tnmPersonaScreenInventory.UpdateAccessoryDisplay, tnmPersonaInventoryInfoWindow.AddAccessoryInfoWindows
+/// What he carries that isn't an item: the subway pass, the program disk, the ID card, the USB stick, the ABI
+/// vouchers (with how many are left), and the binoculars and poster tube when he has them.
+fn accessories_info(view: &View, flags: &imsim_core::flags::FlagBase, assets: &mut RuntimeAssets) -> (String, Vec<Row>) {
+    let cls = "tnmPersonaInventoryInfoWindow";
+    let d = assets.classes.defaults(cls);
+    let title = str_p(&assets.classes.defaults("tnmPersonaScreenInventory"), "accessoriesTitle");
+    let src = assets.classes.script_text(cls).unwrap_or_default();
+    // Each AddAccessory(Texture'Pkg.Group.Name', strXTitle, strXDescription) of the function, in order, with the
+    // flag that guards it.
+    let mut rows = vec![Row::Line];
+    let mut found = false;
+    let vouchers = match flags.get("ABI_VoucherUses") {
+        Some(imsim_core::flags::FlagValue::Int(n)) => *n,
+        _ => 0,
+    };
+    let lo = src.to_ascii_lowercase();
+    if let Some(at) = lo.find("function addaccessoryinfowindows") {
+        let body = &src[at..];
+        let end = body[1..].find("\nfunction ").map(|e| e + 1).unwrap_or(body.len());
+        let mut guard: Option<(String, bool)> = None;
+        for line in body[..end].lines() {
+            let l = line.trim();
+            let ll = l.to_ascii_lowercase();
+            if ll.starts_with("if") {
+                guard = None;
+                if let Some(q) = l.find("GetBool('") {
+                    let f = l[q + 9..].split('\'').next().unwrap_or("").to_string();
+                    guard = Some((f, true));
+                } else if let Some(q) = l.find("GetInt('") {
+                    let f = l[q + 8..].split('\'').next().unwrap_or("").to_string();
+                    guard = Some((f, false));
+                }
+                continue;
+            }
+            let Some(q) = l.find("AddAccessory(Texture'") else { continue };
+            let Some((g, is_bool)) = guard.take() else { continue };
+            let on = if is_bool {
+                flags.get_bool(&g)
+            } else {
+                matches!(flags.get(&g), Some(imsim_core::flags::FlagValue::Int(n)) if *n > 0)
+            };
+            if !on {
+                continue;
+            }
+            let rest = &l[q + 21..];
+            let tex = rest.split('\'').next().unwrap_or("").to_string();
+            let args: Vec<&str> = rest.split(',').skip(1).map(|a| a.trim().trim_end_matches(')').trim_end_matches(';').trim()).collect();
+            let (t, de) = (args.first().copied().unwrap_or(""), args.get(1).copied().unwrap_or(""));
+            let mut text = str_p(&d, t) + &str_p(&d, de);
+            if !is_bool {
+                text += &format!(" {vouchers}");
+            }
+            rows.push(Row::Icon(tex, text, None, false));
+            rows.push(Row::Line);
+            found = true;
+        }
+    }
+    for class in ["TNMBinoculars", "PosterTube"] {
+        if view.inv.items.iter().any(|i| crate::classtree::is_a(&i.def.class, class)) {
+            let cd = assets.classes.defaults(class);
+            let icon = class_p_full(&cd, if class == "PosterTube" { "Icon" } else { "largeIcon" }).unwrap_or_default();
+            rows.push(Row::Icon(icon, format!("{}\n{}", str_p(&cd, "ItemName"), str_p(&cd, "Description")), None, false));
+            rows.push(Row::Line);
+            found = true;
+        }
+    }
+    if !found {
+        return (str_p(&d, "strAccessories"), vec![Row::Text(str_p(&d, "strNoAccessories"))]);
+    }
+    (title, rows)
+}
+
 /// NanoKeyRing.UpdateInfo: "Nano Keys Available:", a line, each key's description (newest first: GiveKey adds
 /// to the front of KeyList), a line and the ring's Description; "No Nano Keys Available!" when it's empty.
 fn keyring_info(assets: &mut RuntimeAssets) -> (String, Vec<Row>) {
@@ -864,6 +1005,10 @@ enum Hit {
     Button(Btn),
     KeyRing,
     Ammo,
+    Fists,
+    Accessories,
+    /// A glove kind in the fists list.
+    Fist(u8),
     AmmoButton(String),
     SkinPrev,
     SkinNext,
@@ -992,8 +1137,13 @@ fn snap_rects(view: &View, lay: &Layout) -> Vec<(i32, i32, i32, i32)> {
     v.extend(lay.actions.iter().map(|(_, x, w)| (*x, BUTTONS.1, *w, 16)));
     v.extend(view.inv.items.iter().filter_map(item_rect));
     v.extend((0..10).map(belt_slot_rect));
-    v.push((KEYRING.0, KEYRING.1, 55, 55));
-    v.push((AMMO.0, AMMO.1, 55, 55));
+    let (k, a) = (keyring_r(), ammo_r());
+    v.push((k.0, k.1, 55, 55));
+    v.push((a.0, a.1, 55, 55));
+    if crate::tnmmode::active() {
+        v.push((FISTS_TNM.0, FISTS_TNM.1, FISTS_TNM.2, 55));
+        v.push((ACCESSORIES_TNM.0, ACCESSORIES_TNM.1, ACCESSORIES_TNM.2, 55));
+    }
     v
 }
 
@@ -1047,11 +1197,20 @@ fn hit_test(
             return Hit::Belt(slot);
         }
     }
-    if inside(p, (KEYRING.0, KEYRING.1, 55, 55)) {
+    let (k, a) = (keyring_r(), ammo_r());
+    if inside(p, (k.0, k.1, if crate::tnmmode::active() { k.2 } else { 55 }, 55)) {
         return Hit::KeyRing;
     }
-    if inside(p, (AMMO.0, AMMO.1, 55, 55)) {
+    if inside(p, (a.0, a.1, 55, 55)) {
         return Hit::Ammo;
+    }
+    if crate::tnmmode::active() {
+        if inside(p, (FISTS_TNM.0, FISTS_TNM.1, FISTS_TNM.2, 55)) {
+            return Hit::Fists;
+        }
+        if inside(p, (ACCESSORIES_TNM.0, ACCESSORIES_TNM.1, ACCESSORIES_TNM.2, 55)) {
+            return Hit::Accessories;
+        }
     }
     if inside(
         p,
@@ -1072,6 +1231,11 @@ fn hit_test(
                     }
                 }
                 Row::Checkbox(..) => return Hit::Checkbox,
+                Row::Icon(_, _, Some(ft), _) => {
+                    if inside(p, (INFO.0 + 4, y, 41, 41)) {
+                        return Hit::Fist(*ft);
+                    }
+                }
                 Row::Skin(_) => {
                     let right = INFO.0 + info_w() - 6;
                     if inside(p, (right - 84, y, 40, 16)) {
@@ -1114,6 +1278,7 @@ fn layout_rows(rows: &[Row], f: &Fonts) -> Vec<(i32, i32, Row)> {
             }
             Row::Checkbox(..) => 14,
             Row::Skin(_) => 18,
+            Row::Icon(_, t, ..) => (wrap(&f.small, t, width - 54).len() as i32 * f.small.height).max(50),
         };
         out.push((y, h, r.clone()));
         y += h;
@@ -1143,6 +1308,7 @@ struct InvCx<'a> {
     drops: Mut<'a, crate::destruct::ItemThrows>,
     msg: Mut<'a, crate::movers::HudMessage>,
     ph: Mut<'a, crate::ai::PlayerHealth>,
+    flags: &'a imsim_core::flags::FlagBase,
 }
 
 /// This frame's placement of the 640 x 480 screen, the mouse on it, fonts, layout and the two canvas nodes.
@@ -1201,12 +1367,13 @@ pub fn inventory_screen_system(
         ResMut<Clips>,
         Res<crate::charged::ActiveCharged>,
     ),
-    (player, cam, mut drops, mut msg, mut ph): (
+    (player, cam, mut drops, mut msg, mut ph, game_flags): (
         Res<Player>,
         Single<&Transform, With<FlyCam>>,
         ResMut<crate::destruct::ItemThrows>,
         ResMut<crate::movers::HudMessage>,
         ResMut<crate::ai::PlayerHealth>,
+        Res<crate::ai::GameFlags>,
     ),
     mut nodes: Query<(&mut Node, &mut Visibility, &MaterialNode<HudLayer>)>,
     mut npcs: Query<&mut crate::ai::Npc>,
@@ -1233,6 +1400,7 @@ pub fn inventory_screen_system(
         drops: drops.reborrow(),
         msg: msg.reborrow(),
         ph: ph.reborrow(),
+        flags: &game_flags.0,
     };
     let cx = &mut cx;
     let rot = rotate_on();
@@ -1752,7 +1920,7 @@ fn show_cursor(
 /// The info pane for the selection (item info / ammo list / key ring), laid out (narrowed when its scroll bar is
 /// up), and the wheel scrolling it.
 fn info_pane(cx: &mut InvCx, fr: &InvFrame, wheel: &mut MessageReader<MouseWheel>) -> InfoPane {
-    let InvCx { st, inv, weapons, clips, charged, assets, .. } = cx;
+    let InvCx { st, inv, weapons, clips, charged, assets, flags, .. } = cx;
     let fonts = &fr.fonts;
     let (info_title, info_rows) = {
         let view = View {
@@ -1765,6 +1933,8 @@ fn info_pane(cx: &mut InvCx, fr: &InvFrame, wheel: &mut MessageReader<MouseWheel
             Some(Sel::Item(c)) => item_info(c, &view, assets),
             Some(Sel::Ammo) => ammo_list(&view, st.show_ammo_desc, assets),
             Some(Sel::KeyRing) => keyring_info(assets),
+            Some(Sel::Fists) => fists_info(assets),
+            Some(Sel::Accessories) => accessories_info(&view, flags, assets),
             None => (String::new(), Vec::new()),
         }
     };
@@ -1976,6 +2146,17 @@ fn release_input(cx: &mut InvCx, fr: &InvFrame, hit: &Hit, action: &mut Option<B
             None => match hit {
                 Hit::KeyRing => select(st, Sel::KeyRing, inv),
                 Hit::Ammo => select(st, Sel::Ammo, inv),
+                Hit::Fists => select(st, Sel::Fists, inv),
+                Hit::Accessories => select(st, Sel::Accessories, inv),
+                // uc: tnmPersonaInventoryInfoWindow.SelectFistType, DisplayFistSelectionMessage
+                Hit::Fist(ft) => {
+                    let d = assets.classes.defaults("tnmPersonaInventoryInfoWindow");
+                    if crate::trestkon::set_fist(*ft) {
+                        crate::classic_hud::client_message(&str_at(&d, "strFistEquipped", *ft as u32));
+                    } else {
+                        crate::classic_hud::client_message(&str_p(&d, "strNoSkill"));
+                    }
+                }
                 Hit::Checkbox => st.show_ammo_desc = !st.show_ammo_desc,
                 Hit::SkinPrev | Hit::SkinNext => {
                     if let Some(Sel::Item(c)) = st.sel.clone() {
@@ -3413,6 +3594,23 @@ fn draw_info(
                     );
                 }
             }
+            Row::Icon(tex, text, fist, worn) => {
+                if fist.is_some() {
+                    // FistIconBackground (Selected for the one worn) behind the glove.
+                    let bg = script_icon(assets, "tnmPersonaInventoryInfoWindow", if *worn { "DisplaySelection" } else { "DeselectAll" }, "~");
+                    if let Some(t) = bg.and_then(|p| hud.tex(assets, &p)) {
+                        c.texture(x, y, 41, 41, 0, 0, &t, Style::Masked, WHITE);
+                    }
+                }
+                if let Some(t) = hud.tex(assets, tex) {
+                    let (w, h) = if fist.is_some() { (41, 41) } else if t.w >= 50 && t.h >= 50 { (50, 50) } else { (t.w as i32, t.h as i32) };
+                    c.texture(x, y, w, h, 0, 0, &t, Style::Masked, WHITE);
+                }
+                let tx = x + 54;
+                for (i, l) in wrap(&f.small, text, width - 54).iter().enumerate() {
+                    c.text(&f.small, tx, y + i as i32 * f.small.height, width - 54, f.small.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(8), l);
+                }
+            }
             Row::Skin(text) => {
                 let right = INFO.0 + info_w() - 6;
                 c.text(&f.headers, x, y + 1, width - 90, 16, HAlign::Left, VAlign::Center, crate::menuui::h_col(7), text);
@@ -3474,59 +3672,50 @@ fn draw_details(
     st: &InvScreen,
 ) {
     let borders = item_borders(hud, assets);
-    for (x, y, w, class, text, count, selected) in [
-        (
-            KEYRING.0,
-            KEYRING.1,
-            KEYRING.2,
-            "NanoKeyRing",
-            "Click icon to see a list of Nano Keys.",
-            Some(format!("Keys: {}", crate::keys::list().len())),
-            st.sel == Some(Sel::KeyRing),
-        ),
-        (
-            AMMO.0,
-            AMMO.1,
-            AMMO.2,
-            "AmmoShell",
-            "Click icon to see a list of Ammo.",
-            None,
-            st.sel == Some(Sel::Ammo),
-        ),
+    // (x, y, width, icon, icon size, text, count, selected)
+    let mut wins: Vec<(i32, i32, i32, Option<String>, (i32, i32), &str, Option<String>, bool)> = Vec::new();
+    let tnm = crate::tnmmode::active();
+    for (r, class, text, count, sel) in [
+        (keyring_r(), "NanoKeyRing", "Click icon to see a list of Nano Keys.", Some(format!("Keys: {}", crate::keys::list().len())), Sel::KeyRing),
+        (ammo_r(), "AmmoShell", "Click icon to see a list of Ammo.", None, Sel::Ammo),
     ] {
         let d = assets.classes.defaults(class);
-        let (iw, ih) = (
-            int_p(&d, "largeIconWidth", 42),
-            int_p(&d, "largeIconHeight", 37),
-        );
-        if let Some(t) = class_p_full(&d, "largeIcon").and_then(|p| hud.tex(assets, &p)) {
-            c.texture(
-                55 / 2 - iw / 2 + x,
-                55 / 2 - ih / 2 + y,
-                iw,
-                ih,
-                0,
-                0,
-                &t,
-                Style::Masked,
-                WHITE,
-            );
+        let size = (int_p(&d, "largeIconWidth", 42), int_p(&d, "largeIconHeight", 37));
+        // The Nameless Mod's windows are icons only (it drops their SetText).
+        wins.push((r.0, r.1, r.2, class_p_full(&d, "largeIcon"), size, if tnm { "" } else { text }, count, st.sel == Some(sel)));
+    }
+    if tnm {
+        let shell = assets.classes.defaults("AmmoShell");
+        let (aw, ah) = (int_p(&shell, "largeIconWidth", 42), int_p(&shell, "largeIconHeight", 37));
+        // The glove and accessories icons the screen's own script names.
+        let fist = script_icon(assets, "tnmPersonaScreenInventory", "CreateFistWindow", "~");
+        let acc = script_icon(assets, "tnmPersonaScreenInventory", "CreateAccessoryWindow", "~");
+        wins.push((FISTS_TNM.0, FISTS_TNM.1, FISTS_TNM.2, fist, (aw + 3, ah), "", None, st.sel == Some(Sel::Fists)));
+        wins.push((ACCESSORIES_TNM.0, ACCESSORIES_TNM.1, ACCESSORIES_TNM.2, acc, (66, ah), "", None, st.sel == Some(Sel::Accessories)));
+    }
+    for (x, y, w, icon, (iw, ih), text, count, selected) in wins {
+        let box_w = if tnm { w } else { 55 };
+        if let Some(t) = icon.and_then(|p| hud.tex(assets, &p)) {
+            c.texture(box_w / 2 - iw / 2 + x, 55 / 2 - ih / 2 + y, iw, ih, 0, 0, &t, Style::Masked, WHITE);
         }
         if selected {
-            c.borders(x, y, 55, 55, &borders, Style::Masked, WHITE);
+            c.borders(x, y, box_w, 55, &borders, Style::Masked, WHITE);
         }
         if let Some(cs) = count {
             c.text(
                 &f.small_ds,
                 x,
                 y + 55 - f.small_ds.height,
-                55,
+                box_w,
                 f.small_ds.height,
                 HAlign::Center,
                 VAlign::Top,
                 crate::menuui::h_col(7),
                 &cs,
             );
+        }
+        if text.is_empty() {
+            continue;
         }
         let tw = w - 55 - 3 - 4;
         let lines = wrap(&f.small, text, tw);

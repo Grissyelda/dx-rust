@@ -75,6 +75,189 @@ pub fn available() -> bool {
     })
 }
 
+/// The Nameless Mod's maps say where it rains or snows themselves: a PrecipitationZone (or its SnowZone) per BSP
+/// zone, with its own rate, radius, wind and sound (precipitation.u, read from the map and its class defaults).
+#[derive(Clone, Debug)]
+pub struct Precip {
+    /// bWeatherActive.
+    pub active: bool,
+    /// Drops per second over the PrecipRad square: PrecipDensity every PrecipFreq.
+    pub rate: f32,
+    pub freq: f32,
+    pub rad: f64,
+    pub wind: DVec3,
+    /// bBlizzard: each flake's wind gets a random upward 0..512.
+    pub blizzard: bool,
+    /// The SnowPrecipitator / snowflake kind.
+    pub snow: bool,
+    /// PrecipNoise, at NoiseVolume x NoiseMult.
+    pub noise: Option<String>,
+    pub noise_vol: f32,
+    /// bSplashyFeet.
+    pub splashy: bool,
+    /// Drop / flake picture (the PrecipClass's Texture).
+    pub texture: String,
+    /// SnowZone.SnowSteps: the footsteps walking in it.
+    pub steps: Vec<String>,
+}
+
+/// The snow-zone footsteps under the player right now (empty when not walking in one).
+static SNOW_STEPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+// uc: SnowZone.SnowStep
+/// A footstep in the snow of a snow zone, if the player walks in one (one of the zone's SnowSteps at random).
+pub fn snow_step() -> Option<String> {
+    let g = SNOW_STEPS.lock().ok()?;
+    if g.is_empty() {
+        return None;
+    }
+    let i = (crate::sound::frand() * g.len() as f32) as usize % g.len();
+    Some(g[i].clone())
+}
+
+/// Each BSP zone's precipitation (None for zones that aren't PrecipitationZones).
+// uc: PrecipitationZone.StartPrecipitator, PrecipitationZone.StartSound
+pub fn precip_zones(lvl: &dx_level::Level, classes: &mut unreal_pkg::classes::ClassDb) -> Vec<Option<Precip>> {
+    use unreal_pkg::props::{find, Value};
+    lvl.zone_rules
+        .iter()
+        .map(|z| {
+            if z.class.is_empty() || !classes.ancestry(&z.class).iter().any(|c| c == "precipitationzone") {
+                return None;
+            }
+            let d = classes.defaults(&z.class);
+            let get = |k: &str| find(&z.props, k).or_else(|| find(&d, k)).cloned();
+            let f = |k: &str, def: f32| match get(k) {
+                Some(Value::Float(v)) => v,
+                Some(Value::Int(v)) => v as f32,
+                Some(Value::Byte(v)) => v as f32,
+                _ => def,
+            };
+            let b = |k: &str| matches!(get(k), Some(Value::Bool(true)));
+            let path = |k: &str| match get(k) {
+                Some(Value::Path(p)) if !p.eq_ignore_ascii_case("None") => Some(p),
+                _ => None,
+            };
+            let wind = match get("Wind") {
+                Some(Value::Vector(v)) => DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64),
+                _ => DVec3::ZERO,
+            };
+            let class = path("PrecipClass").unwrap_or_default();
+            let gen = path("PrecipitatorClass").unwrap_or_default();
+            let snow = crate::util::contains_ci(&gen, "snow") || crate::util::contains_ci(&class, "snowflake");
+            let short = class.rsplit('.').next().unwrap_or("").to_string();
+            let texture = match find(&classes.defaults(&short), "Texture") {
+                Some(Value::Path(p)) => p.clone(),
+                _ => if snow { "precipitation.Skins.snowflake".into() } else { "Precipitation.Skins.Raindrop".into() },
+            };
+            let freq = f("PrecipFreq", 0.01).max(0.001);
+            let noise = path("PrecipNoise");
+            let mult = f("NoiseMult", 0.0);
+            Some(Precip {
+                active: b("bWeatherActive"),
+                rate: f("PrecipDensity", 7.0) / freq,
+                freq,
+                rad: f("PrecipRad", 650.0).max(64.0) as f64,
+                wind,
+                blizzard: b("bBlizzard"),
+                snow,
+                noise_vol: if noise.is_some() && mult >= 1.0 { f("NoiseVolume", 0.0) / 255.0 * mult.min(2.0) } else { 0.0 },
+                noise,
+                splashy: b("bSplashyFeet"),
+                texture,
+                steps: {
+                    let mut v: Vec<(u32, String)> = d
+                        .iter()
+                        .filter(|p| p.name.eq_ignore_ascii_case("SnowSteps"))
+                        .filter_map(|p| match &p.value {
+                            Value::Path(s) if !s.eq_ignore_ascii_case("None") => Some((p.index, s.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    v.sort_by_key(|x| x.0);
+                    v.into_iter().map(|x| x.1).collect()
+                },
+            })
+        })
+        .collect()
+}
+
+/// A PrecipitationShelter's line of precipitation (seen through its doors and windows): from one PrecipitationNode
+/// to the next, PrecipRad either side, with the settings of the PrecipitationZone the node stands in.
+#[derive(Clone, Debug)]
+pub struct Seg {
+    a: DVec3,
+    b: DVec3,
+    rad: f64,
+    /// Drops per second (PrecipitationNode.CalcDensity: the zone's density scaled to the strip's area).
+    rate: f32,
+    precip: Precip,
+}
+
+// uc: PrecipitationShelter.PreBeginPlay, PrecipitationNode.PreBeginPlay, PrecipitationNode.Initialize,
+// uc: PrecipitationNode.CalcDensity, PrecipitationNode.RandomSpawn
+/// Each BSP zone's shelter lines (None for zones that aren't PrecipitationShelters).
+pub fn shelters(lvl: &dx_level::Level, classes: &mut unreal_pkg::classes::ClassDb, zones: &[Option<Precip>]) -> Vec<Option<Vec<Seg>>> {
+    use unreal_pkg::props::{find, Value};
+    let nd = classes.defaults("PrecipitationNode");
+    let name = |p: &[unreal_pkg::props::Property], k: &str| match find(p, k) {
+        Some(Value::Name(n)) if !n.eq_ignore_ascii_case("None") => n.clone(),
+        _ => String::new(),
+    };
+    let nodes: Vec<(String, String, DVec3, bool, f64)> = lvl
+        .actors
+        .iter()
+        .filter(|a| crate::classtree::is_a(&a.class, "PrecipitationNode"))
+        .map(|a| {
+            let l = a.location();
+            let rad = match find(&a.props, "PrecipRad").or_else(|| find(&nd, "PrecipRad")) {
+                Some(Value::Float(f)) => *f as f64,
+                _ => 325.0,
+            };
+            (name(&a.props, "Tag"), name(&a.props, "Event"), DVec3::new(l[0] as f64, l[1] as f64, l[2] as f64), matches!(find(&a.props, "bNullNode"), Some(Value::Bool(true))), rad)
+        })
+        .collect();
+    lvl.zone_rules
+        .iter()
+        .map(|z| {
+            if z.class.is_empty() || !classes.ancestry(&z.class).iter().any(|c| c == "precipitationshelter") {
+                return None;
+            }
+            let first = name(&z.props, "FirstNodeTag");
+            let mut cur = nodes.iter().position(|n| !first.is_empty() && n.0.eq_ignore_ascii_case(&first))?;
+            let mut segs = Vec::new();
+            for _ in 0..64 {
+                let n = &nodes[cur];
+                let Some(next) = nodes.iter().position(|m| !n.1.is_empty() && m.0.eq_ignore_ascii_case(&n.1)) else { break };
+                let zi = lvl.collision.zone_at(n.2);
+                let zp = (zi > 0).then(|| zones.get(zi as usize).cloned().flatten()).flatten();
+                if let (false, Some(p)) = (n.3, zp) {
+                    let len = n.2.distance(nodes[next].2);
+                    let zi_area = (2.0 * p.rad).powi(2);
+                    // PrecipDensity = Max(zi.PrecipDensity * area / ziArea + 0.5, 1) every zi.PrecipFreq.
+                    let zone_density = p.rate * p.freq;
+                    let d = ((zone_density as f64 * len * 2.0 * n.4 / zi_area) + 0.5).floor().max(1.0) as f32;
+                    segs.push(Seg { a: n.2, b: nodes[next].2, rad: n.4, rate: d / p.freq.max(0.001), precip: p });
+                }
+                if next == cur {
+                    break;
+                }
+                cur = next;
+            }
+            (!segs.is_empty()).then_some(segs)
+        })
+        .collect()
+}
+
+/// The precipitation of the zone at this point (TNM maps), if it's falling there.
+fn precip_at<'a>(zones: &'a [Option<Precip>], lvl: &dx_level::Level, p: DVec3) -> Option<&'a Precip> {
+    let z = lvl.collision.zone_at(p);
+    if z <= 0 {
+        return None;
+    }
+    zones.get(z as usize).and_then(|o| o.as_ref()).filter(|p| p.active)
+}
+
 #[derive(Clone, Copy)]
 struct Land {
     z: f64,
@@ -132,6 +315,11 @@ pub struct WeatherState {
     batch_at: f32,
     last_now: f32,
     rings_due: Vec<(f32, DVec3)>,
+    /// The Nameless Mod: each zone's PrecipitationZone (built once a map), and whether the drop material now draws
+    /// snowflakes.
+    precip: Option<Vec<Option<Precip>>>,
+    shelters: Vec<Option<Vec<Seg>>>,
+    flakes: Option<bool>,
 }
 
 /// How often a batch of rain is spawned (seconds): the drops' start times are spread over it.
@@ -287,20 +475,43 @@ pub fn weather_system(
         *st = WeatherState::default();
         st.seed = seed ^ 0x5EED_F00D_1234;
         st.profile = profile(&lvl.name);
+        // The Nameless Mod: the map's own PrecipitationZones decide (its Forum City rain, the ABI snow).
+        if crate::tnmmode::active() {
+            let z = precip_zones(lvl, &mut assets.classes);
+            st.profile = z.iter().any(|p| p.is_some()).then_some(Profile { max: 0.0, wind: DVec3::ZERO });
+            let n = z.iter().flatten().count();
+            if n > 0 {
+                let idx: Vec<usize> = z.iter().enumerate().filter(|(_, p)| p.is_some()).map(|(i, _)| i).collect();
+                println!("weather: {n} precipitation zones {idx:?} ({} snow)", z.iter().flatten().filter(|p| p.snow).count());
+            }
+            st.shelters = shelters(lvl, &mut assets.classes, &z);
+            let ns = st.shelters.iter().flatten().count();
+            if ns > 0 {
+                println!("weather: {ns} precipitation shelters, {} node lines", st.shelters.iter().flatten().map(|s| s.len()).sum::<usize>());
+            }
+            if ns > 0 {
+                st.profile = Some(Profile { max: 0.0, wind: DVec3::ZERO });
+            }
+            st.precip = Some(z);
+        }
     }
+    let tnm = st.precip.is_some();
     // The drawn-roof map: built on the map's first frame (under the loading screen) whenever the map can rain, not
     // when the rain first starts - built then, mid-play, it was a 15 ms hitch (an 80-110 ms frame).
     if st.roofs.is_none() && st.profile.is_some() && available() {
         st.roofs = Some(Roofs::build(lvl));
     }
     let dt = time.delta_secs().min(0.1);
-    let on = mode() > 0 && st.profile.is_some() && available() && !crate::credits::open();
+    let on = st.profile.is_some() && !crate::credits::open() && (tnm || (mode() > 0 && available()));
     if !on {
         if let Ok(mut d) = DENSITY.lock() {
             *d = 0.0;
         }
         EXPOSED.store(false, std::sync::atomic::Ordering::Relaxed);
         WETNESS.store(0, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut g) = SNOW_STEPS.lock() {
+            g.clear();
+        }
         for mut v in &mut vis {
             v.set_if_neq(Visibility::Hidden);
         }
@@ -311,8 +522,46 @@ pub fn weather_system(
     }
     let prof = st.profile.unwrap();
     let mut seed = st.seed;
+    // Where the precipitation is spawned round: the player, or the camera of a cut scene (the ABI intro's snow
+    // follows its camera: tnmMission23 points the zone's Precipitator at Trestkon's camera).
+    let cut = crate::cinematic::active();
+    let eye0 = {
+        let e = dx_level::bevy_to_ue(cam.translation.to_array());
+        DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64)
+    };
+    let me = if cut { eye0 } else { player.body.location };
+    let pvel = if cut { DVec3::ZERO } else { player.body.velocity };
+    let zones = st.precip.take();
+    let here = zones.as_deref().and_then(|z| precip_at(z, lvl, me)).cloned();
+    // Under a PrecipitationShelter: the precipitation falls only along its node lines (out past its windows).
+    let shelter: Option<Vec<Seg>> = if here.is_none() && tnm {
+        let z = lvl.collision.zone_at(me);
+        (z > 0).then(|| st.shelters.get(z as usize).cloned().flatten()).flatten()
+    } else {
+        None
+    };
+    let here = here.or_else(|| shelter.as_ref().and_then(|s| s.first()).map(|s| s.precip.clone()));
+    {
+        // The player's feet in a snow zone (not where the cut-scene camera is).
+        let feet = zones.as_deref().and_then(|z| precip_at(z, lvl, player.body.location)).filter(|p| p.snow);
+        if let Ok(mut g) = SNOW_STEPS.lock() {
+            match feet {
+                Some(p) if *g != p.steps => *g = p.steps.clone(),
+                None if !g.is_empty() => g.clear(),
+                _ => {}
+            }
+        }
+    }
+    st.precip = zones;
     // MissionScript.SetRainLevel, once a second.
     st.tick += dt;
+    if tnm {
+        st.tick = 0.0;
+        st.density = match &here {
+            Some(p) if !p.snow => p.rate * 0.01,
+            _ => 0.0,
+        };
+    }
     while st.tick >= 1.0 {
         st.tick -= 1.0;
         if mode() >= 2 {
@@ -335,6 +584,8 @@ pub fn weather_system(
         }
         st.density = st.density.clamp(0.0, prof.max);
     }
+    let snow = here.as_ref().is_some_and(|p| p.snow);
+    let wind = here.as_ref().map(|p| p.wind).unwrap_or(prof.wind);
     if let Ok(mut d) = DENSITY.lock() {
         *d = st.density;
     }
@@ -407,20 +658,15 @@ pub fn weather_system(
     for mut v in &mut vis {
         v.set_if_neq(Visibility::Visible);
     }
-    let me = player.body.location;
-    let pvel = player.body.velocity;
     // PrecipRad 650 made the rain a visible column round JC: ours falls over a far wider square with the same
     // drops per area (the mod's rate scaled by the area), so its edge is out where the streaks are too thin to see.
-    let rad = 650.0f64;
+    let rad = here.as_ref().map(|p| p.rad).unwrap_or(650.0f64);
     let wide = WIDE_RAD;
     let area_k = ((wide / rad) * (wide / rad)) as f32;
     // Precipitator.Timer: the batch height grows from 300 so the first drops reach the ground quickly - ours on up
     // to RAIN_TOP (the mod's 600 had them start in plain sight a few metres overhead), capped by the sky above.
-    st.height = (st.height + dt * 60000.0 * 0.01).min(RAIN_TOP as f32);
-    let eye = {
-        let e = dx_level::bevy_to_ue(cam.translation.to_array());
-        DVec3::new(e[0] as f64, e[1] as f64, e[2] as f64)
-    };
+    st.height = (st.height + dt * 60000.0 * 0.01).min(if snow { 1400.0 } else { RAIN_TOP as f32 });
+    let eye = eye0;
     let fwd = {
         let f = cam.forward().as_vec3();
         DVec3::new(f.x as f64, f.z as f64, f.y as f64).normalize_or_zero()
@@ -471,7 +717,14 @@ pub fn weather_system(
             st.splash_end = vec![0.0; MAX_SPLASHES];
         }
         // PrecipDensity drops every PrecipFreq (0.01 s), for the batch's length.
-        st.acc += BATCH * st.density / 0.01 * area_k;
+        let rate = if let Some(sh) = &shelter {
+            sh.iter().map(|s| s.rate).sum::<f32>()
+        } else if tnm {
+            here.as_ref().map(|p| p.rate).unwrap_or(0.0) * area_k
+        } else {
+            st.density / 0.01 * area_k
+        };
+        st.acc += BATCH * rate;
         let n = st.acc.floor() as usize;
         st.acc -= n as f32;
         let n = n.min(MAX_DROPS / 2);
@@ -482,7 +735,7 @@ pub fn weather_system(
                 break;
             }
             // Precipitator.RandomSpawn.
-            let mut pos = me + pvel * rad / 1200.0 + yaw_fwd * (rad / 4.0) - prof.wind
+            let mut pos = me + pvel * rad / 1200.0 + yaw_fwd * (rad / 4.0) - wind
                 + DVec3::new(
                     (rnd(&mut seed) - 0.5) * wide * 2.0,
                     (rnd(&mut seed) - 0.5) * wide * 2.0,
@@ -529,17 +782,44 @@ pub fn weather_system(
             });
             let want = me.z + st.height as f64 + (rnd(&mut seed) - 0.5) * 150.0;
             pos.z = want.min(top - rnd(&mut seed) * 60.0);
-            if pos.z < me.z + 40.0 {
+            // A shelter's line: somewhere along a node strip (picked by its share of the rate), at node height.
+            if let Some(sh) = &shelter {
+                let total: f32 = sh.iter().map(|s| s.rate).sum();
+                let mut r = rnd(&mut seed) as f32 * total;
+                let seg = sh.iter().find(|s| {
+                    r -= s.rate;
+                    r <= 0.0
+                }).unwrap_or(&sh[0]);
+                let dir = seg.b - seg.a;
+                let side = DVec3::new(-dir.y, dir.x, 0.0).normalize_or_zero();
+                pos = seg.a + dir * rnd(&mut seed) + side * (rnd(&mut seed) - 0.5) * seg.rad * 2.0
+                    + DVec3::new(0.0, 0.0, (rnd(&mut seed) - 0.5) * 150.0);
+            } else if pos.z < me.z + 40.0 {
                 continue;
             }
-            let z = lvl.collision.zone_at(pos);
-            if z <= 0 || !lvl.zone_sky.get(z as usize).copied().unwrap_or(false) {
-                continue;
+            if shelter.is_some() {
+                // Spawned in the precipitation zone outside: no zone test.
+            } else if tnm {
+                // Only into zones where it's falling.
+                if st.precip.as_deref().and_then(|z| precip_at(z, lvl, pos)).is_none() {
+                    continue;
+                }
+            } else {
+                let z = lvl.collision.zone_at(pos);
+                if z <= 0 || !lvl.zone_sky.get(z as usize).copied().unwrap_or(false) {
+                    continue;
+                }
             }
-            // Raindrop.Randomize.
-            let vel = DVec3::new(0.0, 0.0, -900.0 - rnd(&mut seed) * 800.0) + prof.wind;
-            // Long enough to reach the ground from the top (it ends where it lands).
-            let life = ((pos.z - me.z + 600.0) / -vel.z).clamp(1.0, 4.0);
+            // Raindrop.Randomize / Snowflake.Randomize (flakes: slower, and a blizzard lifts some on the wind).
+            let vel = if snow {
+                let lift = if here.as_ref().is_some_and(|p| p.blizzard) { rnd(&mut seed) * 512.0 } else { 0.0 };
+                DVec3::new(0.0, 0.0, -300.0 - rnd(&mut seed) * 100.0 + lift) + wind
+            } else {
+                DVec3::new(0.0, 0.0, -900.0 - rnd(&mut seed) * 800.0) + wind
+            };
+            // Long enough to reach the ground from the top (it ends where it lands); flakes live 16 s at most.
+            let fall = (-vel.z).max(60.0);
+            let life = ((pos.z - me.z + 600.0) / fall).clamp(1.0, if snow { 16.0 } else { 4.0 });
             let end = pos + vel * life;
             let lkey = ((pos.x / 16.0).floor() as i32, (pos.y / 16.0).floor() as i32, key.2);
             let ws = &mut *st;
@@ -552,7 +832,7 @@ pub fn weather_system(
             // land by the cell under the point it reaches that height (twice, for a slope).
             let mut land = land;
             for _ in 0..2 {
-                let t = ((pos.z - land.z.max(end.z)) / -vel.z).max(0.0);
+                let t = ((pos.z - land.z.max(end.z)) / fall).max(0.0);
                 let p = pos + vel * t;
                 let k2 = ((p.x / 16.0).floor() as i32, (p.y / 16.0).floor() as i32, key.2);
                 if k2 == lkey {
@@ -572,14 +852,14 @@ pub fn weather_system(
             let mut t_end = life;
             let mut lands: Option<(DVec3, DVec3)> = None;
             if land.z > end.z {
-                let t = (pos.z - land.z) / -vel.z;
+                let t = (pos.z - land.z) / fall;
                 if t < t_end {
                     t_end = t;
                     lands = Some((pos + vel * t, land.n));
                 }
             }
             if let Some(wz) = land.water {
-                let t = (pos.z - wz) / -vel.z;
+                let t = (pos.z - wz) / fall;
                 if t >= 0.0 && t < t_end {
                     t_end = t;
                     lands = None;
@@ -592,15 +872,16 @@ pub fn weather_system(
             let t_end_abs = t0 + t_end as f32;
             st.drop_end[slot] = t_end_abs;
             st.drop_next = slot + 1;
-            let len = 8.0 + rnd(&mut seed) as f32 * 22.0;
-            let glow = 0.3 + rnd(&mut seed) as f32 * 0.6;
+            // A flake: half its size (DrawScale 0.1 x (1 + f) of its picture); a drop: its streak length.
+            let len = if snow { 1.6 + rnd(&mut seed) as f32 * 1.6 } else { 8.0 + rnd(&mut seed) as f32 * 22.0 };
+            let glow = if snow { 0.6 + rnd(&mut seed) as f32 * 0.4 } else { 0.3 + rnd(&mut seed) as f32 * 0.6 };
             let col_top = top.min(me.z + RAIN_TOP + 80.0);
             let (p0, v0) = (bv(pos), bv(vel));
             let top_y = bv(DVec3::new(0.0, 0.0, col_top))[1];
             new_drops.push((slot, [p0[0], p0[1], p0[2], t0, v0[0], v0[1], v0[2], t_end_abs, len * dx_level::METERS_PER_UNIT, glow, top_y, 0.0]));
             // Precipitator.Impact: a crown of 3-5 droplets thrown out round the impact, mostly up off the surface
             // (only where it's seen).
-            if let Some((at, n)) = lands {
+            if let Some((at, n)) = lands.filter(|_| !snow) {
                 if (at - eye).dot(fwd) > 0.0 && at.distance(eye) < 1500.0 {
                     let t1 = if n.z.abs() < 0.9 { n.cross(DVec3::Z) } else { n.cross(DVec3::X) }.normalize_or_zero();
                     let t2 = n.cross(t1);
@@ -635,7 +916,15 @@ pub fn weather_system(
     drop(_p1);
     let _p3 = crate::prof::scope("weather::build");
     if env_on!("DXVIEW_RAINLOG") {
-        eprintln!("RAIN density {:.1} new drops {} new splashes {} height {:.0}", st.density, new_drops.len(), new_splashes.len(), st.height);
+        eprintln!(
+            "RAIN density {:.1} new drops {} new splashes {} height {:.0} zone {} here {} snow {snow}",
+            st.density,
+            new_drops.len(),
+            new_splashes.len(),
+            st.height,
+            lvl.collision.zone_at(me),
+            here.is_some()
+        );
     }
     // Only a batch frame writes the data images (a re-uploaded image is a new GPU texture, so the materials are
     // touched then to rebuild their bind groups).
@@ -657,8 +946,19 @@ pub fn weather_system(
         let v = bv(pvel * DVec3::new(0.2, 0.2, 0.0));
         Vec4::new(v[0], v[2], 950.0 * dx_level::METERS_PER_UNIT, 0.0)
     };
+    if tnm && st.flakes != Some(snow) {
+        st.flakes = Some(snow);
+        let tex = here.as_ref().map(|p| p.texture.clone()).unwrap_or_else(|| "Precipitation.Skins.Raindrop".into());
+        if let (Some(h), Some(img)) = (st.mats.first().cloned(), image_for(&mut assets, &mut images, &tex)) {
+            if let Some(mut m) = materials.get_mut(&h) {
+                m.tex = img;
+            }
+        }
+    }
     for (k, h) in st.mats.clone().iter().enumerate() {
-        let want = Vec4::new(k as f32, lean.x, lean.y, lean.z);
+        // Kind 0 drops (2 = flakes), 1 splashlets.
+        let kind = if k == 0 && snow { 2.0 } else { k as f32 };
+        let want = Vec4::new(kind, lean.x, lean.y, lean.z);
         let differs = materials.get(h).is_some_and(|m| (m.params - want).abs().max_element() > 0.02);
         if touched || differs {
             if let Some(mut m) = materials.get_mut(h) {
@@ -671,7 +971,11 @@ pub fn weather_system(
     st.exposure_check -= dt;
     if st.exposure_check <= 0.0 {
         st.exposure_check = 0.25;
+        let zones = st.precip.as_deref();
         let sky = |p: DVec3| {
+            if let Some(zs) = zones {
+                return precip_at(zs, lvl, p).is_some();
+            }
             let z = lvl.collision.zone_at(p);
             z > 0 && lvl.zone_sky.get(z as usize).copied().unwrap_or(false)
         };
@@ -702,6 +1006,16 @@ pub fn weather_system(
     let loud = (st.density / 20.0).clamp(0.0, 1.0);
     let out_vol = loud * st.exposure * 2.0 * 0.5;
     let in_vol = loud * (1.0 - st.exposure) * (st.sky_near * 2.0).min(1.0) * 0.6;
+    if tnm {
+        // The zone's own PrecipNoise (FollowingSound x NoiseMult at NoiseVolume), quieter in shelter.
+        if let Some(p) = here.as_ref().filter(|p| p.noise.is_some()) {
+            let v = (p.noise_vol * st.exposure.max(0.25) * 0.5).min(1.0);
+            if v > 0.01 {
+                crate::sound::hold(0xEA7E_0001, p.noise.as_deref().unwrap_or(""), None, v, 0.0, 1.0);
+            }
+        }
+        return;
+    }
     if out_vol > 0.01 {
         crate::sound::hold(0xEA7E_0001, "Precipitation.Ambient.RainCity", None, out_vol, 0.0, 1.0);
     }

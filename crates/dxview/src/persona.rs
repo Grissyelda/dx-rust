@@ -82,6 +82,9 @@ pub enum PB {
     ConSort(usize),
     ImageRow(usize),
     ShowImageNotes,
+    /// The Nameless Mod's notes search: its edit box and its Search button.
+    SearchBox,
+    Search,
     /// A medical bot's canister list: (canister, which of its two augs).
     CanAug(usize, usize),
     Install,
@@ -130,6 +133,11 @@ pub enum Act {
 
 #[derive(Default)]
 pub struct PersonaUi {
+    /// The Nameless Mod's notes search (tnmPersonaScreenGoals): the text typed, whether the box has the keys, and
+    /// the text the list was last filtered by (PopulateNotesSearch on Search / Enter).
+    search: String,
+    search_focus: bool,
+    search_applied: String,
     skill_sel: Option<usize>,
     /// GMDX perks: the skills screen's info pane shows 0 the skill, 1 its perks, 2 the general perks.
     perk_mode: u8,
@@ -338,7 +346,7 @@ struct NoteEdit {
 impl PersonaUi {
     /// A note has the keyboard (keys other than Tab / Escape go to it, PersonaEditWindow.VirtualKeyPressed).
     pub fn editing(&self) -> bool {
-        self.edit.is_some() || self.asking_delete
+        self.edit.is_some() || self.asking_delete || self.search_focus
     }
     /// The screen closed: the next one opens without a focused note (a fresh PersonaScreenGoals).
     pub fn end_edit(&mut self) {
@@ -956,6 +964,32 @@ pub fn page(
         SCREEN_GOALS => {
             if ui.asking_delete {
                 // Keys go to the message box.
+            } else if ui.search_focus {
+                use bevy::input::keyboard::KeyCode as K;
+                for (k, t) in &inp.typed {
+                    match k {
+                        K::Enter | K::NumpadEnter => {
+                            ui.search_applied = ui.search.clone();
+                            ui.search_focus = false;
+                            ui.note_sel = None;
+                            ui.edit = None;
+                            ui.scroll = 0;
+                        }
+                        K::Escape => ui.search_focus = false,
+                        K::Backspace => {
+                            ui.search.pop();
+                        }
+                        _ => {
+                            if let Some(t) = t {
+                                for ch in t.chars().filter(|c| !c.is_control()) {
+                                    if ui.search.chars().count() < 40 {
+                                        ui.search.push(ch);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             } else if ui.edit.is_some() {
                 edit_note_keys(ui, inp, ctx.fonts);
             }
@@ -1239,6 +1273,18 @@ fn screen_action(screen: usize, ui: &mut PersonaUi, ctx: &mut Ctx, b: PB) -> Opt
         }
         (SCREEN_LOGS, PB::ClearLog) => LOG.lock().unwrap_or_else(|e| e.into_inner()).clear(),
         (_, PB::ShowCompleted) => ui.show_completed = !ui.show_completed,
+        // uc: tnmPersonaScreenGoals.ButtonActivated, tnmPersonaScreenGoals.PopulateNotesSearch
+        (_, PB::SearchBox) => {
+            ui.search_focus = true;
+            ui.edit = None;
+        }
+        (_, PB::Search) => {
+            ui.search_applied = ui.search.clone();
+            ui.search_focus = false;
+            ui.note_sel = None;
+            ui.edit = None;
+            ui.scroll = 0;
+        }
         (_, PB::Note(i)) => {
             // FocusEnteredDescendant: this note takes the keyboard; the cursor goes where it was clicked.
             ui.note_sel = Some(i);
@@ -3002,6 +3048,11 @@ fn goal_rows(f: &Fonts, show_completed: bool) -> Vec<(bool, bool, bool, Vec<Stri
             if goal.completed && !show_completed {
                 continue;
             }
+            // uc: tnmPersonaScreenGoals.PopulateGoalsByType
+            // The Nameless Mod hides the Black ICE goal while in DXI (mission 21).
+            if crate::tnmmode::active() && goal.name.eq_ignore_ascii_case("BlackICE") && crate::legendary::mission() == 21 {
+                continue;
+            }
             found = true;
             let text = if goal.completed {
                 format!("{} [Completed]", goal.text)
@@ -3027,12 +3078,17 @@ fn notes_list() -> Vec<String> {
 const NOTES_AREA: (i32, i32, i32, i32) = (16, 226, 574, 182);
 
 /// Note boxes: (top, height, chars, line spans); 5 px text margins top and bottom, 4 px between boxes.
-fn note_boxes(f: &Fonts) -> Vec<(i32, i32, Vec<char>, Vec<(usize, usize)>)> {
+fn note_boxes(f: &Fonts, search: &str) -> Vec<(i32, i32, Vec<char>, Vec<(usize, usize)>)> {
     let mut y = 0;
+    let want = search.to_lowercase();
     notes_list()
         .iter()
         .map(|n| {
             let chars: Vec<char> = n.chars().collect();
+            // A search shows only the notes holding its text (the rest keep their place in the list, empty).
+            if !want.is_empty() && !n.to_lowercase().contains(&want) {
+                return (y, 0, chars, vec![(0, 0)]);
+            }
             let spans = note_spans(&f.small, &chars, NOTES_AREA.2 - 20);
             let h = spans.len() as i32 * f.small.height + 10;
             let r = (y, h, chars, spans);
@@ -3067,8 +3123,15 @@ fn goals_hits(
         (cx + 10 + 90, cy + 411, 89, 16),
         ui.note_sel.is_some(),
     ));
+    if crate::tnmmode::active() {
+        hits.push((PB::SearchBox, (cx + 183, cy + 209, 280, 14), true));
+        hits.push((PB::Search, (cx + 464, cy + 206, 100, 16), true));
+    }
     let boxes = NOTE_HITS.lock().map(|v| v.clone()).unwrap_or_default();
     for (i, (y, h)) in boxes.into_iter().enumerate() {
+        if h == 0 {
+            continue;
+        }
         let top = (y - ui.scroll).max(0);
         let bottom = (y + h - ui.scroll).min(NOTES_AREA.3);
         if bottom > top {
@@ -3172,7 +3235,7 @@ fn draw_goals(
     let r = checkbox_rect(f, cx, 604, 13, cy + 180, &lab);
     draw_checkbox(c, ctx, r, &lab, ui.show_completed, true);
     // Notes: each in its bracketed box; the selected one in the focus box.
-    let boxes = note_boxes(f);
+    let boxes = note_boxes(f, &ui.search_applied);
     *NOTE_HITS.lock().unwrap() = boxes.iter().map(|b| (b.0, b.1)).collect();
     let (nx, ny, nw, nh) = (
         cx + NOTES_AREA.0,
@@ -3203,6 +3266,9 @@ fn draw_goals(
     }
     let mut total = 0;
     for (i, (y, h, chars, spans)) in boxes.iter().enumerate() {
+        if *h == 0 {
+            continue;
+        }
         let top = ny + y - ui.scroll;
         let t = if ui.note_sel == Some(i) {
             &focus
@@ -3241,6 +3307,24 @@ fn draw_goals(
         total = y + h;
     }
     c.set_clip(None);
+    if crate::tnmmode::active() {
+        // tnmPersonaScreenGoals.CreateNotesButtons: "Search" label, its edit box and button (the mod's strings).
+        let label = s_default(ctx, "tnmPersonaScreenGoals", "strSearch", "");
+        c.text(&f.headers, cx + 133, cy + 209, 50, f.headers.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(7), &label);
+        c.fill(cx + 183, cy + 209, 280, 14, Style::Normal, [0, 0, 0]);
+        let edges: [Option<std::sync::Arc<crate::uicanvas::UiTex>>; 9] = [
+            "TL", "TR", "BL", "BR", "Left", "Right", "Top", "Bottom", "Center",
+        ]
+        .map(|n| ctx.hud.ui(ctx.assets, &format!("PersonaNote{}_{n}", if ui.search_focus { "Focus" } else { "Normal" })));
+        c.borders(cx + 183, cy + 207, 280, 18, &edges, Style::Masked, crate::menuui::h_col(7));
+        c.text(&f.small, cx + 187, cy + 210, 272, f.small.height, HAlign::Left, VAlign::Top, crate::menuui::h_col(9), &ui.search);
+        if ui.search_focus {
+            let x = cx + 187 + f.small.width(&ui.search);
+            c.fill(x, cy + 210, 1, f.small.height, Style::Normal, crate::menuui::h_col(13));
+        }
+        let btn = s_default(ctx, "tnmPersonaScreenGoals", "strSearchButton", "");
+        draw_button(c, ctx.hud, ctx.assets, &f.headers, cx + 464, cy + 206, 100, &btn, state(PB::Search), true);
+    }
     let add = s_default(ctx, "PersonaScreenGoals", "AddButtonLabel", "Add |&Note");
     let del = s_default(
         ctx,

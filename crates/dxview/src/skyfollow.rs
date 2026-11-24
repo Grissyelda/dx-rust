@@ -174,6 +174,9 @@ pub fn follow_system(
     mut sky_cam: Query<&mut Camera, (With<crate::SkyCam>, Without<crate::FlyCam>)>,
     mut copies: Query<(&SkyCopy, &mut Visibility)>,
     faces: Query<&Visibility, (With<SkyBatch>, Without<SkyCopy>)>,
+    level: Res<crate::LevelRes>,
+    time: Res<Time>,
+    mut spin: Local<(u64, [i32; 3], [f64; 3])>,
 ) {
     if !enabled() {
         return;
@@ -182,6 +185,32 @@ pub fn follow_system(
     let Ok((ct, mut camera, mut proj)) = cam.single_mut() else { return };
     if rt.translation != ct.translation {
         rt.translation = ct.translation;
+    }
+    // A SkyZoneInfo turning (PHYS_Rotating at its RotationRate: the space station's sky box, which tnmMission24
+    // keeps nudging so it turns at any frame rate): the sky is seen through the zone's turn.
+    if crate::loader::new_map(&mut spin.0) {
+        use unreal_pkg::props::{find, Value};
+        spin.1 = [0; 3];
+        spin.2 = [0.0; 3];
+        if let Some(a) = level.0.actors.iter().find(|a| a.class.eq_ignore_ascii_case("SkyZoneInfo") || a.class.eq_ignore_ascii_case("MultiSkyZoneInfo")) {
+            if matches!(find(&a.props, "Physics"), Some(Value::Byte(5))) {
+                if let Some(Value::Rotator(r)) = find(&a.props, "RotationRate") {
+                    spin.1 = *r;
+                }
+            }
+        }
+    }
+    if spin.1 != [0; 3] {
+        let dt = time.delta_secs_f64().min(0.1);
+        let rate = spin.1;
+        for k in 0..3 {
+            spin.2[k] = (spin.2[k] + rate[k] as f64 * dt).rem_euclid(65536.0);
+        }
+        let r = [spin.2[0] as i32, spin.2[1] as i32, spin.2[2] as i32];
+        let q = crate::movers::bevy_rotation(r).inverse();
+        if rt.rotation != q {
+            rt.rotation = q;
+        }
     }
     if !matches!(camera.clear_color, ClearColorConfig::Default) {
         camera.clear_color = ClearColorConfig::Default;

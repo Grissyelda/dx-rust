@@ -30,6 +30,13 @@ fn enum_names(src: &str) -> Option<Vec<String>> {
 
 fn parse_value(classes: &ClassDb, class: &str, rhs: &str, ty: Option<u8>) -> Option<Value> {
     let rhs = rhs.trim();
+    // Texture(DynamicLoadObject("Pkg.Group.Name", class'Texture')): the path as written.
+    if let Some(q) = rhs.find("DynamicLoadObject(\"") {
+        let path = rhs[q + 19..].split('"').next().unwrap_or("");
+        if !path.is_empty() {
+            return Some(Value::Path(path.to_string()));
+        }
+    }
     if let Some(q) = rhs.find('\'') {
         let kind = rhs[..q].trim();
         let name = rhs[q + 1..].trim_end_matches('\'');

@@ -45,11 +45,14 @@ mod newgame_view;
 mod tnmclicker;
 mod tnmconsole;
 mod tnmpc;
+mod tnmpuzzle;
+mod tnminvasion;
 mod legendary;
 mod scripted_tv;
 mod tnmlook;
 mod tnmweb;
 mod texctl;
+mod reskin;
 mod nullmask;
 mod online;
 mod netplay;
@@ -1214,6 +1217,8 @@ fn add_mission_systems(app: &mut App) {
         .add_systems(Update, tnmbonus::bonus_system.after(ai::npc_system).run_if(tnmmode::active))
         .add_systems(Update, scripted_tv::tv_system.run_if(tnmmode::active))
         .add_systems(Update, texctl::texctl_system.run_if(tnmmode::active))
+        .add_systems(Update, reskin::reskin_system.run_if(tnmmode::active))
+        .add_systems(Update, tnminvasion::invasion_system.run_if(tnmmode::active))
         .add_systems(Update, legendary::legendary_system.run_if(tnmmode::active))
         .add_systems(Update, (tnmpawn::aug_system, tnmpawn::respawn_system).run_if(tnmmode::active).after(ai::npc_system))
         .add_systems(Update, breath::breath_system.before(particles::particle_system).run_if(tnmmode::active))
