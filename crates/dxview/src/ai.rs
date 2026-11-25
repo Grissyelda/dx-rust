@@ -8166,8 +8166,8 @@ fn apply_hits(list: Vec<crate::damage::PawnHit>, npc: &mut Npc, deco: &mut Deco,
                 h.damage *= scale;
             }
             // A wound mark on a rebuilt body where the shot went in (bodyfx.rs).
-            if !npc.hp_body.robot && matches!(h.damage_type, "Shot" | "Sabot" | "Exploded" | "Burned" | "Flamed") {
-                crate::bodyfx::wound(npc.blocker, h.hit_loc, h.hit_loc - h.attacker_pos, h.damage_type);
+            if !npc.hp_body.robot && matches!(h.damage_type, "Shot" | "Sabot" | "Exploded" | "Burned" | "Flamed" | "KnockedOut" | "Poison") {
+                crate::bodyfx::wound(npc.blocker, h.hit_loc, h.hit_loc - h.attacker_pos, h.damage_type, h.damage);
             }
             let stunned = matches!(npc.state, NpcState::Stunned(_) | NpcState::RubbingEyes(_));
             // EMP: robots lose EMPHitPoints and shut down (Robot state Disabled) at zero; people don't care.
@@ -8435,6 +8435,10 @@ fn pawn_died(npc: &mut Npc, deco: &mut Deco, an: &mut Animated, h: &crate::damag
         damage: h.damage,
         vel: deco.body.velocity,
     });
+    // Dismemberment: a killing blow heavy enough takes off what it hit (dismember.rs).
+    if !knocked_out && !npc.hp_body.robot {
+        crate::dismember::death_blow(npc.blocker, h.hit_loc, h.hit_loc - h.attacker_pos, h.damage, h.damage_type);
+    }
     npc.weapon_drawn = false;
     // DeusExCarcass.InitFor: the body alerts others only if dead (not unconscious), not a robot.
     npc.killer_alliance = match h.attacker {

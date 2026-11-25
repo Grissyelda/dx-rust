@@ -512,6 +512,8 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
 /// Module-level state of the map being left (queues, per-map tables, open windows). What travels with the player
 /// is put back afterwards from the captured save.
 fn reset_modules() {
+    crate::wounds::reset_level();
+    crate::dismember::reset_level();
     crate::mech::reset_level();
     crate::reskin::reset_level();
     crate::tnmpuzzle::reset_level();
@@ -861,6 +863,29 @@ fn dev_goto(world: &mut World) {
                 for mut c in q.iter_mut(world) {
                     c.yaw = (-d.x).atan2(-d.y) as f32;
                     c.pitch = (d.z.atan2(d.truncate().length())) as f32;
+                }
+            }
+            return;
+        }
+        // "secs;dx,dy,dz;gore": stand that far from the body last dismembered (its hips), looking at it.
+        Some("gore") => {
+            let v: Vec<f64> = map.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            let e = crate::dismember::LAST.lock().ok().and_then(|g| *g);
+            let hips = e.and_then(|e| world.get::<crate::skeletal::SkelBody>(e).and_then(|s| s.nodes.get(1).copied()));
+            if let (Some(h), 3) = (hips, v.len()) {
+                if let Some(g) = world.get::<GlobalTransform>(h) {
+                    let at = glam::DVec3::from_array(dx_level::bevy_to_ue(g.translation().to_array()).map(|x| x as f64));
+                    let eye_h = world.resource::<crate::Player>().eye_height;
+                    let from = at + glam::DVec3::new(v[0], v[1], v[2]);
+                    world.resource_mut::<crate::Player>().body.location = from - glam::DVec3::new(0.0, 0.0, eye_h);
+                    let d = at - from;
+                    let mut q = world.query::<&mut crate::FlyCam>();
+                    for mut c in q.iter_mut(world) {
+                        c.yaw = (-d.x).atan2(-d.y) as f32;
+                        c.pitch = (d.z.atan2(d.truncate().length())) as f32;
+                    }
+                    crate::weapons::FIRETEST_RELEASED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    println!("GOTO gore view of {at:?}");
                 }
             }
             return;

@@ -4261,6 +4261,9 @@ pub struct FireTest {
     pub searched_at: Option<f32>,
 }
 
+/// A test step took the camera over (loader GOTO "gore"): the fire test lets go of it and doesn't end the run.
+pub static FIRETEST_RELEASED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn fire_test_cfg() -> Option<FireTest> {
     let v = env_val!("DXVIEW_FIRETEST").map(str::to_owned)?;
     let p: Vec<&str> = v.split(';').collect();
@@ -4299,6 +4302,9 @@ pub fn fire_test(
     bodies: Query<&crate::ai::Npc>,
 ) {
     let Some(mut ft) = ft else { return };
+    if FIRETEST_RELEASED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let dt = time.delta_secs().min(0.05);
     if ft.t == 0.0 {
         player.noclip = false;

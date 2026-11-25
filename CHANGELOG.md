@@ -13,6 +13,16 @@ Lighting and water, without ray tracing (all in the Modern mix; each its own swi
   glowing signs, lamps and bloom keep their colour.
 - **Eye Adaptation**: the picture slowly opens up in the dark and quickly closes down in bright light. It's kept
   gentle so the night stays dark.
+Gore (all in the Modern mix; Low Gore turns it off):
+- **Wounds On Bodies, rebuilt**: wounds are now drawn on the skin itself, exactly where a shot went in (and, for
+  heavy rounds, where it came out): a dark opening, torn flesh, a stain soaking out and blood running down in
+  rivulets that lengthen and stay glossy while wet. They can't float off the body any more and stay put in any pose,
+  ragdolls included. Burns char the skin, blows leave bruises, and the dead bleed harder for a while.
+- **Dismemberment** (new): a heavy enough killing shot takes off what it hit. A head can be blown apart or knocked
+  clean off, and arms and legs come off at the shoulder, elbow, hip or knee (shotgun pellets count together). The part
+  tumbles off trailing blood and slaps down in a splat, and the stump pumps blood with a slowing heartbeat.
+- **Fluid Blood, louder**: more droplets per hit, a red mist puff, back-spatter that splashes the wall behind
+  someone shot through (with runs down it), meaty chunks that arc and leave trails, and fast drops that splash on.
 - **Modern Water**: lamps around the water now glint on the waves, and the floors and walls under water sheets
   shimmer with moving caustics.
 

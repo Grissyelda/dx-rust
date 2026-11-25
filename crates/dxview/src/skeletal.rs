@@ -413,7 +413,18 @@ pub struct ActorLights {
     /// rgb: the lights past the sixteen strongest, summed as an even fill (the vertex-lit meshes add up every
     /// light; leaving them out drew the rebuilt people darker).
     pub amb: Vec4,
+    /// Wounds on the skin (wounds.rs), in the body's rest space (the glTF units its vertices are given in, carried
+    /// to the shader as each vertex's colour): xyz centre, w radius.
+    pub wpos: [Vec4; WOUNDS],
+    /// Per wound: x when it was made (Time::elapsed_secs_wrapped), y kind (wounds::Kind), z how far its blood
+    /// runs (rest units), w a seed.
+    pub winfo: [Vec4; WOUNDS],
+    /// x: wounds in use, y: when the body died (0 = alive; the stains spread faster then).
+    pub wmisc: Vec4,
 }
+
+/// Wounds a body's material carries (the oldest small ones give way first, wounds.rs).
+pub const WOUNDS: usize = 12;
 
 /// Bindless like StandardMaterial: all bodies' sections share a few bind groups and draw as GPU multi-draws.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -552,6 +563,17 @@ pub struct SkelBody {
     pub steps_live: bool,
 }
 
+impl SkelBody {
+    /// The skinned section entities (Mesh3d + SkinnedMesh + MeshMaterial3d<ActorMaterial>).
+    pub(crate) fn mesh_entities(&self) -> &[Entity] {
+        &self.meshes
+    }
+    /// The sections' materials.
+    pub(crate) fn materials(&self) -> &[Handle<ActorMaterial>] {
+        &self.mats
+    }
+}
+
 /// A vertex part hidden while its pawn wears a rebuilt body.
 #[derive(Component)]
 pub struct HiddenPart;
@@ -585,6 +607,9 @@ fn build_mesh(sec: &Section, nmorph: usize) -> Mesh {
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, sec.uvs.clone());
     m.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(sec.joints.clone()));
     m.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, sec.weights.clone());
+    // The rest position rides along as the vertex colour (not skinned): wounds (wounds.rs) are drawn where they
+    // are on the skin, whatever the pose. The alpha stays 1 (masked sections' alpha test multiplies by it).
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, sec.positions.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect::<Vec<[f32; 4]>>());
     m.insert_indices(Indices::U16(sec.indices.clone()));
     if nmorph > 0 {
         let nv = sec.positions.len();
@@ -1635,6 +1660,10 @@ fn relight_from(s: &mut SkelBody, lights: &[dx_level::lighting::LightInfo], ue: 
         new.wet.y = old.wet.y;
         new.wet.z = old.wet.z;
         new.wet.w = old.wet.w;
+        // And its wounds (wounds.rs).
+        new.wpos = old.wpos;
+        new.winfo = old.winfo;
+        new.wmisc = old.wmisc;
         // Unchanged light (standing in the same lamps' reach): leave the material alone - a changed one is
         // re-prepared on the render thread.
         if new == old {

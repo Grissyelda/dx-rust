@@ -92,6 +92,8 @@ mod glow;
 mod gpuinit;
 mod conlight;
 mod tonemap;
+mod wounds;
+mod dismember;
 mod ssr;
 mod vision;
 mod shafts;
@@ -1304,6 +1306,7 @@ fn add_render_systems(app: &mut App) {
         .add_systems(Update, skyfollow::init_system)
         .add_systems(PostUpdate, skyfollow::room_system.before(skyfollow::follow_system))
         .add_systems(Update, gpudrive::gpu_cull_system)
+        .add_systems(PostUpdate, dismember::shrink_system.after(ragdoll::drive_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, weapons::view_glass_system.after(scope::scope_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, scope::scope_system.after(mirror::mirror_system).before(gpudrive::refile_system).before(bevy::transform::TransformSystems::Propagate))
         .add_systems(PostUpdate, gpudrive::refile_system.after(skyfollow::follow_system).after(mirror::mirror_system).before(bevy::camera::visibility::VisibilitySystems::CheckVisibility))
@@ -1383,7 +1386,7 @@ fn add_material_plugins(app: &mut App) {
                 healui::heal_ui_system.before(weapons::weapon_system),
                 optfixes::weapon_pointing_system.before(ai::npc_system),
                 optfixes::unconscious_death_system.after(explosion::explosion_system),
-                bodyfx::wounds_system.after(ai::npc_system),
+                wounds::wounds_system.after(ai::npc_system),
             ),
         )
         // Vertex animation posed on the GPU (gpuanim.rs).
@@ -1405,7 +1408,9 @@ fn add_material_plugins(app: &mut App) {
                 skeletal::spawn_system.after(gpuanim::gpuanim_setup).before(actors::animate),
                 skeletal::pose_system.after(actors::animate).before(ai::npc_weapon_models),
                 gore::gore_system.after(ai::npc_system),
-                bodyfx::bleed_system.after(bodyfx::wounds_system).before(gore::gore_system),
+                wounds::bleed_system.after(wounds::wounds_system).before(gore::gore_system),
+                dismember::dismember_system.after(wounds::wounds_system).before(wounds::bleed_system),
+                dismember::pieces_system,
                 viewblood::view_blood_system.after(gore::gore_system).after(weapons::weapon_system),
                 attach::view_attach_system.after(weapons::weapon_system),
             ),

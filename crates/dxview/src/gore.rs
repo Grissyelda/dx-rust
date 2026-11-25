@@ -8,7 +8,12 @@
 //! - Blood thrown at the eye from close by spatters the weapon in hand (viewblood.rs).
 //! - The dead bleed out: a pool spreads under the body (where a ragdoll came to rest) and slows as it grows.
 //! - Explosions that blow a body apart throw a burst of droplets, big splats on everything near, and a wide pool.
-//! Droplets are drawn as small camera-facing streaks in one mesh; splats, runs and pools are the original's blood
+//! - Shots that go through throw what they carry out the far side (`spatter`): a fast cone of droplets, a red mist,
+//!   and a big splash on the wall behind with runs down it - the back-spatter.
+//! - Every hit puffs a short-lived red mist; meaty chunks (gibs, a head blown apart, dismember.rs) fly in arcs
+//!   leaving a trail of drops and slap down in big splats.
+//! - Fast drops hitting the floor splash a couple of smaller ones on.
+//! Droplets are drawn as small camera-facing streaks in one mesh, mist as soft billboards in another; splats, runs and pools are the original's blood
 //! decals (FlatFXTex2/3/5/6, modulated). All of it shares one cap (more with "Casings And Blood Stay").
 
 use bevy::asset::RenderAssetUsages;
@@ -32,6 +37,16 @@ enum Req {
     Burst(DVec3, f64, f64),
     /// A drop leaving a wound: where, its velocity, its size.
     Drip(DVec3, DVec3, f32),
+    /// What a shot carries out of a body: the exit point, its direction, its damage.
+    Spatter(DVec3, DVec3, f32),
+    /// A puff of red mist: where, drift, size (0..1).
+    Mist(DVec3, DVec3, f32),
+    /// Meaty chunks thrown out: where, the main direction (zero = all round), how many, how fast.
+    Chunks(DVec3, DVec3, usize, f64),
+    /// A splat straight on a surface: where, its normal, size.
+    Splat(DVec3, DVec3, f32),
+    /// A pool spreading on the floor under a point: where, how wide it may get.
+    Pool(DVec3, f32),
 }
 
 static REQS: Mutex<Vec<Req>> = Mutex::new(Vec::new());
@@ -54,6 +69,47 @@ pub fn drip(at: DVec3, vel: DVec3, size: f32) {
     }
 }
 
+fn push(r: Req) {
+    if enabled() {
+        if let Ok(mut g) = REQS.lock() {
+            g.push(r);
+        }
+    }
+}
+
+/// The far side of a shot through a body (wounds.rs): droplets, mist and the splash on the wall behind.
+pub fn spatter(at: DVec3, dir: DVec3, damage: f32) {
+    push(Req::Spatter(at, dir, damage));
+}
+
+/// A puff of red mist.
+pub fn mist(at: DVec3, drift: DVec3, size: f32) {
+    push(Req::Mist(at, drift, size));
+}
+
+/// Meaty chunks thrown out (gibs, a head blown apart): arcs that trail drops and slap down in big splats.
+pub fn chunks(at: DVec3, dir: DVec3, n: usize, speed: f64) {
+    push(Req::Chunks(at, dir, n, speed));
+}
+
+/// A splat straight onto a surface (a severed limb landing).
+pub fn splat(at: DVec3, n: DVec3, size: f32) {
+    push(Req::Splat(at, n, size));
+}
+
+/// A pool spreading on the floor under `at`.
+pub fn pool(at: DVec3, max: f32) {
+    push(Req::Pool(at, max));
+}
+
+/// Pools under these bodies (blocker) spread this much wider (a severed limb bleeds a lot).
+static POOL_BONUS: Mutex<Vec<(usize, f32)>> = Mutex::new(Vec::new());
+pub fn pool_bonus(blocker: usize, extra: f32) {
+    if let Ok(mut g) = POOL_BONUS.lock() {
+        g.push((blocker, extra));
+    }
+}
+
 /// A body blown apart.
 pub fn burst(at: DVec3, r: f64, h: f64) {
     if enabled() {
@@ -73,7 +129,8 @@ pub fn rested(blocker: usize, at: DVec3) {
 }
 
 const GRAVITY: f64 = 950.0;
-const MAX_DROPS: usize = 400;
+const MAX_DROPS: usize = 900;
+const MAX_MIST: usize = 96;
 const SPLATS: [&str; 4] = [
     "DeusExItems.Skins.FlatFXTex2",
     "DeusExItems.Skins.FlatFXTex3",
@@ -87,6 +144,25 @@ struct Drop {
     /// Size (Unreal units across the splat it leaves).
     size: f32,
     life: f32,
+    /// A chunk: leaves drops behind as it flies and lands in a big splat.
+    trail: bool,
+    /// It has splashed once (fast drops on a floor throw smaller ones on).
+    bounced: bool,
+}
+
+impl Drop {
+    fn new(pos: DVec3, vel: DVec3, size: f32) -> Self {
+        Drop { pos, vel, size, life: 3.0, trail: false, bounced: false }
+    }
+}
+
+/// A puff of mist: soft, growing, fading.
+struct Mist {
+    pos: DVec3,
+    vel: DVec3,
+    age: f32,
+    life: f32,
+    size: f32,
 }
 
 /// A trickle running down a steep face from a splat: a streak that lengthens with a bead at its tip.
@@ -148,6 +224,11 @@ pub struct GoreState {
     mesh: Option<Handle<Mesh>>,
     mat: Option<Handle<StandardMaterial>>,
     seed: u64,
+    mists: Vec<Mist>,
+    mist_mesh: Option<Handle<Mesh>>,
+    mist_drawn: bool,
+    trail_acc: f32,
+    bonus: std::collections::HashMap<usize, f32>,
     decals: std::collections::VecDeque<Entity>,
     /// Dead pawns seen (blocker) and how long ago, until their pool starts.
     dead: std::collections::HashMap<usize, f32>,
@@ -212,6 +293,37 @@ fn trickle_image(assets: &mut RuntimeAssets, images: &mut Assets<Image>) -> Hand
         let core = (1.0 - smooth(0.3, 0.95, x)) * smooth(0.0, 0.15, v);
         (core * 0.85, 0.1 + 0.3 * (1.0 - x))
     })
+}
+
+/// A soft round puff (white; the mist mesh's vertex colours tint it).
+fn mist_image(assets: &mut RuntimeAssets, images: &mut Assets<Image>) -> Handle<Image> {
+    let key = "Synth.BloodMist";
+    if let Some(Some(img)) = assets.images.get(key) {
+        return img.clone();
+    }
+    let n = 64u32;
+    let mut data = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let (u, v) = ((x as f32 + 0.5) / n as f32 - 0.5, (y as f32 + 0.5) / n as f32 - 0.5);
+            let r = (u * u + v * v).sqrt() * 2.0;
+            // Lumpy: a few soft blobs in the disc.
+            let lump = 0.75 + 0.25 * ((u * 13.0).sin() * (v * 11.0 + 1.7).cos());
+            let a = ((1.0 - r).max(0.0)).powf(1.8) * lump;
+            data.extend_from_slice(&[255, 255, 255, (a.clamp(0.0, 1.0) * 255.0) as u8]);
+        }
+    }
+    let mut img = Image::new(
+        bevy::render::render_resource::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        data,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    img.sampler = bevy::image::ImageSampler::linear();
+    let h = images.add(img);
+    assets.images.insert(key.to_string(), Some(h.clone()));
+    h
 }
 
 /// A bead of blood (the tip of a trickle, a drop on a weapon): round, darker in the middle, a light rim.
@@ -318,7 +430,11 @@ pub fn gore_system(
     let lvl = &level.0;
     let st = &mut *st;
     let eye = cam.iter().next().map(|c| c.translation()).unwrap_or(Vec3::ZERO);
-    // New blood.
+    // New blood. (Surfaces hit straight on - the wall behind a shot, a landing limb - get their splat here.)
+    let mut wall_hits: Vec<(DVec3, DVec3, f32)> = Vec::new();
+    for (b, extra) in POOL_BONUS.lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default() {
+        *st.bonus.entry(b).or_insert(0.0) += extra;
+    }
     for r in reqs {
         match r {
             Req::Spray(at, dir, amount) => {
@@ -328,23 +444,64 @@ pub fn gore_system(
                 if d < 150.0 {
                     crate::viewblood::splash(((1.0 - d / 150.0) * (2.0 + amount * 0.25)).clamp(1.0, 8.0) as u32);
                 }
-                let n = (4.0 + amount * 0.25).min(14.0) as usize;
+                let n = (6.0 + amount * 0.5).min(26.0) as usize;
                 for i in 0..n {
                     // Most go on along the shot (the exit spray), some back toward the shooter.
                     let back = i % 4 == 3;
                     let base = if back { -dir * 0.6 } else { dir };
                     let v = (base + vrand(&mut st.seed) * 0.45).normalize_or(dir) * (120.0 + rnd(&mut st.seed) * 260.0);
                     let size = 3.0 + rnd(&mut st.seed) as f32 * 7.0;
-                    st.drops.push(Drop { pos: at, vel: v, size, life: 3.0 });
+                    st.drops.push(Drop::new(at, v, size));
+                }
+                let k = (0.35 + amount / 60.0).min(1.0);
+                st.mists.push(Mist { pos: at, vel: -dir * 20.0 + DVec3::Z * 6.0, age: 0.0, life: 0.45 + 0.3 * k, size: 0.5 + k * 0.5 });
+            }
+            Req::Drip(at, vel, size) => st.drops.push(Drop::new(at, vel, size)),
+            Req::Spatter(at, dir, damage) => {
+                let dir = dir.normalize_or(DVec3::X);
+                let n = (8.0 + damage * 0.6).min(30.0) as usize;
+                for _ in 0..n {
+                    let v = (dir + vrand(&mut st.seed) * 0.28).normalize_or(dir) * (260.0 + rnd(&mut st.seed) * 420.0);
+                    st.drops.push(Drop::new(at, v, 2.5 + rnd(&mut st.seed) as f32 * 6.0));
+                }
+                st.mists.push(Mist { pos: at + dir * 6.0, vel: dir * 90.0, age: 0.0, life: 0.6, size: 1.0 });
+                // The wall behind takes the brunt (within about four metres): a big splash with runs down it.
+                let h = lvl.collision.trace(at, at + dir * 260.0, DVec3::ZERO);
+                if h.fraction < 1.0 {
+                    let p = at + dir * 260.0 * h.fraction;
+                    let size = (16.0 + damage * 0.9).min(52.0) * (1.0 - h.fraction as f32 * 0.5);
+                    wall_hits.push((p, h.normal, size));
                 }
             }
-            Req::Drip(at, vel, size) => st.drops.push(Drop { pos: at, vel, size, life: 3.0 }),
+            Req::Mist(at, vel, size) => st.mists.push(Mist { pos: at, vel, age: 0.0, life: 0.5 + size * 0.4, size }),
+            Req::Chunks(at, dir, n, speed) => {
+                for _ in 0..n {
+                    let base = if dir.length_squared() > 0.0 { dir.normalize_or(DVec3::Z) * 0.7 } else { DVec3::ZERO };
+                    let v = (base + vrand(&mut st.seed) + DVec3::Z * 0.6).normalize_or(DVec3::Z) * speed * (0.6 + rnd(&mut st.seed) * 0.7);
+                    let mut d = Drop::new(at, v, 9.0 + rnd(&mut st.seed) as f32 * 10.0);
+                    d.trail = true;
+                    d.life = 4.0;
+                    st.drops.push(d);
+                }
+            }
+            Req::Splat(at, n, size) => wall_hits.push((at, n, size)),
+            Req::Pool(at, max) => {
+                let h = lvl.collision.trace(at + DVec3::Z * 8.0, at - DVec3::Z * 64.0, DVec3::ZERO);
+                if h.fraction < 1.0 && h.normal.z > 0.7 {
+                    let p = at + DVec3::Z * 8.0 + DVec3::NEG_Z * 72.0 * h.fraction;
+                    let _ = decal(&mut commands, &mut assets, &mut images, &mut materials, &mut meshes, st, p, h.normal, 1.0, Some(Pool { t: 0.0, max }));
+                }
+            }
             Req::Burst(at, r, h) => {
                 for _ in 0..70 {
                     let v = (vrand(&mut st.seed) + DVec3::Z * 0.5).normalize_or(DVec3::Z) * (150.0 + rnd(&mut st.seed) * 450.0);
                     let off = DVec3::new((rnd(&mut st.seed) - 0.5) * r, (rnd(&mut st.seed) - 0.5) * r, (rnd(&mut st.seed) - 0.5) * h);
                     let size = 6.0 + rnd(&mut st.seed) as f32 * 16.0;
-                    st.drops.push(Drop { pos: at + off, vel: v, size, life: 3.0 });
+                    st.drops.push(Drop::new(at + off, v, size));
+                }
+                st.mists.push(Mist { pos: at, vel: DVec3::Z * 30.0, age: 0.0, life: 0.9, size: 2.0 });
+                for _ in 0..3 {
+                    st.mists.push(Mist { pos: at + vrand(&mut st.seed) * r, vel: vrand(&mut st.seed) * 60.0, age: 0.0, life: 0.7, size: 1.2 });
                 }
                 // A wide pool where it happened.
                 let down = lvl.collision.trace(at, at - DVec3::Z * (h + 64.0), DVec3::ZERO);
@@ -361,7 +518,15 @@ pub fn gore_system(
         st.drops.drain(..k);
     }
     // Fly, and land.
-    let mut landed: Vec<(DVec3, DVec3, f32)> = Vec::new();
+    let mut landed: Vec<(DVec3, DVec3, f32)> = wall_hits;
+    let mut spawned: Vec<Drop> = Vec::new();
+    // Chunks leave a drop behind every 30 ms or so.
+    st.trail_acc += dt;
+    let trail_now = st.trail_acc >= 0.03;
+    if trail_now {
+        st.trail_acc = 0.0;
+    }
+    let seed = &mut st.seed;
     st.drops.retain_mut(|d| {
         d.life -= dt;
         let from = d.pos;
@@ -369,12 +534,28 @@ pub fn gore_system(
         let to = from + d.vel * dt as f64;
         let h = lvl.collision.trace(from, to, DVec3::ZERO);
         if h.fraction < 1.0 {
-            landed.push((from + (to - from) * h.fraction, h.normal, d.size));
+            let p = from + (to - from) * h.fraction;
+            let speed = d.vel.length();
+            // A chunk slaps down big; a fast drop on a floor splashes a couple of smaller ones on.
+            let size = if d.trail { d.size * 1.8 } else { d.size };
+            landed.push((p, h.normal, size));
+            if !d.bounced && !d.trail && speed > 320.0 && d.size > 3.5 && h.normal.z > 0.6 {
+                let refl = d.vel - h.normal * 2.0 * d.vel.dot(h.normal);
+                for _ in 0..2 {
+                    let mut nd = Drop::new(p + h.normal * 1.0, (refl * 0.22 + vrand(seed) * 60.0) + DVec3::Z * 40.0, d.size * 0.4);
+                    nd.bounced = true;
+                    spawned.push(nd);
+                }
+            }
             return false;
+        }
+        if d.trail && trail_now && d.vel.length_squared() > 2500.0 {
+            spawned.push(Drop::new(from, d.vel * 0.15 + vrand(seed) * 20.0, 1.5 + rnd(seed) as f32 * 2.5));
         }
         d.pos = to;
         d.life > 0.0
     });
+    st.drops.extend(spawned);
     for (p, n, size) in landed {
         let steep = n.z.abs() < 0.6;
         let _ = decal(&mut commands, &mut assets, &mut images, &mut materials, &mut meshes, st, p, n, size, None::<()>);
@@ -470,7 +651,7 @@ pub fn gore_system(
     }
     for (p, n, size, falls) in ends {
         if falls {
-            st.drops.push(Drop { pos: p, vel: DVec3::ZERO, size, life: 3.0 });
+            st.drops.push(Drop::new(p, DVec3::ZERO, size));
         } else {
             // Onto the floor under the tip.
             let h = lvl.collision.trace(p + DVec3::Z * 8.0, p - DVec3::Z * 16.0, DVec3::ZERO);
@@ -498,7 +679,7 @@ pub fn gore_system(
         }
         st.pooled.insert(n.blocker);
         let p = at + DVec3::Z * 16.0 + (DVec3::NEG_Z * 112.0) * h.fraction;
-        let max = if n.animal { 50.0 } else { 90.0 + rnd(&mut st.seed) as f32 * 40.0 };
+        let max = if n.animal { 50.0 } else { 90.0 + rnd(&mut st.seed) as f32 * 40.0 } + st.bonus.get(&n.blocker).copied().unwrap_or(0.0);
         let _ = decal(&mut commands, &mut assets, &mut images, &mut materials, &mut meshes, st, p, h.normal, 1.0, Some(Pool { t: 0.0, max }));
     }
     for (mut p, mut t) in &mut pools {
@@ -508,6 +689,77 @@ pub fn gore_system(
         p.t += dt;
         let size = p.max * (1.0 - (-p.t / 9.0).exp()).max(0.05);
         t.scale = Vec3::new(size, size, 1.0) * dx_level::METERS_PER_UNIT;
+    }
+    // Mist: soft red puffs that swell, drift and fade (one mesh of camera-facing quads).
+    for m in &mut st.mists {
+        m.age += dt;
+        m.pos += m.vel * dt as f64;
+        m.vel *= (1.0 - 2.5 * dt as f64).max(0.0);
+        m.vel.z -= 12.0 * dt as f64;
+    }
+    st.mists.retain(|m| m.age < m.life);
+    if st.mists.len() > MAX_MIST {
+        let k = st.mists.len() - MAX_MIST;
+        st.mists.drain(..k);
+    }
+    if st.mist_mesh.is_none() {
+        let cap = MAX_MIST;
+        let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; cap * 4]);
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, (0..cap).flat_map(|_| [[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]).collect::<Vec<_>>());
+        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; cap * 4]);
+        m.insert_indices(Indices::U32((0..cap as u32).flat_map(|q| [q * 4, q * 4 + 1, q * 4 + 2, q * 4, q * 4 + 2, q * 4 + 3]).collect()));
+        let h = meshes.add(m);
+        let img = mist_image(&mut assets, &mut images);
+        let mat = materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(img),
+            unlit: true,
+            double_sided: true,
+            cull_mode: None,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        });
+        commands.spawn((
+            Mesh3d(h.clone()),
+            MeshMaterial3d(mat),
+            Transform::default(),
+            bevy::camera::visibility::NoFrustumCulling,
+            bevy::light::NotShadowCaster,
+            bevy::light::NotShadowReceiver,
+        ));
+        st.mist_mesh = Some(h);
+    }
+    if !st.mists.is_empty() || st.mist_drawn {
+        st.mist_drawn = !st.mists.is_empty();
+        let cam_rot = cam.iter().next().map(|c| c.rotation()).unwrap_or(Quat::IDENTITY);
+        let (right, up) = (cam_rot * Vec3::X, cam_rot * Vec3::Y);
+        if let Some(mut m) = st.mist_mesh.as_ref().and_then(|h| meshes.get_mut(h)) {
+            let mut quads: Vec<([[f32; 3]; 4], [f32; 4])> = Vec::with_capacity(MAX_MIST);
+            for i in 0..MAX_MIST {
+                let Some(p) = st.mists.get(i) else {
+                    quads.push(([[0.0; 3]; 4], [0.0; 4]));
+                    continue;
+                };
+                let k = p.age / p.life;
+                // Swells fast, then thins out.
+                let size = (8.0 + 26.0 * p.size) * (0.35 + 0.65 * (1.0 - (1.0 - k).powi(3))) * dx_level::METERS_PER_UNIT;
+                let alpha = 0.55 * (1.0 - k).powf(1.6) * (0.6 + 0.4 * p.size.min(1.0));
+                let c = bv(p.pos);
+                let (rx, uy) = (right * size, up * size);
+                quads.push(([(c - rx - uy).into(), (c + rx - uy).into(), (c + rx + uy).into(), (c - rx + uy).into()], [0.38, 0.02, 0.02, alpha]));
+            }
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = m.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+                for (q, quad) in pos.chunks_exact_mut(4).enumerate() {
+                    quad.copy_from_slice(&quads[q].0);
+                }
+            }
+            if let Some(bevy::mesh::VertexAttributeValues::Float32x4(col)) = m.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+                for (q, quad) in col.chunks_exact_mut(4).enumerate() {
+                    quad.fill(quads[q].1);
+                }
+            }
+        }
     }
     // Draw the drops in flight: short streaks along their motion, facing the camera.
     if st.mesh.is_none() {

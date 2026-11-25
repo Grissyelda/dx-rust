@@ -45,6 +45,7 @@ pub const PRESET: &[(&str, f32)] = &[
     ("FirstPersonBody", 1.0),
     ("HurtPoses", 1.0),
     ("BodyWounds", 1.0),
+    ("Dismemberment", 1.0),
     ("FlashlightCone", 1.0),
     ("MaterialSheen", 1.0),
     ("ModernGlass", 1.0),
