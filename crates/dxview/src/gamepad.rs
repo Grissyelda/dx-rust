@@ -442,6 +442,13 @@ fn under_steam() -> bool {
     *S.get_or_init(|| ["SteamGameId", "SteamAppId", "SteamClientLaunch", "SteamOverlayGameId"].iter().any(|k| std::env::var_os(k).is_some()))
 }
 
+/// A pad button was held or a stick pushed within the last `secs` (touch.rs: the overlay fades only for a pad
+/// really being played with).
+pub fn pad_busy_recently(secs: f32) -> bool {
+    let at = PAD_BUSY_AT.load(std::sync::atomic::Ordering::Relaxed);
+    at != 0 && now_ms().saturating_sub(at) < (secs * 1000.0) as u64
+}
+
 /// GitHub issue #54: launched from Steam with a DualSense, Steam Input also turns the pad into keys (its template's
 /// arrows / Enter / Escape and scrolling) while we read the pad itself over HID - every menu step came twice. Under
 /// Steam, while the HID DualSense is in use (pressed or pushed in the last 0.3 s), keyboard navigation keys and

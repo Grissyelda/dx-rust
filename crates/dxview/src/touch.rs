@@ -257,7 +257,7 @@ pub fn take_open_screen() -> Option<usize> {
 
 /// The overlay's opacity: full while fingers are used, faded while a controller or keyboard plays.
 fn overlay_alpha(s: &State) -> f32 {
-    let pad = crate::gamepad::pad_in_use();
+    let pad = crate::gamepad::pad_in_use() && crate::gamepad::pad_busy_recently(3.0);
     if pad && s.now - s.last_touch > 3.0 {
         0.0
     } else {
@@ -409,6 +409,9 @@ pub fn touch_system(
         let mut buttons = layout(w, h, ui);
         if !list.is_empty() {
             s.last_touch = now;
+            // A finger is the input in use, as keyboard and mouse are: the pad stops counting as "last used" (some
+            // phones report built-in keys as a gamepad, which kept the overlay faded out).
+            crate::gamepad::note_kbm();
         }
         // New fingers take a role by where they land.
         for &(id, p, started, _) in &list {

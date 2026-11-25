@@ -15,6 +15,11 @@
 //! off a running camera safely, and Skeletal Characters can change in play (the Classic / Modern switch), so TAA stays
 //! off there. Native AA is its sharpen alone, and the upscaled modes are EASU and RCAS without the temporal blend.
 //!
+//! Phones (`cheap()`): no TAA, no sharpen, and a plain bilinear stretch instead of EASU. On a small mobile GPU the
+//! motion-vector prepass, TAA and FSR's passes cost more than drawing fewer pixels saves (a Mali-G57 went from 30 to
+//! 15 fps with Performance on); the cheap path keeps only the saving. The Display screen calls it Render Resolution
+//! there (menus.rs).
+//!
 //! The world camera keeps the window's logical size (its image's scale factor is divided by the same ratio), so
 //! world_to_viewport / viewport_to_world on it still speak window coordinates.
 
@@ -31,6 +36,11 @@ use bevy::window::PrimaryWindow;
 
 /// The setting: 0 Off, 1 Native AA, 2 Quality, 3 Balanced, 4 Performance, 5 Ultra Performance.
 pub fn mode() -> u32 {
+    if cheap() {
+        // Phones: Render Resolution's own setting (an index into CHEAP_VALUES).
+        let i = (setting!("RenderScale").round().max(0.0) as usize).min(CHEAP_VALUES.len() - 1);
+        return CHEAP_VALUES[i];
+    }
     (setting!("Upscaling").round().max(0.0) as u32).min(5)
 }
 
@@ -46,6 +56,15 @@ pub fn ratio(mode: u32) -> f32 {
 }
 
 pub const NAMES: [&str; 6] = ["Off", "Native AA", "Quality", "Balanced", "Performance", "Ultra Performance"];
+
+/// The phone path: bilinear stretch only (see the top). DXVIEW_CHEAP_UPSCALE=1 tries it on a desktop.
+pub fn cheap() -> bool {
+    crate::platform::android() || env_on!("DXVIEW_CHEAP_UPSCALE")
+}
+
+/// The setting's values and names on phones (Render Resolution): Native AA is TAA, which the cheap path doesn't do.
+pub const CHEAP_VALUES: [u32; 5] = [0, 2, 3, 4, 5];
+pub const CHEAP_NAMES: [&str; 5] = ["100%", "67%", "59%", "50%", "33%"];
 
 /// The camera that blows the world's picture up into the window.
 #[derive(Component)]
@@ -147,7 +166,7 @@ pub fn upscale_system(
         if std::mem::discriminant(&cam.output_mode) != std::mem::discriminant(&out) {
             cam.output_mode = out;
         }
-        let taa = m >= 1 && !cfg!(target_os = "macos");
+        let taa = m >= 1 && !cfg!(target_os = "macos") && !cheap();
         if taa && !has_taa {
             commands.entity(e).insert((TemporalAntiAliasing::default(), Msaa::Off));
         } else if !taa && has_taa {
@@ -155,7 +174,7 @@ pub fn upscale_system(
             commands.entity(e).remove::<(TemporalAntiAliasing, TemporalJitter, MipBias)>();
         }
         // Native AA: a light sharpen after the temporal blend (the upscaled modes sharpen after upscaling instead).
-        let want = (m == 1).then_some(0.35);
+        let want = (m == 1 && !cheap()).then_some(0.35);
         match (want, cas) {
             (Some(s), None) => {
                 commands.entity(e).insert(ContrastAdaptiveSharpening { enabled: true, sharpening_strength: s, denoise: false });
@@ -179,6 +198,12 @@ pub fn upscale_system(
         if on {
             if let Some((h, _)) = &st.image {
                 commands.entity(e).insert(UpscaleSource(h.clone()));
+            }
+            if cheap() {
+                if cas.is_some() {
+                    commands.entity(e).remove::<ContrastAdaptiveSharpening>();
+                }
+                continue;
             }
             // Stronger for the bigger stretches (FSR's own default is 0.2 stops of RCAS sharpness).
             let s = match m { 2 => 0.45, 3 => 0.5, 4 => 0.55, _ => 0.6 };
@@ -268,6 +293,7 @@ mod render {
                     vertex: pipe.vertex.clone(),
                     fragment: Some(FragmentState {
                         shader: super::EASU_SHADER,
+                        shader_defs: if super::cheap() { vec!["CHEAP".into()] } else { Vec::new() },
                         targets: vec![Some(ColorTargetState { format: fmt, blend: None, write_mask: ColorWrites::ALL })],
                         ..default()
                     }),

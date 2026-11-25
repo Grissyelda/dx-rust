@@ -853,11 +853,11 @@ pub fn run() {
     dx_level::set_bc1_supported(!env_on!("DXVIEW_NO_BC1"));
     // `--game <folder>` (RecompLauncher, scripts, Steam shortcuts) is taken out; the rest keep their places.
     let (mut args, game_arg) = recomp::take_game_arg(std::env::args().collect());
-    // The launcher's Game row (or `--tnm <folder>`): The Nameless Mod instead of Deus Ex.
-    #[cfg(not(target_os = "android"))]
-    let tnm = tnmmode::pick(&mut args);
-    #[cfg(target_os = "android")]
-    let tnm: Option<PathBuf> = None;
+    // Android: which GPU this phone has decides the look and the mods (gpuinit::modern_capable), before either.
+    gpuinit::probe();
+    // The launcher's Game row / Settings > Mods (or `--tnm <folder>`): The Nameless Mod instead of Deus Ex. Phones
+    // that play Classic without mods (gpuinit::modern_capable) don't take it.
+    let tnm = if platform::classic_only() { None } else { tnmmode::pick(&mut args) };
     #[cfg(target_os = "android")]
     let root = {
         let _ = &game_arg;
@@ -872,8 +872,6 @@ pub fn run() {
         std::process::exit(recomp::EXIT_NO_GAME);
     }
     prof::mem_mark("start");
-    // Android: which GPU this phone has decides the look and the mods (gpuinit::modern_capable), before either.
-    gpuinit::probe();
     match &tnm {
         Some(t) => tnmmode::setup(std::path::Path::new(&root), t),
         None => setup_mods(&root),

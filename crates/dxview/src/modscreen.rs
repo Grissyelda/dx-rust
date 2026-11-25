@@ -246,6 +246,11 @@ pub fn restart() {
     if let Some(g) = PENDING_GAME.lock().ok().and_then(|mut p| p.take()) {
         let _ = install::set_launcher_lines(&[("Game".into(), g.into())], &[]);
     }
+    // Android: the program is the system's app process, not ours to start - the launch intent starts the app afresh
+    // (it reads launcher.txt's Game line like the desktop).
+    #[cfg(target_os = "android")]
+    crate::android::relaunch();
+    #[cfg(not(target_os = "android"))]
     if let Ok(exe) = std::env::current_exe() {
         // `--tnm <folder>` and DXVIEW_TNM would override the Game line: left out of the new start.
         let mut args: Vec<String> = Vec::new();

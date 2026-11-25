@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.14.1 (Android)
+
+- **Render Resolution** (Settings > Display on phones) replaces Screen Resolution and Display Mode there, which
+  couldn't change anything (a phone's window is always the whole screen): the world is drawn at 100 / 67 / 59 / 50 /
+  33% of the screen's size and stretched, while the weapon, HUD and menus stay sharp. Mali phones start at 67%.
+  Upscaling's TAA and FSR passes are no longer used on phones (they cost a small GPU more than they saved: a Mali-G57
+  went from 30 to 15 fps with Performance on).
+- Touch buttons no longer stay hidden at start on phones that report a built-in key as a game controller: a finger
+  now counts as the input in use, and the overlay only fades while a controller is really being played with.
+- Snapdragon phones: The Nameless Mod can be started (Settings > Mods > Play It) - the app restarts into it instead
+  of closing, and the mod is picked up at start-up.
+
 ## v0.14.0
 
 The highlights since v0.13.1 (the detailed notes for each day follow):

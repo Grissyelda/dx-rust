@@ -118,6 +118,8 @@ pub const DEFAULTS: &[(&str, f32)] = &[
     ("HudFade", 0.0),
     ("ConversationLight", 0.0),
     ("Upscaling", 0.0),
+    // Phones' Render Resolution (upscale.rs cheap()): 0 = 100%, 1 = 67%, 2 = 59%, 3 = 50%, 4 = 33%.
+    ("RenderScale", 0.0),
     ("Grass", 0.0),
     ("Trees", 0.0),
     ("ThrownNoise", 0.0),
@@ -316,6 +318,14 @@ fn platform_default(key: &str) -> Option<f32> {
             "LeanRendering" | "LeanUpdates" => 1.0,
             "HDRRendering" => 0.0,
             "FPSLimit" => 2.0,
+            // Mali GPUs draw the world at two thirds of the screen's size (Render Resolution 67%).
+            "RenderScale" => {
+                if crate::gpuinit::family() == crate::gpuinit::GpuFamily::Mali {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             _ => return touch_default(key),
         };
         return Some(v);

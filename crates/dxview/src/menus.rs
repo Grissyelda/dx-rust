@@ -1093,7 +1093,7 @@ fn split_group(label: &str) -> (&str, &str) {
 /// Ours: the graphics options of the Enhancements list on the Display screen (DISPLAY_EXTRA) and its Advanced
 /// screen (DISPLAY_ADVANCED), so they're found where players look for them. They stay on the Enhancements list too
 /// (same setting, same choice), without the "Group: " prefix here.
-const DISPLAY_EXTRA: [&str; 3] = ["FPSLimit", "FOV", "Upscaling"];
+const DISPLAY_EXTRA: [&str; 4] = ["FPSLimit", "FOV", "Upscaling", "RenderScale"];
 const DISPLAY_ADVANCED: [&str; 8] = [
     "AntiAliasing", "HDRRendering", "RealtimeShadows", "StaticBatching", "LeanRendering", "LeanUpdates", "WorkerThreads",
     "FPSCounter",
@@ -1436,6 +1436,15 @@ impl Enhance {
             }
             c.kind = ChoiceKind::Enum(crate::upscale::NAMES.iter().map(|s| s.to_string()).collect());
             c.value = setting!("Upscaling");
+            if crate::upscale::cheap() {
+                // Phones: the screen's own size can't change, so this is the one resolution choice - the world drawn
+                // smaller and stretched (upscale.rs cheap()).
+                c.key = "RenderScale".into();
+                c.label = "Render Resolution".into();
+                c.help = "How many pixels the world is drawn with, as a share of the screen's. Lower runs faster on phones; the weapon, HUD and menus always stay sharp.".into();
+                c.kind = ChoiceKind::Enum(crate::upscale::CHEAP_NAMES.iter().map(|s| s.to_string()).collect());
+                c.value = setting!("RenderScale");
+            }
             c.saved = c.value;
             items.push(tag(c, "Display"));
         }
@@ -2157,9 +2166,17 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
             ];
             let slots = art_rows(&f).max(original.len());
             choices.retain(|c| !DROPPED.contains(&c.key.as_str()));
+            // Phones: the window is always the whole screen - Screen Resolution and Display Mode can't change
+            // anything (Render Resolution, from DISPLAY_EXTRA, takes their place).
+            let phone = crate::platform::android();
+            if phone && class == "MenuScreenDisplay" {
+                choices.retain(|c| c.key != "Resolution");
+            }
             if class == "MenuScreenDisplay" {
                 let at = choices.iter().position(|c| c.key == "Resolution").unwrap_or(choices.len());
-                choices.insert(at, display_mode_choice());
+                if !phone {
+                    choices.insert(at, display_mode_choice());
+                }
                 let at = choices.iter().position(|c| c.key == "Resolution").map_or(choices.len(), |i| i + 1);
                 choices.insert(at, vsync_choice());
                 // The graphics options from Enhancements: frame rate cap, field of view, upscaling.

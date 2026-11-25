@@ -61,6 +61,20 @@ fn tap(acc: ptr<function, Acc>, off: vec2<f32>, dir: vec2<f32>, len2: vec2<f32>,
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let isz = vec2<f32>(textureDimensions(src));
+#ifdef CHEAP
+    // Phones (upscale.rs cheap()): a plain bilinear stretch - four taps, no edge analysis.
+    let q = in.uv * isz - vec2<f32>(0.5);
+    let q0 = floor(q);
+    let f = q - q0;
+    let d = vec2<i32>(isz) - vec2<i32>(1);
+    let i0 = clamp(vec2<i32>(q0), vec2<i32>(0), d);
+    let i1 = clamp(vec2<i32>(q0) + vec2<i32>(1), vec2<i32>(0), d);
+    let a = textureLoad(src, i0, 0).rgb;
+    let b2 = textureLoad(src, vec2<i32>(i1.x, i0.y), 0).rgb;
+    let c2 = textureLoad(src, vec2<i32>(i0.x, i1.y), 0).rgb;
+    let d2 = textureLoad(src, i1, 0).rgb;
+    return vec4<f32>(mix(mix(a, b2, f.x), mix(c2, d2, f.x), f.y), 1.0);
+#else
     var pp = in.uv * isz - vec2<f32>(0.5);
     let fp = floor(pp);
     pp = pp - fp;
@@ -130,4 +144,5 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     t = t * t;
     let col = t / max(1.0 - max(t.r, max(t.g, t.b)), 1e-4);
     return vec4<f32>(col, 1.0);
+#endif
 }

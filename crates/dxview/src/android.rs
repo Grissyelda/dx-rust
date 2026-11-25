@@ -195,10 +195,11 @@ pub fn open_url(url: &str) -> Result<(), String> {
     ok.ok_or_else(|| format!("couldn't open a browser: {url}"))
 }
 
-/// Start the app again from scratch (after the setup screen found the game): the launch intent in a fresh task,
+/// Start the app again from scratch (after the setup screen found the game, or to switch games / mods): the launch
+/// intent in a fresh task,
 /// then this process ends and Android starts a new one for it.
 pub fn relaunch() -> ! {
-    crate::platform::note("relaunching after setup");
+    crate::platform::note("relaunching");
     with_env(|env, act| {
         let pm = env.call_method(act, "getPackageManager", "()Landroid/content/pm/PackageManager;", &[])?.l()?;
         let pkg = env.call_method(act, "getPackageName", "()Ljava/lang/String;", &[])?.l()?;
