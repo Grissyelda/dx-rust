@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Lighting and water, without ray tracing (all in the Modern mix; each its own switch in Settings > Enhancements):
+- **Bounce Light** (Off / On / Strong): light now bounces once off walls and floors and carries their colour, so a
+  red-lit wall tints the floor in front of it and a lit floor brightens the room around it. People and objects get
+  the same light from probes placed over the floors and along the paths. It's worked out the first time a map
+  loads (a few seconds), saved, and costs nothing while you play.
+- **Reflections** (Off / Subtle / Glossy): polished floors, tiles, metal and wet ground reflect the room and the
+  people in it. These are screen-space reflections on the world's own surfaces; water and mirrors keep their own.
+- **Tonemapping** (None / Filmic / AgX): light brighter than white rolls off smoothly instead of clipping, so
+  glowing signs, lamps and bloom keep their colour.
+- **Eye Adaptation**: the picture slowly opens up in the dark and quickly closes down in bright light. It's kept
+  gentle so the night stays dark.
+- **Modern Water**: lamps around the water now glint on the waves, and the floors and walls under water sheets
+  shimmer with moving caustics.
+
 ## v0.14.1 (Android)
 
 - **Render Resolution** (Settings > Display on phones) replaces Screen Resolution and Display Mode there, which

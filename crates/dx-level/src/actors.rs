@@ -755,11 +755,13 @@ pub fn zone_ambient_at(p: [f32; 3]) -> [f32; 3] {
         let z = t.0.zone_at(pt).max(0) as usize;
         t.1.get(z).or(t.1.first()).copied().unwrap_or([0.0; 3])
     };
+    let b = crate::bounce::ambient_at(p);
+    let add = |c: [f32; 3]| [c[0] + b[0], c[1] + b[1], c[2] + b[2]];
     if let Some(c) = BUILDING_AMBIENT.with(|b| b.borrow().as_ref().map(look)) {
-        return c;
+        return add(c);
     }
-    let Ok(g) = ZONE_AMBIENT.read() else { return [0.0; 3] };
-    g.as_ref().map(look).unwrap_or([0.0; 3])
+    let Ok(g) = ZONE_AMBIENT.read() else { return b };
+    add(g.as_ref().map(look).unwrap_or([0.0; 3]))
 }
 
 /// Lights nearer than this to an actor's origin light it from the origin's side (see light_part).

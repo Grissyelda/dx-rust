@@ -91,6 +91,8 @@ mod skyfollow;
 mod glow;
 mod gpuinit;
 mod conlight;
+mod tonemap;
+mod ssr;
 mod vision;
 mod shafts;
 mod postfx;
@@ -887,6 +889,9 @@ pub fn run() {
     setup_relief_dirs(&root);
     // Emissive Surfaces: glowing faces light their surroundings in every map built (dx_level::emissive).
     dx_level::emissive::set_switch(relight::emissive_on);
+    // Bounce Light: one bounce of the level's light baked into the lightmap (cached per map in data_dir/cache).
+    dx_level::bounce::set_switch(relight::bounce_strength);
+    dx_level::bounce::set_cache_dir(Some(unreal_pkg::paths::data_dir().join("cache").join("bounce")));
     unreal_pkg::paths::set_hd_textures_on(setting!("HDTextures") > 0.5);
     init_game_data(&root);
     prof::mem_mark("game data (classes, mod layers)");
@@ -985,6 +990,7 @@ fn add_core_plugins(app: &mut App, level: Level, root: &String) {
         .insert_resource(pickups::GameRoot(PathBuf::from(&root)))
         .insert_resource({
             dx_level::actors::set_zone_ambient(level.collision.zone_tree(), level.zone_ambient.clone());
+            dx_level::bounce::set_play(level.bounce_probes.clone());
             achievements::set_map(&level.name);
             LevelRes(level)
         });
@@ -1283,6 +1289,7 @@ fn add_render_systems(app: &mut App) {
         )
         .add_systems(Update, hudfade::hud_fade_system)
         .add_plugins(upscale::UpscalePlugin)
+        .add_plugins(ssr::SsrPlugin)
         .add_plugins(lmlights::LmLightsPlugin)
         .add_plugins(grass::GrassPlugin)
         .add_plugins(trees::TreesPlugin)
@@ -1433,6 +1440,8 @@ fn add_hud_light_systems(app: &mut App) {
                 dynlight::brightness_key_system,
                 dynlight::glow_lights_system.before(dynlight::dynlight_system),
                 conlight::con_light_system.before(dynlight::dynlight_system),
+                tonemap::tonemap_system,
+                ssr::ssr_system,
                 dynlight::dynlight_system
                     .after(dynlight::aug_light_system)
                     .after(projectiles::projectile_system)
@@ -1714,7 +1723,9 @@ struct BatchShared {
         (Option<usize>, SurfaceClass, bool, [i32; 2], bool),
         Handle<StandardMaterial>,
     >,
-    bsp_cache: std::collections::HashMap<(AssetId<StandardMaterial>, bool), Handle<shadowlight::BspMaterial>>,
+    bsp_cache: std::collections::HashMap<(AssetId<StandardMaterial>, bool, i32), Handle<shadowlight::BspMaterial>>,
+    /// Modern Water's caustics: the level's water sheet triangles (Bevy x / z bounds, height), built on first use.
+    water_tris: Option<Vec<([f32; 4], f32)>>,
     glass_mats: std::collections::HashMap<usize, Handle<StandardMaterial>>,
 }
 
@@ -1896,6 +1907,7 @@ fn batch_tables(
         relief_t0,
         cache: Default::default(),
         bsp_cache: Default::default(),
+        water_tris: None,
         glass_mats: Default::default(),
     }
 }
@@ -2052,6 +2064,45 @@ fn batch_mesh(b: &dx_level::Batch, lb: &mut LevelBuild, bs: &BatchShared, mat: &
 
 /// Spawns a batch's entity by kind: a Modern Glass pane, water (with its backing), a mirror, or the lit world.
 /// Returns it and whether it's the lit world.
+/// BspShadowParams.u.w = the water's height + this (0 = no water above).
+const CAUSTIC_OFFSET: f32 = 10000.0;
+
+/// The height (Bevy metres) of the water sheet over a BSP batch's faces, if any lie under one within 12 m: their
+/// caustics shine up to there. Water sheets are flat; a face counts when a sheet's triangle covers its centre.
+fn underwater_height(level: &Level, b: &dx_level::Batch, tris: &mut Option<Vec<([f32; 4], f32)>>) -> Option<f32> {
+    let tris = tris.get_or_insert_with(|| {
+        let mut out = Vec::new();
+        for w in level.batches.iter().filter(|w| w.class == SurfaceClass::Water && !w.sky) {
+            for t in w.indices.chunks_exact(3) {
+                let p = [w.positions[t[0] as usize], w.positions[t[1] as usize], w.positions[t[2] as usize]];
+                // Flat sheets only (a waterfall's slope isn't a surface to look up at).
+                if (p[0][1] - p[1][1]).abs() > 0.05 || (p[0][1] - p[2][1]).abs() > 0.05 {
+                    continue;
+                }
+                let (x0, x1) = (p.iter().map(|v| v[0]).fold(f32::MAX, f32::min), p.iter().map(|v| v[0]).fold(f32::MIN, f32::max));
+                let (z0, z1) = (p.iter().map(|v| v[2]).fold(f32::MAX, f32::min), p.iter().map(|v| v[2]).fold(f32::MIN, f32::max));
+                out.push(([x0, x1, z0, z1], p[0][1]));
+            }
+        }
+        out
+    });
+    if tris.is_empty() || b.class == SurfaceClass::Water {
+        return None;
+    }
+    let mut best: Option<f32> = None;
+    let n = b.indices.len() / 3;
+    let step = (n / 400).max(1);
+    for t in b.indices.chunks_exact(3).step_by(step) {
+        let c = [0, 1, 2].map(|k| (b.positions[t[0] as usize][k] + b.positions[t[1] as usize][k] + b.positions[t[2] as usize][k]) / 3.0);
+        for (bb, y) in tris.iter() {
+            if c[0] >= bb[0] && c[0] <= bb[1] && c[2] >= bb[2] && c[2] <= bb[3] && *y > c[1] && *y - c[1] < 12.0 {
+                best = Some(best.map_or(*y, |h: f32| h.max(*y)));
+            }
+        }
+    }
+    best
+}
+
 fn spawn_batch_entity<'c>(
     commands: &'c mut Commands,
     ast: &mut SetupAssets,
@@ -2109,9 +2160,12 @@ fn spawn_batch_entity<'c>(
         // The lit world: StandardMaterial plus the real-time shadow pass over its lightmap (shadowlight.rs).
         None => {
             lit_world = true;
+            // Modern Water: surfaces under a water sheet get its moving caustics (bsp_shadow.wgsl), up to its height.
+            let under = if bs.modern_water && !b.sky { underwater_height(level, b, &mut bs.water_tris) } else { None };
+            let under_key = under.map_or(0, |h| (h * 100.0).round() as i32 + 1);
             let bm = bs
                 .bsp_cache
-                .entry((mat.id(), b.sky))
+                .entry((mat.id(), b.sky, under_key))
                 .or_insert_with(|| {
                     let mut bm = shadowlight::bsp_material(ast.materials.get(mat).cloned().unwrap_or_default());
                     // The sky room is drawn far out past the map by the world camera (skyfollow.rs): the
@@ -2134,6 +2188,18 @@ fn spawn_batch_entity<'c>(
                     // Panning surfaces scroll in the shader (BspShadowParams.u), so the material never changes.
                     if let Some((_, speed, _)) = lb.scrollers.0.iter().find(|(m, _, w)| m.id() == mat.id() && !*w) {
                         bm.extension.params.u = Vec4::new(speed.x, speed.y, 0.0, 0.0);
+                    }
+                    if let Some(h) = under {
+                        // Offset so that 0 still means "no water over it".
+                        bm.extension.params.u.w = h + CAUSTIC_OFFSET;
+                    }
+                    // Screen-Space Reflections (ssr.rs): how much this surface reflects, written into the picture's
+                    // alpha by the shader. Solid surfaces only (a blended one's alpha is its own).
+                    if !b.sky && matches!(bm.base.alpha_mode, AlphaMode::Opaque | AlphaMode::Mask(_)) {
+                        if let Some(name) = b.texture.map(|i| level.textures[i].name.as_str()) {
+                            let s = relight::surface(name);
+                            bm.extension.params.u.z = ssr::reflectivity(s.roughness, s.spec, s.metal, name);
+                        }
                     }
                     ast.bsp_mats.add(bm)
                 })

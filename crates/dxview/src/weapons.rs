@@ -1148,6 +1148,7 @@ pub fn spawn_view_camera(commands: &mut Commands) {
         // The last 3D camera to draw: brightness (gamma) applies to the whole picture here.
         crate::dynlight::Brightness {
             gamma: crate::dynlight::default_gamma(),
+            exposure: 1.0,
             ..default()
         },
     ));

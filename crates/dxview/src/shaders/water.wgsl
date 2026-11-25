@@ -24,6 +24,7 @@ struct WaterParams {
     mask: vec4<f32>,
     heights: array<vec4<f32>, 4>,
     ssr: vec4<f32>,
+    lamps: array<vec4<f32>, 16>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterParams;
@@ -457,6 +458,24 @@ fn modern_water(in: VertexOutput, is_front: bool, t: f32) -> FragmentOutput {
     let nh = max(dot(n, hv), 0.0);
     let moon_col = vec3<f32>(0.75, 0.82, 1.0);
     col += moon_col * (pow(nh, 900.0) * 0.6 + pow(nh, 90.0) * 0.02) * water.moon.w * (0.3 + 0.7 * fine);
+    // The lamps around (static lights, which Bevy's lights don't carry): a sharp glint on the facets that catch
+    // each one and a softer smear along the waves toward it, fading with the lamp's distance from the water.
+    for (var i = 0; i < 8; i += 1) {
+        let lp = water.lamps[i * 2];
+        if (lp.w <= 0.0) {
+            continue;
+        }
+        let to_l = lp.xyz - in.world_position.xyz;
+        let dl = length(to_l);
+        let reach = clamp(1.0 - dl / (lp.w * 1.6), 0.0, 1.0);
+        if (reach <= 0.0) {
+            continue;
+        }
+        let hl = normalize(to_l / dl + v);
+        let nl = max(dot(n, hl), 0.0);
+        let lc = water.lamps[i * 2 + 1].rgb;
+        col += lc * (pow(nl, 600.0) * 0.9 + pow(nl, 70.0) * 0.035) * reach * reach * (0.35 + 0.65 * fine);
+    }
     // See-through by how much water there is: clear in the shallows, its own colour once deep (and always by
     // the reflection at grazing angles).
     var absorb = 1.0 - exp(-depth * 0.55);

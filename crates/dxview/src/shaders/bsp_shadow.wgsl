@@ -304,6 +304,19 @@ fn shadowed_lightmap(lm: vec3<f32>, world_position: vec4<f32>, n: vec3<f32>, fra
     return from_srgb(left);
 }
 
+// Caustics: two drifting, domain-warped wave patterns whose crests meet in thin bright lines (0 .. ~1).
+fn caustic_layer(p: vec2<f32>, t: f32) -> f32 {
+    let w = vec2<f32>(sin(p.y * 1.3 + t * 0.7), cos(p.x * 1.1 - t * 0.6)) * 0.7;
+    let q = p + w;
+    let a = sin(q.x * 2.2 + t * 0.9) + sin(q.y * 2.0 - t * 1.1) + sin((q.x - q.y) * 1.5 + t * 0.6);
+    // The band where the three waves agree: narrow, so the lines stay thin.
+    return pow(clamp(1.0 - abs(a - 1.6) / 1.4, 0.0, 1.0), 6.0);
+}
+
+fn caustics(p: vec2<f32>, t: f32) -> f32 {
+    return caustic_layer(p * 1.7, t) * 0.65 + caustic_layer(p * 2.9 + vec2<f32>(3.1, 7.3), t * 1.3) * 0.45;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     bsp_load(in.instance_index);
@@ -381,6 +394,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #endif // BSP_RELIGHT
 #endif
 #endif
+#ifdef LIGHTMAP
+    // Modern Water's caustics: under a water sheet (u.w = its height + 10000) the light reaching the bottom
+    // gathers into moving bright lines, strongest just under the surface and fading with depth.
+    if (bsp.u.w > 0.0) {
+        let depth = (bsp.u.w - 10000.0) - pbr_input.world_position.y;
+        if (depth > 0.0) {
+            let c = caustics(pbr_input.world_position.xz, view_bindings::globals.time);
+            let k = (1.0 - smoothstep(0.5, 9.0, depth)) * smoothstep(0.0, 0.15, depth);
+            pbr_input.lightmap_light *= 1.0 + c * k * 1.4;
+        }
+    }
+#endif
 #ifdef SCREEN_SPACE_AMBIENT_OCCLUSION
 #ifdef LIGHTMAP
     // Ambient Occlusion (postfx.rs): the world's light is its lightmap, so that's what corners darken.
@@ -411,5 +436,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #endif
     out.color = vec4<f32>(out.color.rgb + base * glow, out.color.a);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    // Screen-Space Reflections (ssr.rs): the surface's reflectivity rides in the picture's alpha (0.5 .. 1).
+    if (bsp.u.z > 0.0) {
+        out.color = vec4<f32>(out.color.rgb, 1.0 - 0.5 * bsp.u.z);
+    }
     return out;
 }

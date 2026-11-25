@@ -425,6 +425,7 @@ fn swap(world: &mut World, map: String, goal: Goal, mut level: dx_level::Level, 
     }
     let carry = matches!(goal, Goal::Travel(_)).then(|| crate::save::capture_travel(world));
     dx_level::actors::set_zone_ambient(level.collision.zone_tree(), level.zone_ambient.clone());
+    dx_level::bounce::set_play(level.bounce_probes.clone());
     // Arriving at a tagged actor (Teleporter URL "map#tag"): it stands in for the PlayerStart.
     if let Goal::Travel(Some(tag)) = &goal {
         let hit = level.actors.iter().find(|a| {

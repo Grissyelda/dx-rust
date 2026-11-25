@@ -46,7 +46,12 @@ pub struct WaterParams {
     /// transmissive pass, where the scene drawn so far is on hand as a texture: the shader reflects it and blends
     /// the water onto it itself, refracted by the waves), y march steps.
     pub ssr: Vec4,
+    /// Modern Water's lamp glints: the nearest static lights, two texels each - Bevy position + radius (m), colour.
+    pub lamps: [Vec4; LAMPS * 2],
 }
+
+/// How many static lamps glint on Modern Water at once (the nearest to the eye).
+pub const LAMPS: usize = 8;
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct WaterExt {
@@ -173,6 +178,9 @@ pub struct WaterMats {
     modern: Option<bool>,
     /// The global parameters last written (modern, rain, moon, open sea).
     last: Option<[f32; 6]>,
+    /// The lamps glinting on the water now (indices into the level's lights), and when they were last chosen.
+    lamp_ids: Vec<usize>,
+    lamp_check: f32,
 }
 
 /// Enhancement "Modern Water" (setting ModernWater): reflections, a body colour and see-through depth, detailed
@@ -205,6 +213,7 @@ pub fn water_system(
     mut wm: ResMut<WaterMats>,
     mut mats: ResMut<Assets<WaterMaterial>>,
     level: Res<crate::LevelRes>,
+    cam: Query<&Transform, (With<crate::FlyCam>, Without<crate::SkyCam>)>,
     mut moon: Local<(u64, Vec3)>,
 ) {
     // The waves run on the GPU's own clock (Bevy's globals.time, which wraps every hour like this one): the
@@ -232,6 +241,44 @@ pub fn water_system(
     }
     let rings = wm.rings;
     let modern = modern();
+    // The nearest static lamps to the eye glint on the waves (Modern Water); chosen again 4 times a second.
+    wm.lamp_check -= time.delta_secs();
+    let mut lamps_changed = false;
+    if modern && wm.lamp_check <= 0.0 {
+        wm.lamp_check = 0.25;
+        if let Ok(tf) = cam.single() {
+            let e = dx_level::bevy_to_ue([tf.translation.x, tf.translation.y, tf.translation.z]);
+            let mut near: Vec<(f32, usize)> = level
+                .0
+                .lights
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| {
+                    let d = ((l.pos[0] - e[0]).powi(2) + (l.pos[1] - e[1]).powi(2) + (l.pos[2] - e[2]).powi(2)).sqrt();
+                    // Within the light's reach of the eye plus a margin (its glint shows from further off).
+                    (d < l.radius * 2.0 + 1500.0 && l.radius > 1.0).then_some((d / l.radius.max(1.0), i))
+                })
+                .collect();
+            near.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let ids: Vec<usize> = near.iter().take(LAMPS).map(|x| x.1).collect();
+            if ids != wm.lamp_ids {
+                wm.lamp_ids = ids;
+                lamps_changed = true;
+            }
+        }
+    }
+    let lamps = {
+        let mut a = [Vec4::ZERO; LAMPS * 2];
+        for (k, &i) in wm.lamp_ids.iter().enumerate() {
+            if let Some(l) = level.0.lights.get(i) {
+                let p = dx_level::ue_to_bevy(l.pos);
+                a[k * 2] = Vec4::new(p[0], p[1], p[2], l.radius * dx_level::METERS_PER_UNIT);
+                a[k * 2 + 1] = Vec4::new(l.color[0], l.color[1], l.color[2], 0.0);
+            }
+        }
+        a
+    };
+    changed |= lamps_changed;
     let switched = wm.modern != Some(modern);
     wm.modern = Some(modern);
     let open_sea = open_sea();
@@ -260,6 +307,7 @@ pub fn water_system(
             m.extension.params.m.x = if modern { 1.0 } else { 0.0 };
             m.extension.params.m.z = rain;
             m.extension.params.moon = moon_dir.extend(1.0);
+            m.extension.params.lamps = if modern { lamps } else { [Vec4::ZERO; LAMPS * 2] };
             m.extension.params.far.w = if modern { wave_m() } else { 0.0 };
             // Classic water fades out between far.x and far.y metres from the eye; the open sea goes to the horizon.
             let (near, far) = if open_sea { (1.0e6, 2.0e6) } else { (30.0, 120.0) };
@@ -320,6 +368,7 @@ pub fn material(base: StandardMaterial, opaque: bool, placeholder: Handle<Image>
                 mask: Vec4::ZERO,
                 heights: [Vec4::ZERO; 4],
                 ssr: Vec4::ZERO,
+                lamps: [Vec4::ZERO; LAMPS * 2],
             },
             reflection: placeholder,
             mask,

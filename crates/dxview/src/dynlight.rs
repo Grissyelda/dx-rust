@@ -894,6 +894,11 @@ pub struct Brightness {
     pub nv_t: f32,
     pub nv_ir: f32,
     pub nv_box: f32,
+    /// Tonemapping (tonemap.rs): 0 none, 1 filmic, 2 AgX; and the eye adaptation's exposure (1 = none).
+    pub tm: f32,
+    pub exposure: f32,
+    pub pad0: f32,
+    pub pad1: f32,
 }
 
 pub const GAMMA_SHADER: Handle<Shader> =

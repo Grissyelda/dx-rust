@@ -18,6 +18,7 @@ pub mod conversations;
 pub mod actors;
 pub mod lighting;
 pub mod emissive;
+pub mod bounce;
 pub mod movers;
 pub mod nav;
 pub mod firetex;
@@ -316,6 +317,8 @@ pub struct Level {
     pub collision: collision::BspCollision,
     /// All surface lightmaps packed into one RGBA8 (sRGB-encoded) atlas.
     pub lightmap: Option<lighting::Atlas>,
+    /// Bounce Light probes for actors (bounce::set_play when the level is put in place).
+    pub bounce_probes: Option<std::sync::Arc<bounce::Probes>>,
     /// Bevy-space meters location of the sky zone, if any; sky batches are positioned in the same space.
     pub sky_origin: Option<[f32; 3]>,
     /// Every sky room's origin (Bevy-space metres; the first is `sky_origin`), and per BSP zone the room it looks
@@ -1808,8 +1811,34 @@ pub fn build_level(
         }
         lights.extend(mesh_lights);
     }
-    let (mesh_actors, actor_list) = actors::build(pkg, classes, &mut lib, &mut textures);
     let nav = nav::NavGraph::build(pkg, classes);
+    // Bounce Light: one bounce of the baked light (and its colour) into the lightmap, and probes for actors.
+    let bounce_probes = {
+        let only: Vec<usize> = baked.patches.iter().enumerate().filter(|(_, p)| lit_surfs.contains(&p.surf)).map(|(i, _)| i).collect();
+        if bounce::strength() > 0.0 && !only.is_empty() {
+            let mut albedo_by_tex: HashMap<usize, [f32; 3]> = HashMap::new();
+            let albedo: Vec<[f32; 3]> = baked
+                .patches
+                .iter()
+                .map(|p| {
+                    let Some(s) = model.surfaces.get(p.surf) else { return [0.3; 3] };
+                    match tex_cache.get(&s.material).copied().flatten() {
+                        Some((ti, _)) => *albedo_by_tex.entry(ti).or_insert_with(|| textures.get(ti).and_then(bounce::average_albedo).unwrap_or([0.3; 3])),
+                        None => [0.3; 3],
+                    }
+                })
+                .collect();
+            let extra: Vec<[f32; 3]> = nav.points.iter().map(|n| [n.pos[0] as f32, n.pos[1] as f32, n.pos[2] as f32]).collect();
+            let (_, probes) = bounce::add_to_bake(&mut baked, &only, &albedo, &bsp_collision, &extra, name);
+            let probes = std::sync::Arc::new(probes);
+            bounce::set_building(Some(probes.clone()));
+            Some(probes)
+        } else {
+            bounce::set_building(None);
+            None
+        }
+    };
+    let (mesh_actors, actor_list) = actors::build(pkg, classes, &mut lib, &mut textures);
     let movers = {
         let mut resolve = |material: i32, masked_face: bool| -> Option<(usize, bool, f32, f32)> {
             // A face drawn PF_Masked needs the picture's see-through texels even when the texture isn't flagged
@@ -1895,6 +1924,7 @@ pub fn build_level(
         println!("level: {} HD textures", lib.hd_used);
     }
     actors::set_building_ambient(None);
+    bounce::set_building(None);
     Ok(Level {
         texture_detail,
         zone_ambient,
@@ -1923,6 +1953,7 @@ pub fn build_level(
         mesh_actors,
         movers,
         nav,
+        bounce_probes,
         zone_water,
         zone_pain,
         zone_rules,

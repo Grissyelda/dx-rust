@@ -43,8 +43,17 @@ pub fn emissive_on() -> bool {
     setting!("EmissiveSurfaces") > 0.5
 }
 
+/// Bounce Light's strength for the next map built (dx_level::bounce): Off / On / Strong.
+pub fn bounce_strength() -> f32 {
+    match setting!("BounceLight").round() as i32 {
+        1 => 1.0,
+        2 => 1.7,
+        _ => 0.0,
+    }
+}
+
 /// The settings that are built into the level's materials (a change reloads the map when switched in play).
-pub const RELOAD_KEYS: &[&str] = &["RemasteredLighting", "ReliefMaps", "MaterialSpecular", "EmissiveSurfaces", "ModernGlass"];
+pub const RELOAD_KEYS: &[&str] = &["RemasteredLighting", "ReliefMaps", "MaterialSpecular", "EmissiveSurfaces", "ModernGlass", "BounceLight", "Reflections"];
 
 /// What a surface is made of, by its texture's name ("Package.Group.Name").
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -13,6 +13,10 @@ struct Settings {
     nv_t: f32,
     nv_ir: f32,
     nv_box: f32,
+    tm: f32,
+    exposure: f32,
+    pad0: f32,
+    pad1: f32,
 }
 @group(0) @binding(2) var<uniform> settings: Settings;
 
@@ -62,6 +66,37 @@ fn night_vision(uv: vec2<f32>, c: vec3<f32>) -> vec3<f32> {
     return pow(clamp(g, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.2));
 }
 
+// Filmic: a fitted ACES curve (Narkowicz), its input and output scaled so the original's mid-grey stays put; the
+// original's white lands at 0.85 and light past it rolls off instead of clipping.
+fn filmic(x: vec3<f32>) -> vec3<f32> {
+    let v = x * 0.6;
+    let y = (v * (2.51 * v + 0.03)) / (v * (2.43 * v + 0.59) + 0.14);
+    return clamp(y * 1.26, vec3(0.0), vec3(1.0));
+}
+
+// AgX (Troy Sobotka), the common polynomial fit of its default contrast, in and out of its own working space.
+fn agx(x: vec3<f32>) -> vec3<f32> {
+    let inset = mat3x3<f32>(
+        vec3<f32>(0.842479062253094, 0.0423282422610123, 0.0423756549057051),
+        vec3<f32>(0.0784335999999992, 0.878468636469772, 0.0784336),
+        vec3<f32>(0.0792237451477643, 0.0791661274605434, 0.879142973793104));
+    let outset = mat3x3<f32>(
+        vec3<f32>(1.19687900512017, -0.0528968517574562, -0.0529716355144438),
+        vec3<f32>(-0.0980208811401368, 1.15190312990417, -0.0980434501171241),
+        vec3<f32>(-0.0990297440797205, -0.0989611768448433, 1.15107367264116));
+    let min_ev = -12.47393;
+    let max_ev = 4.026069;
+    var v = inset * max(x, vec3(1e-10));
+    v = clamp(log2(v), vec3(min_ev), vec3(max_ev));
+    v = (v - min_ev) / (max_ev - min_ev);
+    let v2 = v * v;
+    let v4 = v2 * v2;
+    var c = 15.5 * v4 * v2 - 40.14 * v4 * v + 31.96 * v4 - 6.868 * v2 * v + 0.4298 * v2 + 0.1191 * v - 0.00232;
+    c = outset * c;
+    // The fit's output is display-encoded: back to linear for the rest of the pass.
+    return pow(clamp(c, vec3(0.0), vec3(1.0)), vec3(2.2));
+}
+
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var c = textureSample(screen_texture, texture_sampler, in.uv);
@@ -71,7 +106,13 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
             c = vec4<f32>(night_vision(in.uv, c.rgb), c.a);
         }
     }
-    let display = pow(max(c.rgb, vec3(0.0)), vec3(1.0 / 2.2));
+    var lin = max(c.rgb, vec3(0.0)) * select(settings.exposure, 1.0, settings.exposure <= 0.0);
+    if (settings.tm > 1.5) {
+        lin = agx(lin);
+    } else if (settings.tm > 0.5) {
+        lin = filmic(lin);
+    }
+    let display = pow(lin, vec3(1.0 / 2.2));
     let lifted = pow(display, vec3(1.0 / max(settings.gamma, 0.1)));
     // Unreal adds the view fog (FlashFog / zone ViewFog) to the finished picture.
     let fogged = min(lifted + vec3(settings.fog_r, settings.fog_g, settings.fog_b), vec3(1.0));
