@@ -34,6 +34,10 @@ pub fn reflectivity(roughness: f32, spec: f32, metal: f32, name: &str) -> f32 {
     if ["sky", "mirror", "water", "glass", "window", "wndow"].iter().any(|w| n.contains(w)) {
         return 0.0;
     }
+    // Test aid: every solid surface a mirror-like floor.
+    if env_on!("DXVIEW_SSR_ALL") {
+        return 0.9;
+    }
     let smooth = (1.0 - (roughness - 0.1) / 0.6).clamp(0.0, 1.0);
     let base = smooth * (0.45 + 0.35 * spec.min(1.4) / 1.4 + 0.2 * metal);
     // Floors meant to shine read as wet / polished in Glossy.
@@ -122,7 +126,7 @@ mod render {
     use bevy::render::{
         extract_component::{ComponentUniforms, DynamicUniformIndex},
         render_resource::{
-            binding_types::{sampler, texture_2d, texture_depth_2d, uniform_buffer},
+            binding_types::{sampler, texture_2d, texture_2d_multisampled, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer},
             BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, CachedRenderPipelineId, ColorTargetState,
             ColorWrites, FragmentState, Operations, PipelineCache, RenderPassColorAttachment, RenderPassDescriptor,
             RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor, ShaderStages, TextureFormat,
@@ -133,19 +137,22 @@ mod render {
     };
     use std::collections::HashMap;
 
+    static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
     #[derive(Resource)]
     pub struct SsrPipeline {
-        layout: BindGroupLayoutDescriptor,
+        /// Single-sampled and MSAA prepass textures.
+        layouts: [BindGroupLayoutDescriptor; 2],
         vertex: bevy::render::render_resource::VertexState,
         sampler: Sampler,
-        ids: HashMap<TextureFormat, CachedRenderPipelineId>,
+        ids: HashMap<(TextureFormat, bool), CachedRenderPipelineId>,
     }
 
     #[derive(Component)]
-    pub struct SsrPipelineId(CachedRenderPipelineId);
+    pub struct SsrPipelineId(CachedRenderPipelineId, bool);
 
     pub fn init_pipeline(mut commands: Commands, fullscreen: Res<FullscreenShader>, device: Res<RenderDevice>) {
-        let layout = BindGroupLayoutDescriptor::new(
+        let single = BindGroupLayoutDescriptor::new(
             "dxview_ssr_layout",
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::FRAGMENT,
@@ -159,41 +166,61 @@ mod render {
                 ),
             ),
         );
+        // With MSAA the prepass textures are multisampled (the picture itself is resolved by then).
+        let multi = BindGroupLayoutDescriptor::new(
+            "dxview_ssr_layout_msaa",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::FRAGMENT,
+                (
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                    texture_depth_2d_multisampled(),
+                    texture_2d_multisampled(TextureSampleType::Float { filterable: false }),
+                    uniform_buffer::<ViewUniform>(true),
+                    uniform_buffer::<SsrSettings>(true),
+                ),
+            ),
+        );
         let sampler = device.create_sampler(&SamplerDescriptor {
             mag_filter: bevy::render::render_resource::FilterMode::Linear,
             min_filter: bevy::render::render_resource::FilterMode::Linear,
             ..default()
         });
-        commands.insert_resource(SsrPipeline { layout, vertex: fullscreen.to_vertex_state(), sampler, ids: HashMap::new() });
+        commands.insert_resource(SsrPipeline { layouts: [single, multi], vertex: fullscreen.to_vertex_state(), sampler, ids: HashMap::new() });
     }
 
     pub fn prepare(
         mut commands: Commands,
         cache: Res<PipelineCache>,
         mut pipe: ResMut<SsrPipeline>,
-        views: Query<(Entity, &ExtractedView), With<SsrSettings>>,
+        views: Query<(Entity, &ExtractedView, Option<&Msaa>), With<SsrSettings>>,
     ) {
-        for (e, view) in &views {
+        for (e, view, msaa) in &views {
             let fmt = view.target_format;
-            let id = if let Some(id) = pipe.ids.get(&fmt) {
+            let ms = msaa.is_some_and(|m| m.samples() > 1);
+            if env_on!("DXVIEW_SSRLOG") && LOGGED.load(std::sync::atomic::Ordering::Relaxed) < 3 {
+                println!("SSR prepare: view {e:?} format {fmt:?}");
+            }
+            let id = if let Some(id) = pipe.ids.get(&(fmt, ms)) {
                 *id
             } else {
                 let desc = RenderPipelineDescriptor {
                     label: Some("dxview_ssr".into()),
-                    layout: vec![pipe.layout.clone()],
+                    layout: vec![pipe.layouts[ms as usize].clone()],
                     vertex: pipe.vertex.clone(),
                     fragment: Some(FragmentState {
                         shader: super::SSR_SHADER,
+                        shader_defs: if ms { vec!["MULTISAMPLED".into()] } else { Vec::new() },
                         targets: vec![Some(ColorTargetState { format: fmt, blend: None, write_mask: ColorWrites::ALL })],
                         ..default()
                     }),
                     ..default()
                 };
                 let id = cache.queue_render_pipeline(desc);
-                pipe.ids.insert(fmt, id);
+                pipe.ids.insert((fmt, ms), id);
                 id
             };
-            commands.entity(e).insert(SsrPipelineId(id));
+            commands.entity(e).insert(SsrPipelineId(id, ms));
         }
     }
 
@@ -207,8 +234,18 @@ mod render {
         mut ctx: RenderContext,
     ) {
         let (target, id, prepass, view_offset, settings_index, msaa) = view.into_inner();
-        // The pass reads single-sampled depth and normals.
-        if msaa.is_some_and(|m| m.samples() > 1) {
+        let log = env_on!("DXVIEW_SSRLOG") && LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 20;
+        if log {
+            println!(
+                "SSR pass: msaa {:?} pipeline {} depth {} normal {}",
+                msaa.map(|m| m.samples()),
+                cache.get_render_pipeline(id.0).is_some(),
+                prepass.depth_view().is_some(),
+                prepass.normal_view().is_some()
+            );
+        }
+        // The pipeline was made for the other sample count (MSAA switched this frame): next frame.
+        if msaa.is_some_and(|m| m.samples() > 1) != id.1 {
             return;
         }
         let Some(pipeline) = cache.get_render_pipeline(id.0) else { return };
@@ -217,7 +254,7 @@ mod render {
         let post = target.post_process_write();
         let bind = ctx.render_device().create_bind_group(
             "dxview_ssr_bind",
-            &cache.get_bind_group_layout(&pipe.layout),
+            &cache.get_bind_group_layout(&pipe.layouts[id.1 as usize]),
             &BindGroupEntries::sequential((post.source, &pipe.sampler, depth, normal, view_binding, settings_binding)),
         );
         let desc = RenderPassDescriptor {

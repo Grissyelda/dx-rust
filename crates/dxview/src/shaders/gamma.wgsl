@@ -66,12 +66,15 @@ fn night_vision(uv: vec2<f32>, c: vec3<f32>) -> vec3<f32> {
     return pow(clamp(g, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.2));
 }
 
-// Filmic: a fitted ACES curve (Narkowicz), its input and output scaled so the original's mid-grey stays put; the
-// original's white lands at 0.85 and light past it rolls off instead of clipping.
+// Filmic: the original's picture untouched up to a knee, then a smooth shoulder (slope 1 at the knee, approaching
+// white): light past white rolls off instead of clipping. (A full film curve like ACES also crushes the toe, and
+// Deus Ex is mostly toe: its nights went murky.)
 fn filmic(x: vec3<f32>) -> vec3<f32> {
-    let v = x * 0.6;
-    let y = (v * (2.51 * v + 0.03)) / (v * (2.43 * v + 0.59) + 0.14);
-    return clamp(y * 1.26, vec3(0.0), vec3(1.0));
+    let knee = 0.62;
+    let room = 1.0 - knee;
+    let over = max(x - knee, vec3(0.0));
+    let shoulder = knee + room * (1.0 - exp(-over / room));
+    return select(x, shoulder, x > vec3(knee));
 }
 
 // AgX (Troy Sobotka), the common polynomial fit of its default contrast, in and out of its own working space.

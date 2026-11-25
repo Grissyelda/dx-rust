@@ -2,8 +2,8 @@
 //! the last pass (shaders/gamma.wgsl, the Brightness material on the view-model camera).
 //!
 //! * None keeps the original's look: light past white clips.
-//! * Filmic rolls bright light off smoothly (a fitted ACES curve, rescaled so the original's mid-tones stay where
-//!   they were): glowing signs, lamps and bloom keep their colour instead of going flat white.
+//! * Filmic leaves the picture as it was up to a knee and rolls the light past it smoothly toward white: glowing
+//!   signs, lamps and bloom keep their colour instead of going flat white, and the darks are untouched.
 //! * AgX (Troy Sobotka's, in its common polynomial form) does the same with less hue shift in saturated light.
 //!
 //! Eye Adaptation: the eye opens slowly in the dark and closes quickly in bright light. It's measured on the CPU
@@ -51,6 +51,9 @@ pub fn tonemap_system(
             st.check = 0.2;
             if let (Some(level), Ok(tf)) = (level.as_ref(), cam.single()) {
                 st.want = measure(&level.0, tf);
+                if env_on!("DXVIEW_EYELOG") {
+                    println!("EYE want {:.2} now {:.2} stops", st.want, st.now);
+                }
             }
         }
         // Opening up in the dark takes a few seconds, closing down in bright light under one.

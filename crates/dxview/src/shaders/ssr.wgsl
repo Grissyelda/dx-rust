@@ -9,8 +9,13 @@
 
 @group(0) @binding(0) var screen_texture: texture_2d<f32>;
 @group(0) @binding(1) var screen_sampler: sampler;
+#ifdef MULTISAMPLED
+@group(0) @binding(2) var depth_texture: texture_depth_multisampled_2d;
+@group(0) @binding(3) var normal_texture: texture_multisampled_2d<f32>;
+#else
 @group(0) @binding(2) var depth_texture: texture_depth_2d;
 @group(0) @binding(3) var normal_texture: texture_2d<f32>;
+#endif
 @group(0) @binding(4) var<uniform> view: View;
 struct Settings {
     // x strength, y steps, z max distance (m), w debug (1 = the reflection alone)
@@ -60,6 +65,27 @@ fn scene_color(uv: vec2<f32>, blur: f32) -> vec3<f32> {
     return c * min(1.0, 1.5 / max(l, 1e-4));
 }
 
+fn world_at(uv: vec2<f32>) -> vec3<f32> {
+    let d = depth_at(uv);
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let w = view.world_from_clip * vec4<f32>(ndc, d, 1.0);
+    return w.xyz / w.w;
+}
+
+// The surface's own (geometric) normal from the depth around the pixel: the prepass normal carries the relief
+// maps' bumps, and rays reflected off a bump straight into the floor it sits on found the floor itself.
+fn geometric_normal(uv: vec2<f32>, p: vec3<f32>) -> vec3<f32> {
+    let px = 1.0 / vec2<f32>(textureDimensions(depth_texture));
+    let xr = world_at(uv + vec2<f32>(px.x, 0.0)) - p;
+    let xl = p - world_at(uv - vec2<f32>(px.x, 0.0));
+    let yd = world_at(uv + vec2<f32>(0.0, px.y)) - p;
+    let yu = p - world_at(uv - vec2<f32>(0.0, px.y));
+    // The nearer neighbour on each axis (an edge on one side would bend the normal).
+    let dx = select(xl, xr, length(xr) < length(xl));
+    let dy = select(yu, yd, length(yd) < length(yu));
+    return normalize(cross(dy, dx));
+}
+
 fn hash(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 }
@@ -86,14 +112,23 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     if (dot(n, v) <= 0.02) {
         return vec4<f32>(c.rgb, 1.0);
     }
-    let r = reflect(-v, n);
+    var ng = geometric_normal(in.uv, p0);
+    if (dot(ng, n) < 0.0) {
+        ng = -ng;
+    }
+    // Mostly the flat surface's mirror direction, a little of the bumps.
+    let nr = normalize(mix(ng, n, 0.3));
+    let r = reflect(-v, nr);
+    if (dot(r, ng) <= 0.01) {
+        return vec4<f32>(c.rgb, 1.0);
+    }
     // Steps grow out from the surface (jittered per pixel so the step pattern doesn't band).
     let steps = i32(settings.a.y);
     let max_d = settings.a.z;
     var s = (0.08 + dist * 0.006) * (0.75 + 0.5 * hash(in.position.xy));
     var prev = 0.0;
     var hit = vec4<f32>(0.0);
-    let start = p0 + n * 0.02;
+    let start = p0 + ng * 0.02;
     for (var i = 0; i < steps; i += 1) {
         if (s > max_d) {
             break;
@@ -124,6 +159,14 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
                     }
                 }
                 let qh = project(start + r * b);
+                // A grazing ray finding the surface it left (the same floor a little further on, by depth
+                // precision): not a reflection of anything. What it found must stand off the surface's plane.
+                let hd = depth_at(qh.xy);
+                let hn = vec2<f32>(qh.x * 2.0 - 1.0, 1.0 - qh.y * 2.0);
+                let hw = view.world_from_clip * vec4<f32>(hn, hd, 1.0);
+                if (dot(hw.xyz / hw.w - p0, ng) < 0.03 + b * 0.02) {
+                    break;
+                }
                 // Rays heading back toward the eye would see the backs of things: fade them.
                 let facing = smoothstep(-0.25, 0.1, dot(r, -v));
                 let sure = 1.0 - smoothstep(max_d * 0.6, max_d, b);
