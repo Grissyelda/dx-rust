@@ -25,6 +25,9 @@ Gore (all in the Modern mix; Low Gore turns it off):
   someone shot through (with runs down it), meaty chunks that arc and leave trails, and fast drops that splash on.
 - **Modern Water**: lamps around the water now glint on the waves, and the floors and walls under water sheets
   shimmer with moving caustics.
+- **Augmentique 1.0** (the stand-alone release, not the one inside GMDX): JC no longer appears as a floating head
+  over a pair of trousers. That release lists its outfit groups in a shorter form, which was read with men and women
+  swapped, so male JC was given the women's coat model dressed in his own textures (GitHub #71).
 Android (and The Nameless Mod on phones):
 - **Too bright with Lean Rendering** (on by default on phones): rooms lit by many lamps that switch on and off (The
   Nameless Mod's light switches) went almost white, which also hid the translucent menus and the object belt

@@ -417,12 +417,20 @@ impl Host for Builder<'_> {
                 if self.get_parts_group(&m) {
                     return Some(V::None);
                 }
-                let cm = find_mesh(&arg(a, 1).str()).unwrap_or_default();
+                // Two signatures: (mesh, carcass mesh, allowMale, allowFemale) in the GMDX build, and
+                // (mesh, allowMale, allowFemale) in Augmentique 1.0 on its own. Reading the older form as the newer one
+                // swapped male and female (a man got the female coat's mesh dressed in his own skins: GitHub #71).
+                let short = a.len() <= 3 || matches!(arg(a, 1), V::Bool(_));
+                let (cm, male, fem) = if short {
+                    (String::new(), arg(a, 1).truthy(), arg(a, 2).truthy())
+                } else {
+                    (find_mesh(&arg(a, 1).str()).unwrap_or_default(), arg(a, 2).truthy(), arg(a, 3).truthy())
+                };
                 let regular = self.d.texts.get("bodytyperegular").cloned().unwrap_or_default();
                 self.d.groups.push(Group {
                     meshes: vec![(m, cm, regular)],
-                    allow_male: arg(a, 2).truthy(),
-                    allow_female: arg(a, 3).truthy(),
+                    allow_male: male,
+                    allow_female: fem,
                     parts: Vec::new(),
                     defaults: Vec::new(),
                 });
