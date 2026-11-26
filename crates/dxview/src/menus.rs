@@ -1099,6 +1099,12 @@ const DISPLAY_ADVANCED: [&str; 8] = [
     "FPSCounter",
 ];
 
+/// Ours, Android only (touch::enabled): Settings > Touch Controls, the touch and gyro options on one screen.
+const TOUCH_SCREEN: [&str; 9] = [
+    "TouchLookSpeed", "TouchLookVertical", "TouchInvertY", "TouchTapFire", "TouchSize", "TouchOpacity", "TouchVibrate",
+    "GyroAim", "GyroSensitivity",
+];
+
 /// The Enhancements list's choices for these keys, in this order (missing ones - hidden on this platform - left out).
 fn enhancement_picks(keys: &[&str]) -> Vec<Choice> {
     let en = Enhance::new();
@@ -1503,7 +1509,10 @@ impl Enhance {
     /// Touch controls and gyro aiming (Android).
     fn touch_items(items: &mut Vec<Choice>) {
         for (key, label, help, values) in [
-            ("TouchLook", "Touch Look Speed", "How far the view turns for a drag on the right half of the screen.", vec!["Slowest", "Slow", "Normal", "Fast", "Fastest"]),
+            ("TouchLookSpeed", "Touch Look Speed", "How far the view turns for a drag on the right half of the screen.", vec!["1", "2", "3", "4", "5 (Normal)", "6", "7", "8", "9", "10"]),
+            ("TouchLookVertical", "Up / Down Look Speed", "How fast the view tilts up and down, against the turn left and right.", vec!["50%", "75%", "100%", "125%", "150%"]),
+            ("TouchInvertY", "Invert Touch Look", "Dragging up looks down (touch only; the mouse has its own switch).", vec!["Off", "On"]),
+            ("TouchTapFire", "Tap / Hold To Fire", "A quick tap on the look side fires once, holding a finger still fires; off, only the look drag.", vec!["Off", "On"]),
             ("TouchSize", "Touch Button Size", "The size of the on-screen buttons.", vec!["Small", "Normal", "Large"]),
             ("TouchOpacity", "Touch Button Opacity", "How solid the on-screen buttons and the move stick are drawn.", vec!["25%", "50%", "70%", "90%"]),
             ("TouchVibrate", "Vibrate On Button Press", "A short buzz when a finger lands on an on-screen button.", vec!["Off", "On"]),
@@ -1877,16 +1886,24 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                     at,
                     MenuBtn { label: "Enhancements".into(), y, action: 1, invoke: "MenuScreenEnhancements".into(), key: String::new(), enabled: true },
                 );
-                // Ours: Mods (the mod manager; not on Classic-only phones, which play without mods).
+                // Ours: Mods (the mod manager; not on Classic-only phones, which play without mods) and, on Android,
+                // Touch Controls. The art has no wells for them: the Enhancements well is drawn again (as the main
+                // menu's Achievements) and Previous Menu moves down a row for each.
+                let mut extra: Vec<(&str, &str)> = Vec::new();
+                if crate::touch::enabled() {
+                    extra.push(("Touch Controls", "MenuScreenTouch"));
+                }
                 if !crate::platform::classic_only() {
-                    // The art has no well for it: the Enhancements well is drawn twice (as the main menu's
-                    // Achievements) and Previous Menu moves down a row.
+                    extra.push(("Mods", "MenuScreenMods"));
+                }
+                for (n, (label, invoke)) in extra.into_iter().enumerate() {
+                    let row = y + 36 * (n as i32 + 1);
                     f.dups.push((y - 9, 36));
                     f.ch += 36;
-                    let at = at + 1;
+                    let at = at + 1 + n;
                     buttons.insert(
                         at,
-                        MenuBtn { label: "Mods".into(), y: y + 36, action: 1, invoke: "MenuScreenMods".into(), key: String::new(), enabled: true },
+                        MenuBtn { label: label.into(), y: row, action: 1, invoke: invoke.into(), key: String::new(), enabled: true },
                     );
                     for b in buttons.iter_mut().skip(at + 1) {
                         b.y += 36;
@@ -2097,6 +2114,16 @@ fn open_window(hud: &mut ClassicHud, assets: &mut RuntimeAssets, class: &str) ->
                 voff: 0,
                 dropdown: false,
             }];
+            let slots = art_rows(&f);
+            cut_empty_rows(&mut f, choices.len(), slots);
+            Body::Choices { choices }
+        }
+        "MenuScreenTouch" => {
+            // Ours (Android), on the Display screen's frame (nine rows): touch look speed, buttons, gyro.
+            f = frame(assets, "MenuScreenDisplay");
+            f.class = class.to_string();
+            f.title = "Touch Controls".into();
+            let choices = enhancement_picks(&TOUCH_SCREEN);
             let slots = art_rows(&f);
             cut_empty_rows(&mut f, choices.len(), slots);
             Body::Choices { choices }
@@ -4194,6 +4221,7 @@ fn build_once(
         .map(|a| pint(&a.props, "missionNumber", 0))
         .unwrap_or(0);
     MISSION.store(mission, Ordering::Relaxed);
+    crate::tnmmode::note_map(&level.0.name);
     TRAINING.store(level.0.level_info().is_some() && mission == 0, Ordering::Relaxed);
     if let Some(Value::Str(loc)) = level.0.level_info().and_then(|a| find(&a.props, "MissionLocation")) {
         if let Ok(mut l) = LOCATION.lock() {
@@ -8381,6 +8409,7 @@ mod tests {
             "MenuScreenOptions",
             "MenuScreenDisplay",
             "MenuScreenDisplayAdvanced",
+            "MenuScreenTouch",
             "MenuScreenSound",
             "MenuScreenControls",
             "MenuScreenAdjustColors",

@@ -2171,6 +2171,12 @@ pub fn select_system(
             && mouse.just_pressed(MouseButton::Left)
             && !crate::keybinds::UI_MODE.load(std::sync::atomic::Ordering::Relaxed)
             && !crate::radish::active()
+            // (Not in a cut scene or a conversation, nor on the intro map: a tap to move a phone's intro on raised
+            // the fists over it.)
+            && !crate::cinematic::active()
+            && !crate::consys::third_person()
+            && !crate::menus::intro_map()
+            && !crate::tnmmode::on_intro_map()
             && inv.0.items.iter().any(|i| i.def.class.eq_ignore_ascii_case("WeaponFists"))
         {
             weapons.pending_class = Some("WeaponFists".into());

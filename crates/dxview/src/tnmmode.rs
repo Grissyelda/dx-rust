@@ -169,6 +169,20 @@ pub fn start_map() -> &'static str {
 }
 
 /// The player's class: Trestkon, or JC.
+static ON_INTRO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// menus.rs, on each new map: is it the intro cut scene's map (intro_map)?
+pub fn note_map(name: &str) {
+    let base = intro_map().trim_end_matches(".dx");
+    let n = name.rsplit(['/', '\\']).next().unwrap_or(name).trim_end_matches(".dx");
+    ON_INTRO.store(n.eq_ignore_ascii_case(base), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// On the intro cut scene's map (00_Intro, or The Nameless Mod's TNMIntro).
+pub fn on_intro_map() -> bool {
+    ON_INTRO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The intro cut scene's map: Deus Ex's 00_Intro, or The Nameless Mod's TNMIntro.
 pub fn intro_map() -> &'static str {
     if active() {

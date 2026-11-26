@@ -2,7 +2,7 @@
 // as dx-level's bake added the static ones and as Unreal 1 lit its lightmaps, so the level's shader needs no walk over
 // the lights in each pixel's cluster. One instance a surface block (its 1-texel border included); the block's texels
 // get the baked texel plus its lights, worked out as bsp_shadow.wgsl's classic_lighting did per pixel:
-// from_srgb(to_srgb(baked) + sum of colour x brightness x LIGHT_GAIN x (1 - d / r) x N.L [x cone^2]). An instance
+// baked + sum of from_srgb(colour x brightness x LIGHT_GAIN x (1 - d / r) x N.L [x cone^2]). An instance
 // without lights copies the baked texels (a block a light has left, or the whole atlas when a map loads).
 // Unreal units throughout.
 
@@ -100,7 +100,8 @@ fn fragment(in: ToFragment) -> @location(0) vec4<f32> {
             let cone = saturate(dot(-to / d, light.dir_scale.xyz) * light.dir_scale.w + light.offset.x);
             reach = reach * cone * cone;
         }
-        added += light.color_spot.rgb * reach;
+        // Each light made linear on its own and added (see bsp_shadow.wgsl classic_lighting).
+        added += from_srgb(light.color_spot.rgb * reach);
     }
-    return vec4<f32>(from_srgb(to_srgb(base) + added), 1.0);
+    return vec4<f32>(base + added, 1.0);
 }

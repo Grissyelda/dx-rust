@@ -156,6 +156,15 @@ struct State {
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
+/// A new map: no toggled crouch or fingers carried over from the last one (or from the cut scene before it).
+pub fn reset_level() {
+    with(|s| {
+        s.crouch_on = false;
+        s.fingers.clear();
+        s.cursor = None;
+    });
+}
+
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(State::default))
@@ -203,17 +212,22 @@ pub fn move_axes() -> Option<Vec2> {
     with(|s| (s.move_axes.length() > 0.0).then_some(s.move_axes))
 }
 
+/// Touch Look Speed's steps (multiples of the original 0.0045 rad per logical pixel).
+const LOOK_SPEEDS: [f32; 10] = [0.35, 0.5, 0.65, 0.8, 1.0, 1.2, 1.45, 1.75, 2.1, 2.6];
+
 /// fly(): the view turn this frame (yaw, pitch) in radians from dragging on the look side.
 pub fn look_delta() -> Vec2 {
     if !enabled() {
         return Vec2::ZERO;
     }
-    let sens = [0.5, 0.75, 1.0, 1.4, 2.0][(setting!("TouchLook") as usize).min(4)];
-    let inv = if crate::settings::invert_mouse() { -1.0 } else { 1.0 };
+    // Touch Look Speed (ten steps, 5 = the old Normal) and the up / down share (Android settings screen).
+    let sens = LOOK_SPEEDS[(setting!("TouchLookSpeed") as usize).min(LOOK_SPEEDS.len() - 1)];
+    let vert = [0.5, 0.75, 1.0, 1.25, 1.5][(setting!("TouchLookVertical") as usize).min(4)];
+    let touch_inv = if setting!("TouchInvertY") > 0.5 { -1.0 } else { 1.0 };
     #[allow(unused_mut)]
     let mut turn = with(|s| {
         let d = std::mem::take(&mut s.look);
-        Vec2::new(d.x * 0.0045 * sens, -inv * d.y * 0.0045 * sens)
+        Vec2::new(d.x * 0.0045 * sens, -touch_inv * d.y * 0.0045 * sens * vert)
     });
     // Gyro Aim: the phone's own turn, on while playing (not in a screen).
     #[cfg(target_os = "android")]
@@ -223,6 +237,7 @@ pub fn look_delta() -> Vec2 {
         crate::android::gyro_enable(on);
         if on {
             let g = [0.5, 0.75, 1.0, 1.4, 2.0][(setting!("GyroSensitivity") as usize).min(4)];
+            let inv = if crate::settings::invert_mouse() { -1.0 } else { 1.0 };
             let t = crate::android::gyro_take() * g;
             turn += Vec2::new(t.x, inv * t.y);
         }
@@ -377,7 +392,9 @@ fn fingers(touches: &Touches, emu: &mut Local<(bool, bool)>, mouse_ev: &mut Mess
     }
     let mut v: Vec<(u64, Vec2, bool, bool)> = touches.iter().map(|t| (t.id(), t.position(), touches.just_pressed(t.id()), false)).collect();
     for t in touches.iter_just_released().chain(touches.iter_just_canceled()) {
-        v.push((t.id(), t.position(), false, true));
+        // A quick tap can begin and end between two frames (a slow frame on a phone): it starts and ends here,
+        // else it never took a role and was lost.
+        v.push((t.id(), t.position(), touches.just_pressed(t.id()), true));
     }
     v
 }
@@ -400,13 +417,16 @@ pub fn touch_system(
     let ui = crate::keybinds::UI_MODE.load(std::sync::atomic::Ordering::Relaxed);
     let talking = crate::consys::third_person() && !crate::consys::choosing();
     let cine = crate::cinematic::active();
+    let tap_fire = setting!("TouchTapFire") > 0.5;
     let list = fingers(&touches, &mut emu, &mut mouse_ev, win.cursor_position());
     let map = &binds.map;
     with(|s| {
         s.now = now;
         s.held.clear();
         s.move_axes = Vec2::ZERO;
-        let mut buttons = layout(w, h, ui);
+        // In a cut scene or a conversation the buttons aren't drawn (draw_system), so they take no fingers either: a
+        // tap to skip a line landed on the hidden Crouch key and the player arrived crouched.
+        let mut buttons = if (cine || talking) && !ui { Vec::new() } else { layout(w, h, ui) };
         if !list.is_empty() {
             s.last_touch = now;
             // A finger is the input in use, as keyboard and mouse are: the pad stops counting as "last used" (some
@@ -465,8 +485,10 @@ pub fn touch_system(
                             s.taps.push((Input::Key(KeyCode::Enter), 2));
                         } else if talking {
                             s.taps.push((Input::Key(KeyCode::Space), 2));
-                        } else if let Some(i) = bound(map, "Fire / throw") {
-                            s.taps.push((i, 2));
+                        } else if tap_fire {
+                            if let Some(i) = bound(map, "Fire / throw") {
+                                s.taps.push((i, 2));
+                            }
                         }
                     }
                 }
@@ -543,7 +565,7 @@ pub fn touch_system(
                 Role::Look { firing } => {
                     s.look += d;
                     // Held still long enough: fire until it lifts.
-                    let fire = firing || (now - f.t0 >= TAP_SECS && f.travel < TAP_TRAVEL && !talking && !cine);
+                    let fire = firing || (tap_fire && now - f.t0 >= TAP_SECS && f.travel < TAP_TRAVEL && !talking && !cine);
                     if fire {
                         if let Some(i) = bound(map, "Fire / throw") {
                             s.held.push(i);
@@ -596,7 +618,8 @@ pub fn touch_system(
         // The last spot a finger was stays the cursor (a click lands where it was tapped).
         if let Some(c) = cursor {
             s.cursor = Some(c);
-        } else if !ui {
+        } else if !ui || emulating() {
+            // (The desktop test's mouse is the cursor between presses: kept, it pinned the pointer to the last tap.)
             s.cursor = None;
         } else if let Some(f) = ended.iter().find(|f| matches!(f.role, Role::Ui { .. })) {
             s.cursor = Some(f.pos);

@@ -323,6 +323,15 @@ fn platform_default(key: &str) -> Option<f32> {
             "LeanRendering" | "LeanUpdates" => 1.0,
             "HDRRendering" => 0.0,
             "FPSLimit" => 2.0,
+            // Mali: no 4x MSAA (with the depth prepass the multisampled targets leave the tile memory, the
+            // bandwidth a tiler can least afford).
+            "AntiAliasing" => {
+                if crate::gpuinit::family() == crate::gpuinit::GpuFamily::Mali {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
             // Mali GPUs draw the world at two thirds of the screen's size (Render Resolution 67%).
             "RenderScale" => {
                 if crate::gpuinit::family() == crate::gpuinit::GpuFamily::Mali {
@@ -345,6 +354,10 @@ fn platform_default(key: &str) -> Option<f32> {
 fn touch_default(key: &str) -> Option<f32> {
     Some(match key {
         "TouchLook" | "GyroSensitivity" => 2.0,
+        "TouchLookSpeed" => 4.0,
+        "TouchLookVertical" => 2.0,
+        "TouchInvertY" => 0.0,
+        "TouchTapFire" => 1.0,
         "TouchSize" => 1.0,
         "TouchOpacity" => 2.0,
         "TouchVibrate" => 1.0,

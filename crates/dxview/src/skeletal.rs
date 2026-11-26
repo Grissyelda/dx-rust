@@ -709,6 +709,18 @@ pub fn spawn_system(
             commands.entity(c).insert(HiddenPart);
         }
         let sb = build(&mut commands, &mut meshes, &mut mats, &mut ibms, body, e, &slot_tex, &anim.mesh, anim.draw_scale, a.mesh_actor, None, &[], None);
+        // Phones: what was built goes to startup.log (a Snapdragon player saw no rebuilt people; the log says
+        // whether any were made and with how many textured sections).
+        if crate::platform::android() {
+            static NOTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if NOTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 4 {
+                crate::platform::note(&format!(
+                    "skeletal: {name} rebuilt, {} sections from {} textured slots",
+                    sb.meshes.len(),
+                    slot_tex.len()
+                ));
+            }
+        }
         commands.entity(e).insert(sb);
     }
 }

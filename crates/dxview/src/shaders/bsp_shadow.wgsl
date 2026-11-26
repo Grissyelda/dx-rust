@@ -211,13 +211,13 @@ fn classic_lighting(in: PbrInput) -> vec4<f32> {
 #endif
         // The colour: Bevy's colour x intensity scaled to its brightest channel (hsv_white's 1), back in gamma space.
         let rgb = (*light).color_inverse_square_range.rgb;
-        added += to_srgb(rgb / max(max(rgb.r, rgb.g), max(rgb.b, 1e-8))) * (brightness * reach);
+        // Each light's term is made linear on its own and the terms added to the lightmap's light (ours): summed in
+        // gamma as the bake sums its lights, a room of overlapping lamps (The Nameless Mod's TriggerLights) went
+        // white, far past what Bevy's lights give the same lamps without Lean Rendering.
+        added += from_srgb(to_srgb(rgb / max(max(rgb.r, rgb.g), max(rgb.b, 1e-8))) * (brightness * reach * bsp.p.z));
     }
 #endif // BSP_NO_DYNLIGHTS
-    var lm = in.lightmap_light;
-    if (max(added.r, max(added.g, added.b)) > 0.0) {
-        lm = from_srgb(to_srgb(lm) + added * bsp.p.z);
-    }
+    var lm = in.lightmap_light + added;
     let diffuse_color = base.rgb * (1.0 - in.material.metallic) * (1.0 - in.material.specular_transmission) *
         (1.0 - in.material.diffuse_transmission);
     var direct = vec3<f32>(0.0);

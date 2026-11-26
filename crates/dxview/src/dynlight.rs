@@ -376,9 +376,13 @@ pub struct DynLights {
 }
 
 const POOL: usize = 24;
+/// Mali phones (gpuinit::safe_gpu): every GPU light costs each lit pixel in Bevy's clustered pass, which those tilers
+/// pay dearly for - the eight nearest (muzzle flashes, explosions, flares, the flashlight) are kept.
+const POOL_SMALL: usize = 8;
 
 pub fn setup_dynlights(mut commands: Commands) {
-    for _ in 0..POOL {
+    let pool = if crate::gpuinit::safe_gpu() { POOL_SMALL } else { POOL };
+    for _ in 0..pool {
         commands.spawn((
             PointLight {
                 intensity: 0.0,

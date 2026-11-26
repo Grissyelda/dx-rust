@@ -25,6 +25,21 @@ Gore (all in the Modern mix; Low Gore turns it off):
   someone shot through (with runs down it), meaty chunks that arc and leave trails, and fast drops that splash on.
 - **Modern Water**: lamps around the water now glint on the waves, and the floors and walls under water sheets
   shimmer with moving caustics.
+Android (and The Nameless Mod on phones):
+- **Too bright with Lean Rendering** (on by default on phones): rooms lit by many lamps that switch on and off (The
+  Nameless Mod's light switches) went almost white, which also hid the translucent menus and the object belt
+  against it - the "empty" in-game menu and the lone fist icon. Each moving or switchable light now adds its light
+  the way the PC look does.
+- **Taps**: a quick tap that started and ended between two frames was lost; menus took the pointer from the last tap
+  only, so on the desktop touch test every later tap landed where the first one was.
+- **Intro**: cut-scene cameras no longer fall behind the speech on slow phones; a line now waits (up to 2.5 s) for
+  its recording to finish decoding, so voice, subtitles and lips start together; a cut-scene line without a recording
+  moves on by itself; taps to move the intro on no longer raise Trestkon's fists or press the hidden Crouch button
+  (you arrived crouched); a crouch toggled on a phone ends with the map.
+- **Touch Controls** (Settings > Touch Controls, phones only): Touch Look Speed in ten steps, Up / Down Look Speed,
+  Invert Touch Look, Tap / Hold To Fire on or off, button size and opacity, vibration, Gyro Aim and its speed. Saved
+  with the other settings.
+- **Mali**: 8 GPU lights instead of 24 for flashes and lamps, and 4x MSAA off by default.
 
 ## v0.14.1 (Android)
 

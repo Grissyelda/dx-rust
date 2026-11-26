@@ -102,7 +102,14 @@ enum Wait {
     Input,
     /// Third person: the letterbox sliding away (WaitForConWin).
     Closing,
+    /// Ours: the line's recording is still being decoded in the background. The line waits for it (a little), so
+    /// the words, the voice and the lips start together - on a phone, a line could otherwise begin silent and its
+    /// voice come in late, out of step with the cut scene.
+    Decode,
 }
+
+/// How long a line waits for its recording to be decoded before it starts without it (seconds of game time).
+const DECODE_HOLD: f32 = 2.5;
 
 /// ConCamera state.
 #[derive(Clone, Debug)]
@@ -314,6 +321,8 @@ pub struct Play {
     /// ConPlay.bForcePlay (intro / endgame cut scenes): no ConCamera, no distance checks, no history, keys
     /// ignored, speech heard through the player when the speaker is far, the text centred in a 16:9 letterbox.
     pub forced: bool,
+    /// Wait::Decode: how long this line has waited for its recording.
+    decode_held: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1644,6 +1653,7 @@ impl ConState {
             ending: false,
             no_played_flag: false,
             forced: std::mem::take(&mut self.force_next),
+            decode_held: 0.0,
         });
         true
     }
@@ -2148,6 +2158,19 @@ impl ConState {
                 continued,
                 ..
             } => {
+                // Ours: hold the line until its recording is decoded (Wait::Decode).
+                if sound_id >= 0 {
+                    if let Some(path) = self.speech_path(con, sound_id) {
+                        let ready = crate::sound::cached(&path).is_some();
+                        let p = self.play.as_mut().unwrap();
+                        if !ready && p.decode_held < DECODE_HOLD {
+                            crate::sound::prefetch([path]);
+                            p.wait = Wait::Decode;
+                            return;
+                        }
+                        p.decode_held = 0.0;
+                    }
+                }
                 let sw = self.who(&speaker);
                 let tw = self.who(&speaking_to);
                 {
@@ -2252,7 +2275,9 @@ impl ConState {
                                 ..
                             })
                         );
-                        if p.passive || p.first_person {
+                        // (Ours: a cut scene's line with no recording reads for its length too - waiting for a
+                        // click there held the intro on one line.)
+                        if p.passive || p.first_person || p.forced {
                             p.wait = Wait::Text((p.last_len as f32 * 0.1).max(3.0));
                             p.restrict = p.first_person;
                         } else if chained {
@@ -3290,6 +3315,10 @@ pub fn consys_system(
                         st.finish_play(fl, false);
                     }
                 }
+                Wait::Decode => {
+                    p.decode_held += dt;
+                    p.wait = Wait::Process;
+                }
                 Wait::Process => {}
             }
         }
@@ -3850,6 +3879,10 @@ mod tests {
                     return;
                 }
                 Wait::Input => return,
+                Wait::Decode => {
+                    p.decode_held = DECODE_HOLD;
+                    p.wait = Wait::Process;
+                }
                 Wait::Process => {}
             }
         }

@@ -76,7 +76,7 @@ pub fn setup(
     use bevy::asset::RenderAssetUsages;
     use bevy::image::{ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-    if !(crate::shadowlight::classic_lights() && !atlas.patches.is_empty()) {
+    if !(crate::shadowlight::classic_lights() && !atlas.patches.is_empty()) || env_on!("DXVIEW_NO_LMLIGHTS") {
         clear(commands);
         return None;
     }

@@ -18,6 +18,9 @@ use std::sync::Mutex;
 use unreal_pkg::props::{find, Value};
 
 const UU: f64 = std::f64::consts::PI / 32768.0;
+/// Largest step a cut scene takes in one frame: Bevy's own virtual-time cap. (0.1 s let the camera fall behind the
+/// speech on a phone drawing under 10 frames a second.)
+const CINE_MAX_DT: f64 = 0.25;
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// PHYS_Interpolating along a MapExit's camera path to the next map (state Interpolating: HUD hidden).
@@ -699,7 +702,7 @@ pub fn cinematic_system(
         // PHYS_Interpolating riders: out of collision, placed along the path every frame.
         if let Ok(mut riders) = RIDERS.lock() {
             if !riders.is_empty() {
-                let dt = time.delta_secs_f64().min(0.1);
+                let dt = time.delta_secs_f64().min(CINE_MAX_DT);
                 let owners: Vec<usize> = level.0.mesh_actors.iter().map(|m| m.actor).collect();
                 let mut q = cams.p2();
                 for r in riders.iter_mut() {
@@ -775,7 +778,7 @@ pub fn cinematic_system(
     {
         let mut tg = TRANSIT.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(t) = tg.as_mut() {
-            let ended = t.it.tick(&t.pts, time.delta_secs_f64().min(0.1));
+            let ended = t.it.tick(&t.pts, time.delta_secs_f64().min(CINE_MAX_DT));
             let rot = t.it.rot;
             let d = forward(rot);
             let dir = Vec3::new(d.x as f32, d.z as f32, d.y as f32);
@@ -893,7 +896,7 @@ pub fn cinematic_system(
         }
     }
     let mut ev = Vec::new();
-    c.tick(if crate::loader::settling() { 0.0 } else { time.delta_secs_f64().min(0.1) }, &mut ev);
+    c.tick(if crate::loader::settling() { 0.0 } else { time.delta_secs_f64().min(CINE_MAX_DT) }, &mut ev);
     events.0.extend(ev);
     // The Nameless Mod's sequence is over (CAMCMD_END, or no point left running): the player is back.
     if let Some((loc, eye, _)) = c.tnm {
